@@ -26,4 +26,24 @@ public sealed class OnToPilotOptions
     /// itself is never exposed.
     /// </summary>
     public string? LlmApiKey { get; set; }
+
+    /// <summary>
+    /// Name of the opaque session cookie. Matches the Python backend's
+    /// <c>session_cookie</c> setting so existing client tooling continues
+    /// to work during the .NET migration.
+    /// </summary>
+    public string SessionCookie { get; set; } = "ontopilot_session";
+
+    /// <summary>
+    /// Server-side session lifetime in hours. Matches the Python backend's
+    /// <c>session_ttl_hours</c> (default 2 weeks).
+    /// </summary>
+    public int SessionTtlHours { get; set; } = 24 * 14;
+
+    /// <summary>
+    /// Whether the session cookie is marked <c>Secure</c>. Mirrors the
+    /// Python backend's <c>cookie_secure</c>; default false so local HTTP
+    /// development works out of the box.
+    /// </summary>
+    public bool CookieSecure { get; set; }
 }
