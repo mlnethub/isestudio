@@ -2,6 +2,7 @@ using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -19,6 +20,11 @@ namespace OnToPilot.Authentication;
 /// <c>HttpContext.Items</c> under <see cref="VerificationItemKey"/> so the
 /// resource endpoint can recover the matched knowledge system without a
 /// second DB round-trip.</para>
+/// <para>The token service is resolved per-request from
+/// <see cref="HttpContext.RequestServices"/> so the handler's DI-graph
+/// capture matches <see cref="SessionAuthenticationHandler"/>; this keeps
+/// the lifetime story symmetric when a parallel MCP-bearer scheme is
+/// added in Stage 4.</para>
 /// <para>Errors are written into the FastAPI <c>{"detail": ...}</c> envelope
 /// to stay consistent with the rest of the API.</para>
 /// </remarks>
@@ -37,17 +43,13 @@ public sealed class ApiBearerAuthenticationHandler : AuthenticationHandler<Authe
     /// <summary>HttpContext.Items key for the FastAPI-friendly failure detail.</summary>
     public const string FailDetailItemKey = "auth.bearerFailDetail";
 
-    private readonly IKnowledgeApiTokenService _tokens;
-
     /// <inheritdoc />
     public ApiBearerAuthenticationHandler(
         IOptionsMonitor<AuthenticationSchemeOptions> options,
         ILoggerFactory logger,
-        UrlEncoder encoder,
-        IKnowledgeApiTokenService tokens)
+        UrlEncoder encoder)
         : base(options, logger, encoder)
     {
-        _tokens = tokens;
     }
 
     /// <inheritdoc />
@@ -81,9 +83,14 @@ public sealed class ApiBearerAuthenticationHandler : AuthenticationHandler<Authe
             return AuthenticateResult.NoResult();
         }
 
+        // Resolve the token service per-request so the handler's captured
+        // DI graph stays free of scoped dependencies (matches the pattern
+        // used by SessionAuthenticationHandler).
+        var tokens = Context.RequestServices.GetRequiredService<IKnowledgeApiTokenService>();
+
         // Verify through the token service so we don't duplicate the
         // hash + active-row lookup logic.
-        var verification = await _tokens.VerifyAsync(plaintext, Context.RequestAborted)
+        var verification = await tokens.VerifyAsync(plaintext, Context.RequestAborted)
             .ConfigureAwait(false);
         if (verification is null)
         {
