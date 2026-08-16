@@ -24,3 +24,11 @@ Thumbs.db
 # Local runtime / acceptance artifacts
 *.log
 tmp/
+
+# SDD scratch spaces
+.superpowers/
+
+# .NET
+**/bin/
+**/obj/
+*.user
