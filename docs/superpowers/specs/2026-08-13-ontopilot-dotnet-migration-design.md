@@ -395,7 +395,7 @@ public interface IEmbeddingGenerator<TTerm, TEmbedding>
 
 ```csharp
 var converter = new DocumentConverter();
-var result = await converter.ConvertAsync(filePath);
+var result = await converter.ConvertAsync(filePath);  // 文件路径字符串重载
 // result.Document.ExportToMarkdown() — Markdown 文本
 // result.Document — 结构化文档，用于 HybridChunker
 ```
@@ -427,11 +427,16 @@ public sealed class DocumentParser : IDocumentParser
     {
         try
         {
-            using var memory = new MemoryStream();
-            await stream.CopyToAsync(memory, ct);
-            memory.Position = 0;
+            // DoclingDotNet.ConvertAsync(filePath) 需要文件路径，
+            // 故先将 Stream 写入临时文件
+            var tempPath = Path.GetTempFileName();
+            await using (var fileStream = new FileStream(tempPath, FileMode.Open, FileAccess.Write))
+            {
+                await stream.CopyToAsync(fileStream, ct);
+            }
+
             var converter = new DocumentConverter();
-            var result = await converter.ConvertAsync(memory, extension);
+            var result = await converter.ConvertAsync(tempPath);
             var markdown = result.Document.ExportToMarkdown();
 
             // DoclingDotNet 不可用判断：解析成功但返回空文本（异常或质量问题）
@@ -1183,17 +1188,17 @@ upstream dotnet_backend {
 }
 
 server {
-    listen 8080;
+    listen 8090;  # 8090 对外，backend 监听 8080（docker-compose 已 expose 8080）
 
     # 旧系统（迁移期间）
     location /api/legacy/ {
-        proxy_pass http://python_backend/;
+        proxy_pass http://python-backend:8080/api/legacy/;
         proxy_set_header Host $host;
     }
 
     # 新系统
     location / {
-        proxy_pass http://dotnet_backend/;
+        proxy_pass http://dotnet-backend:8080/;
         proxy_set_header Host $host;
     }
 }
@@ -1201,11 +1206,11 @@ server {
 
 #### 切换步骤
 
-1. **灰度阶段**：前端环境变量指向 Python backend，Nginx 路由默认走 .NET
-2. **5% 流量验证**：通过 Nginx `split_clients` 将 5% 请求路由到 .NET
-3. **50% 流量验证**：确认 24h 无错误后扩大比例
-4. **全量切换**：100% 流量切到 .NET，停止 Python backend
-5. **回滚**：修改 Nginx 配置或前端环境变量即可秒级回滚
+1. **初始状态（100% Python）**：Nginx 路由默认走 `python-backend`，`dotnet-backend` 已在后台启动但无流量
+2. **5% 灰度**：通过 Nginx `split_clients` 将 5% 请求切换到 `dotnet-backend`，观察 24h 错误率
+3. **50% 灰度**：确认 5% 阶段无错误后，将比例提升至 50%
+4. **全量切换**：确认 50% 阶段无错误后，Nginx 路由 100% 到 `dotnet-backend`，停止 `python-backend`
+5. **回滚**：修改 Nginx 配置将流量切回 `python-backend` 即可秒级回滚（重启 `python-backend` 容器）
 
 #### Docker Compose 灰度配置
 
@@ -1216,7 +1221,7 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "8080:8080"
+      - "8090:8090"
     depends_on:
       - python-backend
       - dotnet-backend
@@ -1564,198 +1569,3 @@ public sealed class ShaclValidator
 - **不保留 Python 抽取微服务**：迁移到 Microsoft.Extensions.AI IChatClient 直接调用 Provider
 - **不修改 Frontend**：React 代码不变
 - **不引入新 RDF 存储**：继续使用 Oxigraph（RocksDB）；优先验证后复用存储目录，必要时通过 N-Quads 迁移到新的 Oxigraph 目录
-
----
-
-## 13. 设计审查意见
-
-> 审查日期：2026-08-16 | 审查维度：架构设计、技术选型、迁移策略、风险管控
-
-### 0. 目录结构问题：Section 6 缺失
-
-文档在 Section 5.4（Docker）之后直接跳到了 Section 7（Frontend 兼容性），Section 6 完全空白。可能是以下两种情况之一：
-
-- **编号错误**：某个章节（如"测试策略"、"CI/CD"或"监控告警"）被遗漏
-- **内容确实缺失**：这意味着一个重要部分（如灰度部署、数据迁移执行步骤、可观测性基础设施）没有被记录
-
-**建议**：补充 Section 6，或确认是否为编号错误并修正目录。
-
----
-
-### 1. 架构设计
-
-#### 问题 1.1：OnToPilot.Domain 是空壳
-
-文档第 157 行只写了 `OnToPilot.Domain/ └── ...`，没有任何内容。Domain 层应该承载：
-- 跨模块共享的 Value Objects（如 `KnowledgeSystemId`、`UserId`）
-- Domain Events 接口
-- 跨层共享的 Entity 基类
-
-当前所有内容都在主项目里，Controller 和 Ontology 直接耦合，违背了设立 Domain 层的初衷。
-
-**建议**：明确 Domain 层的内容，至少包含：
-```
-OnToPilot.Domain/
-├── Common/
-│   ├── Entity.cs
-│   ├── ValueObject.cs
-│   └── DomainEvent.cs
-├── KnowledgeSystem/
-│   ├── KnowledgeSystemId.cs
-│   ├── UserId.cs
-│   └── Events/
-└── Shared/
-    ├── IRepository.cs
-    └── IDomainService.cs
-```
-
-#### 问题 1.2：IntegrationApiFacade 缺失于项目结构图
-
-第 933 行和 991 行提到了 `IntegrationApiFacade`，但在整个项目结构图（第 113-164 行）中完全没有出现。这个 Facade 是所有 MCP Tools 依赖的入口，是系统对外的核心抽象层，却只出现在 MCP 章节的代码示例里。
-
-**建议**：在项目结构中显式标注 `IntegrationApiFacade` 的位置与依赖关系。
-
-#### 问题 1.3：LLM 层和 RDF 层职责边界不清
-
-`Llm/` 目录（`ExtractionService`、`EmbeddingService`）和 `Ontology/` 目录（`StoreWrapper`、`SchemaBuilder`）同属 `OnToPilot/` 根下，没有清晰的子层划分。`ExtractionService` 是**业务编排层**（调用 LLM Provider 并将结果写入 RDF Store），不应该和底层的 RDF 封装平级。
-
-**建议**：将 Services 显式分层：
-```
-OnToPilot/
-├── Controllers/          # API 层
-├── Services/             # 业务编排层（新增）
-│   ├── ExtractionService.cs
-│   └── EmbeddingService.cs
-├── Ontology/             # 领域层
-└── Llm/                  # LLM 基础设施（只做 Provider 封装）
-    ├── LlmClientFactory.cs
-    └── EmbeddingGenerator.cs
-```
-
----
-
-### 2. 技术选型
-
-#### 问题 2.1：DoclingDotNet 1.2.0 生产就绪性未验证
-
-DoclingDotNet 并非官方 Docling 团队维护（是社区 `sparkeh9` 移植版），版本 1.2.0 的功能完整度、bug 密度、长期维护保障均未知。文档没有说明"DoclingDotNet 不可用"的判断标准——是返回空文本算失败，还是抛异常算失败？降级链是否在任何单点失败时都能透明传导？
-
-**建议**：在第 4.11.1 节补充：
-- 明确的不可用判断逻辑（try-catch + 空文本双重校验）
-- 降级失败的应急方案（如人工告警 + 降级到纯文本）
-
-#### 问题 2.2：MinIO 客户端选型未充分说明
-
-第 625 行推荐 `AWSSDK.S3` 而非 `Minio` 官方客户端，但两者 API 语义差异未说明：
-- `AWSSDK.S3` 的异常体系（`AmazonS3Exception`）与 MinIO 特定错误（如 `NoSuchBucket`）的映射关系
-- MinIO 的 ListObjects、Bucket Policy 等 S3 扩展 API 在 `AWSSDK.S3` 下的兼容性
-
-**建议**：在第 5.3 节补充选型理由，或评估改用 `Minio` NuGet 包的可行性。
-
-#### 问题 2.3：EF Core 版本不匹配
-
-文档第 579 行写的是"EF Core 8 + Npgsql"，但项目目标框架是 `.NET 10`。EF Core 10（随 .NET 10 发布）相比 EF Core 8 有重大改进（纯 DateOnly/TimeOnly 完整支持、湿润工作单元改进等）。
-
-**建议**：将 EF Core 8 修正为 EF Core 10，并确认 `Npgsql` 包的版本兼容性。
-
-#### 问题 2.4：缺少可观测性基础设施设计
-
-整个设计没有任何 tracing、metrics、logging 的设计。ASP.NET Core 10 原生支持 OpenTelemetry，这种级别的迁移项目（前后端分离、Docker 部署、多 Provider LLM 调用）没有可观测性设计，上线后调试会非常困难。
-
-**建议**：在 Section 6（待补充）中增加：
-- OpenTelemetry 配置（ActivitySource 注入到所有关键路径）
-- 结构化日志（Microsoft.Extensions.Logging + Serilog）
-- LLM 调用埋点（Provider 耗时、Token 消耗、错误率）
-
----
-
-### 3. 迁移策略
-
-#### 问题 3.1：SQL 存量数据迁移脚本设计完全缺失
-
-文档第 581 行说"数据模型一对一映射，迁移脚本处理存量数据"，但整篇文档没有任何关于迁移脚本的说明：
-- 自增 ID → GUID 的映射策略是什么？
-- 迁移窗口期间 Python 和 .NET 能否同时写入 PostgreSQL？
-- 如果迁移失败，回滚方案是什么？
-
-**建议**：在 Section 6（待补充）中补充：
-- 迁移脚本位置：`migrations/SqlAlchemyToEfCore/`
-- 执行方式：先在备份库验证，再在生产库执行
-- 并发策略：迁移期间禁止 Python 写入（或使用数据库锁）
-- 回滚预案：保留 Python 环境的只读访问能力
-
-#### 问题 3.2：MinIO 和 RDF 存储迁移没有明确的执行顺序
-
-文档中 MinIO 迁移（第 871-883 行）和 RDF 存储迁移（第 595-603 行）是分开描述的，但实际部署时需要明确：
-- 哪个先执行？
-- 切换到 .NET 后，如果 MinIO 迁移还未完成，前端上传功能如何处理？
-- RDF 目录复制和 MinIO 镜像是否可以并行执行？
-
-**建议**：在第 5.3 节末尾补充迁移执行序列：
-```
-1. [准备] 停止 Python 后端写入，复制 RDF 存储目录到迁移副本
-2. [并行] 执行 RDF 副本只读验证 + MinIO mc mirror 迁移
-3. [验证] RDF 写入冒烟测试通过，MinIO bucket 内容完整
-4. [切换] 启动 .NET 后端，切换前端 API 指向
-5. [确认] 观察 24h 无异常后删除 Python 环境和原 RDF 目录
-```
-
-#### 问题 3.3：缺少灰度/蓝绿部署方案
-
-文档假设是一次性切换，但生产环境很可能需要"新旧系统并行运行"的窗口期。目前的设计没有任何双写或流量切分策略。
-
-**建议**：在 Section 6（待补充）中增加：
-- 使用 Docker Compose profile 区分 Python/.NET 环境
-- 前端通过环境变量切换 API 指向
-- 或使用 Nginx path-based routing（如 `/api/v1/` → .NET，`/api/legacy/` → Python）
-
----
-
-### 4. 风险与遗漏
-
-#### 问题 4.1：风险登记不完整
-
-以下风险未被登记：
-
-| 遗漏的风险 | 概率 | 影响 | 缓解 |
-|---|---|---|---|
-| DoclingDotNet 解析质量不达预期，导致抽取质量下降 | 中 | 高 | 补充质量评估流程，保留人工抽检 |
-| MinIO 预签名 URL 生成方式与前端上传流程不兼容 | 中 | 中 | 前端上传流程专项验证 |
-| EF Core 迁移脚本执行时间过长导致业务中断 | 中 | 高 | 选择低峰期执行，准备停机窗口 |
-| Microsoft.Extensions.AI 各 Provider 的 Function Calling 支持不一致 | 中 | 中 | 在 ExtractionService 中做 Provider 能力探测 |
-| MCP Streamable HTTP 与现有前端 MCP 客户端的兼容性 | 低 | 高 | 提前用 Postman/MCP Inspector 测试 /mcp 端点 |
-| Section 6 缺失导致关键迁移步骤未定义 | 高 | 高 | 立即补充 Section 6 |
-
-#### 问题 4.2：MCP Token 认证实现不完整
-
-第 994-1008 行展示了 `TryAuthorizeMcpToken` 的伪代码，但没有说明：
-- Token 本身存储在哪里？（数据库？内存？）
-- `mcp:read` / `mcp:write` / `mcp:manage` 三级权限的边界是什么？
-- 过期 Token 如何刷新？
-
-**建议**：在第 8.4 节补充 Token 存储模型和刷新机制。
-
-#### 问题 4.3：没有 API 版本策略
-
-文档强调"API 契约兼容"，但没有说明 .NET 后端上线后是否需要版本化（如 `/api/v1/`）。如果后续需要 Breaking Change，如何处理？
-
-**建议**：在 Section 6（待补充）或第 7 节补充：
-- 当前阶段：无需版本化（因为契约兼容）
-- 未来 Breaking Change：走 `/api/v2/` + 6 个月并行策略
-
----
-
-### 综合评分
-
-| 维度 | 评分 | 说明 |
-|---|---|---|
-| 架构设计 | ⭐⭐⭐☆☆ | 整体结构清晰，但 Domain 层空心化、聚合层缺失 |
-| 技术选型 | ⭐⭐⭐⭐☆ | 选型方向正确，EF Core 版本错误、缺可观测性是主要扣分项 |
-| 迁移策略 | ⭐⭐⭐☆☆ | 策略框架正确，但 SQL 脚本设计和执行顺序缺失 |
-| 风险管控 | ⭐⭐⭐☆☆ | 风险登记不完整，Section 6 缺失是明显漏洞 |
-
-### 最需修复的 3 个问题（按优先级）
-
-1. **🔴 Section 6 缺失** — 立即确认是编号错误还是内容遗漏，补充缺失章节
-2. **🔴 SQL 迁移脚本设计** — 必须在上线前完成，不能留到实施阶段
-3. **🟡 EF Core 8 → EF Core 10** + **DoclingDotNet 生产就绪性评估**
