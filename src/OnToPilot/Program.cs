@@ -119,6 +119,20 @@ if (!app.Environment.IsEnvironment("Testing"))
         // returning from top-level statements is the cleanest signal.
         return;
     }
+
+    // Brief 接口 clause: every boot must also run stale-job/deployment
+    // recovery (so extraction_active() doesn't keep reporting a busy KS
+    // after a crash) and orphan-document backfill (so documents created
+    // before the first KS existed are bound to one). Both services are
+    // idempotent and re-entrant.
+    await scope.ServiceProvider
+        .GetRequiredService<StaleJobRecoveryService>()
+        .RunAsync(default)
+        .ConfigureAwait(false);
+    await scope.ServiceProvider
+        .GetRequiredService<LegacyBackfillService>()
+        .RunAsync(default)
+        .ConfigureAwait(false);
 }
 
 app.Run();

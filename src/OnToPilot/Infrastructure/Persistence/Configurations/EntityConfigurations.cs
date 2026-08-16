@@ -160,7 +160,7 @@ public sealed class KnowledgeApiTokenEntityConfiguration : IEntityTypeConfigurat
         builder.Property(x => x.RevokedAt);
 
         // Foreign keys (Python foreign_key= parity)
-        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.KnowledgeSystem).WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
 
     }
@@ -198,8 +198,8 @@ public sealed class McpUserTokenEntityConfiguration : IEntityTypeConfiguration<M
         builder.Property(x => x.RevokedAt);
 
         // Foreign keys (Python foreign_key= parity)
-        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
-        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.KnowledgeSystem).WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
 
     }
 }

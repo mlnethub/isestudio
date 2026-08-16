@@ -250,13 +250,11 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
     {
         var fks = await GetForeignKeysAsync();
 
-        // The total number must match the count our configurations emit.
+        // The total number must match the count our 24 configurations emit.
         // 45 HasOne<T>().WithMany().HasForeignKey(...) calls were added in
-        // EntityConfigurations.cs, plus 3 navigation-property FKs from
-        // AuthEntities (knowledgeapitoken→knowledgesystem, mcpusertoken→
-        // knowledgesystem, mcpusertoken→users) added in Task 4. Each one
-        // produces one FK constraint in the migration DDL.
-        Assert.Equal(48, fks.Count);
+        // EntityConfigurations.cs. The migration produces one FK constraint
+        // per call.
+        Assert.Equal(45, fks.Count);
 
         // Sanity check: every FK must point at the `id` column of a known
         // business table (the principal). No FK should reference the EFMigrationHistory

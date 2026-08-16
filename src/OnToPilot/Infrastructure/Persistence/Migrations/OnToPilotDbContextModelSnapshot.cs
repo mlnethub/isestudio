@@ -953,9 +953,6 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("KnowledgeSystemId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid?>("KnowledgeSystemId1")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTimeOffset?>("LastUsedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -995,8 +992,6 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("KnowledgeSystemId")
                         .HasDatabaseName("ix_kat_knowledge_system_id");
-
-                    b.HasIndex("KnowledgeSystemId1");
 
                     b.HasIndex("LegacyId")
                         .IsUnique()
@@ -1196,9 +1191,6 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("KnowledgeSystemId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid?>("KnowledgeSystemId1")
-                        .HasColumnType("uuid");
-
                     b.Property<DateTimeOffset?>("LastUsedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -1231,15 +1223,10 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("UserId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid?>("UserId1")
-                        .HasColumnType("uuid");
-
                     b.HasKey("Id");
 
                     b.HasIndex("KnowledgeSystemId")
                         .HasDatabaseName("ix_mcp_knowledge_system_id");
-
-                    b.HasIndex("KnowledgeSystemId1");
 
                     b.HasIndex("LegacyId")
                         .IsUnique()
@@ -1254,8 +1241,6 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("UserId")
                         .HasDatabaseName("ix_mcp_user_id");
-
-                    b.HasIndex("UserId1");
 
                     b.ToTable("mcpusertoken", (string)null);
 
@@ -2125,15 +2110,11 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
                         .HasForeignKey("CreatedById")
                         .OnDelete(DeleteBehavior.Restrict);
 
-                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", "KnowledgeSystem")
                         .WithMany()
                         .HasForeignKey("KnowledgeSystemId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-
-                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", "KnowledgeSystem")
-                        .WithMany()
-                        .HasForeignKey("KnowledgeSystemId1");
 
                     b.Navigation("KnowledgeSystem");
                 });
@@ -2172,25 +2153,17 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.McpUserTokenEntity", b =>
                 {
-                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", "KnowledgeSystem")
                         .WithMany()
                         .HasForeignKey("KnowledgeSystemId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
-                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", "KnowledgeSystem")
-                        .WithMany()
-                        .HasForeignKey("KnowledgeSystemId1");
-
-                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", "User")
                         .WithMany()
                         .HasForeignKey("UserId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
-
-                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", "User")
-                        .WithMany()
-                        .HasForeignKey("UserId1");
 
                     b.Navigation("KnowledgeSystem");
 

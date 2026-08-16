@@ -341,25 +341,4 @@ public sealed class StartupRecoveryTests
         }
         await db.SaveChangesAsync();
     }
-
-    private static async Task<string> StatusOfAsync(OnToPilotDbContext db, string kind, string originalStatus)
-    {
-        // The test seeds one job per (status, kind) pair. StatusOfAsync
-        // looks up the row that originally had `originalStatus` by tracking
-        // it via the failure error message the recovery service writes
-        // ("Interrupted by a server restart"). For "completed" rows we
-        // fall back to Status != "failed".
-        _ = originalStatus;
-        if (kind == "extract" || kind == "tbox")
-        {
-            var interrupted = await db.ExtractionJobs
-                .Where(j => j.Error == "Interrupted by a server restart")
-                .SingleAsync();
-            return interrupted.Status;
-        }
-        var exportInterrupted = await db.ExportJobs
-            .Where(j => j.Error == "Interrupted by a server restart")
-            .SingleAsync();
-        return exportInterrupted.Status;
-    }
 }

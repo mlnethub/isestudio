@@ -99,10 +99,10 @@ public sealed class KnowledgePromptOverrideEntity : LegacyAddressableEntity
 
 /// <summary>
 /// A revocable machine credential scoped to exactly one knowledge system.
-/// Authentication uses the SHA-256 hash (<see cref="TokenHash"/>); new tokens
-/// also keep an encrypted copy (<see cref="SecretCiphertext"/>) so the owner
-/// can explicitly reveal the credential again. Legacy hash-only tokens remain
-/// non-recoverable.
+/// Authentication uses the SHA-256 hash (<see cref="TokenHash"/>); the raw
+/// bearer secret is never stored. The <see cref="SecretCiphertext"/> column
+/// is schema-retained for Python parity but is not yet populated by the
+/// .NET service — tokens remain hash-only and unrecoverable.
 /// </summary>
 public sealed class KnowledgeApiTokenEntity : LegacyAddressableEntity
 {
