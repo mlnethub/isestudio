@@ -27,14 +27,17 @@ public sealed class StaleJobRecoveryService
 {
     private readonly OnToPilotDbContext _db;
     private readonly ILogger<StaleJobRecoveryService> _logger;
+    private readonly TimeProvider _clock;
 
     /// <summary>DI constructor.</summary>
     public StaleJobRecoveryService(
         OnToPilotDbContext db,
-        ILogger<StaleJobRecoveryService> logger)
+        ILogger<StaleJobRecoveryService> logger,
+        TimeProvider clock)
     {
         _db = db;
         _logger = logger;
+        _clock = clock;
     }
 
     /// <summary>
@@ -44,7 +47,7 @@ public sealed class StaleJobRecoveryService
     /// </summary>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        var now = DateTimeOffset.UtcNow;
+        var now = _clock.GetUtcNow();
 
         // ---- Extraction jobs ----
         var staleExtraction = await _db.ExtractionJobs

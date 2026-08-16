@@ -111,7 +111,7 @@ public sealed class StartupRecoveryTests
         using var db = DbContextFactory.CreateSqlite();
         await SeedJobsAsync(db, ("running", "extract"), ("completed", "extract"), ("pending", "export"));
 
-        var service = new StaleJobRecoveryService(db, NullLogger<StaleJobRecoveryService>.Instance);
+        var service = new StaleJobRecoveryService(db, NullLogger<StaleJobRecoveryService>.Instance, TimeProvider.System);
         await service.RunAsync(CancellationToken.None);
 
         // Recovery must mark every interrupted row "failed" and leave the
@@ -196,7 +196,7 @@ public sealed class StartupRecoveryTests
         });
         await db.SaveChangesAsync();
 
-        var service = new StaleJobRecoveryService(db, NullLogger<StaleJobRecoveryService>.Instance);
+        var service = new StaleJobRecoveryService(db, NullLogger<StaleJobRecoveryService>.Instance, TimeProvider.System);
         await service.RunAsync(CancellationToken.None);
 
         var rows = db.ReleaseDeployments.OrderBy(r => r.TboxGraphIri).ToList();
@@ -209,7 +209,7 @@ public sealed class StartupRecoveryTests
     {
         using var db = DbContextFactory.CreateSqlite();
         await SeedJobsAsync(db, ("running", "extract"));
-        var service = new StaleJobRecoveryService(db, NullLogger<StaleJobRecoveryService>.Instance);
+        var service = new StaleJobRecoveryService(db, NullLogger<StaleJobRecoveryService>.Instance, TimeProvider.System);
 
         await service.RunAsync(CancellationToken.None);
         var firstFinishedAt = (await db.ExtractionJobs.SingleAsync()).FinishedAt;
