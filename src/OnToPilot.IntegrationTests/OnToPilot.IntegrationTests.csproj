@@ -5,6 +5,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!-- NU1903 (SSH.NET 2024.2.0 transitive from Testcontainers.PostgreSql)
+         is a known vulnerability advisory that the project does not control.
+         Suppress so -warnaserror builds stay usable. -->
+    <NoWarn>$(NoWarn);NU1903</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

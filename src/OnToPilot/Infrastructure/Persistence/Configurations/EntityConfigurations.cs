@@ -57,6 +57,10 @@ public sealed class AuthSessionEntityConfiguration : IEntityTypeConfiguration<Au
 
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.Property(x => x.ExpiresAt).IsRequired();
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -80,6 +84,11 @@ public sealed class KSGrantEntityConfiguration : IEntityTypeConfiguration<KSGran
 
         builder.Property(x => x.Role).HasMaxLength(32).IsRequired().HasDefaultValue("viewer");
         builder.Property(x => x.CreatedAt).IsRequired();
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -110,6 +119,11 @@ public sealed class KnowledgePromptOverrideEntityConfiguration : IEntityTypeConf
         builder.Property(x => x.UpdatedByName).HasMaxLength(255).IsRequired().HasDefaultValue("");
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.Property(x => x.UpdatedAt).IsRequired();
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.UpdatedById).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -144,6 +158,11 @@ public sealed class KnowledgeApiTokenEntityConfiguration : IEntityTypeConfigurat
         builder.Property(x => x.ExpiresAt);
         builder.Property(x => x.LastUsedAt);
         builder.Property(x => x.RevokedAt);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -177,6 +196,11 @@ public sealed class McpUserTokenEntityConfiguration : IEntityTypeConfiguration<M
         builder.Property(x => x.ExpiresAt).IsRequired();
         builder.Property(x => x.LastUsedAt);
         builder.Property(x => x.RevokedAt);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -222,6 +246,12 @@ public sealed class KnowledgeSystemEntityConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.LlmProviderId);
         builder.Property(x => x.EmbeddingProviderId);
         builder.Property(x => x.EmbeddingModel).HasMaxLength(255);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.OwnerId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ProviderEntity>().WithMany().HasForeignKey(x => x.LlmProviderId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ProviderEntity>().WithMany().HasForeignKey(x => x.EmbeddingProviderId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -271,6 +301,10 @@ public sealed class DocumentEntityConfiguration : IEntityTypeConfiguration<Docum
 
         builder.Property(x => x.TboxExtractedAt);
         builder.Property(x => x.AboxExtractedAt);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -297,6 +331,10 @@ public sealed class ChunkEntityConfiguration : IEntityTypeConfiguration<ChunkEnt
         builder.Property(x => x.CharEnd).IsRequired().HasDefaultValue(0);
         builder.Property(x => x.TokenEstimate).IsRequired().HasDefaultValue(0);
         builder.Property(x => x.CreatedAt).IsRequired();
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<DocumentEntity>().WithMany().HasForeignKey(x => x.DocumentId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -352,6 +390,11 @@ public sealed class SystemConfigEntityConfiguration : IEntityTypeConfiguration<S
         builder.Property(x => x.BaseUrl).HasMaxLength(2048);
         builder.Property(x => x.ApiKey).HasMaxLength(2048);
         builder.Property(x => x.UpdatedAt).IsRequired();
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<ProviderEntity>().WithMany().HasForeignKey(x => x.LlmProviderId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ProviderEntity>().WithMany().HasForeignKey(x => x.EmbeddingProviderId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -410,6 +453,10 @@ public sealed class ExtractionJobEntityConfiguration : IEntityTypeConfiguration<
         builder.Property(x => x.TermsMapped).IsRequired().HasDefaultValue(0);
         builder.Property(x => x.TerminologyProposals).IsRequired().HasDefaultValue(0);
         builder.Property(x => x.TerminologyError);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -441,6 +488,13 @@ public sealed class AxiomProvenanceEntityConfiguration : IEntityTypeConfiguratio
 
         builder.Property(x => x.ReviewRecord).HasConversion(JsonStringValueConverter.Instance);
         builder.Property(x => x.CreatedAt).IsRequired();
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ChunkEntity>().WithMany().HasForeignKey(x => x.ChunkId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ExtractionJobEntity>().WithMany().HasForeignKey(x => x.JobId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<AuditEventEntity>().WithMany().HasForeignKey(x => x.AuditEventId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -472,6 +526,13 @@ public sealed class AboxProvenanceEntityConfiguration : IEntityTypeConfiguration
 
         builder.Property(x => x.ReviewRecord).HasConversion(JsonStringValueConverter.Instance);
         builder.Property(x => x.CreatedAt).IsRequired();
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ChunkEntity>().WithMany().HasForeignKey(x => x.ChunkId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ExtractionJobEntity>().WithMany().HasForeignKey(x => x.JobId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<AuditEventEntity>().WithMany().HasForeignKey(x => x.AuditEventId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -508,6 +569,11 @@ public sealed class AuditEventEntityConfiguration : IEntityTypeConfiguration<Aud
 
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_auditevent_created_at");
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.ActorId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -556,6 +622,13 @@ public sealed class OntologyReleaseEntityConfiguration : IEntityTypeConfiguratio
         builder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_release_created_at");
         builder.Property(x => x.ReviewedAt);
         builder.Property(x => x.PublishedAt);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.ReviewedById).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.PublishedById).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -593,6 +666,11 @@ public sealed class ReleaseDeploymentEntityConfiguration : IEntityTypeConfigurat
         builder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_deployment_created_at");
         builder.Property(x => x.ActivatedAt);
         builder.Property(x => x.StoppedAt);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<OntologyReleaseEntity>().WithMany().HasForeignKey(x => x.ReleaseId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -621,6 +699,11 @@ public sealed class ReleaseStatementProvenanceEntityConfiguration : IEntityTypeC
         builder.HasIndex(x => x.StatementKey).HasDatabaseName("ix_rsp_statement_key");
 
         builder.Property(x => x.Payload).HasConversion(JsonStringValueConverter.Instance);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<OntologyReleaseEntity>().WithMany().HasForeignKey(x => x.ReleaseId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -663,6 +746,12 @@ public sealed class ExportJobEntityConfiguration : IEntityTypeConfiguration<Expo
         builder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_exportjob_created_at");
         builder.Property(x => x.StartedAt);
         builder.Property(x => x.FinishedAt);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<OntologyReleaseEntity>().WithMany().HasForeignKey(x => x.ReleaseId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<UserEntity>().WithMany().HasForeignKey(x => x.CreatedById).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -701,6 +790,10 @@ public sealed class ConflictEntityConfiguration : IEntityTypeConfiguration<Confl
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.Property(x => x.ResolvedAt);
         builder.Property(x => x.Resolution).HasMaxLength(64);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -740,6 +833,10 @@ public sealed class EntityResolutionEntityConfiguration : IEntityTypeConfigurati
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_er_created_at");
         builder.Property(x => x.ResolvedAt);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ChunkEntity>().WithMany().HasForeignKey(x => x.SourceChunkId).OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -790,6 +887,11 @@ public sealed class TermProposalEntityConfiguration : IEntityTypeConfiguration<T
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_tp_created_at");
         builder.Property(x => x.ResolvedAt);
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<ExtractionJobEntity>().WithMany().HasForeignKey(x => x.ExtractionJobId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -826,6 +928,10 @@ public sealed class TboxReconciliationEntityConfiguration : IEntityTypeConfigura
 
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_tboxr_created_at");
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }
 
@@ -859,5 +965,9 @@ public sealed class ValidationDecisionEntityConfiguration : IEntityTypeConfigura
 
         builder.Property(x => x.CreatedAt).IsRequired();
         builder.HasIndex(x => x.CreatedAt).HasDatabaseName("ix_vd_created_at");
+
+        // Foreign keys (Python foreign_key= parity)
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+
     }
 }

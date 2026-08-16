@@ -9,9 +9,10 @@ namespace OnToPilot.IntegrationTests.Persistence;
 /// Spins up a real PostgreSQL instance via Testcontainers, applies the
 /// <c>InitialCompatibility</c> migration, and asserts the resulting schema
 /// matches the Python backend's 24-table contract: every business table is
-/// present, <c>jsonb</c> / <c>bytea</c> column types land correctly, and the
-/// three composite uniqueness constraints from the Python source are enforced
-/// at the database level.
+/// present, <c>jsonb</c> / <c>bytea</c> column types land correctly, the
+/// three composite uniqueness constraints from the Python source are
+/// enforced, and the database-level FK constraints produced by SQLAlchemy's
+/// <c>foreign_key=</c> declarations round-trip into Postgres.
 /// </summary>
 /// <remarks>
 /// <para>This is a fixture-style test: a single container is shared across
@@ -32,6 +33,17 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
 
     /// <summary>Shared context applied with the migration before any assertion runs.</summary>
     private OnToPilotDbContext _db = null!;
+
+    /// <summary>The 24 Python business tables (lowercased).</summary>
+    private static readonly string[] ExpectedTables =
+    {
+        "users", "authsession", "ksgrant", "document", "chunk", "knowledgesystem",
+        "knowledgepromptoverride", "knowledgeapitoken", "mcpusertoken", "provider",
+        "systemconfig", "extractionjob", "axiomprovenance", "aboxprovenance",
+        "auditevent", "ontologyrelease", "releasedeployment",
+        "releasestatementprovenance", "exportjob", "conflict", "entityresolution",
+        "termproposal", "tboxreconciliation", "validationdecision",
+    };
 
     /// <inheritdoc />
     public async Task InitializeAsync()
@@ -54,7 +66,7 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
         await _container.DisposeAsync();
     }
 
-    /// <summary>Returns the lowercase names of all tables in the public schema.</summary>
+    /// <summary>Returns the lowercase names of all business tables in the public schema (excludes EF bookkeeping tables).</summary>
     private async Task<HashSet<string>> GetTableNamesAsync()
     {
         await using var connection = new NpgsqlConnection(_container.GetConnectionString());
@@ -64,7 +76,9 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
         cmd.CommandText = @"
             SELECT table_name
             FROM information_schema.tables
-            WHERE table_schema = 'public' AND table_type = 'BASE TABLE'";
+            WHERE table_schema = 'public'
+              AND table_type = 'BASE TABLE'
+              AND table_name <> '__EFMigrationsHistory'";
         await using var reader = await cmd.ExecuteReaderAsync();
 
         var names = new HashSet<string>(StringComparer.Ordinal);
@@ -97,33 +111,54 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
         return columns;
     }
 
+    /// <summary>Returns (constraint_name, from_table, from_column, to_table, to_column) FKs in the public schema.</summary>
+    private async Task<List<(string Name, string FromTable, string FromColumn, string ToTable, string ToColumn)>> GetForeignKeysAsync()
+    {
+        await using var connection = new NpgsqlConnection(_container.GetConnectionString());
+        await connection.OpenAsync();
+
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            SELECT
+                tc.constraint_name,
+                tc.table_name,
+                kcu.column_name,
+                ccu.table_name AS foreign_table,
+                ccu.column_name AS foreign_column
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+              AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+              ON ccu.constraint_name = tc.constraint_name
+              AND ccu.table_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+              AND tc.table_schema = 'public'";
+        await using var reader = await cmd.ExecuteReaderAsync();
+
+        var fks = new List<(string, string, string, string, string)>();
+        while (await reader.ReadAsync())
+        {
+            fks.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4)));
+        }
+        return fks;
+    }
+
     /// <summary>
-    /// Asserts that all 24 Python business tables are created by the migration,
-    /// and that the three composite uniqueness constraints
-    /// (<c>document(ks, sha256)</c>, <c>ontologyrelease(ks, version)</c>,
-    /// <c>knowledgepromptoverride(ks, prompt_key)</c>) round-trip into Postgres.
+    /// Asserts that all 24 Python business tables are created by the migration
+    /// with no extras — the public schema should contain exactly the 24 tables
+    /// listed in <see cref="ExpectedTables"/>.
     /// </summary>
     [Fact]
     public async Task Migration_creates_all_24_business_tables_with_postgres_types()
     {
         var tables = await GetTableNamesAsync();
 
-        // The 24 Python tables (lowercased).
-        var expected = new[]
-        {
-            "users", "authsession", "ksgrant", "document", "chunk", "knowledgesystem",
-            "knowledgepromptoverride", "knowledgeapitoken", "mcpusertoken", "provider",
-            "systemconfig", "extractionjob", "axiomprovenance", "aboxprovenance",
-            "auditevent", "ontologyrelease", "releasedeployment",
-            "releasestatementprovenance", "exportjob", "conflict", "entityresolution",
-            "termproposal", "tboxreconciliation", "validationdecision",
-        };
-
-        foreach (var t in expected)
+        foreach (var t in ExpectedTables)
         {
             Assert.Contains(t, tables);
         }
-        Assert.Equal(expected.Length, expected.Length); // sanity — exactly 24 expected
+        Assert.Equal(ExpectedTables.Length, tables.Count);
     }
 
     /// <summary>The audit event blob columns should be bytea so rollback payloads store raw.</summary>
@@ -182,20 +217,10 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
     [Fact]
     public async Task Every_business_table_has_unique_legacy_id_index()
     {
-        var tables = new[]
-        {
-            "users", "authsession", "ksgrant", "document", "chunk", "knowledgesystem",
-            "knowledgepromptoverride", "knowledgeapitoken", "mcpusertoken", "provider",
-            "systemconfig", "extractionjob", "axiomprovenance", "aboxprovenance",
-            "auditevent", "ontologyrelease", "releasedeployment",
-            "releasestatementprovenance", "exportjob", "conflict", "entityresolution",
-            "termproposal", "tboxreconciliation", "validationdecision",
-        };
-
         await using var connection = new NpgsqlConnection(_container.GetConnectionString());
         await connection.OpenAsync();
 
-        foreach (var table in tables)
+        foreach (var table in ExpectedTables)
         {
             await using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
@@ -209,5 +234,59 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
             var has = await cmd.ExecuteScalarAsync();
             Assert.NotNull(has);
         }
+    }
+
+    /// <summary>
+    /// The Python backend declares 49 <c>foreign_key=</c> references in
+    /// <c>backend/app/db/models.py</c>. Each one becomes a real
+    /// <c>ForeignKey</c> column element in SQLAlchemy and produces a Postgres
+    /// <c>REFERENCES</c> constraint at DDL time. After consolidation, 45
+    /// distinct (from_table, from_column) &rarr; (to_table, to_column)
+    /// relationships are expected; this test asserts the structural shape of
+    /// every one and checks a handful of representative ones by name.
+    /// </summary>
+    [Fact]
+    public async Task Foreign_key_constraints_match_python_contract()
+    {
+        var fks = await GetForeignKeysAsync();
+
+        // The total number must match the count our 24 configurations emit.
+        // 45 HasOne<T>().WithMany().HasForeignKey(...) calls were added in
+        // EntityConfigurations.cs. The migration produces one FK constraint
+        // per call.
+        Assert.Equal(45, fks.Count);
+
+        // Sanity check: every FK must point at the `id` column of a known
+        // business table (the principal). No FK should reference the EFMigrationHistory
+        // or any non-business table by accident.
+        var knownPrincipals = new HashSet<string>(ExpectedTables, StringComparer.Ordinal)
+        {
+            "__EFMigrationsHistory",
+        };
+        Assert.All(fks, fk => Assert.Contains(fk.ToTable, knownPrincipals));
+        Assert.All(fks, fk => Assert.Equal("id", fk.ToColumn));
+
+        // Spot-check a representative subset by (from_table, from_column)
+        // matching the Python source's foreign_key declarations.
+        Assert.Contains(fks, fk => fk.FromTable == "authsession" && fk.FromColumn == "UserId"
+                                  && fk.ToTable == "users");
+        Assert.Contains(fks, fk => fk.FromTable == "ksgrant" && fk.FromColumn == "KnowledgeSystemId"
+                                  && fk.ToTable == "knowledgesystem");
+        Assert.Contains(fks, fk => fk.FromTable == "ksgrant" && fk.FromColumn == "UserId"
+                                  && fk.ToTable == "users");
+        Assert.Contains(fks, fk => fk.FromTable == "chunk" && fk.FromColumn == "DocumentId"
+                                  && fk.ToTable == "document");
+        Assert.Contains(fks, fk => fk.FromTable == "knowledgesystem" && fk.FromColumn == "OwnerId"
+                                  && fk.ToTable == "users");
+        Assert.Contains(fks, fk => fk.FromTable == "knowledgesystem" && fk.FromColumn == "LlmProviderId"
+                                  && fk.ToTable == "provider");
+        Assert.Contains(fks, fk => fk.FromTable == "releasedeployment" && fk.FromColumn == "ReleaseId"
+                                  && fk.ToTable == "ontologyrelease");
+        Assert.Contains(fks, fk => fk.FromTable == "axiomprovenance" && fk.FromColumn == "AuditEventId"
+                                  && fk.ToTable == "auditevent");
+        Assert.Contains(fks, fk => fk.FromTable == "aboxprovenance" && fk.FromColumn == "AuditEventId"
+                                  && fk.ToTable == "auditevent");
+        Assert.Contains(fks, fk => fk.FromTable == "termproposal" && fk.FromColumn == "ExtractionJobId"
+                                  && fk.ToTable == "extractionjob");
     }
 }

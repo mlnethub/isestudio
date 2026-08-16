@@ -719,6 +719,8 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
                     b.HasIndex("CreatedAt")
                         .HasDatabaseName("ix_exportjob_created_at");
 
+                    b.HasIndex("CreatedById");
+
                     b.HasIndex("KnowledgeSystemId")
                         .HasDatabaseName("ix_exportjob_knowledge_system_id");
 
@@ -1058,6 +1060,8 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
                     b.HasIndex("PromptKey")
                         .HasDatabaseName("ix_kpo_prompt_key");
 
+                    b.HasIndex("UpdatedById");
+
                     b.HasIndex("KnowledgeSystemId", "PromptKey")
                         .IsUnique()
                         .HasDatabaseName("ux_kpo_knowledge_system_id_prompt_key");
@@ -1148,9 +1152,13 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("EmbeddingProviderId");
+
                     b.HasIndex("LegacyId")
                         .IsUnique()
                         .HasDatabaseName("ux_ks_legacy_id");
+
+                    b.HasIndex("LlmProviderId");
 
                     b.HasIndex("Name")
                         .HasDatabaseName("ix_ks_name");
@@ -1332,12 +1340,18 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
                     b.HasIndex("CreatedAt")
                         .HasDatabaseName("ix_release_created_at");
 
+                    b.HasIndex("CreatedById");
+
                     b.HasIndex("KnowledgeSystemId")
                         .HasDatabaseName("ix_release_knowledge_system_id");
 
                     b.HasIndex("LegacyId")
                         .IsUnique()
                         .HasDatabaseName("ux_release_legacy_id");
+
+                    b.HasIndex("PublishedById");
+
+                    b.HasIndex("ReviewedById");
 
                     b.HasIndex("Status")
                         .HasDatabaseName("ix_release_status");
@@ -1612,9 +1626,13 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("EmbeddingProviderId");
+
                     b.HasIndex("LegacyId")
                         .IsUnique()
                         .HasDatabaseName("ux_systemconfig_legacy_id");
+
+                    b.HasIndex("LlmProviderId");
 
                     b.ToTable("systemconfig", (string)null);
 
@@ -1929,6 +1947,320 @@ namespace OnToPilot.Infrastructure.Persistence.Migrations
                     b.ToTable("validationdecision", (string)null);
 
                     b.UseTpcMappingStrategy();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.AboxProvenanceEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.AuditEventEntity", null)
+                        .WithMany()
+                        .HasForeignKey("AuditEventId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ChunkEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChunkId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ExtractionJobEntity", null)
+                        .WithMany()
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.AuditEventEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ActorId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.AuthSessionEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.AxiomProvenanceEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.AuditEventEntity", null)
+                        .WithMany()
+                        .HasForeignKey("AuditEventId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ChunkEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ChunkId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ExtractionJobEntity", null)
+                        .WithMany()
+                        .HasForeignKey("JobId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.ChunkEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.DocumentEntity", null)
+                        .WithMany()
+                        .HasForeignKey("DocumentId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.ConflictEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.DocumentEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.EntityResolutionEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ChunkEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SourceChunkId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.ExportJobEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedById")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.OntologyReleaseEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ReleaseId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.ExtractionJobEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.KSGrantEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeApiTokenEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedById")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.KnowledgePromptOverrideEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("UpdatedById")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ProviderEntity", null)
+                        .WithMany()
+                        .HasForeignKey("EmbeddingProviderId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ProviderEntity", null)
+                        .WithMany()
+                        .HasForeignKey("LlmProviderId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("OwnerId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.McpUserTokenEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.OntologyReleaseEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("CreatedById")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("PublishedById")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ReviewedById")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.ReleaseDeploymentEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.OntologyReleaseEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ReleaseId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.ReleaseStatementProvenanceEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.OntologyReleaseEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ReleaseId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.SystemConfigEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ProviderEntity", null)
+                        .WithMany()
+                        .HasForeignKey("EmbeddingProviderId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ProviderEntity", null)
+                        .WithMany()
+                        .HasForeignKey("LlmProviderId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.TboxReconciliationEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.TermProposalEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.ExtractionJobEntity", null)
+                        .WithMany()
+                        .HasForeignKey("ExtractionJobId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("OnToPilot.Infrastructure.Persistence.Entities.ValidationDecisionEntity", b =>
+                {
+                    b.HasOne("OnToPilot.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }
