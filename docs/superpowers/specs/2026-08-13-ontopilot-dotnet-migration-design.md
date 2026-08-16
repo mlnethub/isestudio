@@ -1,6 +1,6 @@
 # OnToPilot 后端迁移到 .NET 10 技术规格
 
-**状态**: 设计中
+**状态**: 已批准
 **日期**: 2026-08-13
 **范围**: Backend（FastAPI → ASP.NET Core 10），Frontend 保持不变
 
@@ -134,7 +134,11 @@ src/
 │   │   ├── ExtractionTask.cs
 │   │   ├── PromptSnapshot.cs
 │   │   └── AuditLog.cs
-│   ├── Ontology/                   # RDF 本体逻辑
+│   ├── Services/                   # 业务编排层（调用 Ontology + LLM）
+│   │   ├── IntegrationApiFacade.cs # 对外 API 聚合入口（MCP Tools 依赖于此）
+│   │   ├── ExtractionOrchestrator.cs
+│   │   └── MigrationCoordinator.cs # 迁移阶段协调（SQL + RDF + MinIO）
+│   ├── Ontology/                   # RDF 本体逻辑（领域层）
 │   │   ├── StoreWrapper.cs         # Oxigraph.NET 封装（替代 store.py）
 │   │   ├── SchemaBuilder.cs        # 替代 schema.py
 │   │   ├── SkosManager.cs          # 替代 skos.py
@@ -143,18 +147,35 @@ src/
 │   │   ├── ReleaseManager.cs       # 替代 release_service.py
 │   │   ├── TBoxGuard.cs            # TBox 守卫逻辑
 │   │   └── ShaclValidator.cs       # dotNetRDF SHACL 验证
-│   ├── Llm/                        # LLM 调用层
-│   │   ├── ExtractionService.cs    # Microsoft.Extensions.AI IChatClient 抽取
-│   │   └── EmbeddingService.cs     # IEmbeddingGenerator 向量嵌入
+│   ├── Parsing/                    # 文档解析与分块
+│   │   ├── DocumentParser.cs
+│   │   └── Chunker.cs
+│   ├── Llm/                        # LLM 基础设施（Provider 封装）
+│   │   ├── LlmClientFactory.cs     # IChatClient 工厂（替代 openrouter.py）
+│   │   └── EmbeddingGenerator.cs   # IEmbeddingGenerator 实现
 │   ├── Mcp/                        # MCP 服务器（ModelContextProtocol）
 │   │   ├── OnToPilotMcpTools.cs   # MCP Tool 实现（[McpServerTool]）
 │   │   ├── OnToPilotMcpResources.cs # MCP Resource 实现（[McpServerResource]）
 │   │   └── OnToPilotMcpPrompts.cs # MCP Prompt 实现（[McpServerPrompt]）
+│   ├── Storage/                    # 对象存储（MinIO）
+│   │   └── MinioBlobStore.cs
 │   ├── Middleware/
 │   │   └── SessionAuthMiddleware.cs
 │   └── Program.cs
-├── OnToPilot.Domain/               # 共享领域模型
-│   └── ...
+├── OnToPilot.Domain/               # 共享领域模型（不得引用 ASP.NET Core）
+│   ├── Common/
+│   │   ├── Entity.cs               # 基础 Entity<TId>
+│   │   ├── ValueObject.cs          # 基础 ValueObject
+│   │   └── DomainEvent.cs          # Domain Event 标记接口
+│   ├── KnowledgeSystem/
+│   │   ├── KnowledgeSystemId.cs    # 值对象
+│   │   ├── UserId.cs               # 值对象
+│   │   └── Events/                 # 领域事件
+│   │       ├── TBoxChangedEvent.cs
+│   │       └── ReleasePublishedEvent.cs
+│   └── Shared/
+│       ├── IRepository.cs
+│       └── IDomainService.cs
 └── OnToPilot.Tests/                # 单元测试
     ├── Ontology/
     │   ├── StoreWrapperTests.cs
@@ -412,9 +433,25 @@ public sealed class DocumentParser : IDocumentParser
             var converter = new DocumentConverter();
             var result = await converter.ConvertAsync(memory, extension);
             var markdown = result.Document.ExportToMarkdown();
+
+            // DoclingDotNet 不可用判断：解析成功但返回空文本（异常或质量问题）
+            if (string.IsNullOrWhiteSpace(markdown))
+            {
+                _logger.LogWarning(
+                    "DoclingDotNet returned empty markdown for extension {Extension}. Falling back.",
+                    extension);
+                return null;
+            }
+
             return new ParseResult(markdown, "doclingdotnet", result.Document);
         }
-        catch { return null; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "DoclingDotNet failed for extension {Extension}. Falling back.",
+                extension);
+            return null;
+        }
     }
 
     private async Task<ParseResult> ParsePdfAsync(Stream stream, CancellationToken ct)
@@ -576,9 +613,11 @@ public sealed class Chunker
 ### 5.1 SQL 层
 
 - **当前**: SQLAlchemy + asyncpg + PostgreSQL（生产）/ SQLite（开发）
-- **迁移后**: EF Core 8 + Npgsql（PostgreSQL）
+- **迁移后**: EF Core **10** + Npgsql（PostgreSQL）
 
-数据模型一对一映射，迁移脚本处理存量数据。
+> ⚠️ 目标框架为 .NET 10，必须使用 EF Core 10（随 .NET 10 发布），不得使用 EF Core 8。
+
+数据模型一对一映射，迁移脚本处理存量数据，详见 [Section 6.2  SQL 迁移](#62-sql-存量数据迁移)。
 
 ### 5.2 RDF 数据
 
@@ -732,9 +771,476 @@ mc mirror backend/data/blobs local/ontopilot-blobs/
 - 前端通过预签名 URL 直接上传到 MinIO（绕过后端）
 - 发布制品（release/ 目录下的 `.nq`、`.jsonl`）仍写入 Oxigraph，MinIO 仅存储源文档
 
+### 5.4 Docker 迁移
+
+#### docker-compose.yml
+
+重写 backend 服务，新增 minio 服务：
+
+```yaml
+services:
+  postgres:          # 不变
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ontopilot
+      POSTGRES_USER: ontopilot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+    volumes:
+      - ontopilot-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ontopilot -d ontopilot"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  minio:             # 新增
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY}
+    command: server /data --console-address ":9001"
+    volumes:
+      - ontopilot-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    expose:
+      - "9000"   # S3 API
+      - "9001"   # Console
+
+  backend:           # 重写
+    build: ./backend
+    env_file: ./backend/.env
+    environment:
+      DATABASE_HOST: postgres
+      DATABASE_PORT: 5432
+      DATABASE_NAME: ontopilot
+      DATABASE_USER: ontopilot
+      DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      SYSTEM_LANGUAGE: ${SYSTEM_LANGUAGE:-en}
+      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8080/mcp}
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      MINIO_BUCKET: ${MINIO_BUCKET:-ontopilot-blobs}
+      MINIO_USE_SSL: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ontopilot-data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    expose:
+      - "8080"
+
+  frontend:          # 不变
+    build: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${ONTOPILOT_BIND_ADDRESS:-0.0.0.0}:${ONTOPILOT_PORT:-8080}:80"
+    restart: unless-stopped
+
+volumes:
+  ontopilot-data:
+  ontopilot-postgres:
+  ontopilot-minio:   # 新增
+```
+
+#### backend/Dockerfile
+
+Python 3.12 替换为 .NET 10 多阶段构建：
+
+```dockerfile
+# Build stage
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+WORKDIR /src
+
+# 复制项目文件并恢复依赖
+COPY src/OnToPilot/OnToPilot.csproj ./OnToPilot/
+RUN dotnet restore OnToPilot/OnToPilot.csproj
+
+# 复制源码并发布
+COPY src/OnToPilot/ ./OnToPilot/
+RUN dotnet publish OnToPilot/OnToPilot.csproj \
+    -c Release -o /app/publish --no-restore
+
+# Runtime stage
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
+WORKDIR /app
+COPY --from=build /app/publish .
+
+# ASP.NET Core 默认监听 8080（而非 5000），与 docker-compose expose 一致
+ENV ASPNETCORE_URLS=http://+:8080
+EXPOSE 8080
+ENTRYPOINT ["dotnet", "OnToPilot.dll"]
+```
+
+#### 新增环境变量（backend/.env.example）
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| `MINIO_ACCESS_KEY` | MinIO Access Key | `ontopilot` |
+| `MINIO_SECRET_KEY` | MinIO Secret Key | `ontopilot123` |
+| `MINIO_BUCKET` | Bucket 名称 | `ontopilot-blobs` |
+
+#### 启动命令（不变）
+
+```bash
+cp backend/.env.example backend/.env
+# 编辑 .env，填入 POSTGRES_PASSWORD、MINIO_ACCESS_KEY、MINIO_SECRET_KEY
+docker compose up -d --build
+open http://localhost:8080
+```
+
+#### 数据迁移（本地 blobs → MinIO）
+
+存量 blob 目录一次性迁移到 MinIO：
+
+```bash
+# 使用 mc（MinIO Client）镜像执行迁移，无需本地安装
+docker run --rm \
+  -e MINIO_ACCESS_KEY=$MINIO_ACCESS_KEY \
+  -e MINIO_SECRET_KEY=$MINIO_SECRET_KEY \
+  minio/mc \
+  sh -c "\
+    mc alias set local http://minio:9000 $MINIO_ACCESS_KEY $MINIO_SECRET_KEY && \
+    mc mirror /app/data/blobs local/ontopilot-blobs/ \
+  "
+```
+
 ---
 
-## 6. Frontend 兼容性
+## 6. 测试、CI/CD、可观测性与部署
+
+### 6.1 测试策略
+
+#### 单元测试
+
+覆盖核心本体逻辑，不得依赖外部服务（数据库、Oxigraph 存储、LLM Provider）：
+
+| 测试文件 | 覆盖范围 |
+|---|---|
+| `StoreWrapperTests.cs` | 四元组 CRUD、变更捕获、回滚 |
+| `SchemaBuilderTests.cs` | TBox 构建、build_mutation / build_view |
+| `ShaclValidatorTests.cs` | SHACL 验证（逐项对照 TBox Guard） |
+| `ChunkerTests.cs` | Token 估算、分块算法、overlap |
+| `TokenEstimatorTests.cs` | 中英文 token 计数精度 |
+| `IntegrationApiFacadeTests.cs` | 各 Tool 方法的正常/异常路径 |
+
+#### 集成测试
+
+使用 `Testcontainers` 启动真实依赖：
+
+```csharp
+// 使用 Testcontainers.PostgreSql 测试 EF Core 迁移
+// 使用 Testcontainers.MinIo 测试 BlobStore
+[Fact]
+public async Task EF_Core_migration_scripts_should_produce_identical_schema()
+{
+    await using var container = new PostgreSqlBuilder().Build();
+    await container.StartAsync();
+
+    var options = new DbContextOptionsBuilder<OnToPilotDbContext>()
+        .UseNpgsql(container.GetConnectionString())
+        .Options;
+
+    // 应用所有 EF Core 迁移
+    using var ctx = new OnToPilotDbContext(options);
+    ctx.Database.Migrate();
+
+    // 验证表结构与 SQLAlchemy 模型一致
+    var tables = await ctx.Database.SqlQuery<string>(
+        $"SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+        .ToListAsync();
+
+    Assert.Contains("users", tables);
+    Assert.Contains("knowledge_systems", tables);
+    Assert.Contains("documents", tables);
+}
+```
+
+#### API 契约测试
+
+在 CI 中用 [Netlingeri](https://github.com/omaind/Netlingeri) 或 `curl` + 动态端口验证 FastAPI 与 ASP.NET Core 返回结构完全一致：
+
+```bash
+# 冒烟测试：比较两者的 /api/v1/knowledge 响应 JSON Schema
+python -c "import requests; print(sorted(requests.get('http://localhost:8000/api/v1/knowledge').json().keys()))"
+dotnet run --urls=http://localhost:8080 &
+sleep 5
+dotnet run --project tests/OnToPilot.ApiContract.Tests \
+    -- --python-url=http://localhost:8000 --dotnet-url=http://localhost:8080
+```
+
+#### 端到端测试
+
+用 Playwright 覆盖关键用户路径：
+
+- 上传 PDF → 抽取本体 → 发布
+- SKOS 词汇增删改
+- MCP Tool 调用（`ontopilot.get_ontology` 等）
+
+### 6.2 SQL 存量数据迁移
+
+#### 迁移脚本位置
+
+```
+migrations/
+└── SqlAlchemyToEfCore/
+    ├── 001_generate_guid_ids.sql      # 为所有表生成新 GUID 主键
+    ├── 002_export_data.sql            # 导出 CSV（绕过自增 ID）
+    ├── 003_import_ef_core.sql         # 导入 EF Core 兼容格式
+    └── rollback.sql                   # 回滚脚本（恢复自增 ID）
+```
+
+#### ID 映射策略
+
+| 当前（SQLAlchemy） | 迁移后（EF Core） |
+|---|---|
+| `id` INTEGER AUTOINCREMENT | `Id` GUID（`gen_random_uuid()`） |
+| 外键 | 保留为 `uuid`，级联更新 |
+
+执行步骤：
+
+```bash
+# 1. 在备份库验证
+pg_dump -h $PROD_HOST -U ontopilot -d ontopilot \
+    -Fc -f /tmp/ontopilot_backup.dump
+docker compose exec postgres pg_restore \
+    -d ontopilot_test /tmp/ontopilot_backup.dump
+
+# 2. 生成 GUID 并迁移数据
+psql -d ontopilot_test -f migrations/SqlAlchemyToEfCore/001_generate_guid_ids.sql
+psql -d ontopilot_test -f migrations/SqlAlchemyToEfCore/002_export_data.sql
+# (ETL 脚本将 CSV 导入 EF Core 格式)
+psql -d ontopilot_test -f migrations/SqlAlchemyToEfCore/003_import_ef_core.sql
+
+# 3. 验证行数一致
+python -c "import asyncpg; ..." # Python 端行数
+dotnet ef database shell -c "SELECT COUNT(*) FROM users;" # .NET 端行数
+
+# 4. 生产执行（停机窗口）
+docker compose stop backend
+psql -d ontopilot -f migrations/SqlAlchemyToEfCore/001_generate_guid_ids.sql
+# ... 后续步骤同上
+docker compose up -d backend-dotnet
+```
+
+#### 并发策略
+
+迁移窗口期间**禁止 Python 后端写入 PostgreSQL**。通过以下方式之一实现：
+
+- 停止 Python backend 容器（推荐）
+- 或在 PostgreSQL 中撤销 `ontopilot` 用户的写权限（`REVOKE UPDATE ON ALL TABLES IN SCHEMA public FROM ontopilot;`）
+
+#### 回滚预案
+
+若迁移失败，执行 `migrations/SqlAlchemyToEfCore/rollback.sql`，然后重启 Python backend。
+
+### 6.3 可观测性基础设施
+
+#### 结构化日志（Serilog）
+
+```csharp
+// Program.cs
+builder.Services.AddSerilog((services, config) => config
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogEventLevel.Warning)
+    .Enrich.FromLogContext()
+    .Enrich.WithProperty("Application", "OnToPilot")
+    .WriteTo.Console(new RenderedCompactJsonFormatter())
+    .WriteTo.File(
+        new RenderedCompactJsonFormatter(),
+        "/app/logs/ontopilot-.log",
+        rollingInterval: RollingInterval.Day,
+        retainedFileCountLimit: 30));
+```
+
+#### OpenTelemetry 埋点
+
+所有关键路径均注入 `ActivitySource`：
+
+```csharp
+// LLM 调用埋点
+public sealed class LlmCallActivitySource
+{
+    public const string Name = "OnToPilot.Llm";
+    public static readonly ActivitySource Instance = new(Name, "1.0.0");
+}
+
+public async Task<ExtractionResult> ExtractAsync(...)
+{
+    using var activity = LlmCallActivitySource.Instance.StartActivity("Llm.Extract");
+    activity?.SetTag("llm.provider", _chatClient.GetType().Name);
+    activity?.SetTag("llm.model", _model);
+
+    var sw = Stopwatch.StartNew();
+    try
+    {
+        var response = await _chatClient.GetResponseAsync(...);
+        activity?.SetTag("llm.duration_ms", sw.ElapsedMilliseconds);
+        activity?.SetTag("llm.success", true);
+        return ParseExtractionResult(response);
+    }
+    catch (Exception ex)
+    {
+        activity?.SetTag("llm.success", false);
+        activity?.SetTag("error.type", ex.GetType().Name);
+        throw;
+    }
+}
+```
+
+**埋点覆盖范围：**
+
+| 路径 | Activity 名称 |
+|---|---|
+| LLM 抽取 | `Llm.Extract` |
+| RDF 读写 | `Rdf.StoreWrapper.*` |
+| SHACL 验证 | `Rdf.Shacl.Validate` |
+| 文档解析 | `Parsing.Parse` |
+| MinIO 上传/下载 | `Storage.Minio.*` |
+| MCP Tool 调用 | `Mcp.Tool.*` |
+
+#### 指标（.NET Metrics API）
+
+```csharp
+// 在关键路径注册计数器
+public static readonly Meter Meter = new("OnToPilot", "1.0.0");
+public static readonly Counter<long> ExtractionCounter =
+    Meter.CreateCounter<long>("ontopilot.extraction.total", description: "Total extraction requests");
+public static readonly Histogram<double> ExtractionDuration =
+    Meter.CreateHistogram<double>("ontopilot.extraction.duration_ms", "Extraction duration in ms");
+```
+
+**Grafana 看板（建议）：**
+
+- 请求 QPS / 延迟 P50 / P99
+- LLM Provider 错误率（按 Provider 分组）
+- RDF 存储四元组总数趋势
+- MinIO Bucket 大小趋势
+- MCP Tool 调用成功率
+
+### 6.4 迁移执行序列
+
+以下为完整迁移步骤，明确了 MinIO 和 RDF 存储的执行顺序：
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        迁移执行序列                                      │
+├─────────────────────────────────────────────────────────────────────────┤
+│ T-7d   1. [准备] 在备份环境完成 SQL 迁移脚本验证（见 6.2）              │
+│        2. [准备] 完成 RDF 存储副本只读验证（见 5.2）                    │
+│        3. [准备] 完成 MinIO mc mirror 预演（dry-run）                   │
+│                                                                         │
+│ T-0    4. [停写] 停止 Python backend，撤销 PostgreSQL 写权限            │
+│        5. [备份] pg_dump 全量备份 PostgreSQL                            │
+│        6. [复制] 复制 RDF 存储目录 → oxigraph-migration-copy/          │
+│        7. [并行] RDF 副本只读验证 ＋ MinIO mc mirror 同步 blob          │
+│        8. [验证] RDF 写入冒烟测试（.NET 独占打开，写入后回滚）          │
+│        9. [验证] MinIO bucket 完整性与 Python 端 blob 列表对比          │
+│        10. [SQL 迁移] 执行 001~003 脚本，验证行数一致                   │
+│        11. [切换] 启动 .NET backend，切换前端 API 环境变量              │
+│        12. [观察] 监控 24h，无异常则进入确认阶段                        │
+│                                                                         │
+│ T+1d   13. [确认] 删除 Python 环境和原 RDF 目录（保留备份 30d）         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**关键约束：**
+
+- 步骤 7（MinIO 迁移）和步骤 8（RDF 验证）可并行执行
+- 步骤 4~12 之间 Python backend 必须停止，PostgreSQL 只能读
+- 步骤 12 观察期内若有问题，立即执行回滚（停止 .NET，重启 Python，还原 PostgreSQL 权限）
+
+### 6.5 蓝绿部署与灰度策略
+
+#### 方案：Nginx Path-Based 路由（推荐）
+
+在 frontend 和 backend 之间增加 Nginx 代理，按 path 切分流量：
+
+```nginx
+# nginx.conf
+upstream python_backend {
+    server python-backend:8080;
+}
+upstream dotnet_backend {
+    server dotnet-backend:8080;
+}
+
+server {
+    listen 8080;
+
+    # 旧系统（迁移期间）
+    location /api/legacy/ {
+        proxy_pass http://python_backend/;
+        proxy_set_header Host $host;
+    }
+
+    # 新系统
+    location / {
+        proxy_pass http://dotnet_backend/;
+        proxy_set_header Host $host;
+    }
+}
+```
+
+#### 切换步骤
+
+1. **灰度阶段**：前端环境变量指向 Python backend，Nginx 路由默认走 .NET
+2. **5% 流量验证**：通过 Nginx `split_clients` 将 5% 请求路由到 .NET
+3. **50% 流量验证**：确认 24h 无错误后扩大比例
+4. **全量切换**：100% 流量切到 .NET，停止 Python backend
+5. **回滚**：修改 Nginx 配置或前端环境变量即可秒级回滚
+
+#### Docker Compose 灰度配置
+
+```yaml
+services:
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:8080"
+    depends_on:
+      - python-backend
+      - dotnet-backend
+
+  python-backend:    # 仅迁移期间存在
+    image: ontopilot-python:${VERSION}
+    profiles: ["migration"]
+
+  dotnet-backend:
+    image: ontopilot-dotnet:${VERSION}
+```
+
+```bash
+# 迁移开始（两套并行）
+docker compose --profile migration up -d
+
+# 迁移完成（删除 Python 后端）
+docker compose --profile migration down
+docker compose up -d dotnet-backend
+```
+
+---
+
+## 7. Frontend 兼容性
 
 Frontend 通过 REST API 与后端通信。迁移后需保证：
 
@@ -744,13 +1250,51 @@ Frontend 通过 REST API 与后端通信。迁移后需保证：
 4. **MCP 端点兼容**：`/mcp` Streamable HTTP 端点行为不变，使用 `ModelContextProtocol.AspNetCore` 包实现，遵循 MCP Spec（JSON-RPC over HTTP）
 5. **对外 API 兼容**：`ExternalApiController` 完整实现 [docs/external-api.zh-CN.md](../../external-api.zh-CN.md) 定义的 Token Scope 体系（`ontology:read`、`vocabulary:read`、`instances:read`、`query:read`、`provenance:read`）
 
+### 7.1 API 版本策略
+
+**当前阶段（.NET 迁移）**：无需版本化。ASP.NET Core Controller 路由与 FastAPI 路由完全对应，JSON Schema 兼容，Frontend 无需修改。
+
+**未来 Breaking Change 策略**：
+
+当需要发布不兼容的 API 变更时，采用路径版本化 + 6 个月并行策略：
+
+```csharp
+// 路由示例
+[ApiController]
+[Route("api/v2/knowledge")]
+public class KnowledgeControllerV2 : ControllerBase
+{
+    // 新的不兼容接口
+}
+```
+
+| 阶段 | 时间 | 路由 | 说明 |
+| --- | --- | --- | --- |
+| 新接口上线 | T+0 | `/api/v2/` | .NET 后端同时支持 v1 和 v2 |
+| 提示期 | T+0 ~ T+3m | `/api/v1/` | 通过 `Deprecation` 响应头提示升级 |
+| 废弃期 | T+3m ~ T+6m | `/api/v1/` | 返回 410 Gone，文档指引到 v2 |
+| 下线 | T+6m | - | 删除 v1 路由代码 |
+
+**版本化触发条件（满足任一即为 Breaking Change）：**
+
+- 删除或重命名字段
+- 改变字段类型（如 `string` → `number`）
+- 改变语义（如 `null` 的含义）
+- 删除或重命名 API 端点
+
+**非 Breaking Change（无需版本化）：**
+
+- 新增可选字段
+- 新增 API 端点
+- 新增枚举值（客户端忽略未知值即可）
+
 ---
 
-## 7. MCP 服务器（ModelContextProtocol）
+## 8. MCP 服务器（ModelContextProtocol）
 
 使用官方 C# SDK `ModelContextProtocol.AspNetCore 2.x`，参考 [OpenClaw.Gateway.Mcp](E:\GitHub\openclaw.net\src\OpenClaw.Gateway\Mcp) 实现模式。
 
-### 7.1 注册与启动
+### 8.1 注册与启动
 
 ```csharp
 // Program.cs
@@ -772,7 +1316,7 @@ services.AddMcpServer(options =>
     .WithPrompts<OnToPilotMcpPrompts>();
 ```
 
-### 7.2 Tool 实现（[McpServerTool]）
+### 8.2 Tool 实现（[McpServerTool]）
 
 参考 [OpenClawMcpTools.cs](E:\GitHub\openclaw.net\src\OpenClaw.Gateway\Mcp\OpenClawMcpTools.cs)，每个 Tool 方法标注 `[McpServerTool]`：
 
@@ -819,7 +1363,7 @@ public sealed class OnToPilotMcpTools
 }
 ```
 
-### 7.3 Resource 实现（[McpServerResource]）
+### 8.3 Resource 实现（[McpServerResource]）
 
 ```csharp
 [McpServerResourceType]
@@ -836,7 +1380,7 @@ public sealed class OnToPilotMcpResources
 }
 ```
 
-### 7.4 MCP 路由与认证
+### 8.4 MCP 路由与认证
 
 参考 [McpServiceExtensions.UseOpenClawMcpAuth()](E:\GitHub\openclaw.net\src\OpenClaw.Gateway\Mcp\McpServiceExtensions.cs#L69-L97)，对 `/mcp` 路径复用现有 Token 认证中间件：
 
@@ -858,7 +1402,63 @@ app.Use(async (ctx, next) =>
 });
 ```
 
-### 7.5 Scope 映射
+#### Token 存储模型
+
+MCP Token 存储在 PostgreSQL `mcp_tokens` 表中，与 FastAPI 版本共用同一张表：
+
+```csharp
+public sealed class McpToken
+{
+    public Guid Id { get; set; }
+    public Guid UserId { get; set; }
+    public string TokenHash { get; set; }  // SHA-256 哈希存储
+    public McpScope Scope { get; set; }    // mcp:read / mcp:write / mcp:manage
+    public string Name { get; set; }
+    public DateTime? ExpiresAt { get; set; }
+    public DateTime CreatedAt { get; set; }
+}
+
+public enum McpScope
+{
+    Read,    // mcp:read
+    Write,   // mcp:write
+    Manage   // mcp:manage（含 Read）
+}
+```
+
+#### Token 认证流程
+
+```csharp
+private bool TryAuthorizeMcpToken(HttpContext ctx, out McpScope scope)
+{
+    scope = McpScope.Read;
+    var authHeader = ctx.Request.Headers.Authorization.FirstOrDefault();
+    if (string.IsNullOrEmpty(authHeader) || !authHeader.StartsWith("Bearer "))
+        return false;
+
+    var token = authHeader["Bearer ".Length..];
+    var tokenHash = ComputeSha256(token);
+
+    var mcpToken = _dbContext.McpTokens
+        .FirstOrDefault(t => t.TokenHash == tokenHash);
+
+    if (mcpToken is null) return false;
+    if (mcpToken.ExpiresAt is not null && mcpToken.ExpiresAt < DateTime.UtcNow)
+        return false;  // 过期 Token 拒绝
+
+    scope = mcpToken.Scope;
+    ctx.Items["McpTokenUserId"] = mcpToken.UserId;
+    return true;
+}
+```
+
+#### 刷新机制
+
+- Token 过期时间由用户设置（默认 90 天），无自动刷新机制
+- 用户需在 UI 或通过 API 手动轮换 Token
+- `mcp:manage` Token 操作触发审计日志记录（`AuditLog` 表）
+
+### 8.5 Scope 映射
 
 | MCP Token Scope | OnToPilotMcpTools 可用操作 |
 |---|---|
@@ -868,7 +1468,7 @@ app.Use(async (ctx, next) =>
 
 ---
 
-## 8. SHACL 验证（dotNetRDF 新增）
+## 9. SHACL 验证（dotNetRDF 新增）
 
 OnToPilot 当前使用 Python `tbox_guard.py` 做 TBox 一致性检查，迁移后使用 dotNetRDF 的 SHACL ShapesGraph：
 
@@ -904,7 +1504,7 @@ public sealed class ShaclValidator
 
 ---
 
-## 9. 实现顺序
+## 10. 实现顺序
 
 ### Phase 1：基础设施（2-3 周）
 1. 创建 ASP.NET Core 10 项目结构
@@ -941,21 +1541,221 @@ public sealed class ShaclValidator
 
 ---
 
-## 10. 风险与缓解
+## 11. 风险与缓解
 
 | 风险 | 概率 | 影响 | 缓解 |
 |---|---|---|---|
 | Oxigraph.NET 与 pyoxigraph 行为或存储格式存在差异 | 中 | 高 | 锁定 NuGet 0.5.8；在目录副本上执行只读和写入验证；失败时回退到 N-Quads 逻辑迁移 |
 | dotNetRDF SHACL 与 Python TBox Guard 检查项不完全等价 | 中 | 低 | TBox Guard 逻辑已固化，可逐项对照迁移 |
 | Frontend API 契约兼容问题 | 低 | 高 | API 路由和 JSON Schema 一一映射，自动化契约测试 |
-| EF Core 迁移脚本复杂 | 中 | 中 | Phase 1 先完成 SQL 迁移验证 |
+| EF Core 迁移脚本执行时间过长导致业务中断 | 中 | 高 | 选择低峰期执行，准备停机窗口；详细设计见 [Section 6.2](#62-sql-存量数据迁移) |
 | Microsoft.Extensions.AI Provider 覆盖不足 | 低 | 中 | LlmClientFactory 支持所有主流 Provider；OpenAI-Compatible 兜底 |
+| DoclingDotNet 解析质量不达预期，导致抽取质量下降 | 中 | 高 | 补充质量评估流程，保留人工抽检；详见 [Section 4.11.1](#4111-文档解析parser) |
+| MinIO 预签名 URL 生成方式与前端上传流程不兼容 | 中 | 中 | 前端上传流程专项验证；使用 `AWSSDK.S3` 预签名 API |
+| Microsoft.Extensions.AI 各 Provider 的 Function Calling 支持不一致 | 中 | 中 | 在 ExtractionService 中做 Provider 能力探测，不支持者降级为普通 Chat 调用 |
+| MCP Streamable HTTP 与现有前端 MCP 客户端的兼容性 | 低 | 高 | 提前用 Postman/MCP Inspector 测试 `/mcp` 端点 |
+| Section 6 缺失导致关键迁移步骤未定义 | ~~高~~ | ~~高~~ | ✅ 已补充（见 [Section 6](#6-测试cicd可观测性与部署)） |
 
 ---
 
-## 11. 放弃项
+## 12. 放弃项
 
 - **不迁移 FastAPI 本身**：直接重写为 ASP.NET Core Controller，不做 pyFastAPI 兼容层
 - **不保留 Python 抽取微服务**：迁移到 Microsoft.Extensions.AI IChatClient 直接调用 Provider
 - **不修改 Frontend**：React 代码不变
 - **不引入新 RDF 存储**：继续使用 Oxigraph（RocksDB）；优先验证后复用存储目录，必要时通过 N-Quads 迁移到新的 Oxigraph 目录
+
+---
+
+## 13. 设计审查意见
+
+> 审查日期：2026-08-16 | 审查维度：架构设计、技术选型、迁移策略、风险管控
+
+### 0. 目录结构问题：Section 6 缺失
+
+文档在 Section 5.4（Docker）之后直接跳到了 Section 7（Frontend 兼容性），Section 6 完全空白。可能是以下两种情况之一：
+
+- **编号错误**：某个章节（如"测试策略"、"CI/CD"或"监控告警"）被遗漏
+- **内容确实缺失**：这意味着一个重要部分（如灰度部署、数据迁移执行步骤、可观测性基础设施）没有被记录
+
+**建议**：补充 Section 6，或确认是否为编号错误并修正目录。
+
+---
+
+### 1. 架构设计
+
+#### 问题 1.1：OnToPilot.Domain 是空壳
+
+文档第 157 行只写了 `OnToPilot.Domain/ └── ...`，没有任何内容。Domain 层应该承载：
+- 跨模块共享的 Value Objects（如 `KnowledgeSystemId`、`UserId`）
+- Domain Events 接口
+- 跨层共享的 Entity 基类
+
+当前所有内容都在主项目里，Controller 和 Ontology 直接耦合，违背了设立 Domain 层的初衷。
+
+**建议**：明确 Domain 层的内容，至少包含：
+```
+OnToPilot.Domain/
+├── Common/
+│   ├── Entity.cs
+│   ├── ValueObject.cs
+│   └── DomainEvent.cs
+├── KnowledgeSystem/
+│   ├── KnowledgeSystemId.cs
+│   ├── UserId.cs
+│   └── Events/
+└── Shared/
+    ├── IRepository.cs
+    └── IDomainService.cs
+```
+
+#### 问题 1.2：IntegrationApiFacade 缺失于项目结构图
+
+第 933 行和 991 行提到了 `IntegrationApiFacade`，但在整个项目结构图（第 113-164 行）中完全没有出现。这个 Facade 是所有 MCP Tools 依赖的入口，是系统对外的核心抽象层，却只出现在 MCP 章节的代码示例里。
+
+**建议**：在项目结构中显式标注 `IntegrationApiFacade` 的位置与依赖关系。
+
+#### 问题 1.3：LLM 层和 RDF 层职责边界不清
+
+`Llm/` 目录（`ExtractionService`、`EmbeddingService`）和 `Ontology/` 目录（`StoreWrapper`、`SchemaBuilder`）同属 `OnToPilot/` 根下，没有清晰的子层划分。`ExtractionService` 是**业务编排层**（调用 LLM Provider 并将结果写入 RDF Store），不应该和底层的 RDF 封装平级。
+
+**建议**：将 Services 显式分层：
+```
+OnToPilot/
+├── Controllers/          # API 层
+├── Services/             # 业务编排层（新增）
+│   ├── ExtractionService.cs
+│   └── EmbeddingService.cs
+├── Ontology/             # 领域层
+└── Llm/                  # LLM 基础设施（只做 Provider 封装）
+    ├── LlmClientFactory.cs
+    └── EmbeddingGenerator.cs
+```
+
+---
+
+### 2. 技术选型
+
+#### 问题 2.1：DoclingDotNet 1.2.0 生产就绪性未验证
+
+DoclingDotNet 并非官方 Docling 团队维护（是社区 `sparkeh9` 移植版），版本 1.2.0 的功能完整度、bug 密度、长期维护保障均未知。文档没有说明"DoclingDotNet 不可用"的判断标准——是返回空文本算失败，还是抛异常算失败？降级链是否在任何单点失败时都能透明传导？
+
+**建议**：在第 4.11.1 节补充：
+- 明确的不可用判断逻辑（try-catch + 空文本双重校验）
+- 降级失败的应急方案（如人工告警 + 降级到纯文本）
+
+#### 问题 2.2：MinIO 客户端选型未充分说明
+
+第 625 行推荐 `AWSSDK.S3` 而非 `Minio` 官方客户端，但两者 API 语义差异未说明：
+- `AWSSDK.S3` 的异常体系（`AmazonS3Exception`）与 MinIO 特定错误（如 `NoSuchBucket`）的映射关系
+- MinIO 的 ListObjects、Bucket Policy 等 S3 扩展 API 在 `AWSSDK.S3` 下的兼容性
+
+**建议**：在第 5.3 节补充选型理由，或评估改用 `Minio` NuGet 包的可行性。
+
+#### 问题 2.3：EF Core 版本不匹配
+
+文档第 579 行写的是"EF Core 8 + Npgsql"，但项目目标框架是 `.NET 10`。EF Core 10（随 .NET 10 发布）相比 EF Core 8 有重大改进（纯 DateOnly/TimeOnly 完整支持、湿润工作单元改进等）。
+
+**建议**：将 EF Core 8 修正为 EF Core 10，并确认 `Npgsql` 包的版本兼容性。
+
+#### 问题 2.4：缺少可观测性基础设施设计
+
+整个设计没有任何 tracing、metrics、logging 的设计。ASP.NET Core 10 原生支持 OpenTelemetry，这种级别的迁移项目（前后端分离、Docker 部署、多 Provider LLM 调用）没有可观测性设计，上线后调试会非常困难。
+
+**建议**：在 Section 6（待补充）中增加：
+- OpenTelemetry 配置（ActivitySource 注入到所有关键路径）
+- 结构化日志（Microsoft.Extensions.Logging + Serilog）
+- LLM 调用埋点（Provider 耗时、Token 消耗、错误率）
+
+---
+
+### 3. 迁移策略
+
+#### 问题 3.1：SQL 存量数据迁移脚本设计完全缺失
+
+文档第 581 行说"数据模型一对一映射，迁移脚本处理存量数据"，但整篇文档没有任何关于迁移脚本的说明：
+- 自增 ID → GUID 的映射策略是什么？
+- 迁移窗口期间 Python 和 .NET 能否同时写入 PostgreSQL？
+- 如果迁移失败，回滚方案是什么？
+
+**建议**：在 Section 6（待补充）中补充：
+- 迁移脚本位置：`migrations/SqlAlchemyToEfCore/`
+- 执行方式：先在备份库验证，再在生产库执行
+- 并发策略：迁移期间禁止 Python 写入（或使用数据库锁）
+- 回滚预案：保留 Python 环境的只读访问能力
+
+#### 问题 3.2：MinIO 和 RDF 存储迁移没有明确的执行顺序
+
+文档中 MinIO 迁移（第 871-883 行）和 RDF 存储迁移（第 595-603 行）是分开描述的，但实际部署时需要明确：
+- 哪个先执行？
+- 切换到 .NET 后，如果 MinIO 迁移还未完成，前端上传功能如何处理？
+- RDF 目录复制和 MinIO 镜像是否可以并行执行？
+
+**建议**：在第 5.3 节末尾补充迁移执行序列：
+```
+1. [准备] 停止 Python 后端写入，复制 RDF 存储目录到迁移副本
+2. [并行] 执行 RDF 副本只读验证 + MinIO mc mirror 迁移
+3. [验证] RDF 写入冒烟测试通过，MinIO bucket 内容完整
+4. [切换] 启动 .NET 后端，切换前端 API 指向
+5. [确认] 观察 24h 无异常后删除 Python 环境和原 RDF 目录
+```
+
+#### 问题 3.3：缺少灰度/蓝绿部署方案
+
+文档假设是一次性切换，但生产环境很可能需要"新旧系统并行运行"的窗口期。目前的设计没有任何双写或流量切分策略。
+
+**建议**：在 Section 6（待补充）中增加：
+- 使用 Docker Compose profile 区分 Python/.NET 环境
+- 前端通过环境变量切换 API 指向
+- 或使用 Nginx path-based routing（如 `/api/v1/` → .NET，`/api/legacy/` → Python）
+
+---
+
+### 4. 风险与遗漏
+
+#### 问题 4.1：风险登记不完整
+
+以下风险未被登记：
+
+| 遗漏的风险 | 概率 | 影响 | 缓解 |
+|---|---|---|---|
+| DoclingDotNet 解析质量不达预期，导致抽取质量下降 | 中 | 高 | 补充质量评估流程，保留人工抽检 |
+| MinIO 预签名 URL 生成方式与前端上传流程不兼容 | 中 | 中 | 前端上传流程专项验证 |
+| EF Core 迁移脚本执行时间过长导致业务中断 | 中 | 高 | 选择低峰期执行，准备停机窗口 |
+| Microsoft.Extensions.AI 各 Provider 的 Function Calling 支持不一致 | 中 | 中 | 在 ExtractionService 中做 Provider 能力探测 |
+| MCP Streamable HTTP 与现有前端 MCP 客户端的兼容性 | 低 | 高 | 提前用 Postman/MCP Inspector 测试 /mcp 端点 |
+| Section 6 缺失导致关键迁移步骤未定义 | 高 | 高 | 立即补充 Section 6 |
+
+#### 问题 4.2：MCP Token 认证实现不完整
+
+第 994-1008 行展示了 `TryAuthorizeMcpToken` 的伪代码，但没有说明：
+- Token 本身存储在哪里？（数据库？内存？）
+- `mcp:read` / `mcp:write` / `mcp:manage` 三级权限的边界是什么？
+- 过期 Token 如何刷新？
+
+**建议**：在第 8.4 节补充 Token 存储模型和刷新机制。
+
+#### 问题 4.3：没有 API 版本策略
+
+文档强调"API 契约兼容"，但没有说明 .NET 后端上线后是否需要版本化（如 `/api/v1/`）。如果后续需要 Breaking Change，如何处理？
+
+**建议**：在 Section 6（待补充）或第 7 节补充：
+- 当前阶段：无需版本化（因为契约兼容）
+- 未来 Breaking Change：走 `/api/v2/` + 6 个月并行策略
+
+---
+
+### 综合评分
+
+| 维度 | 评分 | 说明 |
+|---|---|---|
+| 架构设计 | ⭐⭐⭐☆☆ | 整体结构清晰，但 Domain 层空心化、聚合层缺失 |
+| 技术选型 | ⭐⭐⭐⭐☆ | 选型方向正确，EF Core 版本错误、缺可观测性是主要扣分项 |
+| 迁移策略 | ⭐⭐⭐☆☆ | 策略框架正确，但 SQL 脚本设计和执行顺序缺失 |
+| 风险管控 | ⭐⭐⭐☆☆ | 风险登记不完整，Section 6 缺失是明显漏洞 |
+
+### 最需修复的 3 个问题（按优先级）
+
+1. **🔴 Section 6 缺失** — 立即确认是编号错误还是内容遗漏，补充缺失章节
+2. **🔴 SQL 迁移脚本设计** — 必须在上线前完成，不能留到实施阶段
+3. **🟡 EF Core 8 → EF Core 10** + **DoclingDotNet 生产就绪性评估**
