@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OnToPilot.Authentication;
 using OnToPilot.Infrastructure.Persistence;
 
 namespace OnToPilot.Tests.Authentication;
@@ -22,14 +23,26 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
     public const string OtherPassword = "alice12345strong";
 
     private readonly string _sqlitePath;
+    private readonly IPasswordService? _passwordOverride;
 
-    public AuthTestWebApplicationFactory()
+    public AuthTestWebApplicationFactory() : this(passwordOverride: null)
+    {
+    }
+
+    /// <summary>
+    /// Construct with a custom <see cref="IPasswordService"/>. Used by the
+    /// timing-safe login regression test to assert the controller calls
+    /// <c>Verify</c> on every login attempt (so missing vs wrong password
+    /// take the same time).
+    /// </summary>
+    public AuthTestWebApplicationFactory(IPasswordService? passwordOverride)
     {
         var rawPath = Path.Combine(
             Path.GetTempPath(),
             $"ontopilot-auth-tests-{Guid.NewGuid():N}.db");
         // SQLite connection-string parser is sensitive to backslashes.
         _sqlitePath = rawPath.Replace('\\', '/');
+        _passwordOverride = passwordOverride;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -47,6 +60,18 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
                 // connection-string parser doesn't choke on the raw path.
                 ["OnToPilot:Persistence:SqliteConnection"] = $"Data Source={_sqlitePath}",
             });
+        });
+
+        builder.ConfigureServices(services =>
+        {
+            if (_passwordOverride is not null)
+            {
+                // Replace the production IPasswordService registration with
+                // the spy/fake the test injected.
+                var existing = services.Where(d => d.ServiceType == typeof(IPasswordService)).ToList();
+                foreach (var desc in existing) services.Remove(desc);
+                services.AddSingleton(_passwordOverride);
+            }
         });
     }
 
@@ -75,4 +100,3 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
         base.Dispose(disposing);
     }
 }
-

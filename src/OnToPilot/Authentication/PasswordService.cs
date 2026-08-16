@@ -1,7 +1,25 @@
 namespace OnToPilot.Authentication;
 
 /// <summary>
-/// Password hashing and validation, BCrypt-backed. The cost factor matches
+/// Password hashing and verification. <see cref="PasswordService"/> is the
+/// BCrypt-backed production implementation; tests substitute a spy to verify
+/// the controller invokes verification on every login attempt (so a missing
+/// user and a wrong password cost the same time).
+/// </summary>
+public interface IPasswordService
+{
+    /// <summary>Hash a freshly chosen password. Caller must have validated via <see cref="Validate"/>.</summary>
+    string Hash(string password);
+
+    /// <summary>Verify a presented password against a stored BCrypt hash.</summary>
+    bool Verify(string password, string passwordHash);
+
+    /// <summary>Reject passwords that violate length, byte-cap, or bootstrap rules.</summary>
+    void Validate(string password, bool bootstrap = false);
+}
+
+/// <summary>
+/// BCrypt-backed password hashing and validation. The cost factor matches
 /// the Python backend's <c>bcrypt.gensalt()</c> default (12). Password
 /// length is bounded by BCrypt's 72-byte UTF-8 input limit; we additionally
 /// require 12 characters (a project minimum).
@@ -10,8 +28,14 @@ namespace OnToPilot.Authentication;
 /// <para>Bootstrap validation additionally rejects published example passwords
 /// (<c>admin</c>, <c>changeme</c>, …) so empty installs can't accidentally land
 /// on a credential that's already in a public password list.</para>
+/// <para>
+/// <see cref="TimingSafeDummyHash"/> is a precomputed BCrypt hash the login
+/// controller feeds to <see cref="Verify"/> when the username doesn't exist,
+/// so the work done on a missing user matches the work done on a wrong
+/// password and the response time can't leak username existence.
+/// </para>
 /// </remarks>
-public sealed class PasswordService
+public sealed class PasswordService : IPasswordService
 {
     /// <summary>Minimum password length, mirrored from the Python backend.</summary>
     public const int MinLength = 12;
@@ -21,6 +45,14 @@ public sealed class PasswordService
 
     /// <summary>Cost factor matched to <c>bcrypt.gensalt()</c>'s default.</summary>
     public const int DefaultCost = 12;
+
+    /// <summary>
+    /// A valid BCrypt hash generated once at startup with the same cost factor
+    /// as real hashes. Used by the login path to equalize verification timing
+    /// when the presented username doesn't exist.
+    /// </summary>
+    public static readonly string TimingSafeDummyHash =
+        BCrypt.Net.BCrypt.HashPassword("timing-safe-dummy-password", DefaultCost);
 
     /// <summary>
     /// Bootstrap-time reject list. Empty installs MUST NOT land on one of
@@ -36,17 +68,11 @@ public sealed class PasswordService
         "replace-with-a-strong-password",
     };
 
-    /// <summary>
-    /// Hash a freshly chosen password with BCrypt at the default cost.
-    /// Caller must have already validated via <see cref="Validate"/>.
-    /// </summary>
+    /// <inheritdoc />
     public string Hash(string password) =>
         BCrypt.Net.BCrypt.HashPassword(password, DefaultCost);
 
-    /// <summary>
-    /// Verify a presented password against a stored BCrypt hash. Tolerates
-    /// malformed hashes by returning <c>false</c> rather than throwing.
-    /// </summary>
+    /// <inheritdoc />
     public bool Verify(string password, string passwordHash)
     {
         if (string.IsNullOrEmpty(passwordHash)) return false;
@@ -60,15 +86,7 @@ public sealed class PasswordService
         }
     }
 
-    /// <summary>
-    /// Reject passwords that are too short, exceed BCrypt's UTF-8 byte cap, or
-    /// (when <paramref name="bootstrap"/> is <c>true</c>) match a published
-    /// example. Existing password hashes are unaffected — this is for newly
-    /// seeded, created, or rotated credentials only.
-    /// </summary>
-    /// <exception cref="ArgumentException">
-    /// Thrown with a user-facing message describing the rejection reason.
-    /// </exception>
+    /// <inheritdoc />
     public void Validate(string password, bool bootstrap = false)
     {
         ArgumentNullException.ThrowIfNull(password);

@@ -39,7 +39,7 @@ builder.Services.AddDbContext<OnToPilotDbContext>((sp, options) =>
 
 // ---- Auth services ----
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<PasswordService>();
+builder.Services.AddSingleton<IPasswordService, PasswordService>();
 builder.Services.AddSingleton<KnowledgeSystemAccessService>();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)

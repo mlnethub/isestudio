@@ -22,13 +22,13 @@ public sealed class AuthController : ControllerBase
 {
     private readonly OnToPilotDbContext _db;
     private readonly OnToPilotOptions _options;
-    private readonly PasswordService _passwords;
+    private readonly IPasswordService _passwords;
     private readonly TimeProvider _clock;
 
     public AuthController(
         OnToPilotDbContext db,
         IOptions<OnToPilotOptions> options,
-        PasswordService passwords,
+        IPasswordService passwords,
         TimeProvider clock)
     {
         _db = db;
@@ -39,9 +39,10 @@ public sealed class AuthController : ControllerBase
 
     /// <summary>
     /// Verify the credentials, create a server-side session, and set the
-    /// opaque-token cookie. Failure deliberately emits a generic message —
-    /// the Python backend hides whether a username exists for the same
-    /// reason.
+    /// opaque-token cookie. Both the failure message and the failure timing
+    /// are deliberately constant — a missing username and a wrong password
+    /// both pay the cost of one BCrypt round so an enum on the wire can't
+    /// leak whether the username exists.
     /// </summary>
     [HttpPost("login")]
     [ProducesResponseType(typeof(UserOut), StatusCodes.Status200OK)]
@@ -50,6 +51,9 @@ public sealed class AuthController : ControllerBase
     {
         if (body is null || string.IsNullOrWhiteSpace(body.Username) || string.IsNullOrEmpty(body.Password))
         {
+            // Even empty submissions must run the BCrypt round so the
+            // response time matches a fully-populated bad request.
+            _passwords.Verify(string.Empty, PasswordService.TimingSafeDummyHash);
             return Unauthorized(new { detail = "Incorrect username or password" });
         }
 
@@ -57,19 +61,20 @@ public sealed class AuthController : ControllerBase
             .SingleOrDefaultAsync(u => u.Username == body.Username, ct)
             .ConfigureAwait(false);
 
-        // Generic error — do not reveal whether the username exists, whether
-        // the account is active, or whether the password was wrong.
-        if (user is null || !user.Active || !_passwords.Verify(body.Password, user.PasswordHash))
-        {
-            return Unauthorized(new { detail = "Incorrect username or password" });
-        }
+        // Always invoke Verify — against a precomputed dummy hash when the
+        // user is missing — so missing vs wrong-password both take one BCrypt
+        // round. The booleans are then folded in without short-circuiting.
+        var presentedHash = user?.PasswordHash ?? PasswordService.TimingSafeDummyHash;
+        var passwordOk = _passwords.Verify(body.Password, presentedHash);
+        var ok = user is not null && user.Active && passwordOk;
+        if (!ok) return Unauthorized(new { detail = "Incorrect username or password" });
 
         var token = CreateToken();
         var now = _clock.GetUtcNow();
         _db.AuthSessions.Add(new AuthSessionEntity
         {
             Token = token,
-            UserId = user.Id,
+            UserId = user!.Id,
             CreatedAt = now,
             ExpiresAt = now.AddHours(_options.SessionTtlHours),
         });
@@ -106,6 +111,9 @@ public sealed class AuthController : ControllerBase
             Secure = _options.CookieSecure,
             SameSite = SameSiteMode.Lax,
             Path = "/",
+            // Python backend emits max-age=0 to clear; match its wire shape
+            // exactly so existing cookie-handling tooling keeps working.
+            MaxAge = TimeSpan.Zero,
         });
         return Ok(new { ok = true });
     }

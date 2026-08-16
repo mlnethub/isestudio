@@ -133,13 +133,3 @@ public sealed class SessionAuthenticationHandler : AuthenticationHandler<Authent
         await Response.Body.WriteAsync(body, Context.RequestAborted);
     }
 }
-
-/// <summary>Shared constants for <see cref="SessionAuthenticationHandler"/> consumers.</summary>
-public static class SessionAuthenticationDefaults
-{
-    /// <summary>Claims principal name type, kept compatible with ASP.NET defaults.</summary>
-    public const string PrincipalName = "OnToPilot";
-
-    /// <summary>Convenience re-export of the handler scheme name.</summary>
-    public const string Scheme = SessionAuthenticationHandler.SchemeName;
-}
