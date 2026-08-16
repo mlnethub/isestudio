@@ -6,6 +6,7 @@ using OnToPilot.Authentication;
 using OnToPilot.Authorization;
 using OnToPilot.Configuration;
 using OnToPilot.Infrastructure.Persistence;
+using OnToPilot.Infrastructure.Startup;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -42,9 +43,21 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IPasswordService, PasswordService>();
 builder.Services.AddSingleton<KnowledgeSystemAccessService>();
 
+// Bearer-token primitives (scoped to the request DbContext).
+builder.Services.AddScoped<IKnowledgeApiTokenService, KnowledgeApiTokenService>();
+builder.Services.AddScoped<IMcpTokenService, McpTokenService>();
+
+// Startup recovery hosted services (scoped to a single DbContext per run).
+builder.Services.AddScoped<BootstrapAdminService>();
+builder.Services.AddScoped<StaleJobRecoveryService>();
+builder.Services.AddScoped<LegacyBackfillService>();
+
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(
         SessionAuthenticationHandler.SchemeName,
+        _ => { })
+    .AddScheme<AuthenticationSchemeOptions, ApiBearerAuthenticationHandler>(
+        ApiBearerAuthenticationHandler.SchemeName,
         _ => { });
 builder.Services.AddAuthorization();
 
@@ -74,6 +87,39 @@ app.UseMiddleware<FastApiErrorMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+
+// ---- Bootstrap recovery ----
+// Empty installs MUST NOT auto-create a default admin user — the service
+// refuses and exits with a documented non-zero code so the operator can
+// provision the first user manually (via SSH / kubectl exec / etc.).
+//
+// For the SQLite provider (tests + dev) we EnsureCreated here so the
+// bootstrap check has a table to query. For PostgreSQL we trust the
+// deploy-time migrations to have applied the InitialCompatibility
+// migration; the schema must exist before this process starts.
+//
+// Test environments opt out via the "Testing" environment so individual
+// tests can seed users through `WebApplicationFactory.CreateDbContext()`
+// without the bootstrap step refusing to start.
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    using var scope = app.Services.CreateScope();
+    var db = scope.ServiceProvider.GetRequiredService<OnToPilotDbContext>();
+    if (db.Database.IsSqlite())
+    {
+        await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
+    }
+
+    var bootstrap = scope.ServiceProvider.GetRequiredService<BootstrapAdminService>();
+    var outcome = await bootstrap.RunAsync(default).ConfigureAwait(false);
+    if (outcome == BootstrapOutcome.BootstrapRequired)
+    {
+        Environment.ExitCode = bootstrap.ExitCode;
+        // Don't call app.Run(); the host hasn't bound sockets yet, and
+        // returning from top-level statements is the cleanest signal.
+        return;
+    }
+}
 
 app.Run();
 

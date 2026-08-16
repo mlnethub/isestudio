@@ -109,6 +109,9 @@ public sealed class KnowledgeApiTokenEntity : LegacyAddressableEntity
     /// <summary>FK to the knowledge system this token is scoped to.</summary>
     public Guid KnowledgeSystemId { get; set; }
 
+    /// <summary>Navigation to the owning knowledge system.</summary>
+    public KnowledgeSystemEntity? KnowledgeSystem { get; set; }
+
     /// <summary>Owner-chosen label.</summary>
     public string Name { get; set; } = string.Empty;
 
@@ -149,8 +152,14 @@ public sealed class McpUserTokenEntity : LegacyAddressableEntity
     /// <summary>FK to the knowledge system this token is scoped to.</summary>
     public Guid KnowledgeSystemId { get; set; }
 
+    /// <summary>Navigation to the owning knowledge system.</summary>
+    public KnowledgeSystemEntity? KnowledgeSystem { get; set; }
+
     /// <summary>FK to the user the token acts on behalf of.</summary>
     public Guid UserId { get; set; }
+
+    /// <summary>Navigation to the owning user.</summary>
+    public UserEntity? User { get; set; }
 
     /// <summary>Owner-chosen label.</summary>
     public string Name { get; set; } = string.Empty;
