@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
@@ -10,13 +11,20 @@ namespace OnToPilot.Ontology;
 /// <summary>
 /// Produces a stable, order-independent signature for a triple set. Two
 /// captures of the same logical triples (same subjects, predicates, objects,
-/// graphs — regardless of insertion order) hash to the same signature so the
-/// conflict queue can deduplicate re-detected issues.
+/// graphs — regardless of insertion order, and regardless of which overload
+/// was used to feed the input) hash to the same signature so the conflict
+/// queue can deduplicate re-detected issues.
 ///
-/// <para>Algorithm: canonicalize each quad as N-Triples (preserving blank
-/// nodes, language tags, and datatypes — the same byte rules used by
-/// <see cref="StoreWrapper.DumpNQuads"/>), sort the resulting lines in
-/// lexicographic order, join with <c>\n</c>, then SHA-256.</para>
+/// <para>Algorithm: route every input — whether a list of <see cref="OntoQuad"/>
+/// or a raw N-Quads byte payload — through the same canonical N-Quads writer
+/// (<see cref="AppendTerm"/>), sort the resulting lines in lexicographic
+/// order, join with <c>\n</c>, then SHA-256.</para>
+///
+/// <para>The byte overload parses the payload via Oxigraph's N-Quads loader
+/// and re-serializes each parsed quad through the canonical writer. This
+/// makes <c>Signature(bytesFromDump)</c> and <c>Signature(quadsFromMatch)</c>
+/// return identical hashes for the same layer — verified by
+/// <c>Signature_is_consistent_between_byte_and_quad_overloads</c>.</para>
 /// </summary>
 public static class ConflictDetector
 {
@@ -40,10 +48,11 @@ public static class ConflictDetector
     }
 
     /// <summary>
-    /// Compute the signature for raw N-Quads bytes. Lines are normalized
-    /// (trimmed of trailing whitespace and a single canonical terminator
-    /// appended) before sorting so a serialized payload remains stable across
-    /// parsers.
+    /// Compute the signature for raw N-Quads bytes. The bytes are parsed via
+    /// Oxigraph's N-Quads loader and each parsed quad is re-serialized
+    /// through the same canonical writer the quad overload uses, so the
+    /// two overloads agree on identical logical input. Empty payloads hash
+    /// to the well-known SHA-256 of the empty string.
     /// </summary>
     public static string Signature(byte[] nQuads)
     {
@@ -53,22 +62,22 @@ public static class ConflictDetector
         {
             return Sha256Hex(ReadOnlySpan<byte>.Empty);
         }
-        var raw = text.Split('\n');
-        var lines = new List<string>(raw.Length);
-        foreach (var line in raw)
+
+        // Parse the bytes back to a quad set, then hash via the quad overload
+        // so the byte and quad paths produce identical hashes for the same
+        // logical content. Oxigraph may reassign blank-node labels on load;
+        // the signature is therefore a semantic fingerprint (post-parse
+        // canonical form), not a raw byte fingerprint.
+        var quads = new List<OntoQuad>();
+        using (var store = new Oxigraph.Store())
         {
-            // Strip trailing CR/LF/whitespace but keep the leading content
-            // intact so the `<subject> <predicate> <object> .` shape is
-            // preserved (the leading space before `.` is part of the
-            // canonical N-Quples / N-Triples form).
-            var trimmed = line.TrimEnd('\r', '\n');
-            if (trimmed.Length == 0 || trimmed.StartsWith("#", StringComparison.Ordinal))
-                continue;
-            lines.Add(trimmed);
+            store.Load(text, RdfFormat.NQuads);
+            foreach (var q in store.Match())
+            {
+                quads.Add(q);
+            }
         }
-        lines.Sort(StringComparer.Ordinal);
-        var joined = string.Join("\n", lines) + "\n";
-        return Sha256Hex(Encoding.UTF8.GetBytes(joined));
+        return Signature(quads);
     }
 
     private static string CanonicalNQuads(OntoQuad q)

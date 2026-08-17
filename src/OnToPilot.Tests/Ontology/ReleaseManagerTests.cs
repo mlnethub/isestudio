@@ -276,4 +276,36 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
 
         Assert.Equal(sig1, sig2);
     }
+
+    // ------------------------------------------------------------------
+    // I-3 regression: concurrent CaptureAsync for the same KS must yield
+    // distinct version strings. Without the manager lock around
+    // AllocateVersion two captures can both observe the same existing
+    // versions and both allocate "v1". With the lock, version allocation
+    // is serialized so the N captures each get a unique version.
+    // ------------------------------------------------------------------
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task Concurrent_captures_yield_distinct_versions()
+    {
+        const int n = 8;
+        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
+            [MakeQuad("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
+
+        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+
+        var tasks = Enumerable.Range(0, n)
+            .Select(_ => Task.Run(() => releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None)))
+            .ToArray();
+
+        var captured = await Task.WhenAll(tasks);
+
+        Assert.Equal(n, captured.Length);
+        var versions = captured.Select(r => r.Version).ToList();
+        Assert.Equal(n, versions.Distinct(StringComparer.Ordinal).Count());
+        // Version numbers must be a contiguous range starting at v1
+        // (no gaps when capturing into an empty artifact store).
+        var numbers = versions.Select(v => int.Parse(v.AsSpan(1))).OrderBy(x => x).ToList();
+        Assert.Equal(Enumerable.Range(1, n).ToList(), numbers);
+    }
 }

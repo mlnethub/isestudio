@@ -18,7 +18,15 @@ public sealed class ReleaseManager : IDisposable
     private readonly ReleaseArtifactStore _artifacts;
     private readonly string _servingRoot;
     private readonly Dictionary<string, PublishedEntry> _published = new(StringComparer.Ordinal);
+    // _lock guards the in-memory _published registry (read on publish /
+    // delete).
     private readonly object _lock = new();
+    // _versionLock serializes the entire CaptureAsync body so two concurrent
+    // captures for the same knowledge system cannot both observe an empty
+    // artifact store and allocate the same version. Capture is an
+    // infrequent operation, so the simpler "one capture at a time" model
+    // is preferable to a more elaborate reservation scheme.
+    private readonly SemaphoreSlim _versionLock = new(1, 1);
     private bool _disposed;
 
     private sealed record PublishedEntry(KsContext Ks, StoreWrapper Store);
@@ -64,33 +72,48 @@ public sealed class ReleaseManager : IDisposable
         ArgumentNullException.ThrowIfNull(actor);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        var version = AllocateVersion();
-        var id = Guid.NewGuid().ToString("N");
-
-        var files = new List<ReleaseFileManifest>(3);
-        long provenanceCount = 0;
-
-        foreach (var layer in new[] { RdfLayer.TBox, RdfLayer.ABox, RdfLayer.Vocabulary })
+        // Serialize the entire capture against concurrent captures for the
+        // same KS. Version allocation + shard write + manifest write must
+        // be atomic w.r.t. AllocateVersion() callers; otherwise two
+        // concurrent captures can both observe an empty artifact store and
+        // both allocate "v1". The version reservation (write the manifest
+        // skeleton first, then update with shards) would also work; the
+        // whole-body semaphore is simpler and capture is infrequent.
+        await _versionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var graphIri = GraphIriFor(ks, layer);
-            var graph = new OntoNamedNode(graphIri);
+            var version = AllocateVersion();
+            var id = Guid.NewGuid().ToString("N");
 
-            await using var capture = await _workspace.CaptureAsync(
-                graphIri, revertOnError: true, cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
+            var files = new List<ReleaseFileManifest>(3);
+            long provenanceCount = 0;
 
-            var nQuads = _workspace.DumpNQuads(graph);
-            _artifacts.Write(id, layer, nQuads);
-            files.Add(_artifacts.BuildFileManifest(id, layer, nQuads));
-            provenanceCount += ReleaseArtifactStore.StatementCount(nQuads);
+            foreach (var layer in new[] { RdfLayer.TBox, RdfLayer.ABox, RdfLayer.Vocabulary })
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var graphIri = GraphIriFor(ks, layer);
+                var graph = new OntoNamedNode(graphIri);
+
+                await using var capture = await _workspace.CaptureAsync(
+                    graphIri, revertOnError: true, cancellationToken: cancellationToken)
+                    .ConfigureAwait(false);
+
+                var nQuads = _workspace.DumpNQuads(graph);
+                _artifacts.Write(id, layer, nQuads);
+                files.Add(_artifacts.BuildFileManifest(id, layer, nQuads));
+                provenanceCount += ReleaseArtifactStore.StatementCount(nQuads);
+            }
+
+            var manifest = new ReleaseManifest(version, files, provenanceCount);
+            _artifacts.SaveManifest(id, manifest);
+            WriteKsHeader(_artifacts.ReleasePath(id), ks);
+
+            return new Release(id, version, ks, _artifacts.ReleasePath(id));
         }
-
-        var manifest = new ReleaseManifest(version, files, provenanceCount);
-        _artifacts.SaveManifest(id, manifest);
-        WriteKsHeader(_artifacts.ReleasePath(id), ks);
-
-        return new Release(id, version, ks, _artifacts.ReleasePath(id));
+        finally
+        {
+            _versionLock.Release();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -375,5 +398,6 @@ public sealed class ReleaseManager : IDisposable
             }
             _published.Clear();
         }
+        _versionLock.Dispose();
     }
 }
