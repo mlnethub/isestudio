@@ -281,7 +281,7 @@ public static class Guard
         foreach (var n in existingNorms) availableClasses.Add(n);
 
         bool UnavailableClass(string? value) =>
-            !string.IsNullOrWhiteSpace(value) && !availableClasses.Contains(Normalize(value));
+            string.IsNullOrWhiteSpace(value) || !availableClasses.Contains(Normalize(value));
 
         // 3. Clean object / data properties.
         var existingObjectNorms = new HashSet<string>(
@@ -397,7 +397,7 @@ public static class Guard
             };
             if (endpoints.Length == 0) continue;
             if (endpoints.Any(IsBlocked)) continue;
-            if (endpoints.Any(v => !string.IsNullOrWhiteSpace(v) && UnavailableClass(v))) continue;
+            if (endpoints.Any(UnavailableClass)) continue;
             if (ax.Type == "subclass"
                 && !string.IsNullOrWhiteSpace(ax.Sub)
                 && !string.IsNullOrWhiteSpace(ax.Super)

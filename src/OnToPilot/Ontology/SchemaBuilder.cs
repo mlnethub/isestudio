@@ -273,6 +273,15 @@ public static class SchemaBuilder
         var domainAll = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         var rangeAll = new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
+        // RDF list / owl:unionOf bookkeeping (port of schema.py _union_members /
+        // _concrete_members). We need every domain / range value expanded
+        // through any owl:unionOf blank node so multi-valued or union-shaped
+        // properties don't collapse to one arbitrary last-writer value.
+        var unionHead = new Dictionary<string, string>(StringComparer.Ordinal);
+        var listFirst = new Dictionary<string, string>(StringComparer.Ordinal);
+        var listRest = new Dictionary<string, string>(StringComparer.Ordinal);
+        var bnodeSubjects = new HashSet<string>(StringComparer.Ordinal);
+
         foreach (var q in quads)
         {
             var siri = TermIri(q.Subject);
@@ -317,11 +326,17 @@ public static class SchemaBuilder
             }
             else if (piri == Vocabulary.RdfsLabel.Value)
             {
-                labels[siri] = ((OntoLiteral)q.Object).Value;
+                if (q.Object is OntoLiteral lbl)
+                {
+                    labels[siri] = lbl.Value;
+                }
             }
             else if (piri == Vocabulary.RdfsComment.Value)
             {
-                comments[siri] = ((OntoLiteral)q.Object).Value;
+                if (q.Object is OntoLiteral cmt)
+                {
+                    comments[siri] = cmt.Value;
+                }
             }
             else if (piri == Vocabulary.RdfsSubClassOf.Value)
             {
@@ -355,6 +370,25 @@ public static class SchemaBuilder
             {
                 equivalent.Add(new AxiomPair(siri, oiri));
             }
+            else if (piri == Vocabulary.OwlUnionOf.Value)
+            {
+                // The subject is the anonymous union bnode; the object is the
+                // head cell of its rdf:List.
+                unionHead[siri] = oiri;
+            }
+            else if (piri == Vocabulary.RdfFirst.Value)
+            {
+                listFirst[siri] = oiri;
+            }
+            else if (piri == Vocabulary.RdfRest.Value)
+            {
+                listRest[siri] = oiri;
+            }
+
+            if (q.Subject is OntoBlankNode)
+            {
+                bnodeSubjects.Add(siri);
+            }
         }
 
         var superMap = new Dictionary<string, List<string>>(StringComparer.Ordinal);
@@ -384,11 +418,11 @@ public static class SchemaBuilder
 
         var objList = objProps.Keys
             .OrderBy(LabelOf, StringComparer.Ordinal)
-            .Select(iri => PropEntry(iri, isDatatypeRange: false, labels, comments, domains, ranges, domainAll, rangeAll, LabelOf))
+            .Select(iri => PropEntry(iri, isDatatypeRange: false, labels, comments, domains, ranges, domainAll, rangeAll, unionHead, listFirst, listRest, LabelOf))
             .ToList();
         var dataList = dataProps.Keys
             .OrderBy(LabelOf, StringComparer.Ordinal)
-            .Select(iri => PropEntry(iri, isDatatypeRange: true, labels, comments, domains, ranges, domainAll, rangeAll, LabelOf))
+            .Select(iri => PropEntry(iri, isDatatypeRange: true, labels, comments, domains, ranges, domainAll, rangeAll, unionHead, listFirst, listRest, LabelOf))
             .ToList();
 
         return new OntologyView(
@@ -416,6 +450,62 @@ public static class SchemaBuilder
         _ => term.ToString() ?? "",
     };
 
+    /// <summary>
+    /// Walk an rdf:List whose head is <paramref name="headValue"/>, returning
+    /// the IRIs of every member cell. Stops at <c>rdf:nil</c> and bails out
+    /// after 1000 hops to defend against cyclic graphs. Mirrors
+    /// <c>_union_members</c> in schema.py.
+    /// </summary>
+    private static List<string> UnionMembers(
+        string? headValue,
+        IReadOnlyDictionary<string, string> listFirst,
+        IReadOnlyDictionary<string, string> listRest)
+    {
+        var outList = new List<string>();
+        if (headValue is null) return outList;
+        var cur = headValue;
+        int guard = 0;
+        while (!string.IsNullOrEmpty(cur)
+            && cur != Vocabulary.RdfNil.Value
+            && guard < 1000)
+        {
+            if (listFirst.TryGetValue(cur, out var first))
+            {
+                outList.Add(first);
+            }
+            listRest.TryGetValue(cur, out cur);
+            guard++;
+        }
+        return outList;
+    }
+
+    /// <summary>
+    /// Flatten a property's domain/range value(s) to the concrete class /
+    /// datatype IRIs they admit: every rdfs:domain / rdfs:range triple, with
+    /// any owl:unionOf expanded to its members. De-duplicated,
+    /// order-preserving. Mirrors <c>_concrete_members</c> in schema.py.
+    /// </summary>
+    private static List<string> ConcreteMembers(
+        IReadOnlyList<string> values,
+        IReadOnlyDictionary<string, string> unionHead,
+        IReadOnlyDictionary<string, string> listFirst,
+        IReadOnlyDictionary<string, string> listRest)
+    {
+        var outList = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var v in values)
+        {
+            var members = unionHead.ContainsKey(v)
+                ? UnionMembers(v, listFirst, listRest)
+                : new List<string> { v };
+            foreach (var m in members)
+            {
+                if (seen.Add(m)) outList.Add(m);
+            }
+        }
+        return outList;
+    }
+
     private static PropertyView PropEntry(
         string iri,
         bool isDatatypeRange,
@@ -425,6 +515,9 @@ public static class SchemaBuilder
         IReadOnlyDictionary<string, string> ranges,
         IReadOnlyDictionary<string, List<string>> domainAll,
         IReadOnlyDictionary<string, List<string>> rangeAll,
+        IReadOnlyDictionary<string, string> unionHead,
+        IReadOnlyDictionary<string, string> listFirst,
+        IReadOnlyDictionary<string, string> listRest,
         Func<string, string> labelOf)
     {
         string? domainLabel = null;
@@ -439,6 +532,12 @@ public static class SchemaBuilder
                 ? "xsd:" + LocalOf(rval)
                 : labelOf(rval);
         }
+        var dMembers = ConcreteMembers(
+            domainAll.TryGetValue(iri, out var dList) ? dList : Array.Empty<string>(),
+            unionHead, listFirst, listRest);
+        var rMembers = ConcreteMembers(
+            rangeAll.TryGetValue(iri, out var rList) ? rList : Array.Empty<string>(),
+            unionHead, listFirst, listRest);
         return new PropertyView(
             Iri: iri,
             Local: LocalOf(iri),
@@ -448,7 +547,7 @@ public static class SchemaBuilder
             DomainLabel: domainLabel,
             Range: ranges.TryGetValue(iri, out var r) ? r : null,
             RangeLabel: rangeLabel,
-            DomainMembers: domainAll.TryGetValue(iri, out var dm) ? dm : Array.Empty<string>(),
-            RangeMembers: rangeAll.TryGetValue(iri, out var rm) ? rm : Array.Empty<string>());
+            DomainMembers: dMembers,
+            RangeMembers: rMembers);
     }
 }

@@ -140,9 +140,11 @@ public static class RoleEvidence
             // The exact label is the subject of a direct identity assertion.
             $@"(?<![\w-]){decorated}\s+is\s+(?:an?\s+|the\s+)?(?:named\s+)?(?:instance|individual)\b",
             $@"\b(?:instance|individual)\s+(?:named|called)\s+{decorated}(?![\w-])",
-            // Chinese: "名为 X 的实例", "该 X 实例", "X 是一个实例".
+            // Chinese: "名为 X 的实例", "该 X 实例", "X 是一个实例". No \b — .NET regex
+            // treats CJK ideographs as word characters so a boundary never fires
+            // between two adjacent Chinese characters, silently hiding matches.
             $@"(?:名为|称为)\s*{decorated}\s*的?(?:实例|个体)",
-            $@"\b该\s*{decorated}\s*(?:实例|个体)",
+            $@"该\s*{decorated}\s*(?:实例|个体)",
             $@"{decorated}\s*是\s*(?:一个|该)?\s*(?:实例|个体)",
         };
         foreach (var p in patterns)

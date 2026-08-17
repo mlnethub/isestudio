@@ -7,7 +7,7 @@ namespace OnToPilot.Ontology;
 /// All IRIs match the canonical W3C namespaces; the helper
 /// <see cref="ClassLocalName"/> / <see cref="PropertyLocalName"/> / <see cref="NormLabel"/>
 /// trio is the .NET equivalent of the Python <c>vocab.py</c> label helpers and is
-/// shared with <see cref="SchemaBuilder"/> and <see cref="TBoxGuard"/>.
+/// shared with <see cref="SchemaBuilder"/> and <see cref="Guard"/>.
 /// </summary>
 public static class Vocabulary
 {
