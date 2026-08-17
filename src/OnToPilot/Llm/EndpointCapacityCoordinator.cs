@@ -22,11 +22,15 @@ namespace OnToPilot.Llm;
 /// <see cref="AsyncLocal{T}"/> that flows with the
 /// <see cref="System.Threading.ExecutionContext"/>. Sequential
 /// <c>await coordinator.AcquireAsync(...)</c> calls on the same async
-/// task re-enter the bucket without blocking. Note that
-/// <see cref="System.Threading.ExecutionContext"/> values also flow into
-/// sub-tasks started via <c>Task.Run</c>; consumers that need to
-/// distinguish sub-tasks from continuations should use a higher-level
-/// coordination primitive.</para>
+/// task re-enter the bucket without blocking. <c>Task.Run</c> sub-tasks
+/// inherit the caller's <see cref="System.Threading.ExecutionContext"/>
+/// (and therefore the AsyncLocal state), so a request handler that
+/// internally fans out via <c>Task.Run</c> still counts as the same
+/// logical caller and will not deadlock against itself. Different
+/// callers are different <see cref="System.Threading.ExecutionContext"/>
+/// flows — for example, two HTTP requests handled on independent flows,
+/// or a flow that explicitly used
+/// <see cref="System.Threading.ExecutionContext.SuppressFlow"/>.</para>
 /// </summary>
 public sealed class EndpointCapacityCoordinator
 {
@@ -57,6 +61,30 @@ public sealed class EndpointCapacityCoordinator
     /// exactly one permit regardless of this value.
     /// </param>
     /// <param name="cancellationToken">Cancellation forwarded to the wait.</param>
+    /// <remarks>
+    /// <para>Reentrancy is tracked via the per-caller
+    /// <see cref="AsyncLocal{T}"/> state that flows with the
+    /// <see cref="System.Threading.ExecutionContext"/>. Two acquires on
+    /// the same key from the same async flow — sequential awaits on the
+    /// same async method, or a child task started with <c>Task.Run</c>
+    /// (which inherits the captured
+    /// <see cref="System.Threading.ExecutionContext"/>) — re-enter the
+    /// bucket without blocking. This matches the production use case: a
+    /// request handler that internally fans out via <c>Task.Run</c>
+    /// must not deadlock against itself when chat and embedding
+    /// extraction both call back into the coordinator.</para>
+    ///
+    /// <para>An acquire is treated as a "different caller" — and
+    /// therefore hits the underlying <see cref="SemaphoreSlim"/> and
+    /// blocks — only when its
+    /// <see cref="System.Threading.ExecutionContext"/> does not carry
+    /// the AsyncLocal state forward. In practice that means the acquire
+    /// ran inside an
+    /// <see cref="System.Threading.ExecutionContext.SuppressFlow"/>
+    /// scope, or on a flow that was independently constructed
+    /// (different request, a brand-new task created from scratch,
+    /// etc.).</para>
+    /// </remarks>
     public ValueTask<IAsyncDisposable> AcquireAsync(
         EndpointCapacityKey key,
         int permits,
