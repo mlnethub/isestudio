@@ -87,7 +87,11 @@ public sealed class StoreWrapper : IDisposable
 
     /// <summary>
     /// Pattern match. <c>graph</c> is the named-graph filter; <c>null</c>
-    /// matches the default graph (triples without a graph context).
+    /// matches all graphs (the Oxigraph wildcard — quads in every named
+    /// graph, including the default graph). To filter on the default graph
+    /// specifically, pass <c>DefaultGraph</c>. See
+    /// <see cref="Count(Oxigraph.NamedNode?)"/> for the same null convention
+    /// (null → store total).
     /// </summary>
     public IReadOnlyList<OntoQuad> Match(
         OntoNamedNode? subject = null,
@@ -233,7 +237,7 @@ public sealed class StoreWrapper : IDisposable
     /// <summary>
     /// Replace every quad in <paramref name="graph"/> with the supplied set in
     /// one logical operation. Implemented as <c>ClearGraph</c> +
-    /// <c>BulkExtend</c>; Oxigraph 0.5.8 has no single-call primitive.
+    /// <c>Extend</c>; Oxigraph 0.5.8 has no single-call primitive.
     /// </summary>
     public void ReplaceGraph(OntoNamedNode graph, IReadOnlyList<OntoQuad> quads)
     {

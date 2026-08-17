@@ -125,6 +125,42 @@ public class StoreWrapperTests : IClassFixture<StoreWrapperFixture>, IAsyncLifet
     // ------------------------------------------------------------------
 
     [Fact]
+    public void DumpNQuads_round_trips_preserving_two_distinct_blank_nodes()
+    {
+        // F3: two bnodes with different labels must both survive the dump
+        // round-trip as blank nodes (never collapse or get promoted to
+        // NamedNode).
+        var b1 = new OntoBlankNode("alpha");
+        var b2 = new OntoBlankNode("beta");
+        _fx.Store.AddQuads(_g1,
+        [
+            new OntoQuad(b1, new OntoNamedNode("urn:p"), new OntoLiteral("v1"), _g1),
+            new OntoQuad(b2, new OntoNamedNode("urn:p"), new OntoLiteral("v2"), _g1),
+        ]);
+
+        var bytes = _fx.Store.DumpNQuads(_g1);
+        var text = System.Text.Encoding.UTF8.GetString(bytes);
+        Assert.Contains("_:alpha", text);
+        Assert.Contains("_:beta", text);
+
+        using var fresh = new StoreWrapper(System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            "ontopilot-rt-bnodes-" + Guid.NewGuid().ToString("N")));
+        fresh.LoadNQuads(bytes);
+        var roundTripped = fresh.Match(graph: _g1);
+        Assert.Equal(2, roundTripped.Count);
+        Assert.All(roundTripped, q => Assert.IsType<OntoBlankNode>(q.Subject));
+
+        var labels = roundTripped
+            .Select(q => ((OntoBlankNode)q.Subject).Value)
+            .ToHashSet();
+        // Labels get reassigned by Oxigraph on load — both must still be
+        // distinct and non-empty after the round trip.
+        Assert.Equal(2, labels.Count);
+        Assert.DoesNotContain(string.Empty, labels);
+    }
+
+    [Fact]
     public void DumpNQuads_round_trips_preserving_blank_node_label()
     {
         var bnode = new OntoBlankNode("b1");
