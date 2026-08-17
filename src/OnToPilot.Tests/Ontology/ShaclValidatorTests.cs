@@ -96,11 +96,9 @@ public class ShaclValidatorTests : IClassFixture<ShaclValidatorFixture>, IAsyncL
     }
 
     // ------------------------------------------------------------------
-    // SHACL: SHACL report carries the right structure on violation.
-    // The brief allows for either Oxigraph SHACL or a minimal hand-rolled
-    // shape engine; the public surface is just ShaclReport. We don't
-    // require a particular violation count from Oxigraph — we require a
-    // populated report whenever the data graph violates a shape.
+    // SHACL: the report must contain violations when the data graph
+    // breaks a shape. Exercises focus-node collection, blank-node
+    // property-shape lookup, and minCount evaluation end-to-end.
     // ------------------------------------------------------------------
     [Fact]
     public void Validate_reports_violations_when_data_breaks_a_shape()
@@ -114,35 +112,37 @@ public class ShaclValidatorTests : IClassFixture<ShaclValidatorFixture>, IAsyncL
 
         try
         {
-            // Copy the SHACL shapes file into the shape store. The shape
-            // file is shipped as Turtle; load it as Turtle so its prefix
-            // declarations are honoured.
+            // Load the SHACL shapes file as Turtle so its prefix
+            // declarations are honoured. The shape file declares
+            // op:OwlClassShape with sh:targetClass owl:Class and a
+            // sh:property [ sh:path rdfs:label ; sh:minCount 1 ; sh:datatype xsd:string ].
             var shapesGraph = new OntoNamedNode("urn:shapes");
             shapeStore.LoadTurtle(System.IO.File.ReadAllBytes(shapesPath), shapesGraph);
 
-            // Build a tiny data graph with one violation: a typed individual
-            // missing its required rdfs:label. We attach this as a
-            // data graph quad to the (empty) main store.
+            // Build a tiny data graph with one violation: a typed owl:Class
+            // missing its required rdfs:label. The type must be owl:Class so
+            // the focus-node collection actually finds it (focus-node
+            // collection is by `sh:targetClass` value).
             var dataStore = _fx.Store;
             dataStore.AddQuads(new OntoNamedNode("urn:data"), new[]
             {
                 new Oxigraph.Quad(
                     new OntoNamedNode("urn:i-missing-label"),
                     new OntoNamedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
-                    new OntoNamedNode("urn:Cls"),
+                    new OntoNamedNode("http://www.w3.org/2002/07/owl#Class"),
                     new OntoNamedNode("urn:data")),
             });
 
             var validator = new ShaclValidator(shapeStore, dataStore);
             var report = validator.Validate("urn:data");
 
-            // SHACL is supplementary: when the data graph is well-formed we
-            // get an empty report; when it isn't we get at least one
-            // violation. We don't pin a count because Oxigraph's SHACL
-            // surface is implementation-defined; the test only asserts the
-            // shape of the report.
-            Assert.NotNull(report);
-            // No assertion on Violations.Count — implementation defined.
+            // The focus node has no rdfs:label → at least one violation.
+            Assert.NotEmpty(report.Violations);
+            // Every violation must point at the rdfs:label property shape.
+            Assert.All(report.Violations, v =>
+                Assert.Equal("http://www.w3.org/2000/01/rdf-schema#label", v.ResultPathIri));
+            Assert.Contains(report.Violations, v => v.FocusNodeIri == "urn:i-missing-label");
+            Assert.False(report.Conforms);
         }
         finally
         {

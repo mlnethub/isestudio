@@ -3,6 +3,7 @@ using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
 using OntoBlankNode = Oxigraph.BlankNode;
+using OntoTerm = Oxigraph.INamedOrBlankNode;
 
 namespace OnToPilot.Ontology;
 
@@ -108,7 +109,7 @@ public sealed class ShaclValidator
         IReadOnlyList<PropertyShapeDef> Properties);
 
     private sealed record PropertyShapeDef(
-        string Iri,
+        string Id,
         string PathIri,
         int? MinCount,
         string? DatatypeIri,
@@ -121,19 +122,25 @@ public sealed class ShaclValidator
         var result = new List<ShapeDef>();
         var shapeIris = new HashSet<string>(StringComparer.Ordinal);
 
-        // Step 1: collect every sh:NodeShape subject.
-        foreach (var q in _shapeStore.Match(
-            predicateIri: ShaclVocab.TargetClass.Value))
+        // Step 1: collect every sh:NodeShape subject. Shapes are always
+        // named resources; property shapes (their sh:property values) are
+        // commonly blank nodes in Turtle form, but that doesn't change
+        // shape identification.
+        // Use the OntoNamedNode-based Match overload (passing null graph)
+        // so Oxigraph treats `graph == null` as a wildcard across all named
+        // graphs — not as a filter on the default graph.
+        var shPredicate = (OntoNamedNode?)new OntoNamedNode(ShaclVocab.TargetClass.Value);
+        foreach (var q in _shapeStore.Match(predicate: shPredicate))
         {
             if (q.Subject is OntoNamedNode s && q.Object is OntoNamedNode t)
             {
                 shapeIris.Add(s.Value);
             }
         }
-        foreach (var q in _shapeStore.Match(subject: (OntoNamedNode?)null, predicate: (OntoNamedNode?)null, @object: (OntoLiteral?)null, graph: (OntoNamedNode?)null))
+        var rdfTypePredicate = (OntoNamedNode?)new OntoNamedNode(Vocabulary.RdfType.Value);
+        foreach (var q in _shapeStore.Match(predicate: rdfTypePredicate))
         {
             if (q.Subject is OntoNamedNode s
-                && q.Predicate.Value == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
                 && q.Object is OntoNamedNode t
                 && t.Value == ShaclVocab.NodeShape.Value)
             {
@@ -142,21 +149,29 @@ public sealed class ShaclValidator
         }
 
         // Step 2: per shape, gather target classes + property shapes.
+        // Property shapes can be blank nodes in Turtle form — accept BOTH
+        // named nodes and blank nodes so shapes like
+        //   op:X a sh:NodeShape ; sh:property [ sh:path ... ] .
+        // are recognized.
         foreach (var shapeIri in shapeIris)
         {
             var targets = new List<string>();
-            var propertyShapes = new List<OntoNamedNode>();
-            foreach (var q in _shapeStore.Match(subjectIri: shapeIri))
+            var propertyShapes = new List<OntoTerm>();
+            foreach (var q in _shapeStore.Match(
+                subject: (OntoNamedNode?)new OntoNamedNode(shapeIri)))
             {
                 if (q.Predicate.Value == ShaclVocab.TargetClass.Value && q.Object is OntoNamedNode t)
                     targets.Add(t.Value);
-                if (q.Predicate.Value == ShaclVocab.Property.Value && q.Object is OntoNamedNode p)
-                    propertyShapes.Add(p);
+                if (q.Predicate.Value == ShaclVocab.Property.Value
+                    && q.Object is OntoTerm psTerm)
+                {
+                    propertyShapes.Add(psTerm);
+                }
             }
             var props = new List<PropertyShapeDef>();
             foreach (var ps in propertyShapes)
             {
-                var prop = ReadPropertyShape(ps.Value);
+                var prop = ReadPropertyShape(ps);
                 if (prop is not null) props.Add(prop);
             }
             result.Add(new ShapeDef(shapeIri, targets, props));
@@ -164,7 +179,7 @@ public sealed class ShaclValidator
         return result;
     }
 
-    private PropertyShapeDef? ReadPropertyShape(string psIri)
+    private PropertyShapeDef? ReadPropertyShape(OntoTerm psTerm)
     {
         string? path = null;
         int? minCount = null;
@@ -172,7 +187,7 @@ public sealed class ShaclValidator
         string? nodeKind = null;
         string? cls = null;
         string? message = null;
-        foreach (var q in _shapeStore.Match(subjectIri: psIri))
+        foreach (var q in _shapeStore.MatchSubject(psTerm))
         {
             switch (q.Predicate.Value)
             {
@@ -197,7 +212,11 @@ public sealed class ShaclValidator
             }
         }
         if (path is null) return null;
-        return new PropertyShapeDef(psIri, path, minCount, datatype, nodeKind, cls, message);
+        // Use the blank-node label (or named IRI) as the stable identifier
+        // for violation reporting. Oxigraph assigns blank node labels at
+        // load time and they don't change for the lifetime of the store.
+        var id = psTerm is OntoNamedNode nn ? nn.Value : ((OntoBlankNode)psTerm).Value;
+        return new PropertyShapeDef(id, path, minCount, datatype, nodeKind, cls, message);
     }
 
     // ------------------------------------------------------------------
@@ -234,7 +253,7 @@ public sealed class ShaclValidator
         if (prop.MinCount is int minCount && values.Count < minCount)
         {
             yield return new ShaclViolation(
-                SourceShapeIri: prop.Iri,
+                SourceShapeIri: prop.Id,
                 FocusNodeIri: focus,
                 ResultPathIri: prop.PathIri,
                 ValueKind: "missing",
@@ -256,7 +275,7 @@ public sealed class ShaclValidator
                 if (!ok)
                 {
                     yield return new ShaclViolation(
-                        SourceShapeIri: prop.Iri,
+                        SourceShapeIri: prop.Id,
                         FocusNodeIri: focus,
                         ResultPathIri: prop.PathIri,
                         ValueKind: kind,
@@ -268,7 +287,7 @@ public sealed class ShaclValidator
                 && (lit.Datatype?.Value ?? "http://www.w3.org/2001/XMLSchema#string") != dt)
             {
                 yield return new ShaclViolation(
-                    SourceShapeIri: prop.Iri,
+                    SourceShapeIri: prop.Id,
                     FocusNodeIri: focus,
                     ResultPathIri: prop.PathIri,
                     ValueKind: "literal",
@@ -283,7 +302,7 @@ public sealed class ShaclValidator
                 if (!hasClass)
                 {
                     yield return new ShaclViolation(
-                        SourceShapeIri: prop.Iri,
+                        SourceShapeIri: prop.Id,
                         FocusNodeIri: focus,
                         ResultPathIri: prop.PathIri,
                         ValueKind: "iri",

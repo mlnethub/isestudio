@@ -213,19 +213,25 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
         var before = abox.CreateIndividual(_ks, "urn:ind-before", "urn:Class");
         byte[] snapshot = _fx.Store.DumpNQuads(new OntoNamedNode(_ks.ABoxGraph));
 
+        // Capture the after IRI too so we can assert it was actually
+        // rolled back. The previous form used `$"{_ks.BaseIri}"` as the
+        // subject filter, which never matches any real quad and made the
+        // assertion vacuous.
+        string? after = null;
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
             await using var capture = await _fx.Store.CaptureAsync(_ks.ABoxGraph, revertOnError: false);
-            abox.CreateIndividual(_ks, "urn:ind-after", "urn:Class");
+            after = abox.CreateIndividual(_ks, "urn:ind-after", "urn:Class");
             capture.MarkError();
             throw new InvalidOperationException();
         });
 
         // Bytes match — the second create is gone.
         Assert.Equal(snapshot, _fx.Store.DumpNQuads(new OntoNamedNode(_ks.ABoxGraph)));
-        // Only the original individual remains.
-        Assert.Empty(_fx.Store.Match(
-            subjectIri: $"{_ks.BaseIri}",
-            graphIri: _ks.ABoxGraph));
+        // Only the original individual remains: the before individual
+        // still has its triples, and the after individual was rolled back.
+        Assert.NotEmpty(_fx.Store.Match(subjectIri: before, graphIri: _ks.ABoxGraph));
+        Assert.False(string.IsNullOrEmpty(after));
+        Assert.Empty(_fx.Store.Match(subjectIri: after!, graphIri: _ks.ABoxGraph));
     }
 }

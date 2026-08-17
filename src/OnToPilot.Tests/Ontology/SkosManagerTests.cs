@@ -156,6 +156,50 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     }
 
     // ------------------------------------------------------------------
+    // Date filter on ListConcepts (Task 3 step 4): StartDate / EndDate
+    // bounds on the concept's ModifiedAt (falling back to CreatedAt).
+    // The filter is on the date portion (`stamp[..10]`) of the ISO-8601
+    // string so we anchor the bounds to the same day we just wrote.
+    // ------------------------------------------------------------------
+    [Fact]
+    public void ListConcepts_filters_by_start_and_end_date()
+    {
+        var skos = new SkosManager(_fx.Store);
+
+        var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
+            Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
+
+        skos.CreateConcept(_ks, schemeIri, new SkosConceptData(
+            Iri: "urn:c-today", PrefLabel: "Today", Language: "en"));
+        skos.CreateConcept(_ks, schemeIri, new SkosConceptData(
+            Iri: "urn:c-soon", PrefLabel: "Soon", Language: "en"));
+
+        // Anchored at today's date in the same ISO format the manager
+        // writes — the date filter compares only `stamp[..10]`.
+        var today = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd");
+        var tomorrow = DateTimeOffset.UtcNow.AddDays(1).ToString("yyyy-MM-dd");
+        var lastYear = DateTimeOffset.UtcNow.AddYears(-1).ToString("yyyy-MM-dd");
+
+        // Both concepts are dated today.
+        Assert.Equal(2, skos.ListConcepts(_ks).Total);
+        Assert.Equal(2, skos.ListConcepts(_ks, StartDate: today).Total);
+        Assert.Equal(2, skos.ListConcepts(_ks, EndDate: today).Total);
+        Assert.Equal(2, skos.ListConcepts(_ks, StartDate: today, EndDate: today).Total);
+
+        // No concepts can fall within a window that starts tomorrow.
+        Assert.Equal(0, skos.ListConcepts(_ks, StartDate: tomorrow).Total);
+
+        // No concepts can match a window that ends last year.
+        Assert.Equal(0, skos.ListConcepts(_ks, EndDate: lastYear).Total);
+
+        // Date filter composes with the other filters. Both concepts are
+        // Origin=manual by default, so the date+origin intersection keeps
+        // both; an Origin that no concept has still produces zero.
+        Assert.Equal(2, skos.ListConcepts(_ks, Origin: "manual", StartDate: today).Total);
+        Assert.Equal(0, skos.ListConcepts(_ks, Origin: "agent", StartDate: today).Total);
+    }
+
+    // ------------------------------------------------------------------
     // Resolve: pref/alt/hidden match with score.
     // ------------------------------------------------------------------
     [Fact]

@@ -128,6 +128,21 @@ public sealed class StoreWrapper : IDisposable
             graph: graph);
     }
 
+    /// <summary>
+    /// Internal helper: pattern match by an exact <see cref="INamedOrBlankNode"/>
+    /// subject. Used by callers that need to fetch triples whose subject is
+    /// a blank node (Turtle <c>[ ... ]</c> property shapes, RDF lists, etc.)
+    /// since the public string-IRI overloads only match named nodes.
+    /// </summary>
+    internal IReadOnlyList<OntoQuad> MatchSubject(
+        INamedOrBlankNode subject,
+        NamedNode? predicate = null)
+    {
+        ArgumentNullException.ThrowIfNull(subject);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _store.Match(subject: subject, predicate: predicate, @object: null, graph: null);
+    }
+
     /// <summary>Total quad count. With <paramref name="graph"/>, scoped to one graph.</summary>
     public ulong Count(OntoNamedNode? graph = null)
     {
