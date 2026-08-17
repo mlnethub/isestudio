@@ -18,12 +18,11 @@ namespace OnToPilot.Storage;
 /// serves it.
 /// </para>
 /// <para>
-/// <see cref="PutAsync"/> streams the request body via
-/// <see cref="PutObjectRequest.InputStream"/> while an
-/// <see cref="IncrementalHash"/> running over the same chunked read
-/// accumulates the digest. The S3 client buffers the input stream into
-/// a signed chunked request internally, so callers don't pay for an
-/// out-of-process buffer.
+/// <see cref="PutAsync"/> streams the caller's stream through an internal
+/// <see cref="HashingStream"/> wrapper that accumulates the SHA-256 in
+/// the same chunked reads the SDK issues. The caller's bytes never
+/// accumulate in process memory — bytes flow through hash and SDK
+/// simultaneously as the SDK drains the wrapper.
 /// </para>
 /// <para>
 /// Reference counting is intentionally NOT implemented here — the
@@ -34,9 +33,6 @@ namespace OnToPilot.Storage;
 /// </remarks>
 public sealed class MinioBlobStore : IBlobStore
 {
-    /// <summary>Chunk size for the streaming read on Put/Get.</summary>
-    private const int StreamChunkSize = 81920;
-
     private readonly IAmazonS3 _s3;
     private readonly string _bucket;
 
@@ -89,28 +85,21 @@ public sealed class MinioBlobStore : IBlobStore
     {
         ArgumentNullException.ThrowIfNull(content);
 
-        // Stream into a MemoryStream only after we've accumulated the
-        // hash and the key — we still want a streaming round-trip in
-        // total memory. IncrementalHash rides along over the same
-        // buffered read, and the result is fed to S3 once we know
-        // the final key.
-        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        using var buffered = new MemoryStream();
-        var scratch = new byte[StreamChunkSize];
-        int read;
-        while ((read = await content.ReadAsync(scratch.AsMemory(0, StreamChunkSize), cancellationToken)
-                                       .ConfigureAwait(false)) > 0)
-        {
-            hasher.AppendData(scratch, 0, read);
-            buffered.Write(scratch, 0, read);
-        }
-        var digest = hasher.GetHashAndReset();
-        var sha256 = Convert.ToHexString(digest).ToLowerInvariant();
+        // Pre-flight hash: drain the caller's stream through a HashingStream
+        // wrapper that accumulates the SHA-256 in-place as it forwards
+        // reads. No MemoryStream buffer is allocated — bytes flow through
+        // once. We need the SHA up-front because the S3 SDK requires the
+        // object key to be set on PutObjectRequest before the HTTP request
+        // goes out.
+        using var hashing = new HashingStream(content, HashAlgorithmName.SHA256);
+        await hashing.DrainAsync(cancellationToken).ConfigureAwait(false);
+        var sha256 = hashing.GetHashHexLower();
+        var totalBytes = hashing.BytesRead;
         var key = BlobKey.LegacyPathFor(sha256);
 
         // Idempotent write: skip the upload entirely if the object is
-        // already in place. Cheaper than re-sending identical bytes
-        // for the (common) re-upload-after-restart case.
+        // already in place. Cheaper than re-sending identical bytes for
+        // the (common) re-upload-after-restart case.
         try
         {
             await _s3.GetObjectMetadataAsync(new GetObjectMetadataRequest
@@ -125,17 +114,58 @@ public sealed class MinioBlobStore : IBlobStore
             // Fall through to upload.
         }
 
-        buffered.Position = 0;
+        // Replay: wrap the caller's stream again and hand it to the SDK
+        // so bytes flow through the hasher and the SDK read pipe in
+        // lock-step. The stream must be seekable so we can rewind; HTTP
+        // request bodies (and FileStream/MemoryStream) satisfy this.
+        // We do not buffer — the second pass also reads without copying.
+        if (!content.CanSeek)
+        {
+            throw new NotSupportedException(
+                "MinioBlobStore.PutAsync requires a seekable stream so the payload can be hashed and uploaded in two passes; "
+                + "pass a MemoryStream, FileStream, or an HTTP request body that ASP.NET has buffered to a seekable backing store.");
+        }
+        content.Position = 0;
+
+        using var uploadHashing = new HashingStream(content, HashAlgorithmName.SHA256);
+        // Pre-flight drain already gave us the total byte count. Pass
+        // it to the upload wrapper so its Length property returns the
+        // correct value (the SDK marshaller reads Length - Position to
+        // size the request body).
+        uploadHashing.SetKnownLength(totalBytes);
         var request = new PutObjectRequest
         {
             BucketName = _bucket,
             Key = key,
-            InputStream = buffered,
+            InputStream = uploadHashing,
+            // HashingStream is not seekable, so the SDK can't compute
+            // its default payload checksum by re-reading the stream.
+            // Disable the default checksum path; the SDK still verifies
+            // integrity via the HTTP body, and we have a stronger
+            // application-level SHA on the stored object.
+            DisableDefaultChecksumValidation = true,
             // ContentType intentionally left null; the Python backend
             // stored raw binary without an explicit MIME, and we want
             // bit-for-bit round-trips of the bytes themselves.
         };
+        // The SDK requires Content-Length up-front. We know it from the
+        // pre-flight drain (no extra buffering needed) so set it on the
+        // Headers collection; otherwise the marshaller throws
+        // "Could not determine content length" because HashingStream is
+        // not a known-seekable type and the SDK can't auto-derive length.
+        request.Headers.ContentLength = totalBytes;
         await _s3.PutObjectAsync(request, cancellationToken).ConfigureAwait(false);
+
+        // Sanity-check: the upload pass must produce the same SHA we
+        // named the key with. If they ever diverge, the caller's stream
+        // was mutated between reads, which is a caller bug.
+        var uploadSha = uploadHashing.GetHashHexLower();
+        if (!string.Equals(uploadSha, sha256, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"SHA mismatch between pre-flight hash ({sha256}) and upload-time "
+                + $"hash ({uploadSha}); the caller's stream was mutated between reads.");
+        }
 
         return new BlobWriteResult(sha256, key);
     }
@@ -152,12 +182,12 @@ public sealed class MinioBlobStore : IBlobStore
                 Key = key,
             }, cancellationToken).ConfigureAwait(false);
 
-            // The ResponseStream is owned by the caller after this
-            // method returns. The underlying S3 client disposes its
-            // copy when the response object is disposed; the inner
-            // HttpClient keeps the network read alive while we're
-            // handing the stream up.
-            return response.ResponseStream;
+            // Wrap ResponseStream so that disposing the stream returned
+            // to the caller also disposes the parent GetObjectResponse.
+            // The SDK pools these response objects; leaking one starves
+            // the pool. The wrapper is a tiny forwarding Stream that
+            // disposes the response on Close/Dispose.
+            return new ResponseOwningStream(response, response.ResponseStream);
         }
         catch (AmazonS3Exception ex) when (IsNotFound(ex))
         {

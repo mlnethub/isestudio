@@ -32,4 +32,12 @@
     </None>
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Storage wrappers (HashingStream, ResponseOwningStream) are internal
+         so MinioBlobStore's contract stays the IBlobStore surface; expose
+         them to the unit test project so the streaming/disposal behavior
+         can be asserted without spinning up MinIO. -->
+    <InternalsVisibleTo Include="OnToPilot.Tests" />
+  </ItemGroup>
+
 </Project>
