@@ -141,9 +141,20 @@ public sealed class Chunker
     }
 
     /// <summary>
-    /// Convenience overload that prefers the structured Docling document when available
-    /// and otherwise falls back to plain-text chunking. Matches the Python
-    /// <c>chunk_document</c> API exactly.
+    /// Chunk a <see cref="ParseResult"/>, preferring the structured Docling document when
+    /// available and otherwise falling back to plain-text chunking. Mirrors the Python
+    /// <c>chunk_document</c> entry point.
+    ///
+    /// <para>
+    /// To opt into the structured path, <see cref="ParseResult.StructuredDocument"/> must
+    /// implement <see cref="IDoclingStructuredDocument"/>; callers typically wire this up
+    /// when the parser's DoclingDotNet backend produced a real document. Any other
+    /// object (or <c>null</c>) falls through silently to <see cref="Chunk(string)"/> on
+    /// <see cref="ParseResult.Text"/>. The structured adapter is the integration point for
+    /// structure-aware chunking (heading preservation, table-header repetition, etc.) so
+    /// downstream code can implement it once and have the rest of the pipeline pick it
+    /// up automatically.
+    /// </para>
     /// </summary>
     public IReadOnlyList<ChunkSpan> ChunkDocument(ParseResult result)
     {

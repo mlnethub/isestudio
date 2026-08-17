@@ -120,4 +120,76 @@ public sealed class ChunkerParityTests
                 $"Overlap at chunk {i} starts mid-token at offset {span.CharStart} (preceding char: '{prev}').");
         }
     }
+
+    [Fact]
+    [Trait("Category", "Parsing")]
+    public void Chunker_uses_structured_spans_when_provided()
+    {
+        // Regression test for the "structured-first" branch of ChunkDocument. When the
+        // ParseResult's StructuredDocument is an IDoclingStructuredDocument, the chunker
+        // must use its spans verbatim and NOT fall through to the text chunker.
+        var structuredSpans = new List<ChunkSpan>
+        {
+            new(0, "structured alpha", 0, 15, 2),
+            new(1, "structured beta bravo", 20, 41, 4),
+        };
+        var adapter = new TestStructuredDocument(structuredSpans);
+        // Text and size/overlap are deliberately inconsistent with the structured spans so a
+        // bug that silently fell back to Chunk(text) would produce different output.
+        var result = new ParseResult("Text that should not be chunked", "docling", adapter);
+
+        var chunker = new Chunker(24, 6);
+        var actual = chunker.ChunkDocument(result);
+
+        Assert.Equal(2, actual.Count);
+        Assert.Equal(structuredSpans[0], actual[0]);
+        Assert.Equal(structuredSpans[1], actual[1]);
+    }
+
+    [Fact]
+    [Trait("Category", "Parsing")]
+    public void Chunker_falls_back_to_text_when_structured_returns_empty()
+    {
+        // When IDoclingStructuredDocument.ToChunkSpans() returns an empty list, the chunker
+        // must degrade to the text chunker on ParseResult.Text.
+        var adapter = new TestStructuredDocument(Array.Empty<ChunkSpan>());
+        var text = "First sentence. Second sentence.\n\nThird paragraph.";
+        var result = new ParseResult(text, "docling", adapter);
+
+        var chunker = new Chunker(24, 6);
+        var actual = chunker.ChunkDocument(result);
+
+        Assert.NotEmpty(actual);
+        // Cross-check: Chunk(text) must produce the same spans.
+        var expected = chunker.Chunk(text);
+        Assert.Equal(expected.Count, actual.Count);
+        for (var i = 0; i < expected.Count; i++)
+        {
+            Assert.Equal(expected[i], actual[i]);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Parsing")]
+    public void Chunker_uses_text_when_structured_object_lacks_adapter()
+    {
+        // A ParseResult whose StructuredDocument is some other type (e.g. the raw
+        // DoclingDotNet DTO) must not silently match; the chunker should fall through
+        // to Chunk(text). This locks the current behaviour of "structured path requires
+        // IDoclingStructuredDocument" until a real DoclingDotNet adapter is introduced.
+        var result = new ParseResult("Hello world.", "docling", new object());
+
+        var chunker = new Chunker(24, 6);
+        var actual = chunker.ChunkDocument(result);
+
+        Assert.Single(actual);
+        Assert.Equal("Hello world.", actual[0].Text);
+    }
+
+    private sealed class TestStructuredDocument : IDoclingStructuredDocument
+    {
+        private readonly IReadOnlyList<ChunkSpan> _spans;
+        public TestStructuredDocument(IReadOnlyList<ChunkSpan> spans) => _spans = spans;
+        public IReadOnlyList<ChunkSpan> ToChunkSpans() => _spans;
+    }
 }

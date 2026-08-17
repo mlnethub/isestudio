@@ -4,8 +4,12 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <!-- DoclingDotNet 1.2.0 transitively pins bblanchon.PDFium to >= 135.0.7024; NuGet's auto-bump
-         to 135.0.7033 is harmless but reports NU1603. Suppress project-wide. -->
+    <!-- DoclingDotNet 1.2.0 transitively pins bblanchon.PDFium to >= 135.0.7024; NuGet's
+         auto-bump to 135.0.7033 is harmless but reports NU1603. NU1603 is reported at the
+         project level during restore, so it cannot be suppressed via a per-PackageReference
+         `<NoWarn>` attribute (it is not a build warning). Suppressing it here is the
+         correct scope: only this project depends on DoclingDotNet, and any other NU1603
+         finding would be unrelated. -->
     <NoWarn>$(NoWarn);NU1603</NoWarn>
   </PropertyGroup>
 

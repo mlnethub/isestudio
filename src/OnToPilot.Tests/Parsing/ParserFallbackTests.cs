@@ -1,5 +1,8 @@
 using System.Text;
 using ClosedXML.Excel;
+using DocumentFormat.OpenXml;
+using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Wordprocessing;
 using OnToPilot.Parsing;
 
 namespace OnToPilot.Tests.Parsing;
@@ -43,6 +46,27 @@ public sealed class ParserFallbackTests
         Assert.NotNull(result.Text);
         Assert.Contains("## Sheet:", result.Text);
         Assert.Contains("Sheet1", result.Text);
+    }
+
+    [Fact]
+    [Trait("Category", "Parsing")]
+    public void Parse_docx_falls_back_to_OpenXml_when_Docling_unavailable()
+    {
+        // DoclingDotNet's MsWordDocumentBackend cannot instantiate on this host (the
+        // native PDFium runtime is not present), so the parser must degrade to the
+        // DocumentFormat.OpenXml fallback. The OpenXml path emits paragraphs separated by
+        // blank lines and should preserve the inserted text verbatim.
+        var docxBytes = BuildMinimalDocx("Alpha paragraph.", "Bravo paragraph.");
+
+        var parser = new DocumentParser();
+        using var ms = new MemoryStream(docxBytes);
+        var result = parser.Parse(ms, "letter.docx");
+
+        Assert.NotNull(result);
+        Assert.NotNull(result.Text);
+        Assert.Contains("fallback:docx", result.Backend);
+        Assert.Contains("Alpha paragraph.", result.Text);
+        Assert.Contains("Bravo paragraph.", result.Text);
     }
 
     [Fact]
@@ -131,6 +155,28 @@ public sealed class ParserFallbackTests
 
         using var ms = new MemoryStream();
         wb.SaveAs(ms);
+        return ms.ToArray();
+    }
+
+    /// <summary>
+    /// Build a minimal DOCX containing the given paragraphs using DocumentFormat.OpenXml.
+    /// The output is a real Word document that the OpenXml fallback can read.
+    /// </summary>
+    private static byte[] BuildMinimalDocx(params string[] paragraphs)
+    {
+        using var ms = new MemoryStream();
+        using (var doc = WordprocessingDocument.Create(ms, WordprocessingDocumentType.Document))
+        {
+            var main = doc.AddMainDocumentPart();
+            var body = new Body();
+            main.Document = new Document(body);
+            foreach (var text in paragraphs)
+            {
+                var run = new Run(new Text(text));
+                body.AppendChild(new Paragraph(run));
+            }
+            main.Document.Save();
+        }
         return ms.ToArray();
     }
 }
