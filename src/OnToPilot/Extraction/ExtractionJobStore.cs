@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OnToPilot.Infrastructure.Persistence;
@@ -49,12 +48,6 @@ public sealed class ExtractionJobStore
 
     private readonly IDbContextFactory<OnToPilotDbContext> _contexts;
     private readonly TimeProvider _clock;
-
-    /// <summary>
-    /// Per-context re-entry bookkeeping for <c>WaitAsync</c> recursion (the
-    /// orchestrator's background work calls back through the store too).
-    /// </summary>
-    private readonly ConcurrentDictionary<Guid, byte> _waiters = new();
 
     public ExtractionJobStore(
         IDbContextFactory<OnToPilotDbContext> contexts,

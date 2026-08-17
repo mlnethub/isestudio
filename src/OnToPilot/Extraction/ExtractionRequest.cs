@@ -37,7 +37,12 @@ public sealed record ExtractionRequest(
     string? ApiKey,
     int ConcurrencyLimit = 4)
 {
-    /// <summary>Capacity bucket this request draws chat permits from.</summary>
+    /// <summary>
+    /// Capacity bucket this request draws chat permits from. Keyed by the
+    /// provider <see cref="Endpoint"/> (not the knowledge-system graph IRI)
+    /// so two requests pointed at the same endpoint share one permit budget
+    /// regardless of which knowledge system they write into.
+    /// </summary>
     public EndpointCapacityKey CapacityKey => new("chat", Endpoint);
 
     /// <summary>Provider config for <see cref="IChatClientFactory.Create"/>.</summary>

@@ -419,8 +419,13 @@ public sealed class ExtractionOrchestrator
             {
                 var chunk = chunks[i];
                 ExtractionMergeResult merged;
+                // Bucket by the provider endpoint (Constraint 4): two jobs
+                // pointed at the same endpoint share a permit budget so
+                // the chat provider is never oversubscribed, regardless of
+                // which knowledge system they write into. Two jobs pointed
+                // at different endpoints flow through independent buckets.
                 await using (var lease = await _capacity.AcquireAsync(
-                    new EndpointCapacityKey("chat", ctx.KsContext.GraphIri),
+                    ctx.Request.CapacityKey,
                     permits: 1,
                     cancellationToken).ConfigureAwait(false))
                 {
