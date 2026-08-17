@@ -266,6 +266,21 @@ public sealed class StoreWrapper : IDisposable
         _store.Load(Encoding.UTF8.GetString(nQuads), RdfFormat.NQuads);
     }
 
+    /// <summary>
+    /// Load a Turtle serialization into a single named graph
+    /// <paramref name="toGraph"/>. Used by the SHACL shapes file
+    /// (<c>Ontology/Shapes/tbox-shapes.ttl</c>) which is shipped as Turtle
+    /// for readability; the loaded quads land in <paramref name="toGraph"/>.
+    /// </summary>
+    public void LoadTurtle(byte[] turtle, OntoNamedNode toGraph)
+    {
+        ArgumentNullException.ThrowIfNull(turtle);
+        ArgumentNullException.ThrowIfNull(toGraph);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var opts = new LoadOptions(ToGraph: toGraph);
+        _store.Load(Encoding.UTF8.GetString(turtle), RdfFormat.Turtle, opts);
+    }
+
     // Internal: replace a named graph by N-Quads bytes. Used by QuadChangeCapture
     // revert paths so the snapshot format is byte-exact and the embedded graph
     // context re-attaches the quads to the right slot.

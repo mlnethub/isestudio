@@ -25,4 +25,10 @@
     <ProjectReference Include="..\OnToPilot.Domain\OnToPilot.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="Ontology\Shapes\tbox-shapes.ttl">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
