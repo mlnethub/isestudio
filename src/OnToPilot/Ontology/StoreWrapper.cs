@@ -204,6 +204,13 @@ public sealed class StoreWrapper : IDisposable
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
+    /// <summary>Convenience overload that accepts the named graph as a string IRI.</summary>
+    public byte[] DumpNQuads(string graphIri)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(graphIri);
+        return DumpNQuads(new OntoNamedNode(graphIri));
+    }
+
     // Centralised term writer — see NQuadsTermWriter for the canonical
     // N-Quads encoding rules. Keeping this as a thin delegate (rather than
     // inlining the body) means dumps, conflict signatures, and exports
