@@ -27,4 +27,10 @@
     <ProjectReference Include="..\OnToPilot.Domain\OnToPilot.Domain.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="Fixtures\tbox_abox_boundary.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
