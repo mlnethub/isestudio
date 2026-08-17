@@ -94,50 +94,13 @@ public static class ConflictDetector
         return sb.ToString();
     }
 
-    // Mirror of StoreWrapper.AppendNQuadsTerm — the StoreWrapper implementation
-    // is private so we duplicate the byte-exact rules here. Both writers must
-    // agree on blank-node labels (`_:label`), language tags (`@en`), and
-    // datatypes (`^^<iri>`) so signatures stay comparable across the codebase.
-    private static void AppendTerm(StringBuilder sb, object term)
-    {
-        switch (term)
-        {
-            case OntoNamedNode n:
-                sb.Append('<').Append(n.Value).Append('>');
-                break;
-            case OntoBlankNode b:
-                sb.Append("_:").Append(b.Value);
-                break;
-            case OntoLiteral l:
-                sb.Append('"');
-                foreach (var ch in l.Value)
-                {
-                    switch (ch)
-                    {
-                        case '\\': sb.Append("\\\\"); break;
-                        case '"': sb.Append("\\\""); break;
-                        case '\n': sb.Append("\\n"); break;
-                        case '\r': sb.Append("\\r"); break;
-                        case '\t': sb.Append("\\t"); break;
-                        default: sb.Append(ch); break;
-                    }
-                }
-                sb.Append('"');
-                if (l.Language is { } lang && lang.Length > 0)
-                {
-                    sb.Append('@').Append(lang);
-                }
-                else
-                {
-                    var dt = l.Datatype ?? OntoLiteral.XsdString;
-                    sb.Append("^^<").Append(dt.Value).Append('>');
-                }
-                break;
-            default:
-                sb.Append(term.ToString());
-                break;
-        }
-    }
+    // Thin delegate to the centralised term writer — see NQuadsTermWriter
+    // for the canonical N-Quads encoding rules. Conflict signatures must
+    // produce the same bytes as StoreWrapper dumps and RdfExportService
+    // exports for the same set of quads, so the three sites share one
+    // implementation rather than three copies that can drift.
+    private static void AppendTerm(StringBuilder sb, object term) =>
+        NQuadsTermWriter.Append(sb, term);
 
     private static string Sha256Hex(ReadOnlySpan<byte> bytes)
     {

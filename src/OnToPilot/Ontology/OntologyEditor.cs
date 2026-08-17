@@ -171,11 +171,29 @@ public sealed class OntologyEditor
         if (used.Count > 0) _store.RemoveQuads(aboxGraph, used);
     }
 
+    // The cascade takes its own capture on the ABox graph (a different
+    // named graph, so a different lock) and must surface the 15s conflict
+    // contract that GraphWriteCoordinator enforces on that capture. The
+    // sync DeleteClass / DeleteProperty ops are invoked from inside
+    // ApplyEditAsync's switch — blocking the calling thread on the
+    // cascade's Task would either deadlock the synchronization context
+    // (when ASP.NET Core pins the request thread) or needlessly block a
+    // thread-pool worker (in test runs / console hosts). Pushing the
+    // cascade onto a fresh thread-pool worker via Task.Run keeps the
+    // wait genuinely synchronous from the caller's perspective without
+    // starving the pool or capturing a SynchronizationContext.
+    //
+    // The async lambda is required so Task.Run picks the Func<Task>
+    // overload — otherwise the compiler would pick Func<ValueTask>, and
+    // the cascade's continuation (including the ABox capture acquisition
+    // and any GraphWriteConflictException it raises) would never run.
     private void CascadeClassDelete(string graphIri, string clsIri) =>
-        CascadeClassDeleteAsync(graphIri, clsIri).GetAwaiter().GetResult();
+        Task.Run(async () => await CascadeClassDeleteAsync(graphIri, clsIri))
+            .GetAwaiter().GetResult();
 
     private void CascadePropertyDelete(string graphIri, string propIri) =>
-        CascadePropertyDeleteAsync(graphIri, propIri).GetAwaiter().GetResult();
+        Task.Run(async () => await CascadePropertyDeleteAsync(graphIri, propIri))
+            .GetAwaiter().GetResult();
 
     // ------------------------------------------------------------------
     // Helpers

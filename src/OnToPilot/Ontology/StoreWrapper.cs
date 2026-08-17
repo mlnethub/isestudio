@@ -204,50 +204,12 @@ public sealed class StoreWrapper : IDisposable
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
-    private static void AppendNQuadsTerm(StringBuilder sb, object term)
-    {
-        switch (term)
-        {
-            case OntoNamedNode n:
-                sb.Append('<').Append(n.Value).Append('>');
-                break;
-            case OntoBlankNode b:
-                sb.Append("_:").Append(b.Value);
-                break;
-            case OntoLiteral l:
-                // N-Quples: escape backslashes and double quotes; add language
-                // tag if present; add datatype IRI otherwise. Strings without
-                // a datatype default to xsd:string (per W3C N-Triples spec).
-                sb.Append('"');
-                foreach (var ch in l.Value)
-                {
-                    switch (ch)
-                    {
-                        case '\\': sb.Append("\\\\"); break;
-                        case '"': sb.Append("\\\""); break;
-                        case '\n': sb.Append("\\n"); break;
-                        case '\r': sb.Append("\\r"); break;
-                        case '\t': sb.Append("\\t"); break;
-                        default: sb.Append(ch); break;
-                    }
-                }
-                sb.Append('"');
-                if (l.Language is { } lang && lang.Length > 0)
-                {
-                    sb.Append('@').Append(lang);
-                }
-                else
-                {
-                    var dt = l.Datatype ?? OntoLiteral.XsdString;
-                    sb.Append("^^<").Append(dt.Value).Append('>');
-                }
-                break;
-            default:
-                // DefaultGraph and any future term types: fall back to ToString().
-                sb.Append(term.ToString());
-                break;
-        }
-    }
+    // Centralised term writer — see NQuadsTermWriter for the canonical
+    // N-Quads encoding rules. Keeping this as a thin delegate (rather than
+    // inlining the body) means dumps, conflict signatures, and exports
+    // always agree on byte content for the same term.
+    private static void AppendNQuadsTerm(StringBuilder sb, object term) =>
+        NQuadsTermWriter.Append(sb, term);
 
     /// <summary>
     /// Replace every quad in <paramref name="graph"/> with the supplied set in

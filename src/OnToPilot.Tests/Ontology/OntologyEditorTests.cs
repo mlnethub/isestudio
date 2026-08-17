@@ -193,4 +193,77 @@ public class OntologyEditorTests : IClassFixture<OntologyEditorFixture>, IAsyncL
         Assert.False(RoleEvidence.HasExplicitIndividualDeclaration(
             source, "Lazor8030ProdEquipCategory"));
     }
+
+    // ------------------------------------------------------------------
+    // I-1 regression (Stage 2): the sync-over-async bridge in DeleteClass
+    // must surface GraphWriteConflictException (the 15s waitTimeout
+    // contract from GraphWriteCoordinator) — not TimeoutException, and
+    // not a deadlock. The fix routes the cascade through Task.Run so the
+    // wait does not capture the calling thread's SynchronizationContext
+    // or starve the pool; the cascade still opens its own capture on the
+    // ABox graph and must obey that graph's per-key lock.
+    //
+    // The test holds a long-running write lease on the ABox graph, then
+    // issues a delete_class op. The cascade inside DeleteClass blocks on
+    // the held lease, hits the 15s waitTimeout, and throws
+    // GraphWriteConflictException; ApplyEditAsync propagates it. Asserting
+    // the exception type catches any future regression where the
+    // sync-over-async bridge swallows the conflict as a bare
+    // TimeoutException or deadlocks the test thread.
+    // ------------------------------------------------------------------
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task Delete_class_cascade_surfaces_GraphWriteConflictException_not_TimeoutException()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+
+        // 1) Seed a class so delete_class has something to remove.
+        var clsIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "add_class",
+                ["label"] = "Country",
+            });
+
+        // 2) Seed an instance typed against that class in the paired ABox
+        //    graph so the cascade actually opens a capture on ABox. The
+        //    cascade IRIs the ABox graph as "<tbox>/abox" — matches
+        //    OntologyEditor.AboxIri which appends "/abox" to the trimmed
+        //    TBox graph IRI.
+        var aboxGraph = new OntoNamedNode(_graph.Value.TrimEnd('/') + "/abox");
+        _fx.Store.AddQuads(aboxGraph, new[]
+        {
+            new OntoQuad(
+                new OntoNamedNode("urn:instance-1"),
+                new OntoNamedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+                new OntoNamedNode(clsIri),
+                aboxGraph),
+        });
+
+        // 3) Hold a write lease on the ABox graph for the duration of the
+        //    test. The cascade's CaptureAsync(aboxGraph, ...) will block
+        //    on the per-graph lock and, after the 15s waitTimeout,
+        //    surface GraphWriteConflictException — proving the
+        //    sync-over-async bridge preserves the conflict contract.
+        await using var heldAbox = await _fx.Store.CaptureAsync(
+            aboxGraph, revertOnError: false);
+
+        // 4) Issue delete_class. Use a hard upper bound (30s) so a true
+        //    deadlock still fails the test instead of hanging the run.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var delOp = new Dictionary<string, object?>
+        {
+            ["op"] = "delete_class",
+            ["iri"] = clsIri,
+        };
+
+        // 5) The exception type is the assertion. ApplyEditAsync's
+        //    try/catch must rethrow the original exception after
+        //    MarkError(), so we expect the conflict type to surface
+        //    intact. A bare TimeoutException would indicate the
+        //    sync-over-async bridge swallowed the conflict contract.
+        var ex = await Assert.ThrowsAsync<GraphWriteConflictException>(async () =>
+            await editor.ApplyEditAsync(_graph.Value, _baseIri, delOp, cts.Token));
+        Assert.Contains("abox", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }
