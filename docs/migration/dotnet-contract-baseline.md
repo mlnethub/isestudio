@@ -8,7 +8,7 @@ artifacts below are byte-deterministic outputs of
 ## Frozen counts (from the artifacts in this folder)
 
 | Surface | Source | Count |
-|---------|--------|-------|
+| ------- | ------ | ----- |
 | REST operations | `app.openapi()["paths"]` (methods in `get`, `post`, `put`, `patch`, `delete`) | **154** |
 | REST paths | `app.openapi()["paths"]` | **128** |
 | MCP tools | `mcp.list_tools()` | **20** |
@@ -137,3 +137,40 @@ After any change to a FastAPI router or to a `@mcp.tool(...)` decorator:
   stage that consumes these artifacts.
 - `backend/scripts/export_contract_baseline.py` — the exporter.
 - `backend/tests/test_dotnet_contract_baseline.py` — the determinism test.
+
+## Task 1 inventory findings (api-mcp stage, plan task 1)
+
+The api-mcp plan's task 1 establishes the parameterized contract gates.
+Running the test skeleton at this commit produced:
+
+- **OpenAPI parity**: 154 expected operations from the Python baseline vs.
+  0 actual operations in the current .NET app. The .NET side has not
+  wired `builder.Services.AddOpenApi()` or `app.MapOpenApi()` yet, and no
+  internal controllers exist, so the inventory is empty by construction.
+  This is the expected task-1 state and the inventory failure is the
+  gate the brief calls for: a clear "missing 154 operations" diff that
+  tasks 2 (controllers) and 3 (external / published) close one by one.
+- **MCP parity**: 20 expected tools from the Python baseline vs. 0 in
+  the .NET app. Task 4 owns the MCP transport and the per-tool
+  registration; the inventory failure is expected and not a regression.
+- **Facade smoke test**: passes. `IIntegrationApiFacade` compiles,
+  `IntegrationApiFacade` can be instantiated, and every method throws
+  `NotImplementedException` with a TODO comment naming the task that
+  fills it in.
+
+### 21/20 MCP decorator vs. test discrepancy — resolved
+
+The plan flagged that `backend/app/mcp_server.py` had 21 `@mcp.tool(...)`
+decorators and `backend/tests/test_mcp.py` asserted `len(names) == 20`.
+Both numbers are now **20**:
+
+- 20 `@mcp.tool(...)` decorators in `backend/app/mcp_server.py`
+  (verified with `grep -c '^@mcp\.tool' backend/app/mcp_server.py`).
+- `mcp.list_tools()` returns 20 `Tool` objects.
+- `backend/tests/test_mcp.py::test_streamable_http_lists_authenticated_tools`
+  asserts 20 over the authenticated Streamable HTTP response.
+
+The discrepancy was closed before this commit and the baseline JSON
+reflects the resolved count. Any future change that adds or removes a
+tool MUST rerun `backend/scripts/export_contract_baseline.py` and update
+this document in the same commit.

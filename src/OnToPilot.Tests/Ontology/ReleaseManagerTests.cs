@@ -1,4 +1,5 @@
 using OnToPilot.Ontology;
+using OnToPilot.Application.Foundation;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;

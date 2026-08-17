@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- NU1902 (AngleSharp 1.4.0) and NU1903 (SQLitePCLRaw.lib.e_sqlite3 2.1.11)
+         are transitive from Oxigraph 0.5.8 — the project does not control
+         the pinned versions. The api-mcp plan inherits them as accepted
+         advisories; opt them out of -warnaserror promotion. -->
+    <NoWarn>$(NoWarn);NU1902;NU1903</NoWarn>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1902;NU1903</WarningsNotAsErrors>
+  </PropertyGroup>
+
+</Project>

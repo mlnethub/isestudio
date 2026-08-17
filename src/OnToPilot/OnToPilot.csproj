@@ -36,6 +36,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\OnToPilot.Application\OnToPilot.Application.csproj" />
     <ProjectReference Include="..\OnToPilot.Domain\OnToPilot.Domain.csproj" />
   </ItemGroup>
 
