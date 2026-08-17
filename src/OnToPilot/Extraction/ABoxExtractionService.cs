@@ -43,6 +43,14 @@ public sealed class ABoxExtractionService
     /// resolution: this layer only parses the reply and never talks to the
     /// store.
     /// </summary>
+    /// <remarks>
+    /// <para>Transient provider failures (<see cref="HttpRequestException"/>,
+    /// <see cref="IOException"/>) are tolerated; cancellation propagates;
+    /// every other exception propagates to <see cref="ExtractionOrchestrator"/>'s
+    /// outer <c>catch</c> which reverts the per-phase RDF capture and marks
+    /// the job failed. See <see cref="TBoxExtractionService.ExtractAsync"/>
+    /// for the full rationale.</para>
+    /// </remarks>
     public async Task<ABoxDelta> ExtractAsync(
         IChatClient chat,
         KsContext ks,
@@ -77,9 +85,9 @@ public sealed class ABoxExtractionService
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
         {
-            // See TBoxExtractionService.ExtractAsync for the rationale.
+            // Transient provider/network error: see TBoxExtractionService.
             return ABoxDelta.Empty;
         }
     }

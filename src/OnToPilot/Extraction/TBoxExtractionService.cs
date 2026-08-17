@@ -44,6 +44,17 @@ public sealed class TBoxExtractionService
     /// <see cref="TBoxDelta"/>. Errors from the chat client bubble; a reply
     /// with no recoverable JSON becomes <see cref="TBoxDelta.Empty"/>.
     /// </summary>
+    /// <remarks>
+    /// <para>Transient provider failures (<see cref="HttpRequestException"/>,
+    /// <see cref="IOException"/>) are tolerated: a flaky LLM must not abort
+    /// the whole job, so the chunk is skipped and an empty delta is returned.
+    /// Cancellation propagates so the orchestrator's cancellation path runs.
+    /// Every other exception (auth failure, configuration error, malformed
+    /// SDK reply, …) propagates to <see cref="ExtractionOrchestrator"/>'s
+    /// outer <c>catch</c> which reverts the per-phase RDF capture and marks
+    /// the job failed — silently returning <see cref="TBoxDelta.Empty"/>
+    /// would hide the failure as a successful empty extraction.</para>
+    /// </remarks>
     public async Task<TBoxDelta> ExtractAsync(
         IChatClient chat,
         KsContext ks,
@@ -70,10 +81,10 @@ public sealed class TBoxExtractionService
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception ex) when (ex is HttpRequestException or IOException)
         {
-            // A flaky LLM must not abort the whole job — log via the
-            // orchestrator's progress channel and skip this chunk.
+            // Transient provider/network error: log via the orchestrator's
+            // progress channel and skip this chunk.
             return TBoxDelta.Empty;
         }
 
