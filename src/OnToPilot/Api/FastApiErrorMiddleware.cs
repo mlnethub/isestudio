@@ -1,6 +1,10 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using OnToPilot.Ontology;
+using OnToPilot.Serialization;
 
 namespace OnToPilot.Api;
 
@@ -15,6 +19,10 @@ namespace OnToPilot.Api;
 /// <para>The middleware handles three failure shapes:</para>
 /// <list type="number">
 ///   <item>Unhandled exceptions → HTTP 500 <c>{"detail": "Internal server error"}</c> (no stack trace is ever leaked).</item>
+///   <item><see cref="GraphWriteConflictException"/> → HTTP 409 with the
+///         structured <c>{"detail": { "error": "...", "job_id": "..." }}</c>
+///         envelope the brief's "抽取进行中的修改返回 409" requirement
+///         mandates (an extraction is in progress, a mutation tried to land).</item>
 ///   <item>Empty 4xx responses (e.g. unmatched routes) → envelope with a status-appropriate message.</item>
 /// </list>
 /// <para>Per-endpoint 401/403/404 details are emitted by the controller /
@@ -23,6 +31,16 @@ namespace OnToPilot.Api;
 /// </remarks>
 public sealed class FastApiErrorMiddleware
 {
+    // Mirror the Program.cs resolver chain: source-generated context first,
+    // reflection fallback for the structured ConflictDetail record and any
+    // other anonymous payload the middlewares still hand-roll.
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        TypeInfoResolver = JsonTypeInfoResolver.Combine(
+            OnToPilotJsonContext.Default,
+            new DefaultJsonTypeInfoResolver()),
+    };
+
     private readonly RequestDelegate _next;
     private readonly ILogger<FastApiErrorMiddleware> _logger;
 
@@ -37,6 +55,19 @@ public sealed class FastApiErrorMiddleware
         try
         {
             await _next(context).ConfigureAwait(false);
+        }
+        catch (GraphWriteConflictException ex)
+        {
+            // Surface as HTTP 409 with the structured envelope the brief
+            // mandates ("抽取进行中的修改返回 409"). The detail field carries
+            // both the human reason and the offending job id so clients
+            // can poll /api/knowledge/{ks_id}/jobs/{job_id} for the
+            // extraction that blocked the write.
+            await WriteEnvelopeAsync(
+                context,
+                StatusCodes.Status409Conflict,
+                new ConflictDetail(ex.Message, ex.JobId)).ConfigureAwait(false);
+            return;
         }
         catch (Exception ex)
         {
@@ -67,12 +98,26 @@ public sealed class FastApiErrorMiddleware
         _ => $"HTTP {status}",
     };
 
-    private static async Task WriteEnvelopeAsync(HttpContext context, int statusCode, string detail)
+    private static async Task WriteEnvelopeAsync(HttpContext context, int statusCode, object detail)
     {
         context.Response.Clear();
         context.Response.StatusCode = statusCode;
         context.Response.ContentType = "application/json; charset=utf-8";
-        var body = JsonSerializer.SerializeToUtf8Bytes(new { detail });
+        var body = JsonSerializer.SerializeToUtf8Bytes(new FastApiError(detail), JsonOptions);
         await context.Response.Body.WriteAsync(body, context.RequestAborted).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// The structured detail payload for an in-progress-extraction
+    /// 409. The shape matches the FastAPI envelope
+    /// (<c>{"detail": { "error": "...", "job_id": "..." }}</c>) so
+    /// existing tooling keeps working. Property names are explicitly
+    /// pinned to snake_case via <see cref="JsonPropertyNameAttribute"/>
+    /// so the wire shape stays stable even though the controller-layer
+    /// serializers use the PascalCase default — the source-generated
+    /// resolver alone does not enforce snake casing.
+    /// </summary>
+    public sealed record ConflictDetail(
+        [property: JsonPropertyName("error")] string Error,
+        [property: JsonPropertyName("job_id")] Guid? JobId);
 }

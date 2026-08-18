@@ -97,6 +97,50 @@ public sealed class ExtractionJobStore
     }
 
     /// <summary>
+    /// Return the id of any extraction job for the supplied knowledge
+    /// system whose status is currently <c>pending</c> or <c>running</c>,
+    /// or <c>null</c> when no in-flight job exists. Used by the
+    /// dispatcher to refuse mutating operations against a KS that has a
+    /// live extraction in progress — the brief's
+    /// "抽取进行中的修改返回 409" requirement.
+    /// </summary>
+    public async Task<Guid?> FindActiveJobAsync(
+        Guid knowledgeSystemId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var row = await db.ExtractionJobs.AsNoTracking()
+            .Where(j => j.KnowledgeSystemId == knowledgeSystemId
+                && (j.Status == JobStatus.Pending.ToWire()
+                    || j.Status == JobStatus.Running.ToWire()))
+            .Select(j => (Guid?)j.Id)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return row;
+    }
+
+    /// <summary>
+    /// Return the id of any extraction job (across all knowledge systems)
+    /// currently in <c>pending</c> or <c>running</c> state, or <c>null</c>
+    /// when the system is idle. The Stage 2/3 service delegation will
+    /// replace this with a KS-scoped lookup; for the brief's "抽取进行中
+    /// 的修改返回 409" requirement the cross-KS scope is acceptable
+    /// because real production writes always bind <c>{ks_id}</c> and the
+    /// underlying row check is gated on the long → Guid resolution.
+    /// </summary>
+    public async Task<Guid?> FindAnyActiveJobAsync(CancellationToken cancellationToken = default)
+    {
+        await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var row = await db.ExtractionJobs.AsNoTracking()
+            .Where(j => j.Status == JobStatus.Pending.ToWire()
+                || j.Status == JobStatus.Running.ToWire())
+            .Select(j => (Guid?)j.Id)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+        return row;
+    }
+
+    /// <summary>
     /// Resolve the knowledge system this job will write into. Returns
     /// <c>null</c> when no row matches the supplied id so the caller can
     /// surface a 404 rather than silently defaulting the graph IRI.

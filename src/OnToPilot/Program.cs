@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -6,13 +8,28 @@ using OnToPilot.Application.Integration;
 using OnToPilot.Authentication;
 using OnToPilot.Authorization;
 using OnToPilot.Configuration;
+using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Startup;
 using OnToPilot.Integration;
+using OnToPilot.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddControllers();
+// Wire the source-generated JSON serializer context so every typed DTO
+// the controllers return (FastApiError, OntologyResponse, ChangePreview,
+// QueryResponse) hits System.Text.Json's compile-time path. The
+// resolver chain keeps the default reflection-based resolver in place
+// for the anonymous placeholder payloads the InternalOperationDispatcher
+// emits until the Stage 2/3 services land; once those become typed DTOs
+// they take the source-gen path and skip reflection entirely. See
+// src/OnToPilot/Serialization/OnToPilotJsonContext.cs.
+builder.Services.AddControllers().AddJsonOptions(options =>
+{
+    options.JsonSerializerOptions.TypeInfoResolver = JsonTypeInfoResolver.Combine(
+        OnToPilotJsonContext.Default,
+        new DefaultJsonTypeInfoResolver());
+});
 
 // Single in-process dispatcher + facade. Controllers depend only on the
 // facade; the dispatcher is the implementation seam for swapping in
@@ -46,6 +63,35 @@ builder.Services.AddDbContext<OnToPilotDbContext>((sp, options) =>
         options.UseNpgsql(npgsql);
     }
 });
+
+// Also register an IDbContextFactory<OnToPilotDbContext> so background
+// services (the ExtractionOrchestrator, the InternalOperationDispatcher's
+// "is extraction active" guard) can open a fresh DbContext per call without
+// sharing the scoped HttpContext-bound tracker. Both registrations point at
+// the same configuration so the production connection string and the
+// contract-test sqlite file are honoured identically.
+builder.Services.AddDbContextFactory<OnToPilotDbContext>((sp, options) =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    var provider = config["OnToPilot:Persistence:Provider"] ?? "npgsql";
+    if (string.Equals(provider, "sqlite", StringComparison.OrdinalIgnoreCase))
+    {
+        var sqlite = config["OnToPilot:Persistence:SqliteConnection"]
+            ?? "Data Source=:memory:";
+        options.UseSqlite(sqlite);
+    }
+    else
+    {
+        var npgsql = config["OnToPilot:Persistence:ConnectionString"]
+            ?? "Host=localhost;Port=5432;Database=ontopilot;Username=postgres;Password=postgres";
+        options.UseNpgsql(npgsql);
+    }
+});
+
+// Singleton so the dispatcher's "find any active extraction" guard does
+// not have to share state with the request-scoped DbContext; the store
+// uses its own IDbContextFactory.
+builder.Services.AddSingleton<ExtractionJobStore>();
 
 // ---- Auth services ----
 builder.Services.AddSingleton(TimeProvider.System);

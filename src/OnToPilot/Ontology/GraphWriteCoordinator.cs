@@ -10,6 +10,20 @@ public sealed class GraphWriteConflictException : Exception
 {
     public GraphWriteConflictException(string message) : base(message) { }
     public GraphWriteConflictException(string message, Exception inner) : base(message, inner) { }
+
+    /// <summary>
+    /// Constructor for the brief's "抽取进行中的修改返回 409" path. The
+    /// middleware surfaces <see cref="JobId"/> in the
+    /// <c>{"detail": { "error": "...", "job_id": "..." }}</c> envelope
+    /// so clients can poll the job row that blocked the mutation.
+    /// </summary>
+    public GraphWriteConflictException(string message, Guid jobId) : base(message)
+    {
+        JobId = jobId;
+    }
+
+    /// <summary>The extraction job whose in-flight status blocked the mutation.</summary>
+    public Guid? JobId { get; }
 }
 
 /// <summary>

@@ -18,9 +18,16 @@ public sealed class PromptsController : InternalControllerBase
     public Task<IActionResult> ListAsync(long ks_id, CancellationToken ct)
         => InvokeAsync("prompts.list", Req(ks: ks_id), ct);
 
+    // FastAPI declares this endpoint as 204 No Content; the dispatcher
+    // still has to be invoked (the work has to happen server-side) but
+    // the controller intentionally returns NoContent() so the wire shape
+    // matches the documented envelope exactly.
     [HttpPost("api/knowledge/{ks_id:long}/prompts/restore-all")]
-    public Task<IActionResult> RestoreAllAsync(long ks_id, CancellationToken ct)
-        => InvokeAsync("prompts.restore_all", Req(ks: ks_id), ct);
+    public async Task<IActionResult> RestoreAllAsync(long ks_id, CancellationToken ct)
+    {
+        await Facade.InvokeAsync("prompts.restore_all", Req(ks: ks_id), ct).ConfigureAwait(false);
+        return NoContent();
+    }
 
     [HttpDelete("api/knowledge/{ks_id:long}/prompts/{prompt_key}")]
     public Task<IActionResult> RestoreAsync(long ks_id, string prompt_key, CancellationToken ct)
