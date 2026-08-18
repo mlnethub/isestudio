@@ -17,6 +17,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OnToPilot.Application", "On
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OnToPilot.ApiContract.Tests", "OnToPilot.ApiContract.Tests\OnToPilot.ApiContract.Tests.csproj", "{E9198F06-AC3E-403C-AF3C-F38FBBCBD7A1}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OnToPilot.Migration", "OnToPilot.Migration\OnToPilot.Migration.csproj", "{B2A2B4F0-1234-5678-9ABC-DEF012345678}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU

@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Npgsql" Version="10.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\OnToPilot.Application\OnToPilot.Application.csproj" />
+    <ProjectReference Include="..\OnToPilot.Domain\OnToPilot.Domain.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The migration SQL files live under <repo-root>/migrations/SqlAlchemyToEfCore
+         so they are shared with the rehearsal / cutover orchestration
+         (Task 4) and version-controlled next to the .NET source. Copy
+         them next to the executing assembly so the runtime can load
+         them without filesystem assumptions. -->
+    <Content Include="..\..\migrations\SqlAlchemyToEfCore\*.sql" Link="migrations\SqlAlchemyToEfCore\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>
