@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ontopilot.local/migration/blob-manifest.schema.json",
+  "title": "OnToPilot blob migration manifest",
+  "description": "Output of BlobMigrationCommand.RunAsync: one record per blob uploaded (or planned for upload in dry-run) from the Python filesystem layout blobs/<aa>/<bb>/<sha256> into the MinIO bucket. Task 4's Assert-AllMigrationManifests gate loads this file and validates every entry against this schema before allowing the cutover to proceed.",
+  "type": "object",
+  "required": ["version", "sourceDirectory", "bucket", "generatedAtUtc", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "Manifest format version (semver). Bumped only when the schema shape changes.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "sourceDirectory": {
+      "description": "Absolute path of the Python blob root that was walked to produce this manifest. Matches backend/data/blobs/ in production.",
+      "type": "string",
+      "minLength": 1
+    },
+    "bucket": {
+      "description": "MinIO bucket the blobs were uploaded into (or would be uploaded into, in dry-run mode).",
+      "type": "string",
+      "minLength": 1
+    },
+    "generatedAtUtc": {
+      "description": "ISO-8601 UTC timestamp at which the migration command finished writing the manifest.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "entries": {
+      "description": "One record per blob. Order is deterministic: ascending SHA-256 hex so the manifest is byte-identical across runs.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "required": ["sourcePath", "objectKey", "size", "sha256", "referenceCount"],
+      "additionalProperties": false,
+      "properties": {
+        "sourcePath": {
+          "description": "POSIX-style legacy layout path relative to the source root, e.g. 'ab/cd/abcdef0123...'.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}$"
+        },
+        "objectKey": {
+          "description": "Object key written to MinIO. Identical to the source path because MinioBlobStore uses BlobKey.LegacyPathFor(sha) — the same {aa}/{bb}/{full_sha} layout. This is what makes Document.storagepath portable across the cutover.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{64}$"
+        },
+        "size": {
+          "description": "Byte length of the blob. Matches FileInfo.Length on the source file.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "description": "Lowercase-hex SHA-256 digest of the blob bytes. The first four hex chars are the shard prefix; the full digest is the object key.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "referenceCount": {
+          "description": "Number of document.storagepath rows that reference this blob (>= 1 — zero-reference blobs are skipped and never appear here).",
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
