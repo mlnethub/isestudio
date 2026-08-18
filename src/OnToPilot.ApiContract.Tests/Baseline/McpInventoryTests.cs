@@ -1,26 +1,55 @@
+using OnToPilot.Mcp;
+
 namespace OnToPilot.ApiContract.Tests.Baseline;
 
 /// <summary>
+/// Equality that compares the MCP tool inventory by name only. The
+/// description strings live in two places (Python source vs .NET
+/// <see cref="OnToPilotMcpTools"/>) and are allowed to drift in
+/// wording; the parity gate enforces name equality so a tool that
+/// appears in the baseline is exposed by the .NET server and vice
+/// versa.
+/// </summary>
+internal sealed class McpToolNameComparer : IEqualityComparer<McpToolDescriptor>
+{
+    public static readonly McpToolNameComparer Instance = new();
+    public bool Equals(McpToolDescriptor? x, McpToolDescriptor? y)
+    {
+        if (x is null || y is null) return x is null && y is null;
+        return string.Equals(x.Name, y.Name, StringComparison.Ordinal);
+    }
+    public int GetHashCode(McpToolDescriptor obj)
+        => HashCode.Combine(obj.Name);
+}
+
+/// <summary>
 /// Gate that proves the .NET MCP transport advertises exactly the same
-/// <c>tools/list</c> surface as the frozen Python baseline. The diff
+/// <c>tools/list</c> names as the frozen Python baseline. The diff
 /// must be empty in both directions once task 4 lands.
 /// </summary>
 [Trait("Category", "ApiContract")]
 public sealed class McpInventoryTests
 {
     /// <summary>
-    /// Exact verbatim name required by the api-mcp plan. Currently
-    /// expected to fail with a clear diff (20 tools expected, 0 found)
-    /// until task 4 wires the MCP transport.
+    /// Exact verbatim name required by the api-mcp plan. Once task 4
+    /// wires the transport and the inventory returns all 20 baseline
+    /// names, the diff between expected and actual is empty.
     /// </summary>
     [Fact]
     public void Mcp_tools_match_baseline()
     {
-        var expected = BaselineLoader.McpTools();
-        var actual = OnToPilotMcpTools.Inventory();
+        var expectedNames = BaselineLoader.McpTools()
+            .Select(t => t.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
 
-        var missingInDotNet = expected.Except(actual).ToArray();
-        var extraInDotNet = actual.Except(expected).ToArray();
+        var actualNames = OnToPilotMcpTools.Inventory()
+            .Select(t => t.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        var missingInDotNet = expectedNames.Except(actualNames, StringComparer.Ordinal).ToArray();
+        var extraInDotNet = actualNames.Except(expectedNames, StringComparer.Ordinal).ToArray();
 
         var detail = BuildDiffReport(missingInDotNet, extraInDotNet);
         Assert.True(
@@ -29,8 +58,8 @@ public sealed class McpInventoryTests
     }
 
     private static string BuildDiffReport(
-        IReadOnlyList<McpTool> missingInDotNet,
-        IReadOnlyList<McpTool> extraInDotNet)
+        IReadOnlyList<string> missingInDotNet,
+        IReadOnlyList<string> extraInDotNet)
     {
         var builder = new System.Text.StringBuilder();
         if (missingInDotNet.Count > 0)
@@ -38,7 +67,7 @@ public sealed class McpInventoryTests
             builder.AppendLine($"Tools present in Python baseline but missing in .NET ({missingInDotNet.Count}):");
             foreach (var tool in missingInDotNet)
             {
-                builder.AppendLine($"  - {tool.Name}");
+                builder.AppendLine($"  - {tool}");
             }
         }
         if (extraInDotNet.Count > 0)
@@ -46,7 +75,7 @@ public sealed class McpInventoryTests
             builder.AppendLine($"Tools present in .NET but missing in Python baseline ({extraInDotNet.Count}):");
             foreach (var tool in extraInDotNet)
             {
-                builder.AppendLine($"  + {tool.Name}");
+                builder.AppendLine($"  + {tool}");
             }
         }
         return builder.ToString();

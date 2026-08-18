@@ -3,6 +3,7 @@ using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using ModelContextProtocol.AspNetCore;
 using OnToPilot.Api;
 using OnToPilot.Application.Integration;
 using OnToPilot.Authentication;
@@ -12,6 +13,7 @@ using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Startup;
 using OnToPilot.Integration;
+using OnToPilot.Mcp;
 using OnToPilot.Serialization;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -126,6 +128,35 @@ builder.Services.AddAuthorization();
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
 
+// ---- MCP transport ----
+// The MCP transport is registered with the SDK's HttpServer transport in
+// stateless mode (no session affinity, fresh server context per request).
+// The token / role checks live in McpTokenAuthenticationMiddleware (HTTP
+// layer) and McpPrincipalAccessor (per-call real-time lookup); the SDK
+// only owns the JSON-RPC envelope. The 1 MiB request limit + DNS-rebind
+// guard keep the public endpoint within the brief-mandated bounds.
+builder.Services.AddMcpServer(options =>
+{
+    options.ServerInfo = new ModelContextProtocol.Protocol.Implementation
+    {
+        Name = "OntoPilot",
+        Version = "1.0.0",
+    };
+})
+.WithHttpTransport(options =>
+{
+    options.Stateless = true;
+})
+.WithTools<OnToPilotMcpTools>()
+.WithResources<OnToPilotMcpResources>()
+.WithPrompts<OnToPilotMcpPrompts>();
+
+// Principal accessor is scoped to the request DbContext so the per-call
+// role re-resolution lives on the same change tracker as the rest of the
+// request. The middleware reads it through DI too; both registrations
+// resolve to the same scoped instance per request.
+builder.Services.AddScoped<McpPrincipalAccessor>();
+
 // Translate model-state validation failures into the FastAPI envelope
 // ({ "detail": "..." }) instead of the default application/problem+json
 // body that [ApiController] otherwise emits.
@@ -151,8 +182,74 @@ app.UseMiddleware<FastApiErrorMiddleware>();
 
 app.UseAuthentication();
 app.UseAuthorization();
+
+// MCP transport: bearer-token authentication runs ahead of the JSON-RPC
+// handler so the SDK sees an authenticated principal on every tool call.
+// Only /mcp is authenticated; the rest of the pipeline keeps its existing
+// session / bearer / contract-test schemes.
+app.UseMiddleware<McpTokenAuthenticationMiddleware>();
+
+// Cap the MCP request body at 1 MiB. Anything larger is rejected with
+// 413 by the Kestrel form-options reader so a malicious client cannot
+// pin a worker thread on a 4 GiB JSON-RPC payload.
+app.UseWhen(
+    context => context.Request.Path.StartsWithSegments("/mcp"),
+    branch =>
+    {
+        branch.Use(async (ctx, next) =>
+        {
+            var feature = ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+            if (feature is { IsReadOnly: false })
+            {
+                feature.MaxRequestBodySize = 1024 * 1024;
+            }
+            await next().ConfigureAwait(false);
+        });
+    });
+
+// DNS-rebinding protection: reject any /mcp request whose Host header
+// does not match the configured allowed hosts list. This guards the
+// Streamable HTTP transport against the local-lookup-redirect attack
+// FastMCP / the brief both call out.
+app.UseWhen(
+    context => context.Request.Path.StartsWithSegments("/mcp"),
+    branch =>
+    {
+        branch.Use(async (ctx, next) =>
+        {
+            var host = ctx.Request.Host.Host;
+            var allowed = new[]
+            {
+                "localhost",
+                "127.0.0.1",
+                "[::1]",
+                ctx.RequestServices.GetRequiredService<IConfiguration>()["OnToPilot:PublicHost"] ?? "localhost",
+            };
+            if (!allowed.Any(a => string.Equals(a, host, StringComparison.OrdinalIgnoreCase)))
+            {
+                ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+                ctx.Response.ContentType = "application/json; charset=utf-8";
+                var body = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+                    new { detail = "DNS rebinding rejected: host header not allowed." });
+                await ctx.Response.Body.WriteAsync(body, ctx.RequestAborted).ConfigureAwait(false);
+                return;
+            }
+            await next().ConfigureAwait(false);
+        });
+    });
+
 app.MapControllers();
 app.MapOpenApi();
+
+// Wire the SDK's Streamable HTTP transport at /mcp. The endpoint routes
+// POST initialize / tools/list / tools/call / prompts/list / resources/list
+// into the registered server primitives; the stateless flag means every
+// request is independent and no Mcp-Session-Id header is required.
+// Auth is handled by McpTokenAuthenticationMiddleware ahead of the SDK
+// pipeline; we deliberately do NOT call .RequireAuthorization() so the
+// SDK does not fall through to the session-cookie scheme and emit a
+// confusing "Not authenticated" envelope before our bearer check runs.
+app.MapMcp("/mcp");
 
 // ---- Bootstrap recovery ----
 // Empty installs MUST NOT auto-create a default admin user — the service
