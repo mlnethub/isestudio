@@ -1,7 +1,14 @@
-# One-command self-hosted stack:
+# OnToPilot self-hosted stack (.NET 10 backend + PostgreSQL + MinIO + Frontend).
 #   cp backend/.env.example backend/.env
+#   cp .env.example .env && edit .env to set POSTGRES_PASSWORD + MINIO_ACCESS_KEY + MINIO_SECRET_KEY
 #   docker compose up -d --build
 #   open http://localhost:8080
+#
+# Healthcheck paths and service ports are kept in sync with the .NET image:
+#   - backend listens on 8080 (ASP.NET Core env ASPNETCORE_URLS=http://+:8080)
+#   - /api/health is the liveness probe (NOT /health — the migration spec
+#     repeatedly references /api/health so a Docker healthcheck pointed at
+#     /health would silently fail in compose and block the frontend).
 services:
   postgres:
     image: postgres:16-alpine
@@ -18,30 +25,60 @@ services:
       retries: 20
     restart: unless-stopped
 
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?Set MINIO_ACCESS_KEY in the root .env file}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in the root .env file}
+    command: server /data --console-address ":9001"
+    volumes:
+      - ontopilot-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    expose:
+      - "9000"   # S3 API
+      - "9001"   # Console
+
   backend:
     build: ./backend
     env_file: ./backend/.env
     environment:
-      DATABASE_HOST: postgres
-      DATABASE_PORT: 5432
-      DATABASE_NAME: ontopilot
-      DATABASE_USER: ontopilot
-      DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
-      SYSTEM_LANGUAGE: ${SYSTEM_LANGUAGE:-en}
-      MCP_PUBLIC_URL: ${MCP_PUBLIC_URL:-http://localhost:8080/mcp}
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      ASPNETCORE_URLS: http://+:8080
+      # EF Core binds OnToPilot:Persistence:ConnectionString via the
+      # double-underscore delimiter used by ASP.NET Core's
+      # EnvironmentVariablesConfigurationProvider.
+      OnToPilot__Persistence__Provider: npgsql
+      OnToPilot__Persistence__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-ontopilot};Username=${POSTGRES_USER:-ontopilot};Password=${POSTGRES_PASSWORD}
+      OnToPilot__Storage__Endpoint: minio:9000
+      OnToPilot__Storage__AccessKey: ${MINIO_ACCESS_KEY}
+      OnToPilot__Storage__SecretKey: ${MINIO_SECRET_KEY}
+      OnToPilot__Storage__Bucket: ${MINIO_BUCKET:-ontopilot-blobs}
+      OnToPilot__Storage__UseSsl: "false"
+      OnToPilot__SystemLanguage: ${SYSTEM_LANGUAGE:-en}
+      OnToPilot__PublicHost: ${MCP_PUBLIC_HOST:-localhost}
     depends_on:
       postgres:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     volumes:
       - ontopilot-data:/app/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health')"]
+      # /api/health is the only contract path; any other path returns
+      # 404 from MapControllers and would fail the healthcheck. The
+      # backend binds 8080 inside the container (ASPNETCORE_URLS).
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/api/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 20
     restart: unless-stopped
     expose:
-      - "8000"
+      - "8080"
 
   frontend:
     build: ./frontend
@@ -55,3 +92,4 @@ services:
 volumes:
   ontopilot-data:
   ontopilot-postgres:
+  ontopilot-minio:
