@@ -265,6 +265,8 @@ public sealed class BlobMigrationTests : IAsyncLifetime
             cancellationToken: CancellationToken.None);
         Assert.Equal(2, firstRun.Entries.Count);
         Assert.Equal(2, firstRun.UploadedCount);
+        Assert.Equal(0, firstRun.ResumeSkippedCount);
+        Assert.Equal(0, firstRun.ZeroReferenceSkippedCount);
 
         // Simulate an interrupt then resume: add a third blob, re-run with
         // the SAME state file. The state store must cause the first two
@@ -279,12 +281,16 @@ public sealed class BlobMigrationTests : IAsyncLifetime
             options: new BlobMigrationOptions(DryRun: false, Force: false, SkipExisting: true, ManifestOut: null, StatePath: statePath),
             cancellationToken: CancellationToken.None);
 
-        // The second run still finds all 3 blobs, but only 1 new upload
-        // occurred; the other 2 were skipped because the state store
-        // remembers them.
+        // The second run still finds all 3 blobs (Entries.Count == 3),
+        // but only 1 new upload occurred; the other 2 were resume-skips
+        // because the state store remembers them. ResumeSkippedCount is
+        // the count of state-store hits that ARE recorded in Entries;
+        // ZeroReferenceSkippedCount is the count of orphan blobs (none
+        // here) that are NOT in Entries.
         Assert.Equal(3, secondRun.Entries.Count);
         Assert.Equal(1, secondRun.UploadedCount);
-        Assert.Equal(2, secondRun.SkippedCount);
+        Assert.Equal(2, secondRun.ResumeSkippedCount);
+        Assert.Equal(0, secondRun.ZeroReferenceSkippedCount);
 
         // The MinIO bucket must have exactly 3 objects (one per SHA).
         var listing = await _s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = BucketName });

@@ -124,7 +124,8 @@ public sealed class BlobMigrationCommand
 
         var entries = new List<BlobManifestEntry>(files.Length);
         var uploadedCount = 0;
-        var skippedCount = 0;
+        var resumeSkippedCount = 0;
+        var zeroReferenceSkippedCount = 0;
         var corruptedCount = 0;
 
         // Pre-warm the reference-count cache so we only query the
@@ -181,7 +182,7 @@ public sealed class BlobMigrationCommand
                     "BlobMigrationCommand skipping zero-reference blob '{Sha}' (storage_path='{StoragePath}'); "
                     + "this is expected for orphan blobs and any release artifacts (which live outside the source tree anyway).",
                     sha256, storagePath);
-                skippedCount++;
+                zeroReferenceSkippedCount++;
                 continue;
             }
 
@@ -200,14 +201,15 @@ public sealed class BlobMigrationCommand
             // the state store already records this blob — the entry is
             // still added to the manifest below so its presence stays
             // visible to the cutover orchestrator.
+            //
+            // SkipExisting is intentionally NOT consulted here:
+            // MinioBlobStore.PutAsync is already idempotent at the SDK
+            // layer (it short-circuits when an object with the same key
+            // already exists, see src/OnToPilot/Storage/MinioBlobStore.cs
+            // lines 110-122). The only resume path that matters is the
+            // state-store check above.
             if (!options.DryRun && !isResumeSkip)
             {
-                if (!options.SkipExisting && !options.Force)
-                {
-                    // No-op: the SkipExisting default is true. The
-                    // branch is here only for clarity at the call site.
-                }
-
                 // PutAsync requires a seekable stream so it can hash
                 // + upload in two passes. FileStream is seekable.
                 await using (var uploadStream = new FileStream(
@@ -250,7 +252,7 @@ public sealed class BlobMigrationCommand
 
             if (isResumeSkip)
             {
-                skippedCount++;
+                resumeSkippedCount++;
             }
         }
 
@@ -262,7 +264,8 @@ public sealed class BlobMigrationCommand
             force: options.Force,
             entries: entries,
             uploadedCount: uploadedCount,
-            skippedCount: skippedCount,
+            resumeSkippedCount: resumeSkippedCount,
+            zeroReferenceSkippedCount: zeroReferenceSkippedCount,
             corruptedCount: corruptedCount,
             finishedAtUtc: finishedAt);
 
@@ -272,8 +275,8 @@ public sealed class BlobMigrationCommand
         }
 
         _logger.LogInformation(
-            "BlobMigrationCommand finished: uploaded={Uploaded}, skipped={Skipped}, corrupted={Corrupted}, manifestEntries={Entries}",
-            uploadedCount, skippedCount, corruptedCount, entries.Count);
+            "BlobMigrationCommand finished: uploaded={Uploaded}, resumeSkipped={ResumeSkipped}, zeroRefSkipped={ZeroRefSkipped}, corrupted={Corrupted}, manifestEntries={Entries}",
+            uploadedCount, resumeSkippedCount, zeroReferenceSkippedCount, corruptedCount, entries.Count);
 
         return report;
     }
@@ -343,22 +346,25 @@ public sealed class BlobMigrationCommand
     private static async Task<bool> VerifyRoundTripAsync(
         IBlobStore blobStore, string sha256, CancellationToken cancellationToken)
     {
-        await using var stream = await blobStore.GetAsync(sha256, cancellationToken).ConfigureAwait(false);
+        var stream = await blobStore.GetAsync(sha256, cancellationToken).ConfigureAwait(false);
         if (stream is null)
         {
             return false;
         }
-        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var buffer = new byte[HashChunkSize];
-        int read;
-        while ((read = await stream.ReadAsync(buffer.AsMemory(0, HashChunkSize), cancellationToken)
-                                   .ConfigureAwait(false)) > 0)
+        await using (stream)
         {
-            hasher.AppendData(buffer, 0, read);
+            using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            var buffer = new byte[HashChunkSize];
+            int read;
+            while ((read = await stream.ReadAsync(buffer.AsMemory(0, HashChunkSize), cancellationToken)
+                                       .ConfigureAwait(false)) > 0)
+            {
+                hasher.AppendData(buffer, 0, read);
+            }
+            var digest = hasher.GetHashAndReset();
+            var hex = Convert.ToHexString(digest).ToLowerInvariant();
+            return string.Equals(hex, sha256, StringComparison.Ordinal);
         }
-        var digest = hasher.GetHashAndReset();
-        var hex = Convert.ToHexString(digest).ToLowerInvariant();
-        return string.Equals(hex, sha256, StringComparison.Ordinal);
     }
 
     private static async Task WriteManifestAsync(

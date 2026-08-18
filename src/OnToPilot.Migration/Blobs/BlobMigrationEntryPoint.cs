@@ -65,8 +65,9 @@ public static class BlobMigrationEntryPoint
                 parsed.Source, blobStore, dataSource, options, CancellationToken.None).ConfigureAwait(false);
             Console.WriteLine(string.Format(
                 CultureInfo.InvariantCulture,
-                "[blob-migration] uploaded={0} skipped={1} corrupted={2} entries={3}",
-                report.UploadedCount, report.SkippedCount, report.CorruptedCount, report.Entries.Count));
+                "[blob-migration] uploaded={0} resumeSkipped={1} zeroRefSkipped={2} corrupted={3} entries={4}",
+                report.UploadedCount, report.ResumeSkippedCount, report.ZeroReferenceSkippedCount,
+                report.CorruptedCount, report.Entries.Count));
             return 0;
         }
         catch (Exception ex)

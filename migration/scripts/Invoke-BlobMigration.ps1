@@ -127,13 +127,36 @@ if ($DryRun) {
 if ($Force) {
     $cliArgs += @("--force")
 }
-# Default behaviour is SkipExisting = true; the script only forwards an
-# explicit --no-skip-existing if a future caller needs it.
-if (-not $SkipExisting) {
-    $cliArgs += @("--no-skip-existing")
-}
+# SkipExisting: the .NET host already defaults to true and the field is
+# unused inside BlobMigrationCommand (MinioBlobStore.PutAsync is
+# idempotent at the SDK layer, so the only resume path is the state-
+# store check). Don't forward anything here — the .NET default wins,
+# and we don't accidentally invert the user's intent with a misnamed
+# switch forwarder (the previous code's `-not $SkipExisting` branch
+# always fired on default and forced --no-skip-existing, contradicting
+# the inline comment).
 
-Write-Host "[Invoke-BlobMigration] running: dotnet run --project $ProjectPath -- $($cliArgs -join ' ')"
+# F-4 fix: never echo secret values to stdout. In a production cutover
+# this would leak --minio-secret-key and --postgres-connection-string
+# into any log aggregator that captures the script's output. Print
+# argument NAMES only — values stay in $cliArgs for the dotnet call
+# but never reach the operator log line.
+$cliArgsForLog = @()
+$redactNext = $false
+foreach ($arg in $cliArgs) {
+    if ($redactNext) {
+        $cliArgsForLog += "<redacted>"
+        $redactNext = $false
+        continue
+    }
+    if ($arg -in @("--minio-secret-key", "--postgres-connection-string", "--minio-access-key")) {
+        $cliArgsForLog += $arg
+        $redactNext = $true
+        continue
+    }
+    $cliArgsForLog += $arg
+}
+Write-Host "[Invoke-BlobMigration] running: dotnet run --project $ProjectPath -- $($cliArgsForLog -join ' ')"
 & $dotnet run --project $ProjectPath --no-build -- @cliArgs
 $exitCode = $LASTEXITCODE
 Write-Host "[Invoke-BlobMigration] dotnet exited with code $exitCode"
