@@ -94,7 +94,10 @@ function Invoke-ProductionCutover {
         [string]$MigrationsDir = 'migrations/SqlAlchemyToEfCore',
 
         [string]$DotNetProject = 'src/OnToPilot.WebHost/OnToPilot.WebHost.csproj',
-        [string]$DotNetBindAddress = 'http://127.0.0.1:5000'
+        [string]$DotNetBindAddress = 'http://127.0.0.1:5000',
+
+        [string]$SqlManifestPath,
+        [string]$RdfManifestPath
     )
 
     Set-StrictMode -Version Latest
@@ -142,8 +145,18 @@ function Invoke-ProductionCutover {
             -MigrationsDir $MigrationsDir
 
         # Gate 7: every manifest must exist and its checksum must match
-        # the value recorded in the cutover record.
-        Assert-AllMigrationManifests -Record $resolvedRecord
+        # the value recorded in the cutover record. The content-
+        # validating gate runs schema + business + MinIO HEAD + SHA
+        # checks; it must NEVER silently bypass.
+        $manifestGateArgs = @{
+            Record           = $resolvedRecord
+            BlobManifestPath = $BlobManifestOut
+            MinioEndpoint    = $MinioEndpoint
+            MinioBucket      = $BlobBucket
+        }
+        if ($SqlManifestPath) { $manifestGateArgs['SqlManifestPath'] = $SqlManifestPath }
+        if ($RdfManifestPath) { $manifestGateArgs['RdfManifestPath'] = $RdfManifestPath }
+        Assert-AllMigrationManifests @manifestGateArgs
 
         # Gate 8: boot the .NET backend.
         Start-DotNetBackend `

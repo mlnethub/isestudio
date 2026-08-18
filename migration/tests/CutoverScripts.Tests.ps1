@@ -91,7 +91,7 @@ Describe 'hard preflight gate: refuses cutover while python backend is running' 
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
-        Mock Test-AllMigrationManifests  { $true }
+        Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
@@ -112,7 +112,7 @@ Describe 'hard preflight gate: refuses cutover when database is still writable' 
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
-        Mock Test-AllMigrationManifests  { $true }
+        Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
@@ -132,7 +132,7 @@ Describe 'hard preflight gate: refuses cutover when backup is not verified' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
-        Mock Test-AllMigrationManifests  { $true }
+        Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
@@ -152,7 +152,7 @@ Describe 'happy path: proceeds past backup gate when backup is verified' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
-        Mock Test-AllMigrationManifests  { $true }
+        Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
@@ -173,7 +173,7 @@ Describe 'migration gates: stop the sequence on the first failure' {
         Mock Invoke-RdfCopyVerification { throw 'rdf copy mismatch' }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
-        Mock Test-AllMigrationManifests  { $true }
+        Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
@@ -190,7 +190,7 @@ Describe 'migration gates: stop the sequence on the first failure' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { throw 'minio unreachable' }
         Mock Invoke-SqlMigration        { }
-        Mock Test-AllMigrationManifests  { $true }
+        Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
@@ -207,7 +207,7 @@ Describe 'migration gates: stop the sequence on the first failure' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { throw 'verify.sql rowcount drift' }
-        Mock Test-AllMigrationManifests  { $true }
+        Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
@@ -227,7 +227,7 @@ Describe 'manifest validation gate: stops when checksums disagree' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
-        Mock Test-AllMigrationManifests  { throw 'blob checksum mismatch' }
+        Mock Assert-AllMigrationManifests { throw 'blob checksum mismatch' }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
@@ -247,7 +247,7 @@ Describe 'happy path: full sequence reaches post-cutover smoke on success' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
-        Mock Test-AllMigrationManifests  { $true }
+        Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
@@ -259,7 +259,7 @@ Describe 'happy path: full sequence reaches post-cutover smoke on success' {
         Assert-MockCalled Invoke-RdfCopyVerification -Times 1
         Assert-MockCalled Invoke-BlobMigration       -Times 1
         Assert-MockCalled Invoke-SqlMigration        -Times 1
-        Assert-MockCalled Test-AllMigrationManifests  -Times 1
+        Assert-MockCalled Assert-AllMigrationManifests -Times 1
         Assert-MockCalled Start-DotNetBackend        -Times 1
         Assert-MockCalled Invoke-PostCutoverSmoke    -Times 1
     }
@@ -276,11 +276,204 @@ Describe 'cutover record gate: refuses to start when the record is incomplete' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
-        Mock Test-AllMigrationManifests  { $true }
+        Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
         { & Invoke-ProductionCutover -Record $script:BadRecord } |
             Should Throw 'Cutover record'
+    }
+}
+
+# ---------------------------------------------------------------------
+# Helper: build a synthetic SQL/RDF/blob manifest triple + the
+# matching cutover record. The tests below construct manifests with
+# different content shapes to exercise the content-validating
+# Assert-AllMigrationManifests gate.
+# ---------------------------------------------------------------------
+
+function New-ManifestFixtures {
+    [CmdletBinding()]
+    param(
+        [hashtable]$SqlOverrides   = @{},
+        [hashtable]$RdfOverrides   = @{},
+        [hashtable]$BlobOverrides  = @{},
+        [hashtable]$RecordOverrides = @{},
+        [switch]$IncludeMinIOBlock,
+        [switch]$OmitRecordSha
+    )
+
+    # Canonical placeholder SHA-256 used for the SHA-chain checks.
+    $zeroSha = '0' * 64
+    $tableRow = @{ Table = 'document'; RowCount = 1; OrphanCount = 0; BusinessChecksum = $zeroSha.Substring(0,32) }
+
+    $sqlBase = [ordered]@{
+        StartedAt = '2026-08-18T10:00:00+00:00'
+        FinishedAt = '2026-08-18T10:05:00+00:00'
+        Steps = @(@{ FileName = '001.sql'; AppliedAt = '2026-08-18T10:01:00+00:00'; Checksum = $zeroSha })
+        VerifySummary = @{ Rows = @($tableRow) }
+    }
+    foreach ($k in $SqlOverrides.Keys) { $sqlBase[$k] = $SqlOverrides[$k] }
+
+    $rdfBase = [ordered]@{
+        Strategy = 'direct'
+        QuadCount = 10
+        NamedGraphs = @('urn:ontopilot:test:tbox')
+        QueryResultHashes = @{ 'all-quads' = $zeroSha; 'tbox-only' = $zeroSha }
+        WriteRevertPassed = $true
+    }
+    foreach ($k in $RdfOverrides.Keys) { $rdfBase[$k] = $RdfOverrides[$k] }
+
+    $blobBase = [ordered]@{
+        version = '1.0.0'
+        sourceDirectory = '/var/lib/ontopilot/blobs'
+        bucket = 'ontopilot-blobs'
+        generatedAtUtc = '2026-08-18T10:00:00+00:00'
+        entries = @(@{
+            sourcePath = 'ab/cd/abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567'
+            objectKey  = 'ab/cd/abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567'
+            size       = 42
+            sha256     = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567'
+            referenceCount = 1
+        })
+    }
+    foreach ($k in $BlobOverrides.Keys) { $blobBase[$k] = $BlobOverrides[$k] }
+
+    $sqlPath  = Join-Path $TestDrive 'sql-migration-log.json'
+    $rdfPath  = Join-Path $TestDrive 'rdf-manifest.json'
+    $blobPath = Join-Path $TestDrive 'blob-manifest.json'
+    $sqlBase  | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $sqlPath  -Encoding utf8
+    $rdfBase  | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rdfPath  -Encoding utf8
+    $blobBase | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $blobPath -Encoding utf8
+
+    # Cutover record that lists every expected reference value.
+    $recordBody = @"
+# Production Cutover Record
+
+- Cutover start (UTC): 2026-08-18T10:00:00Z
+- Backup path: /var/backups/ontopilot/2026-08-18
+- Backup SHA-256: $zeroSha
+- Operator signature: Test Operator
+- MinIO endpoint: http://127.0.0.1:9000
+- MinIO bucket: ontopilot-blobs
+- Expected post-cutover manifest checksums:
+  - SQL verify summary: $zeroSha
+  - RDF verify summary: $zeroSha
+  - blob verify summary: $zeroSha
+- expected-sql-manifest-sha256: $zeroSha
+- expected-rdf-manifest-sha256: $zeroSha
+- expected-blob-manifest-sha256: $zeroSha
+- expected-sql-checksums:
+  - document = $($tableRow.BusinessChecksum)
+- expected-rdf-query-hashes:
+  - all-quads = $zeroSha
+  - tbox-only = $zeroSha
+"@
+    foreach ($k in $RecordOverrides.Keys) {
+        # Allow tests to overwrite individual lines by replacing the placeholder marker.
+        $recordBody = $recordBody.Replace("__$k__", $RecordOverrides[$k])
+    }
+    $recordPath = Join-Path $TestDrive 'cutover-record.md'
+    Set-Content -LiteralPath $recordPath -Value $recordBody -Encoding utf8
+
+    return [pscustomobject]@{
+        RecordPath = $recordPath
+        SqlPath    = $sqlPath
+        RdfPath    = $rdfPath
+        BlobPath   = $blobPath
+    }
+}
+
+Describe 'manifest content validation: validates content not just existence' {
+
+    It 'validates manifest content not just existence' {
+        $fixtures = New-ManifestFixtures `
+            -SqlOverrides  @{ VerifySummary = @{ Rows = @(@{ Table = 'document'; RowCount = 1; OrphanCount = 1; BusinessChecksum = ('0' * 32) }) } } `
+            -RdfOverrides  @{ WriteRevertPassed = $false } `
+            -BlobOverrides @{ entries = @(@{
+                sourcePath = 'ab/cd/abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567'
+                objectKey  = 'ab/cd/abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567'
+                size       = 42
+                sha256     = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345'  # 63 chars
+                referenceCount = 1
+            }) }
+
+        $threw = $null
+        try {
+            Assert-AllMigrationManifests `
+                -Record $fixtures.RecordPath `
+                -SqlManifestPath $fixtures.SqlPath `
+                -RdfManifestPath $fixtures.RdfPath `
+                -BlobManifestPath $fixtures.BlobPath `
+                -MinioEndpoint 'http://127.0.0.1:9000' `
+                -MinioBucket 'ontopilot-blobs'
+        } catch {
+            $threw = $_
+        }
+        $threw | Should Not BeNullOrEmpty
+        $threw.Exception.Message | Should Match 'OrphanCount'
+        $threw.Exception.Message | Should Match 'WriteRevertPassed'
+        $threw.Exception.Message | Should Match 'malformed SHA-256'
+    }
+}
+
+Describe 'manifest content validation: matches expected checksums from cutover record' {
+
+    It 'matches expected checksums from cutover record' {
+        # Override the record's expected SHA-256s to the actual
+        # canonical SHAs of the freshly-serialised manifests so the
+        # SHA-chain gate passes.
+        $fixtures = New-ManifestFixtures
+        $sqlSha  = (Get-CanonicalManifestSha -Path $fixtures.SqlPath)
+        $rdfSha  = (Get-CanonicalManifestSha -Path $fixtures.RdfPath)
+        $blobSha = (Get-CanonicalManifestSha -Path $fixtures.BlobPath)
+        $content = Get-Content -LiteralPath $fixtures.RecordPath -Raw
+        $content = $content.Replace(('0' * 64), $sqlSha, 1)
+        $content = $content.Replace(('0' * 64), $rdfSha, 1)
+        $content = $content.Replace(('0' * 64), $blobSha, 1)
+        Set-Content -LiteralPath $fixtures.RecordPath -Value $content -Encoding utf8
+
+        # The blob manifest's per-object MinIO HEAD check needs
+        # Test-MinioObjectExists to be mockable for this unit test.
+        # We don't run a real MinIO here; the gate throws on MinIO
+        # failure, so we expect a MinIO-side error. To isolate the
+        # checksum happy path, mock Test-MinioObjectExists to
+        # return true.
+        Mock Test-MinioObjectExists { $true }
+
+        { Assert-AllMigrationManifests `
+                -Record $fixtures.RecordPath `
+                -SqlManifestPath $fixtures.SqlPath `
+                -RdfManifestPath $fixtures.RdfPath `
+                -BlobManifestPath $fixtures.BlobPath `
+                -MinioEndpoint 'http://127.0.0.1:9000' `
+                -MinioBucket 'ontopilot-blobs' } | Should Not Throw
+    }
+}
+
+Describe 'manifest content validation: rejects manifest sha256 mismatch' {
+
+    It 'rejects manifest sha256 mismatch' {
+        $fixtures = New-ManifestFixtures
+        # Keep the record's expected-* SHA values at the zero
+        # placeholder — they will NOT match the actual canonical
+        # SHAs of the freshly-serialised manifests.
+
+        Mock Test-MinioObjectExists { $true }
+
+        $threw = $null
+        try {
+            Assert-AllMigrationManifests `
+                -Record $fixtures.RecordPath `
+                -SqlManifestPath $fixtures.SqlPath `
+                -RdfManifestPath $fixtures.RdfPath `
+                -BlobManifestPath $fixtures.BlobPath `
+                -MinioEndpoint 'http://127.0.0.1:9000' `
+                -MinioBucket 'ontopilot-blobs'
+        } catch {
+            $threw = $_
+        }
+        $threw | Should Not BeNullOrEmpty
+        $threw.Exception.Message | Should Match 'SQL manifest SHA-256 mismatch'
     }
 }

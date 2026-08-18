@@ -70,6 +70,37 @@ sequence with a non-zero exit code and a descriptive message.
 | 8 | Start-DotNetBackend         | 1               |
 | 9 | Invoke-PostCutoverSmoke     | 4               |
 
+**Gate 7 (`Assert-AllMigrationManifests`) is a content gate, not just
+a file-existence gate.** The cutover script runs six checks per
+manifest:
+
+1. **File existence.** `migrations/SqlAlchemyToEfCore/migration-log.json`,
+   `.artifacts/rdf-manifest.json`, `.artifacts/blob-manifest.json`.
+2. **JSON parse.** Each file is `ConvertFrom-Json`'d; malformed JSON
+   throws with the file path.
+3. **JSON Schema validation.** Each manifest is validated against
+   `migration/manifests/sql-migration-log.schema.json` /
+   `rdf-manifest.schema.json` / `blob-manifest.schema.json`. The
+   blob schema is the one shipped by Task 3; the SQL and RDF
+   schemas are introduced alongside this gate.
+4. **Business checks:**
+   - SQL: every `VerifySummary.Rows[*].OrphanCount == 0`. Every
+     `BusinessChecksum` matches the value in the cutover record's
+     `expected-sql-checksums` section (operator fills this in from
+     the rehearsal run).
+   - RDF: `WriteRevertPassed == true`, `QuadCount > 0`, every
+     `QueryResultHashes[*]` matches the cutover record's
+     `expected-rdf-query-hashes` section.
+   - Blob: every `entries[*].sha256` is 64 lowercase hex chars.
+     Every `entries[*].size` matches the actual MinIO object size
+     via a HEAD request to `<MinIO endpoint>/<bucket>/<objectKey>`.
+5. **Canonical SHA-256 chain.** Each manifest is re-serialised with
+   sorted keys / no whitespace and hashed; the SHA must match the
+   `expected-<type>-manifest-sha256` line in the cutover record.
+6. **No silent bypass.** If the cutover record is missing the
+   MinIO endpoint or bucket, the gate **throws** rather than
+   skipping the per-object HEAD verification.
+
 ```bash
 # Step 0: stop the Python backend. This is gate 1 — until this is
 # done the cutover will refuse to start.

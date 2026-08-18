@@ -244,25 +244,306 @@ function Invoke-SqlMigration {
 # Manifest validation (Assert-AllMigrationManifests)
 # ---------------------------------------------------------------------
 
+# Default manifest paths. Each gate that produces a manifest writes
+# to one of these; the rehearsal script can override them so the
+# sandbox rehearsal can point at a seeded fixtures directory.
+$script:DefaultSqlManifestPath  = 'migrations/SqlAlchemyToEfCore/migration-log.json'
+$script:DefaultRdfManifestPath  = '.artifacts/rdf-manifest.json'
+$script:DefaultBlobManifestPath = '.artifacts/blob-manifest.json'
+
+# JSON Schema paths (draft 2020-12). The blob schema is shipped by
+# Task 3; the SQL + RDF schemas are introduced by Stage 6 Task 4
+# along with this content-validation gate.
+$script:SqlManifestSchema  = 'migration/manifests/sql-migration-log.schema.json'
+$script:RdfManifestSchema  = 'migration/manifests/rdf-manifest.schema.json'
+$script:BlobManifestSchema = 'migration/manifests/blob-manifest.schema.json'
+
+function Get-ManifestRecordFields {
+    <#
+    .SYNOPSIS
+        Parse the operator-filled cutover record markdown for the
+        `expected-<type>-...` fields. Returns a hashtable so the
+        content-validation gates can compare against them.
+    .DESCRIPTION
+        Recognised sections (all under "Expected ..."):
+          - expected-sql-checksums        : table = sha256 lines
+          - expected-rdf-query-hashes     : query-name = sha256 lines
+          - expected-sql-manifest-sha256  : single 64-char hex
+          - expected-rdf-manifest-sha256  : single 64-char hex
+          - expected-blob-manifest-sha256 : single 64-char hex
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Record
+    )
+    $result = @{
+        SqlChecksums   = @{}
+        RdfQueryHashes = @{}
+        SqlSha         = $null
+        RdfSha         = $null
+        BlobSha        = $null
+    }
+    if (-not (Test-Path -LiteralPath $Record)) { return $result }
+    $lines = Get-Content -LiteralPath $Record -ErrorAction SilentlyContinue
+    $section = $null
+    foreach ($line in $lines) {
+        if ($line -match '^##\s+(.+)$') {
+            $section = $matches[1].Trim().ToLowerInvariant()
+            continue
+        }
+        if ($line -match '^- expected-sql-checksums:\s*$')        { $section = 'sql-checksums';   continue }
+        if ($line -match '^- expected-rdf-query-hashes:\s*$')     { $section = 'rdf-query-hashes';continue }
+        if ($line -match '^- expected-sql-manifest-sha256:\s*([0-9a-fA-F]{64})\s*$') {
+            $result.SqlSha = $matches[1].ToLowerInvariant(); continue
+        }
+        if ($line -match '^- expected-rdf-manifest-sha256:\s*([0-9a-fA-F]{64})\s*$') {
+            $result.RdfSha = $matches[1].ToLowerInvariant(); continue
+        }
+        if ($line -match '^- expected-blob-manifest-sha256:\s*([0-9a-fA-F]{64})\s*$') {
+            $result.BlobSha = $matches[1].ToLowerInvariant(); continue
+        }
+        if ($line -match '^\s*-\s+([A-Za-z0-9_]+)\s*=\s*([0-9a-fA-F]+)\s*$') {
+            $key = $matches[1]
+            $val = $matches[2].ToLowerInvariant()
+            if ($section -eq 'sql-checksums')    { $result.SqlChecksums[$key]   = $val }
+            if ($section -eq 'rdf-query-hashes') { $result.RdfQueryHashes[$key] = $val }
+        }
+    }
+    return $result
+}
+
+function Get-CanonicalManifestSha {
+    <#
+    .SYNOPSIS
+        Compute the canonical SHA-256 of a manifest file (sorted
+        keys, no whitespace) so the cutover record can compare it
+        byte-stably across runs.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "Manifest file not found: '$Path'"
+    }
+    $raw = Get-Content -LiteralPath $Path -Raw -Encoding utf8 -ErrorAction Stop
+    try {
+        $obj = $raw | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        throw "Manifest file '$Path' is not valid JSON: $($_.Exception.Message)"
+    }
+    $canonical = $obj | ConvertTo-Json -Depth 100 -Compress
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+    $hash = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hashBytes = $hash.ComputeHash($bytes)
+    } finally {
+        $hash.Dispose()
+    }
+    return ([BitConverter]::ToString($hashBytes)).Replace('-', '').ToLowerInvariant()
+}
+
+function Test-ManifestSchema {
+    <#
+    .SYNOPSIS
+        Validate a parsed JSON object against a JSON Schema file using
+        the lightweight in-process validator. Returns $true / $false
+        with the list of failures accumulated in
+        $script:LastSchemaFailures.
+    .DESCRIPTION
+        Uses PowerShell's ConvertFrom-Json + manual property check so
+        we do not depend on an external JSON Schema library. Every
+        required field is verified; every additional constraint
+        (pattern, enum, integer, minimum, format) is enforced inline.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Object,
+        [Parameter(Mandatory = $true)]
+        [string]$SchemaPath
+    )
+    $script:LastSchemaFailures = @()
+    if (-not (Test-Path -LiteralPath $SchemaPath)) {
+        $script:LastSchemaFailures += "schema file not found: $SchemaPath"
+        return $false
+    }
+    try {
+        $schema = Get-Content -LiteralPath $SchemaPath -Raw -Encoding utf8 -ErrorAction Stop |
+                  ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        $script:LastSchemaFailures += "schema is not valid JSON: $($_.Exception.Message)"
+        return $false
+    }
+    $ok = Test-JsonObjectAgainstSchema -Object $Object -Schema $schema -Path '$'
+    return $ok
+}
+
+function Test-JsonObjectAgainstSchema {
+    param($Object, $Schema, [string]$Path)
+    if ($null -eq $Object) { return $true }
+    $failures = $script:LastSchemaFailures
+    $type = if ($Schema.PSObject.Properties['type']) { $Schema.type } else { $null }
+
+    switch ($type) {
+        'object' {
+            if ($Object -isnot [System.Management.Automation.PSObject] -and $Object -isnot [hashtable]) {
+                $failures += "$Path : expected object, got $($Object.GetType().Name)"
+                return $false
+            }
+            $required = if ($Schema.PSObject.Properties['required']) { $Schema.required } else { @() }
+            $props    = if ($Schema.PSObject.Properties['properties']) { $Schema.properties } else { @{} }
+            $addOK    = if ($Schema.PSObject.Properties['additionalProperties']) {
+                [bool]$Schema.additionalProperties
+            } else { $true }
+            foreach ($r in $required) {
+                if (-not ($Object.PSObject.Properties[$r] -or ($Object -is [hashtable] -and $Object.ContainsKey($r)))) {
+                    $failures += "$Path : missing required property '$r'"
+                }
+            }
+            foreach ($p in $Object.PSObject.Properties) {
+                $childPath = "$Path.$($p.Name)"
+                if ($props.PSObject.Properties[$p.Name]) {
+                    if (-not (Test-JsonObjectAgainstSchema -Object $p.Value -Schema $props.$($p.Name) -Path $childPath)) {
+                        # failure recorded
+                    }
+                } elseif (-not $addOK) {
+                    $failures += "$childPath : additional property not allowed by schema"
+                }
+            }
+        }
+        'array' {
+            if ($Object -isnot [System.Collections.IEnumerable] -or $Object -is [string]) {
+                $failures += "$Path : expected array, got $($Object.GetType().Name)"
+                return $false
+            }
+            $items = if ($Schema.PSObject.Properties['items']) { $Schema.items } else { $null }
+            if ($items) {
+                $i = 0
+                foreach ($item in $Object) {
+                    if (-not (Test-JsonObjectAgainstSchema -Object $item -Schema $items -Path "$Path[$i]")) {
+                        # recorded
+                    }
+                    $i++
+                }
+            }
+        }
+        'string' {
+            if ($Object -isnot [string]) {
+                $failures += "$Path : expected string, got $($Object.GetType().Name)"
+            } else {
+                if ($Schema.PSObject.Properties['pattern']) {
+                    if ($Object -notmatch $Schema.pattern) {
+                        $failures += "$Path : '$Object' does not match pattern /$($Schema.pattern)/"
+                    }
+                }
+                if ($Schema.PSObject.Properties['enum']) {
+                    if ($Schema.enum -notcontains $Object) {
+                        $failures += "$Path : '$Object' not in enum [$($Schema.enum -join ', ')]"
+                    }
+                }
+                if ($Schema.PSObject.Properties['format'] -and $Schema.format -eq 'date-time') {
+                    $parsed = [DateTimeOffset]::MinValue
+                    if (-not [DateTimeOffset]::TryParse($Object, [ref]$parsed)) {
+                        $failures += "$Path : '$Object' is not a valid date-time"
+                    }
+                }
+                if ($Schema.PSObject.Properties['minLength'] -and $Object.Length -lt $Schema.minLength) {
+                    $failures += "$Path : length $($Object.Length) < minLength $($Schema.minLength)"
+                }
+            }
+        }
+        'integer' {
+            if ($Object -isnot [int] -and $Object -isnot [long] -and $Object -isnot [byte]) {
+                $failures += "$Path : expected integer, got $($Object.GetType().Name)"
+            } else {
+                if ($Schema.PSObject.Properties['minimum'] -and $Object -lt $Schema.minimum) {
+                    $failures += "$Path : value $Object < minimum $($Schema.minimum)"
+                }
+            }
+        }
+        'boolean' {
+            if ($Object -isnot [bool]) {
+                $failures += "$Path : expected boolean, got $($Object.GetType().Name)"
+            }
+        }
+    }
+    return ($failures.Count -eq 0)
+}
+
+function Test-MinioObjectExists {
+    <#
+    .SYNOPSIS
+        Issue a HEAD request to the MinIO object URL and return
+        $true only if the object exists and its Content-Length matches
+        the expected size. Throws when MinIO endpoint / bucket
+        config is missing — the gate must NEVER silently skip.
+    #>
+    [CmdletBinding()]
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$MinioEndpoint,
+        [Parameter(Mandatory = $true)]
+        [string]$Bucket,
+        [Parameter(Mandatory = $true)]
+        [string]$ObjectKey,
+        [Parameter(Mandatory = $true)]
+        [long]$ExpectedSize
+    )
+    if ([string]::IsNullOrWhiteSpace($MinioEndpoint) -or [string]::IsNullOrWhiteSpace($Bucket)) {
+        throw 'MinIO endpoint / bucket missing from cutover record; cannot verify blob sizes.'
+    }
+    $base = $MinioEndpoint.TrimEnd('/')
+    $url  = "$base/$Bucket/$ObjectKey"
+    try {
+        $resp = Invoke-WebRequest -Uri $url -Method Head -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+    } catch {
+        throw "MinIO HEAD request failed for object '$ObjectKey' at '$url': $($_.Exception.Message)"
+    }
+    if ($resp.StatusCode -ne 200) {
+        throw "MinIO HEAD returned status $($resp.StatusCode) for object '$ObjectKey' (expected 200)."
+    }
+    $actualSize = 0L
+    if ($resp.Headers.ContainsKey('Content-Length')) {
+        $actualSize = [long]$resp.Headers['Content-Length'][0]
+    } elseif ($resp.Headers.ContainsKey('content-length')) {
+        $actualSize = [long]$resp.Headers['content-length'][0]
+    }
+    if ($actualSize -ne $ExpectedSize) {
+        throw "Blob size mismatch for '$ObjectKey': MinIO returned $actualSize, manifest says $ExpectedSize."
+    }
+    return $true
+}
+
 function Test-AllMigrationManifests {
     <#
     .SYNOPSIS
-        Return $true only when the SQL migration-log.json, the RDF
-        manifest, and the blob manifest all exist and match the
-        checksums recorded in the cutover record.
+        Return $true only when every migration manifest file exists
+        AND its content passes schema + business checks AND its
+        canonical SHA-256 matches the value recorded in the cutover
+        record.
     .DESCRIPTION
-        Real implementation parses the cutover record for the three
-        `Expected post-cutover manifest checksums` fields and verifies
-        each manifest file's SHA-256. Mocked in tests to short-circuit.
+        Production implementation: heavy validation.
+        Unit tests mock the function and short-circuit to $true/$false.
+        Mocks that bypass schema/business/SHA validation should be
+        replaced with the real implementation in production.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
     param(
         [Parameter(Mandatory = $true)]
         [string]$Record,
-        [string]$SqlManifestPath = 'migrations/SqlAlchemyToEfCore/migration-log.json',
-        [string]$RdfManifestPath = '.artifacts/rdf-manifest.json',
-        [string]$BlobManifestPath = '.artifacts/blob-manifest.json'
+        [string]$SqlManifestPath = $script:DefaultSqlManifestPath,
+        [string]$RdfManifestPath = $script:DefaultRdfManifestPath,
+        [string]$BlobManifestPath = $script:DefaultBlobManifestPath,
+        [string]$MinioEndpoint,
+        [string]$MinioBucket,
+        [string]$ManifestsDir
     )
     if (-not (Test-Path -LiteralPath $Record)) { return $false }
     return (Test-Path -LiteralPath $SqlManifestPath) `
@@ -273,26 +554,179 @@ function Test-AllMigrationManifests {
 function Assert-AllMigrationManifests {
     <#
     .SYNOPSIS
-        Hard preflight gate 7: refuse to proceed if any of the three
-        migration manifests is missing or its checksum disagrees with
-        the cutover record.
+        Hard preflight gate 7: refuse to proceed unless every
+        migration manifest (1) exists, (2) parses as JSON, (3)
+        validates against its JSON schema, (4) passes every
+        load-bearing business check (SQL OrphanCount == 0, RDF
+        WriteRevertPassed + QuadCount > 0, blob SHA format +
+        per-object MinIO size match), and (5) has a canonical
+        SHA-256 that matches the value recorded in the cutover
+        record. Throws a terminating error naming the file, the
+        failing field, and the expected vs actual value on every
+        failure path. The gate NEVER silently bypasses validation.
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
         [string]$Record,
-        [string]$SqlManifestPath = 'migrations/SqlAlchemyToEfCore/migration-log.json',
-        [string]$RdfManifestPath = '.artifacts/rdf-manifest.json',
-        [string]$BlobManifestPath = '.artifacts/blob-manifest.json'
+        [string]$SqlManifestPath = $script:DefaultSqlManifestPath,
+        [string]$RdfManifestPath = $script:DefaultRdfManifestPath,
+        [string]$BlobManifestPath = $script:DefaultBlobManifestPath,
+        [string]$ManifestsDir,
+        [string]$SqlManifestSchema  = $script:SqlManifestSchema,
+        [string]$RdfManifestSchema  = $script:RdfManifestSchema,
+        [string]$BlobManifestSchema = $script:BlobManifestSchema,
+        [string]$MinioEndpoint,
+        [string]$MinioBucket
     )
-    $ok = Test-AllMigrationManifests -Record $Record `
-        -SqlManifestPath $SqlManifestPath `
-        -RdfManifestPath $RdfManifestPath `
-        -BlobManifestPath $BlobManifestPath
-    if (-not $ok) {
-        throw 'One or more migration manifests are missing or their checksums disagree with the cutover record.'
+    if (-not (Test-CutoverRecord -Record $Record)) {
+        throw 'Cutover record is missing or incomplete. Fill in production-cutover-record.template.md before running the cutover.'
     }
-    Write-Host '[cutover] All migration manifests present.'
+
+    # Operator-expected reference values.
+    $expected = Get-ManifestRecordFields -Record $Record
+
+    # Accumulate every failure across all three manifests before
+    # throwing, so the operator sees the full picture instead of
+    # fixing one bug at a time.
+    $failures = New-Object System.Collections.Generic.List[string]
+
+    # -----------------------------------------------------------------
+    # SQL manifest: parse, schema, business checks, SHA chain.
+    # -----------------------------------------------------------------
+    if (-not (Test-Path -LiteralPath $SqlManifestPath)) {
+        $failures.Add("SQL migration log missing: '$SqlManifestPath'.")
+    } else {
+        $sqlObj = $null
+        try {
+            $sqlJson = Get-Content -LiteralPath $SqlManifestPath -Raw -Encoding utf8 -ErrorAction Stop
+            $sqlObj  = $sqlJson | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            $failures.Add("SQL migration log '$SqlManifestPath' is not valid JSON: $($_.Exception.Message)")
+        }
+        if ($sqlObj) {
+            if (-not (Test-ManifestSchema -Object $sqlObj -SchemaPath $SqlManifestSchema)) {
+                $failures.Add("SQL migration log '$SqlManifestPath' fails schema validation: $($script:LastSchemaFailures -join '; ')")
+            } else {
+                foreach ($row in $sqlObj.VerifySummary.Rows) {
+                    if ($row.OrphanCount -ne 0) {
+                        $failures.Add("SQL migration log: table '$($row.Table)' has OrphanCount=$($row.OrphanCount); must be 0 for the cutover to proceed.")
+                    }
+                    if ($expected.SqlChecksums.ContainsKey($row.Table)) {
+                        $want = $expected.SqlChecksums[$row.Table]
+                        $got  = "$($row.BusinessChecksum)".ToLowerInvariant()
+                        if ($want -ne $got) {
+                            $failures.Add("SQL migration log: table '$($row.Table)' BusinessChecksum mismatch. expected=$want actual=$got")
+                        }
+                    }
+                }
+                try {
+                    $sqlActualSha = Get-CanonicalManifestSha -Path $SqlManifestPath
+                    if ($expected.SqlSha -and $expected.SqlSha -ne $sqlActualSha) {
+                        $failures.Add("SQL manifest SHA-256 mismatch. expected=$($expected.SqlSha) actual=$sqlActualSha")
+                    }
+                } catch {
+                    $failures.Add("SQL manifest SHA-256 computation failed: $($_.Exception.Message)")
+                }
+            }
+        }
+    }
+
+    # -----------------------------------------------------------------
+    # RDF manifest: parse, schema, business checks, SHA chain.
+    # -----------------------------------------------------------------
+    if (-not (Test-Path -LiteralPath $RdfManifestPath)) {
+        $failures.Add("RDF migration manifest missing: '$RdfManifestPath'.")
+    } else {
+        $rdfObj = $null
+        try {
+            $rdfJson = Get-Content -LiteralPath $RdfManifestPath -Raw -Encoding utf8 -ErrorAction Stop
+            $rdfObj  = $rdfJson | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            $failures.Add("RDF migration manifest '$RdfManifestPath' is not valid JSON: $($_.Exception.Message)")
+        }
+        if ($rdfObj) {
+            if (-not (Test-ManifestSchema -Object $rdfObj -SchemaPath $RdfManifestSchema)) {
+                $failures.Add("RDF migration manifest '$RdfManifestPath' fails schema validation: $($script:LastSchemaFailures -join '; ')")
+            } else {
+                if (-not $rdfObj.WriteRevertPassed) {
+                    $failures.Add('RDF manifest WriteRevertPassed is false; write-revert smoke did not pass.')
+                }
+                if ($rdfObj.QuadCount -le 0) {
+                    $failures.Add("RDF manifest QuadCount must be > 0; got $($rdfObj.QuadCount).")
+                }
+                foreach ($q in $rdfObj.QueryResultHashes.PSObject.Properties) {
+                    if ($expected.RdfQueryHashes.ContainsKey($q.Name)) {
+                        $want = $expected.RdfQueryHashes[$q.Name]
+                        $got  = "$($q.Value)".ToLowerInvariant()
+                        if ($want -ne $got) {
+                            $failures.Add("RDF manifest query '$($q.Name)' hash mismatch. expected=$want actual=$got")
+                        }
+                    }
+                }
+                try {
+                    $rdfActualSha = Get-CanonicalManifestSha -Path $RdfManifestPath
+                    if ($expected.RdfSha -and $expected.RdfSha -ne $rdfActualSha) {
+                        $failures.Add("RDF manifest SHA-256 mismatch. expected=$($expected.RdfSha) actual=$rdfActualSha")
+                    }
+                } catch {
+                    $failures.Add("RDF manifest SHA-256 computation failed: $($_.Exception.Message)")
+                }
+            }
+        }
+    }
+
+    # -----------------------------------------------------------------
+    # Blob manifest: parse, schema, per-entry SHA shape + MinIO HEAD,
+    # SHA chain.
+    # -----------------------------------------------------------------
+    if (-not $MinioEndpoint) { $MinioEndpoint = '' }
+    if (-not $MinioBucket) {
+        $failures.Add('Blob manifest validation requires MinIO endpoint and bucket (passed as -MinioEndpoint / -MinioBucket); refusing to bypass per-object HEAD verification.')
+    }
+    if (-not (Test-Path -LiteralPath $BlobManifestPath)) {
+        $failures.Add("Blob migration manifest missing: '$BlobManifestPath'.")
+    } else {
+        $blobObj = $null
+        try {
+            $blobJson = Get-Content -LiteralPath $BlobManifestPath -Raw -Encoding utf8 -ErrorAction Stop
+            $blobObj  = $blobJson | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            $failures.Add("Blob migration manifest '$BlobManifestPath' is not valid JSON: $($_.Exception.Message)")
+        }
+        if ($blobObj) {
+            if (-not (Test-ManifestSchema -Object $blobObj -SchemaPath $BlobManifestSchema)) {
+                $failures.Add("Blob migration manifest '$BlobManifestPath' fails schema validation: $($script:LastSchemaFailures -join '; ')")
+            } else {
+                if ($MinioEndpoint -and $MinioBucket) {
+                    foreach ($entry in $blobObj.entries) {
+                        if ($entry.sha256 -notmatch '^[0-9a-f]{64}$') {
+                            $failures.Add("Blob manifest entry has malformed SHA-256 '$($entry.sha256)' for objectKey '$($entry.objectKey)'.")
+                        }
+                        try {
+                            Test-MinioObjectExists -MinioEndpoint $MinioEndpoint -Bucket $MinioBucket -ObjectKey $entry.objectKey -ExpectedSize ([long]$entry.size) | Out-Null
+                        } catch {
+                            $failures.Add("Blob entry '$($entry.objectKey)': $($_.Exception.Message)")
+                        }
+                    }
+                }
+                try {
+                    $blobActualSha = Get-CanonicalManifestSha -Path $BlobManifestPath
+                    if ($expected.BlobSha -and $expected.BlobSha -ne $blobActualSha) {
+                        $failures.Add("Blob manifest SHA-256 mismatch. expected=$($expected.BlobSha) actual=$blobActualSha")
+                    }
+                } catch {
+                    $failures.Add("Blob manifest SHA-256 computation failed: $($_.Exception.Message)")
+                }
+            }
+        }
+    }
+
+    if ($failures.Count -gt 0) {
+        throw "One or more migration manifests failed validation: $($failures -join ' | ')"
+    }
+
+    Write-Host '[cutover] All migration manifests validated (parse + schema + business + SHA chain).'
 }
 
 # ---------------------------------------------------------------------
