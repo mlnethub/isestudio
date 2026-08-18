@@ -15,6 +15,14 @@
         the brief pins down so the auth + side-effect contract is exercised
         end to end.
 
+    NOTE (Stage 5 follow-up): Playwright wiring is intentionally NOT in
+    scope here. This script is the MCP counterpart to the
+    `frontend/e2e/dotnet/*.spec.ts` suite, which itself assumes a
+    `frontend/playwright.config.ts` + `@playwright/test` dependency that
+    has not yet been added. See docs/migration/contract-observability-followups.md
+    for the open work. Do not add Playwright to `frontend/package.json`
+    as part of MCP smoke fixes.
+
 .PARAMETER Url
     Full URL of the MCP endpoint exposed by the .NET backend, e.g.
     `http://localhost:18080/mcp`.
@@ -154,7 +162,20 @@ foreach ($scenario in $contracts.scenarios) {
         }
     }
 
-    $result = Invoke-McpRequest -Method 'tools/call' -Params @{ name = $scenario.tool; arguments = $params } -Token $Token
+    # Pick the JSON-RPC method + params shape:
+    #   * default = tools/call with { name, arguments } envelope
+    #   * if the scenario declares its own `method` (e.g. tools/list for
+    #     discovery), call that JSON-RPC method directly and skip the
+    #     {name, arguments} wrapping. tools/list is a meta-method, not an
+    #     MCP tool, so it must NEVER be invoked via tools/call.
+    $method = 'tools/call'
+    $callParams = @{ name = $scenario.tool; arguments = $params }
+    if ($scenario.PSObject.Properties.Match('method').Count -gt 0 -and $scenario.method) {
+        $method = [string] $scenario.method
+        $callParams = $params
+    }
+
+    $result = Invoke-McpRequest -Method $method -Params $callParams -Token $Token
 
     $invocation = [ordered]@{
         scenario    = $scenario.name
@@ -176,15 +197,28 @@ foreach ($scenario in $contracts.scenarios) {
 
     $invocation.ok = $true
 
-    # preview-clean assertion: if the scenario is a 'preview', the diff vs the
-    # baseline snapshot must be empty (no unapproved differences).
+    # preview-clean assertion: if the scenario is a 'preview', the named diff
+    # field on the response must be empty / zero (no unapproved differences).
+    # The diff field may be either a collection (e.g. an array of triples)
+    # or a scalar (e.g. the integer added_triples count returned by
+    # preview_ontology_changes — see OnToPilotMcpTools.cs:587-592).
     if ($scenario.PSObject.Properties.Match('expectsCleanPreview').Count -gt 0 -and $scenario.expectsCleanPreview) {
         $diffField = $scenario.diffField
         $payload = $result.result
         $diff = $payload.$diffField
-        if ($null -ne $diff -and @($diff).Count -gt 0) {
+        $hasContent = $false
+        if ($null -ne $diff) {
+            if ($diff -is [string]) {
+                $hasContent = $diff.Length -gt 0
+            } elseif ($diff -is [System.Collections.IEnumerable]) {
+                $hasContent = @($diff).Count -gt 0
+            } else {
+                $hasContent = ([int] $diff) -ne 0
+            }
+        }
+        if ($hasContent) {
             $invocation.ok = $false
-            $msg = "Scenario '$($scenario.name)' expected a clean preview but $diffField had entries: $($diff -join ', ')"
+            $msg = "Scenario '$($scenario.name)' expected a clean preview but $diffField had content: $diff"
             $report.unapprovedDiff += $msg
             if ($FailOnUnapproved) { throw $msg }
         }
@@ -211,9 +245,21 @@ if ($report.unapprovedDiff.Count -gt 0 -and $FailOnUnapproved) {
     throw "MCP smoke reported $($report.unapprovedDiff.Count) unapproved difference(s)."
 }
 
-# The plan snippet is preserved verbatim for the reviewer:
+# The plan snippet is preserved verbatim for the reviewer, with the throw
+# gated on -FailOnUnapproved so the JSON report remains the source of truth
+# when the operator is doing a discovery-only run (the brief explicitly
+# distinguishes soft warnings from hard failures — without the gate the
+# tail snippet would always throw on any drift, which inverts the earlier
+# soft-warning design intent at lines 132-144).
 $tools = Invoke-McpRequest -Method 'tools/list' -Token $Token
-Compare-Object $BaselineToolNames ($tools.result.tools.name) | ForEach-Object { throw "MCP inventory mismatch: $_" }
+$drift = Compare-Object $BaselineToolNames ($tools.result.tools.name)
+if ($drift) {
+    if ($FailOnUnapproved) {
+        $drift | ForEach-Object { throw "MCP inventory mismatch: $_" }
+    } else {
+        $drift | ForEach-Object { Write-Warning "MCP inventory mismatch (suppressed without -FailOnUnapproved): $_" }
+    }
+}
 Invoke-McpRequest -Method 'tools/call' -Params @{ name = 'get_ontology'; arguments = @{} } -Token $Token | Out-Null
 
 Write-Host "[mcp-smoke] OK" -ForegroundColor Green

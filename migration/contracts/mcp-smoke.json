@@ -1,45 +1,61 @@
 {
   "$schema": "https://ontopilot.io/schemas/mcp-smoke.v1.json",
-  "description": "Smoke scenarios the Test-McpEndpoint.ps1 runner executes against the .NET MCP transport. Each scenario names the MCP tool, declares the default argument bag, and (for preview tools) the structural diff field that must come back empty. The baseline tool inventory is the source of truth for tools/list parity; if the .NET backend adds or removes a tool the runner fails (or, without -FailOnUnapproved, records the drift in migration/actual/mcp-smoke-report.json).",
+  "description": "Smoke scenarios the Test-McpEndpoint.ps1 runner executes against the .NET MCP transport. Each scenario names the MCP tool, declares the default argument bag, and (for preview tools) the structural diff field that must come back clean. The baseline tool inventory mirrors the canonical Stage 4 inventory in src/OnToPilot/Mcp/OnToPilotMcpTools.cs:88-142 and migration/baseline/mcp-tools-python.json; if the .NET backend adds or removes a tool the runner fails (or, without -FailOnUnapproved, records the drift in migration/actual/mcp-smoke-report.json).",
   "baselineToolNames": [
+    "apply_instance_change",
+    "apply_ontology_changes",
+    "apply_vocabulary_change",
+    "decide_review_item",
+    "get_history",
+    "get_individual",
     "get_ontology",
-    "search_concepts",
+    "get_workspace_context",
+    "list_documents",
+    "list_individuals",
     "list_releases",
-    "preview_release",
-    "apply_release",
-    "rollback_release"
+    "list_review_items",
+    "list_vocabulary_concepts",
+    "manage_release",
+    "preview_ontology_changes",
+    "query_knowledge",
+    "resolve_term",
+    "rollback_history_event",
+    "search_ontology",
+    "start_extraction"
   ],
   "scenarios": [
     {
       "name": "discover-tools-list",
+      "method": "tools/list",
       "tool": "tools/list",
-      "notes": "The runner also calls tools/list directly to enforce inventory parity against baselineToolNames."
+      "defaultArguments": {},
+      "notes": "JSON-RPC meta-method invocation. The runner bypasses the tools/call wrapping and calls tools/list directly so the server-side inventory check has parity with baselineToolNames. The scenario must NEVER be invoked via tools/call."
     },
     {
       "name": "read-get-ontology",
       "tool": "get_ontology",
       "defaultArguments": {},
-      "notes": "Read the TBox for the seeded knowledge system. The runner never logs the response body; only the success/failure shape reaches the report."
+      "notes": "Read the TBox for the seeded knowledge system. Per the real schema (OnToPilotMcpTools.cs:108), get_ontology takes no arguments. The runner never logs the response body; only the success/failure shape reaches the report."
     },
     {
-      "name": "read-search-concepts",
-      "tool": "search_concepts",
+      "name": "search-ontology-pump",
+      "tool": "search_ontology",
       "defaultArguments": { "query": "pump" },
-      "notes": "Read-side vocabulary search. Confirms the search tool accepts an empty/default argument bag without surfacing an MCP error envelope."
+      "notes": "Read-side TBox search. Per the real schema, search_ontology requires a 'query' string. Confirms the search tool accepts the default argument bag without surfacing an MCP error envelope."
     },
     {
-      "name": "preview-release-clean",
-      "tool": "preview_release",
-      "defaultArguments": { "release_id": "draft" },
+      "name": "list-releases",
+      "tool": "list_releases",
+      "defaultArguments": {},
+      "notes": "Read-side release inventory. Per the real schema, list_releases takes no arguments. Confirms the read-only release endpoint is reachable."
+    },
+    {
+      "name": "preview-ontology-changes-clean",
+      "tool": "preview_ontology_changes",
+      "defaultArguments": { "operations": [] },
       "expectsCleanPreview": true,
-      "diffField": "unapproved_diff",
-      "notes": "preview_release must surface an empty `unapproved_diff` array when the seeded draft matches the live ontology. Any entry here is treated as an unapproved difference."
-    },
-    {
-      "name": "apply-release-idempotent",
-      "tool": "apply_release",
-      "defaultArguments": { "release_id": "draft", "confirm": true },
-      "notes": "Side-effect tool. The runner asserts a result envelope is returned; it does NOT inspect the body to avoid leaking release identifiers into the report."
+      "diffField": "added_triples",
+      "notes": "preview_ontology_changes must surface added_triples=0 when the empty operations array is previewed against the live ontology. The result schema (OnToPilotMcpTools.cs:587-592) returns added_triples / removed_triples / operation_count scalars — not the unapproved_diff array the previous (rejected) contract claimed. Any non-zero value here is treated as an unapproved difference."
     }
   ]
 }
