@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using OnToPilot.Observability;
 
 namespace OnToPilot.Storage;
 
@@ -47,131 +48,155 @@ public sealed class LocalCasBlobStore : IBlobStore
     }
 
     /// <inheritdoc />
-    public async Task<BlobWriteResult> PutAsync(Stream content, CancellationToken cancellationToken)
+    public Task<BlobWriteResult> PutAsync(Stream content, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(content);
 
-        // Stage 1: copy the upload to a temp file under the root while
-        // streaming it through IncrementalHash so we never hold the
-        // entire payload in memory. Two writers of the same content
-        // racing on the same target would otherwise collide on a
-        // single shared temp filename.
-        var tempId = Guid.NewGuid().ToString("N");
-        Directory.CreateDirectory(_root);
-        var tempPath = Path.Combine(_root, $".tmp-{tempId}");
-
-        string sha256;
-        try
-        {
-            await using (var tempStream = new FileStream(
-                tempPath,
-                FileMode.CreateNew,
-                FileAccess.Write,
-                FileShare.None,
-                StreamChunkSize,
-                useAsync: true))
+        return Telemetry.StorageSource.WithStorageActivity(
+            "storage.localcas.put",
+            content.CanSeek ? (long?)content.Length : null,
+            async ct =>
             {
-                using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-                var buffer = new byte[StreamChunkSize];
-                int read;
-                while ((read = await content.ReadAsync(buffer.AsMemory(0, StreamChunkSize), cancellationToken)
-                                               .ConfigureAwait(false)) > 0)
-                {
-                    var slice = buffer.AsMemory(0, read);
-                    hasher.AppendData(buffer, 0, read);
-                    await tempStream.WriteAsync(slice, cancellationToken).ConfigureAwait(false);
-                }
-                await tempStream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                // Stage 1: copy the upload to a temp file under the root while
+                // streaming it through IncrementalHash so we never hold the
+                // entire payload in memory. Two writers of the same content
+                // racing on the same target would otherwise collide on a
+                // single shared temp filename.
+                var tempId = Guid.NewGuid().ToString("N");
+                Directory.CreateDirectory(_root);
+                var tempPath = Path.Combine(_root, $".tmp-{tempId}");
 
-                var digest = hasher.GetHashAndReset();
-                sha256 = Convert.ToHexString(digest).ToLowerInvariant();
-            }
-
-            // Stage 2: move the now-hashed payload to its canonical path,
-            // skipping the move entirely if it already exists with
-            // identical content (an idempotent write).
-            var legacyPath = BlobKey.LegacyPathFor(sha256);
-            var finalPath = Path.Combine(_root, legacyPath);
-            var finalDir = Path.GetDirectoryName(finalPath)!;
-            Directory.CreateDirectory(finalDir);
-
-            if (File.Exists(finalPath))
-            {
-                // A previous write already populated this SHA — drop our
-                // temp file rather than overwriting the canonical blob.
-                TryDelete(tempPath);
-            }
-            else
-            {
+                string sha256;
                 try
                 {
-                    File.Move(tempPath, finalPath, overwrite: false);
-                }
-                catch (IOException)
-                {
-                    // Race: another concurrent writer won the move. Fall
-                    // through; the file at finalPath has the same
-                    // content (same SHA), so it's still the canonical
-                    // copy.
-                    TryDelete(tempPath);
-                }
-            }
+                    await using (var tempStream = new FileStream(
+                        tempPath,
+                        FileMode.CreateNew,
+                        FileAccess.Write,
+                        FileShare.None,
+                        StreamChunkSize,
+                        useAsync: true))
+                    {
+                        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+                        var buffer = new byte[StreamChunkSize];
+                        int read;
+                        while ((read = await content.ReadAsync(buffer.AsMemory(0, StreamChunkSize), ct)
+                                                       .ConfigureAwait(false)) > 0)
+                        {
+                            var slice = buffer.AsMemory(0, read);
+                            hasher.AppendData(buffer, 0, read);
+                            await tempStream.WriteAsync(slice, ct).ConfigureAwait(false);
+                        }
+                        await tempStream.FlushAsync(ct).ConfigureAwait(false);
 
-            return new BlobWriteResult(sha256, legacyPath);
-        }
-        catch
-        {
-            // Best-effort cleanup: a failed put must not leave a temp
-            // file behind in the store root.
-            TryDelete(tempPath);
-            throw;
-        }
+                        var digest = hasher.GetHashAndReset();
+                        sha256 = Convert.ToHexString(digest).ToLowerInvariant();
+                    }
+
+                    // Stage 2: move the now-hashed payload to its canonical path,
+                    // skipping the move entirely if it already exists with
+                    // identical content (an idempotent write).
+                    var legacyPath = BlobKey.LegacyPathFor(sha256);
+                    var finalPath = Path.Combine(_root, legacyPath);
+                    var finalDir = Path.GetDirectoryName(finalPath)!;
+                    Directory.CreateDirectory(finalDir);
+
+                    if (File.Exists(finalPath))
+                    {
+                        // A previous write already populated this SHA — drop our
+                        // temp file rather than overwriting the canonical blob.
+                        TryDelete(tempPath);
+                    }
+                    else
+                    {
+                        try
+                        {
+                            File.Move(tempPath, finalPath, overwrite: false);
+                        }
+                        catch (IOException)
+                        {
+                            // Race: another concurrent writer won the move. Fall
+                            // through; the file at finalPath has the same
+                            // content (same SHA), so it's still the canonical
+                            // copy.
+                            TryDelete(tempPath);
+                        }
+                    }
+
+                    return new BlobWriteResult(sha256, legacyPath);
+                }
+                catch
+                {
+                    // Best-effort cleanup: a failed put must not leave a temp
+                    // file behind in the store root.
+                    TryDelete(tempPath);
+                    throw;
+                }
+            },
+            cancellationToken);
     }
 
     /// <inheritdoc />
     public Task<Stream?> GetAsync(string sha256, CancellationToken cancellationToken)
     {
-        var path = PathForSha(sha256);
-        if (!File.Exists(path))
-        {
-            return Task.FromResult<Stream?>(null);
-        }
+        return Telemetry.StorageSource.WithStorageActivity(
+            "storage.localcas.get",
+            null,
+            ct =>
+            {
+                var path = PathForSha(sha256);
+                if (!File.Exists(path))
+                {
+                    return Task.FromResult<Stream?>(null);
+                }
 
-        Stream stream = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read,
-            StreamChunkSize,
-            useAsync: true);
-        return Task.FromResult<Stream?>(stream);
+                Stream stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    StreamChunkSize,
+                    useAsync: true);
+                return Task.FromResult<Stream?>(stream);
+            },
+            cancellationToken);
     }
 
     /// <inheritdoc />
     public Task<bool> ExistsAsync(string sha256, CancellationToken cancellationToken)
     {
-        var path = PathForSha(sha256);
-        return Task.FromResult(File.Exists(path));
+        return Telemetry.StorageSource.WithStorageActivity(
+            "storage.localcas.exists",
+            null,
+            ct => Task.FromResult(File.Exists(PathForSha(sha256))),
+            cancellationToken);
     }
 
     /// <inheritdoc />
     public Task<bool> RemoveAsync(string sha256, CancellationToken cancellationToken)
     {
-        var path = PathForSha(sha256);
-        if (!File.Exists(path))
-        {
-            return Task.FromResult(false);
-        }
+        return Telemetry.StorageSource.WithStorageActivity(
+            "storage.localcas.remove",
+            null,
+            ct =>
+            {
+                var path = PathForSha(sha256);
+                if (!File.Exists(path))
+                {
+                    return Task.FromResult(false);
+                }
 
-        try
-        {
-            File.Delete(path);
-            return Task.FromResult(true);
-        }
-        catch (DirectoryNotFoundException)
-        {
-            return Task.FromResult(false);
-        }
+                try
+                {
+                    File.Delete(path);
+                    return Task.FromResult(true);
+                }
+                catch (DirectoryNotFoundException)
+                {
+                    return Task.FromResult(false);
+                }
+            },
+            cancellationToken);
     }
 
     private string PathForSha(string sha256)

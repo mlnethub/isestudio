@@ -29,6 +29,7 @@ public static class TelemetryExtensions
     internal const string ModelTag = "llm.model";
     internal const string PhaseTag = "extraction.phase";
     internal const string OperationTag = "operation.name";
+    internal const string PeerServiceTag = "peer.service";
     internal const string GraphTag = "rdf.graph";
     internal const string QuadCountTag = "rdf.quad_count";
     internal const string ViolationCountTag = "shacl.violation_count";
@@ -58,6 +59,7 @@ public static class TelemetryExtensions
         ArgumentNullException.ThrowIfNull(action);
 
         using var activity = source.StartActivity(operationName, ActivityKind.Client);
+        activity?.SetTag(PeerServiceTag, provider);
         activity?.SetTag(ProviderTag, provider);
         activity?.SetTag(ModelTag, model);
 
@@ -132,6 +134,7 @@ public static class TelemetryExtensions
         ArgumentNullException.ThrowIfNull(action);
 
         using var activity = source.StartActivity(operationName, ActivityKind.Internal);
+        activity?.SetTag(PeerServiceTag, "oxigraph");
         activity?.SetTag(OperationTag, operationName);
         if (!string.IsNullOrEmpty(graphIri)) activity?.SetTag(GraphTag, graphIri);
 
@@ -162,6 +165,7 @@ public static class TelemetryExtensions
         ArgumentNullException.ThrowIfNull(action);
 
         using var activity = source.StartActivity(operationName, ActivityKind.Internal);
+        activity?.SetTag(PeerServiceTag, "shacl.validator");
         activity?.SetTag(OperationTag, operationName);
         activity?.SetTag(GraphTag, graphIri);
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -196,6 +200,7 @@ public static class TelemetryExtensions
         ArgumentNullException.ThrowIfNull(action);
 
         using var activity = source.StartActivity(operationName, ActivityKind.Internal);
+        activity?.SetTag(PeerServiceTag, "docling");
         activity?.SetTag(OperationTag, operationName);
         if (!string.IsNullOrEmpty(extension)) activity?.SetTag(ExtensionTag, extension);
 
@@ -226,6 +231,7 @@ public static class TelemetryExtensions
         ArgumentNullException.ThrowIfNull(action);
 
         using var activity = source.StartActivity(operationName, ActivityKind.Client);
+        activity?.SetTag(PeerServiceTag, "minio");
         activity?.SetTag(OperationTag, operationName);
         if (bytes.HasValue) activity?.SetTag(BytesTag, bytes.Value);
 
@@ -255,6 +261,7 @@ public static class TelemetryExtensions
         ArgumentNullException.ThrowIfNull(action);
 
         using var activity = source.StartActivity($"Mcp.Tool.{toolName}", ActivityKind.Server);
+        activity?.SetTag(PeerServiceTag, "ontopilot.mcp");
         activity?.SetTag(ToolTag, toolName);
 
         try

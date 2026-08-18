@@ -1,8 +1,10 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Text;
 using ClosedXML.Excel;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
+using OnToPilot.Observability;
 using UglyToad.PdfPig;
 
 namespace OnToPilot.Parsing;
@@ -53,32 +55,48 @@ public sealed class DocumentParser : IDocumentParser
         ArgumentNullException.ThrowIfNull(fileName);
 
         var ext = Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant();
-        if (!Supported.Contains(ext))
+        using var activity = Telemetry.ParsingSource.StartActivity("parsing.parse", ActivityKind.Internal);
+        activity?.SetTag(TelemetryExtensions.PeerServiceTag, "docling");
+        activity?.SetTag(TelemetryExtensions.ExtensionTag, ext);
+        activity?.SetTag("file.name", Path.GetFileName(fileName));
+        try
         {
-            // HTML/PPTX (and any other unsupported extension) follow the same rule: throw.
-            throw new NotSupportedException($"Unsupported file type: .{ext}");
-        }
-
-        // Buffer the stream so DoclingDotNet and the fallback can each seek.
-        var bytes = ReadAllBytes(content);
-
-        if (DoclingHandled.Contains(ext))
-        {
-            try
+            if (!Supported.Contains(ext))
             {
-                var docling = TryDocling(bytes, fileName, ext);
-                if (docling is not null && !string.IsNullOrWhiteSpace(docling.Text))
+                // HTML/PPTX (and any other unsupported extension) follow the same rule: throw.
+                throw new NotSupportedException($"Unsupported file type: .{ext}");
+            }
+
+            // Buffer the stream so DoclingDotNet and the fallback can each seek.
+            var bytes = ReadAllBytes(content);
+
+            if (DoclingHandled.Contains(ext))
+            {
+                try
                 {
-                    return docling;
+                    var docling = TryDocling(bytes, fileName, ext);
+                    if (docling is not null && !string.IsNullOrWhiteSpace(docling.Text))
+                    {
+                        activity?.SetTag(TelemetryExtensions.OutcomeTag, "success");
+                        return docling;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "DoclingDotNet failed on {File}; falling back", fileName);
                 }
             }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex, "DoclingDotNet failed on {File}; falling back", fileName);
-            }
-        }
 
-        return FallbackParse(bytes, ext, fileName);
+            var fallback = FallbackParse(bytes, ext, fileName);
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "success");
+            return fallback;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "error");
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            throw;
+        }
     }
 
     private static byte[] ReadAllBytes(Stream s)

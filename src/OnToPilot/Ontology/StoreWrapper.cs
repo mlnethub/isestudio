@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Text;
 using Oxigraph;
+using OnToPilot.Observability;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoBlankNode = Oxigraph.BlankNode;
@@ -69,7 +71,21 @@ public sealed class StoreWrapper : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (quads.Count == 0) return;
-        _store.Extend(quads);
+        using var activity = Telemetry.RdfSource.StartActivity("rdf.store.add", ActivityKind.Internal);
+        activity?.SetTag(TelemetryExtensions.PeerServiceTag, "oxigraph");
+        activity?.SetTag(TelemetryExtensions.GraphTag, graph.Value);
+        activity?.SetTag(TelemetryExtensions.QuadCountTag, quads.Count);
+        try
+        {
+            _store.Extend(quads);
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "success");
+        }
+        catch (Exception ex)
+        {
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "error");
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            throw;
+        }
     }
 
     /// <summary>Remove quads from the store. No-op for quads that aren't present.</summary>
@@ -79,9 +95,23 @@ public sealed class StoreWrapper : IDisposable
         ArgumentNullException.ThrowIfNull(quads);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        foreach (var q in quads)
+        if (quads.Count == 0) return;
+        using var activity = Telemetry.RdfSource.StartActivity("rdf.store.remove", ActivityKind.Internal);
+        activity?.SetTag(TelemetryExtensions.GraphTag, graph.Value);
+        activity?.SetTag(TelemetryExtensions.QuadCountTag, quads.Count);
+        try
         {
-            _store.Remove(q);
+            foreach (var q in quads)
+            {
+                _store.Remove(q);
+            }
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "success");
+        }
+        catch (Exception ex)
+        {
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "error");
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            throw;
         }
     }
 
@@ -229,10 +259,23 @@ public sealed class StoreWrapper : IDisposable
         ArgumentNullException.ThrowIfNull(quads);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        _store.ClearGraph(graph);
-        if (quads.Count > 0)
+        using var activity = Telemetry.RdfSource.StartActivity("rdf.store.replace", ActivityKind.Internal);
+        activity?.SetTag(TelemetryExtensions.GraphTag, graph.Value);
+        activity?.SetTag(TelemetryExtensions.QuadCountTag, quads.Count);
+        try
         {
-            _store.Extend(quads);
+            _store.ClearGraph(graph);
+            if (quads.Count > 0)
+            {
+                _store.Extend(quads);
+            }
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "success");
+        }
+        catch (Exception ex)
+        {
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "error");
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            throw;
         }
     }
 
@@ -296,16 +339,23 @@ public sealed class StoreWrapper : IDisposable
         ArgumentNullException.ThrowIfNull(graph);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        var lease = await _coordinator.AcquireAsync(
+        return await Telemetry.RdfSource.WithRdfActivity(
+            "rdf.store.capture",
             graph.Value,
-            waitTimeout ?? TimeSpan.FromSeconds(15),
+            async ct =>
+            {
+                var lease = await _coordinator.AcquireAsync(
+                    graph.Value,
+                    waitTimeout ?? TimeSpan.FromSeconds(15),
+                    ct).ConfigureAwait(false);
+
+                // Snapshot AFTER taking the lock so we capture exactly what the
+                // caller will see as the "before" state.
+                var snapshot = DumpNQuads(graph);
+
+                return new QuadChangeCapture(this, graph.Value, lease, revertOnError, snapshot);
+            },
             cancellationToken).ConfigureAwait(false);
-
-        // Snapshot AFTER taking the lock so we capture exactly what the
-        // caller will see as the "before" state.
-        var snapshot = DumpNQuads(graph);
-
-        return new QuadChangeCapture(this, graph.Value, lease, revertOnError, snapshot);
     }
 
     /// <summary>Convenience overload that accepts a string IRI.</summary>

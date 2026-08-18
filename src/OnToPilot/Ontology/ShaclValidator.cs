@@ -1,4 +1,5 @@
 using Oxigraph;
+using OnToPilot.Observability;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
@@ -87,16 +88,22 @@ public sealed class ShaclValidator
     {
         ArgumentException.ThrowIfNullOrEmpty(dataGraphIri);
 
-        var shapes = ReadShapes();
-        var violations = new List<ShaclViolation>();
-        foreach (var shape in shapes)
-        {
-            foreach (var target in shape.TargetClasses)
+        return Telemetry.RdfSource.WithShaclActivity(
+            "rdf.shacl.validate",
+            dataGraphIri,
+            () =>
             {
-                violations.AddRange(ValidateShape(shape, target, dataGraphIri));
-            }
-        }
-        return new ShaclReport(violations.Count == 0, violations);
+                var shapes = ReadShapes();
+                var violations = new List<ShaclViolation>();
+                foreach (var shape in shapes)
+                {
+                    foreach (var target in shape.TargetClasses)
+                    {
+                        violations.AddRange(ValidateShape(shape, target, dataGraphIri));
+                    }
+                }
+                return new ShaclReport(violations.Count == 0, violations);
+            }).Report;
     }
 
     // ------------------------------------------------------------------
