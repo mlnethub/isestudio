@@ -113,6 +113,9 @@ builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
         _ => { })
     .AddScheme<AuthenticationSchemeOptions, ApiBearerAuthenticationHandler>(
         ApiBearerAuthenticationHandler.SchemeName,
+        _ => { })
+    .AddScheme<AuthenticationSchemeOptions, ExternalTokenAuthenticationHandler>(
+        ExternalTokenAuthenticationHandler.SchemeName,
         _ => { });
 builder.Services.AddAuthorization();
 

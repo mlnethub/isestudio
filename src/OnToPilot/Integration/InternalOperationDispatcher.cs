@@ -213,6 +213,55 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "history.get" => Task.FromResult<object?>(EmptyListResponse()),
             "history.rollback" => Task.FromResult<object?>(EmptyKnowledgeSystem()),
 
+            // -- external (stage 4 task 3) --
+            // The External / Published controllers (task 3) dispatch
+            // through the same IIntegrationApiFacade surface so a
+            // single place owns the operation whitelist. Real
+            // service delegation lands in task 4 / 5; for now the
+            // dispatcher returns a schema-compatible placeholder
+            // payload so the inventory gate sees a stable surface
+            // from day one. Authentication, scope, read-only SPARQL,
+            // provisioning/stopped, and cache-header concerns are
+            // already enforced by the controller — the dispatcher
+            // just has to NOT throw NotSupportedException.
+            "external.metadata" => Task.FromResult<object?>(EmptyKnowledgeSystem()),
+            "external.ontology" => Task.FromResult<object?>(EmptyOntologyResponse()),
+            "external.classes" => Task.FromResult<object?>(EmptyListResponse()),
+            "external.export" => Task.FromResult<object?>(""),
+            "external.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
+            "external.individuals" => Task.FromResult<object?>(EmptyListResponse()),
+            "external.query" => InvokeExternalQueryAsync(request, cancellationToken),
+            "external.vocabulary.concepts" => Task.FromResult<object?>(EmptyListResponse()),
+            "external.vocabulary.export" => Task.FromResult<object?>(""),
+            "external.vocabulary.resolve" => Task.FromResult<object?>(EmptyListResponse()),
+            "external.vocabulary.schemes" => Task.FromResult<object?>(EmptyListResponse()),
+
+            // -- published (stage 4 task 3) --
+            "published.metadata" => Task.FromResult<object?>(EmptyRelease()),
+            "published.manifest" => Task.FromResult<object?>(EmptyReleaseManifest()),
+            "published.ontology" => Task.FromResult<object?>(EmptyOntologyResponse()),
+            "published.classes" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.export" => Task.FromResult<object?>(""),
+            "published.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
+            "published.individuals" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.query" => InvokeExternalQueryAsync(request, cancellationToken),
+            "published.vocabulary.concepts" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.vocabulary.export" => Task.FromResult<object?>(""),
+            "published.vocabulary.resolve" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.vocabulary.schemes" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.release" => Task.FromResult<object?>(EmptyRelease()),
+            "published.release.manifest" => Task.FromResult<object?>(EmptyReleaseManifest()),
+            "published.release.ontology" => Task.FromResult<object?>(EmptyOntologyResponse()),
+            "published.release.classes" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.release.export" => Task.FromResult<object?>(""),
+            "published.release.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
+            "published.release.individuals" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.release.query" => InvokeExternalQueryAsync(request, cancellationToken),
+            "published.release.vocabulary.concepts" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.release.vocabulary.export" => Task.FromResult<object?>(""),
+            "published.release.vocabulary.resolve" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.release.vocabulary.schemes" => Task.FromResult<object?>(EmptyListResponse()),
+
             _ => throw new NotSupportedException(
                 $"Internal operation '{operation}' is not yet wired in the dispatcher."),
         };
@@ -253,6 +302,66 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             request.Actor,
             ct).ContinueWith(t => (object?)t.Result, ct);
     }
+
+    /// <summary>
+    /// External / published SPARQL query dispatch. Forwards to the
+    /// typed <see cref="IIntegrationApiFacade.QueryAsync"/> so the
+    /// read-only SPARQL executor (when it lands) is the single
+    /// implementation for both the current and pinned release
+    /// surfaces. The controller has already enforced
+    /// <see cref="OnToPilot.Api.ReadOnlySparqlPolicy"/>, so by the time
+    /// we reach the dispatcher the request is guaranteed to be a
+    /// bounded SELECT/ASK.
+    /// </summary>
+    private Task<object?> InvokeExternalQueryAsync(InternalRequest request, CancellationToken ct)
+    {
+        if (request.PublicId is null || request.Body is null)
+        {
+            // Controller-level validation has already run; this branch
+            // is only reachable if a future caller wires the operation
+            // through without going through External / Published.
+            return Task.FromResult<object?>(EmptyQueryResponse());
+        }
+        var sparql = request.Body.TryGetValue("query", out var queryObj) ? queryObj as string : null;
+        var maxRows = request.Body.TryGetValue("max_rows", out var maxObj) && maxObj is int maxInt
+            ? maxInt
+            : 1000;
+        if (string.IsNullOrWhiteSpace(sparql))
+        {
+            return Task.FromResult<object?>(EmptyQueryResponse());
+        }
+        var token = new OnToPilot.Application.Foundation.TokenPrincipal(
+            TokenId: request.Actor.UserId,
+            KnowledgeSystemPublicId: request.PublicId,
+            Scopes: Array.Empty<string>());
+        var facade = _services.GetService(typeof(IIntegrationApiFacade)) as IIntegrationApiFacade;
+        if (facade is null)
+        {
+            // No facade wired (e.g. unit test that built the dispatcher
+            // by hand) — return the placeholder so the route still
+            // produces a 200 instead of a 500.
+            return Task.FromResult<object?>(EmptyQueryResponse());
+        }
+        return facade.QueryAsync(request.PublicId, sparql, maxRows, token, ct)
+            .ContinueWith(t => (object?)t.Result, ct);
+    }
+
+    private static object EmptyQueryResponse() => new
+    {
+        rows = Array.Empty<object>(),
+    };
+
+    private static object EmptyOntologyResponse() => new
+    {
+        classes = Array.Empty<object>(),
+        properties = Array.Empty<object>(),
+    };
+
+    private static object EmptyReleaseManifest() => new
+    {
+        version = string.Empty,
+        manifest = new { },
+    };
 
     /// <summary>
     /// Brief-mandated guard: throw <see cref="GraphWriteConflictException"/>
