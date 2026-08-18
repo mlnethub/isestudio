@@ -10,6 +10,13 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
     <PackageReference Include="Npgsql" Version="10.0.0" />
+    <!-- Oxigraph 0.5.8: the data-cutover RDF layer (Task 2) consumes the
+         same disk-backed store wrapper the rest of OnToPilot already uses.
+         The Migration project deliberately does NOT depend on
+         Oxigraph.Extensions.DotNetRDF — that package is only needed when
+         the .NET code is talking RDF terms to dotNetRDF. Migration talks
+         Oxigraph directly (Store, Quad, RdfFormat). -->
+    <PackageReference Include="Oxigraph" Version="0.5.8" />
   </ItemGroup>
 
   <ItemGroup>
