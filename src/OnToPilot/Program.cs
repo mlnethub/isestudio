@@ -2,15 +2,24 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using OnToPilot.Api;
+using OnToPilot.Application.Integration;
 using OnToPilot.Authentication;
 using OnToPilot.Authorization;
 using OnToPilot.Configuration;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Startup;
+using OnToPilot.Integration;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
+
+// Single in-process dispatcher + facade. Controllers depend only on the
+// facade; the dispatcher is the implementation seam for swapping in
+// per-operation delegates as Stage 2/3 services stabilise.
+builder.Services.AddSingleton<IInternalOperationDispatcher, InternalOperationDispatcher>();
+builder.Services.AddScoped<IIntegrationApiFacade, IntegrationApiFacade>();
+
 builder.Services.Configure<OnToPilotOptions>(
     builder.Configuration.GetSection(OnToPilotOptions.SectionName));
 
@@ -61,6 +70,13 @@ builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
         _ => { });
 builder.Services.AddAuthorization();
 
+// ASP.NET Core 10 ships the OpenAPI document at /openapi/v1.json when both
+// the transformer services and the endpoint mapping are registered. The
+// inventory test reads this URL, so the registration has to live next to
+// the rest of the pipeline wiring.
+builder.Services.AddOpenApi();
+builder.Services.AddEndpointsApiExplorer();
+
 // Translate model-state validation failures into the FastAPI envelope
 // ({ "detail": "..." }) instead of the default application/problem+json
 // body that [ApiController] otherwise emits.
@@ -87,6 +103,7 @@ app.UseMiddleware<FastApiErrorMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
+app.MapOpenApi();
 
 // ---- Bootstrap recovery ----
 // Empty installs MUST NOT auto-create a default admin user — the service

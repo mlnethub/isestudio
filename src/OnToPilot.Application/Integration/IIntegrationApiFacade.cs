@@ -3,20 +3,17 @@ using OnToPilot.Application.Foundation;
 namespace OnToPilot.Application.Integration;
 
 /// <summary>
-/// Shared surface for every REST controller and every MCP tool. Both
-/// transports adapt to <see cref="IIntegrationApiFacade"/> so the
-/// business logic has exactly one implementation, and a parity break in
-/// one transport cannot drift from the other. Real implementations land
-/// across tasks 2-4 of the api-mcp plan; this file only fixes the
-/// boundary so the contract tests can lock the parameter ordering.
+/// Single entry point shared by the internal REST controllers (task 2),
+/// the external / published API (task 3), and the MCP transport (task 4).
+/// Every transport-specific concern (HTTP, JSON envelope, SPARQL scoping)
+/// lives in the calling layer; the facade is purely protocol-agnostic.
 /// </summary>
 public interface IIntegrationApiFacade
 {
     /// <summary>
-    /// Return the current mutable TBox for the bound knowledge system as
-    /// structured classes, properties, axioms, and labels. Used by both
-    /// the internal <c>GET /api/.../ontology</c> endpoint and the MCP
-    /// <c>get_ontology</c> tool.
+    /// Fetch the structured TBox for the bound knowledge system. Used by
+    /// <c>GET /api/knowledge/{ks_id}/ontology</c> and the MCP <c>get_ontology</c>
+    /// tool.
     /// </summary>
     Task<OntologyResponse> GetOntologyAsync(
         long knowledgeSystemId,
@@ -24,10 +21,10 @@ public interface IIntegrationApiFacade
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Run a bounded read-only SPARQL SELECT or ASK over the published
-    /// graph of <paramref name="publicId"/>. Rejects SERVICE, FROM, GRAPH,
-    /// and update verbs before touching the store. Used by the external
-    /// API and by the MCP <c>query_knowledge</c> tool.
+    /// Run a read-only SPARQL query against the named knowledge system's
+    /// published graph. Used by the external API
+    /// (<c>POST /api/v1/knowledge-systems/{public_id}/query</c>); task 3 owns
+    /// the read-only-policy enforcement.
     /// </summary>
     Task<QueryResponse> QueryAsync(
         string publicId,
@@ -37,14 +34,37 @@ public interface IIntegrationApiFacade
         CancellationToken cancellationToken);
 
     /// <summary>
-    /// Validate a structured ontology change-set and return its exact
-    /// RDF diff without writing to the workspace. The caller applies the
-    /// same operations through a follow-up tool/endpoint after the
-    /// preview matches their expectations.
+    /// Preview a structured TBox edit-set against the bound knowledge system.
+    /// Returns the exact RDF diff the caller would commit if the operations
+    /// were applied, without mutating the workspace. Used by both the
+    /// internal <c>POST /api/knowledge/{ks_id}/ontology/edit</c> and the
+    /// MCP <c>preview_ontology_changes</c> tool.
     /// </summary>
     Task<ChangePreview> PreviewOntologyChangesAsync(
         long knowledgeSystemId,
         IReadOnlyList<EditOperation> operations,
         Actor actor,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Dispatch any internal REST operation by its stable name (e.g.
+    /// <c>"ontology.get"</c>, <c>"releases.publish"</c>). Returns the success
+    /// payload the controller should serialise verbatim, or throws to let
+    /// the controller convert the failure into the FastAPI envelope.
+    /// </summary>
+    /// <param name="operation">
+    /// Stable operation name. The internal API contract test enumerates the
+    /// 154 names from the frozen Python OpenAPI baseline; controllers pick
+    /// one and call through.
+    /// </param>
+    /// <param name="request">
+    /// All controller inputs (KS id, public id, resource ids, body, query,
+    /// actor) bundled into a single record so adding a new parameter does
+    /// not require touching every caller.
+    /// </param>
+    /// <param name="cancellationToken">Forwarded from the request scope.</param>
+    Task<object?> InvokeAsync(
+        string operation,
+        InternalRequest request,
         CancellationToken cancellationToken);
 }

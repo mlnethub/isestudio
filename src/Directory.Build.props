@@ -1,0 +1,20 @@
+<Project>
+
+  <!--
+    NuGet advisory suppression shared by every project under src/.
+
+    The api-mcp plan accepts NU1902 (AngleSharp 1.4.0) and NU1903
+    (SQLitePCLRaw.lib.e_sqlite3 2.1.11) as inherited advisories:
+    both packages are transitive from Oxigraph 0.5.8, which we pin
+    deliberately. Promoting the advisories to errors under
+    -warnaserror would block every restore, so we suppress them here
+    rather than per-project. Projects that want stronger guarantees
+    can opt back in by overriding the NoWarn list in their own
+    csproj.
+  -->
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);NU1902;NU1903</NoWarn>
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1902;NU1903</WarningsNotAsErrors>
+  </PropertyGroup>
+
+</Project>

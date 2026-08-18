@@ -9,9 +9,15 @@ namespace OnToPilot.Controllers;
 /// The Python backend exposes the same shape at <c>/api/v1/knowledge-systems/{public_id}</c>;
 /// this controller is the .NET counterpart that accepts
 /// <c>Authorization: Bearer &lt;opk_...&gt;</c> instead of a session cookie.
+///
+/// <para>The diagnostic <c>whoami</c> endpoint is hidden from the OpenAPI
+/// document &mdash; it is a developer aid, not part of the public contract.
+/// The api-mcp inventory gate asserts (METHOD, path) parity with the frozen
+/// Python baseline, so the route must not leak into the .NET document.</para>
 /// </summary>
 [ApiController]
 [Route("api/bearer")]
+[ApiExplorerSettings(IgnoreApi = true)]
 public sealed class ApiBearerController : ControllerBase
 {
     /// <summary>
