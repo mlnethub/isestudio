@@ -81,6 +81,9 @@ BEGIN
             FROM _fk_snap_ks_ownerid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE ks.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "knowledgesystem" ALTER COLUMN "ownerid" SET NOT NULL;
+        END IF;
         ALTER TABLE "knowledgesystem"
             ADD CONSTRAINT "FK_knowledgesystem_users_OwnerId"
             FOREIGN KEY ("ownerid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -117,6 +120,9 @@ BEGIN
             FROM _fk_snap_ks_llmprov s
             JOIN "provider" p ON p.id = s.fk_value
             WHERE ks.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "knowledgesystem" ALTER COLUMN "llmproviderid" SET NOT NULL;
+        END IF;
         ALTER TABLE "knowledgesystem"
             ADD CONSTRAINT "FK_knowledgesystem_provider_LlmProviderId"
             FOREIGN KEY ("llmproviderid") REFERENCES "provider"("guid_id") ON DELETE RESTRICT;
@@ -153,6 +159,9 @@ BEGIN
             FROM _fk_snap_ks_embprov s
             JOIN "provider" p ON p.id = s.fk_value
             WHERE ks.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "knowledgesystem" ALTER COLUMN "embeddingproviderid" SET NOT NULL;
+        END IF;
         ALTER TABLE "knowledgesystem"
             ADD CONSTRAINT "FK_knowledgesystem_provider_EmbeddingProviderId"
             FOREIGN KEY ("embeddingproviderid") REFERENCES "provider"("guid_id") ON DELETE RESTRICT;
@@ -189,6 +198,9 @@ BEGIN
             FROM _fk_snap_as_userid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "authsession" ALTER COLUMN "userid" SET NOT NULL;
+        END IF;
         ALTER TABLE "authsession"
             ADD CONSTRAINT "FK_authsession_users_UserId"
             FOREIGN KEY ("userid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -225,6 +237,9 @@ BEGIN
             FROM _fk_snap_kg_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE k.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "ksgrant" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "ksgrant"
             ADD CONSTRAINT "FK_ksgrant_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -261,6 +276,9 @@ BEGIN
             FROM _fk_snap_kg_userid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE k.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "ksgrant" ALTER COLUMN "userid" SET NOT NULL;
+        END IF;
         ALTER TABLE "ksgrant"
             ADD CONSTRAINT "FK_ksgrant_users_UserId"
             FOREIGN KEY ("userid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -297,6 +315,9 @@ BEGIN
             FROM _fk_snap_kpo_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE k.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "knowledgepromptoverride" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "knowledgepromptoverride"
             ADD CONSTRAINT "FK_kpo_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -333,6 +354,9 @@ BEGIN
             FROM _fk_snap_kpo_ubyid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE k.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "knowledgepromptoverride" ALTER COLUMN "updatedbyid" SET NOT NULL;
+        END IF;
         ALTER TABLE "knowledgepromptoverride"
             ADD CONSTRAINT "FK_kpo_users_UpdatedById"
             FOREIGN KEY ("updatedbyid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -369,6 +393,9 @@ BEGIN
             FROM _fk_snap_kat_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE k.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "knowledgeapitoken" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "knowledgeapitoken"
             ADD CONSTRAINT "FK_kat_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -405,6 +432,9 @@ BEGIN
             FROM _fk_snap_kat_cbyid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE k.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "knowledgeapitoken" ALTER COLUMN "createdbyid" SET NOT NULL;
+        END IF;
         ALTER TABLE "knowledgeapitoken"
             ADD CONSTRAINT "FK_kat_users_CreatedById"
             FOREIGN KEY ("createdbyid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -441,6 +471,9 @@ BEGIN
             FROM _fk_snap_mcp_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE m.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "mcpusertoken" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "mcpusertoken"
             ADD CONSTRAINT "FK_mcp_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -477,6 +510,9 @@ BEGIN
             FROM _fk_snap_mcp_userid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE m.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "mcpusertoken" ALTER COLUMN "userid" SET NOT NULL;
+        END IF;
         ALTER TABLE "mcpusertoken"
             ADD CONSTRAINT "FK_mcp_users_UserId"
             FOREIGN KEY ("userid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -513,6 +549,9 @@ BEGIN
             FROM _fk_snap_doc_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE d.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "document" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "document"
             ADD CONSTRAINT "FK_document_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -549,6 +588,9 @@ BEGIN
             FROM _fk_snap_chunk_docid s
             JOIN "document" d ON d.id = s.fk_value
             WHERE c.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "chunk" ALTER COLUMN "documentid" SET NOT NULL;
+        END IF;
         ALTER TABLE "chunk"
             ADD CONSTRAINT "FK_chunk_document_DocumentId"
             FOREIGN KEY ("documentid") REFERENCES "document"("guid_id") ON DELETE CASCADE;
@@ -585,6 +627,9 @@ BEGIN
             FROM _fk_snap_sc_llmprov s
             JOIN "provider" p ON p.id = s.fk_value
             WHERE sc.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "systemconfig" ALTER COLUMN "llmproviderid" SET NOT NULL;
+        END IF;
         ALTER TABLE "systemconfig"
             ADD CONSTRAINT "FK_systemconfig_provider_LlmProviderId"
             FOREIGN KEY ("llmproviderid") REFERENCES "provider"("guid_id") ON DELETE RESTRICT;
@@ -621,6 +666,9 @@ BEGIN
             FROM _fk_snap_sc_embprov s
             JOIN "provider" p ON p.id = s.fk_value
             WHERE sc.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "systemconfig" ALTER COLUMN "embeddingproviderid" SET NOT NULL;
+        END IF;
         ALTER TABLE "systemconfig"
             ADD CONSTRAINT "FK_systemconfig_provider_EmbeddingProviderId"
             FOREIGN KEY ("embeddingproviderid") REFERENCES "provider"("guid_id") ON DELETE RESTRICT;
@@ -657,6 +705,9 @@ BEGIN
             FROM _fk_snap_ej_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE e.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "extractionjob" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "extractionjob"
             ADD CONSTRAINT "FK_extractionjob_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -694,6 +745,9 @@ BEGIN
             FROM _fk_snap_ae_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "auditevent" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "auditevent"
             ADD CONSTRAINT "FK_auditevent_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -727,6 +781,9 @@ BEGIN
             FROM _fk_snap_ae_actorid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "auditevent" ALTER COLUMN "actorid" SET NOT NULL;
+        END IF;
         ALTER TABLE "auditevent"
             ADD CONSTRAINT "FK_auditevent_users_ActorId"
             FOREIGN KEY ("actorid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -764,6 +821,9 @@ BEGIN
             FROM _fk_snap_ap_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "axiomprovenance" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "axiomprovenance"
             ADD CONSTRAINT "FK_axiomprovenance_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -797,6 +857,9 @@ BEGIN
             FROM _fk_snap_ap_chunkid s
             JOIN "chunk" c ON c.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "axiomprovenance" ALTER COLUMN "chunkid" SET NOT NULL;
+        END IF;
         ALTER TABLE "axiomprovenance"
             ADD CONSTRAINT "FK_axiomprovenance_chunk_ChunkId"
             FOREIGN KEY ("chunkid") REFERENCES "chunk"("guid_id") ON DELETE RESTRICT;
@@ -830,6 +893,9 @@ BEGIN
             FROM _fk_snap_ap_jobid s
             JOIN "extractionjob" e ON e.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "axiomprovenance" ALTER COLUMN "jobid" SET NOT NULL;
+        END IF;
         ALTER TABLE "axiomprovenance"
             ADD CONSTRAINT "FK_axiomprovenance_extractionjob_JobId"
             FOREIGN KEY ("jobid") REFERENCES "extractionjob"("guid_id") ON DELETE RESTRICT;
@@ -863,6 +929,9 @@ BEGIN
             FROM _fk_snap_ap_aeid s
             JOIN "auditevent" ae ON ae.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "axiomprovenance" ALTER COLUMN "auditeventid" SET NOT NULL;
+        END IF;
         ALTER TABLE "axiomprovenance"
             ADD CONSTRAINT "FK_axiomprovenance_auditevent_AuditEventId"
             FOREIGN KEY ("auditeventid") REFERENCES "auditevent"("guid_id") ON DELETE RESTRICT;
@@ -896,6 +965,9 @@ BEGIN
             FROM _fk_snap_abp_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "aboxprovenance" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "aboxprovenance"
             ADD CONSTRAINT "FK_aboxprovenance_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -929,6 +1001,9 @@ BEGIN
             FROM _fk_snap_abp_chunkid s
             JOIN "chunk" c ON c.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "aboxprovenance" ALTER COLUMN "chunkid" SET NOT NULL;
+        END IF;
         ALTER TABLE "aboxprovenance"
             ADD CONSTRAINT "FK_aboxprovenance_chunk_ChunkId"
             FOREIGN KEY ("chunkid") REFERENCES "chunk"("guid_id") ON DELETE RESTRICT;
@@ -962,6 +1037,9 @@ BEGIN
             FROM _fk_snap_abp_jobid s
             JOIN "extractionjob" e ON e.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "aboxprovenance" ALTER COLUMN "jobid" SET NOT NULL;
+        END IF;
         ALTER TABLE "aboxprovenance"
             ADD CONSTRAINT "FK_aboxprovenance_extractionjob_JobId"
             FOREIGN KEY ("jobid") REFERENCES "extractionjob"("guid_id") ON DELETE RESTRICT;
@@ -995,6 +1073,9 @@ BEGIN
             FROM _fk_snap_abp_aeid s
             JOIN "auditevent" ae ON ae.id = s.fk_value
             WHERE a.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "aboxprovenance" ALTER COLUMN "auditeventid" SET NOT NULL;
+        END IF;
         ALTER TABLE "aboxprovenance"
             ADD CONSTRAINT "FK_aboxprovenance_auditevent_AuditEventId"
             FOREIGN KEY ("auditeventid") REFERENCES "auditevent"("guid_id") ON DELETE RESTRICT;
@@ -1031,6 +1112,9 @@ BEGIN
             FROM _fk_snap_or_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE o.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "ontologyrelease" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "ontologyrelease"
             ADD CONSTRAINT "FK_ontologyrelease_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -1064,6 +1148,9 @@ BEGIN
             FROM _fk_snap_or_cbyid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE o.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "ontologyrelease" ALTER COLUMN "createdbyid" SET NOT NULL;
+        END IF;
         ALTER TABLE "ontologyrelease"
             ADD CONSTRAINT "FK_ontologyrelease_users_CreatedById"
             FOREIGN KEY ("createdbyid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -1097,6 +1184,9 @@ BEGIN
             FROM _fk_snap_or_rbyid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE o.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "ontologyrelease" ALTER COLUMN "reviewedbyid" SET NOT NULL;
+        END IF;
         ALTER TABLE "ontologyrelease"
             ADD CONSTRAINT "FK_ontologyrelease_users_ReviewedById"
             FOREIGN KEY ("reviewedbyid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -1130,6 +1220,9 @@ BEGIN
             FROM _fk_snap_or_pbyid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE o.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "ontologyrelease" ALTER COLUMN "publishedbyid" SET NOT NULL;
+        END IF;
         ALTER TABLE "ontologyrelease"
             ADD CONSTRAINT "FK_ontologyrelease_users_PublishedById"
             FOREIGN KEY ("publishedbyid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -1166,6 +1259,9 @@ BEGIN
             FROM _fk_snap_rd_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE r.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "releasedeployment" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "releasedeployment"
             ADD CONSTRAINT "FK_releasedeployment_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -1199,6 +1295,9 @@ BEGIN
             FROM _fk_snap_rd_relid s
             JOIN "ontologyrelease" o ON o.id = s.fk_value
             WHERE r.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "releasedeployment" ALTER COLUMN "releaseid" SET NOT NULL;
+        END IF;
         ALTER TABLE "releasedeployment"
             ADD CONSTRAINT "FK_releasedeployment_ontologyrelease_ReleaseId"
             FOREIGN KEY ("releaseid") REFERENCES "ontologyrelease"("guid_id") ON DELETE RESTRICT;
@@ -1235,6 +1334,9 @@ BEGIN
             FROM _fk_snap_rsp_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE r.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "releasestatementprovenance" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "releasestatementprovenance"
             ADD CONSTRAINT "FK_rsp_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -1268,6 +1370,9 @@ BEGIN
             FROM _fk_snap_rsp_relid s
             JOIN "ontologyrelease" o ON o.id = s.fk_value
             WHERE r.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "releasestatementprovenance" ALTER COLUMN "releaseid" SET NOT NULL;
+        END IF;
         ALTER TABLE "releasestatementprovenance"
             ADD CONSTRAINT "FK_rsp_ontologyrelease_ReleaseId"
             FOREIGN KEY ("releaseid") REFERENCES "ontologyrelease"("guid_id") ON DELETE RESTRICT;
@@ -1304,6 +1409,9 @@ BEGIN
             FROM _fk_snap_xj_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE e.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "exportjob" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "exportjob"
             ADD CONSTRAINT "FK_exportjob_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -1337,6 +1445,9 @@ BEGIN
             FROM _fk_snap_xj_relid s
             JOIN "ontologyrelease" o ON o.id = s.fk_value
             WHERE e.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "exportjob" ALTER COLUMN "releaseid" SET NOT NULL;
+        END IF;
         ALTER TABLE "exportjob"
             ADD CONSTRAINT "FK_exportjob_ontologyrelease_ReleaseId"
             FOREIGN KEY ("releaseid") REFERENCES "ontologyrelease"("guid_id") ON DELETE RESTRICT;
@@ -1370,6 +1481,9 @@ BEGIN
             FROM _fk_snap_xj_cbyid s
             JOIN "users" u ON u.id = s.fk_value
             WHERE e.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "exportjob" ALTER COLUMN "createdbyid" SET NOT NULL;
+        END IF;
         ALTER TABLE "exportjob"
             ADD CONSTRAINT "FK_exportjob_users_CreatedById"
             FOREIGN KEY ("createdbyid") REFERENCES "users"("guid_id") ON DELETE RESTRICT;
@@ -1406,6 +1520,9 @@ BEGIN
             FROM _fk_snap_cf_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE c.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "conflict" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "conflict"
             ADD CONSTRAINT "FK_conflict_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -1442,6 +1559,9 @@ BEGIN
             FROM _fk_snap_er_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE e.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "entityresolution" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "entityresolution"
             ADD CONSTRAINT "FK_entityresolution_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -1475,6 +1595,9 @@ BEGIN
             FROM _fk_snap_er_scid s
             JOIN "chunk" c ON c.id = s.fk_value
             WHERE e.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "entityresolution" ALTER COLUMN "sourcechunkid" SET NOT NULL;
+        END IF;
         ALTER TABLE "entityresolution"
             ADD CONSTRAINT "FK_entityresolution_chunk_SourceChunkId"
             FOREIGN KEY ("sourcechunkid") REFERENCES "chunk"("guid_id") ON DELETE RESTRICT;
@@ -1511,6 +1634,9 @@ BEGIN
             FROM _fk_snap_tp_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE t.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "termproposal" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "termproposal"
             ADD CONSTRAINT "FK_termproposal_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -1544,6 +1670,9 @@ BEGIN
             FROM _fk_snap_tp_ejid s
             JOIN "extractionjob" e ON e.id = s.fk_value
             WHERE t.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "termproposal" ALTER COLUMN "extractionjobid" SET NOT NULL;
+        END IF;
         ALTER TABLE "termproposal"
             ADD CONSTRAINT "FK_termproposal_extractionjob_ExtractionJobId"
             FOREIGN KEY ("extractionjobid") REFERENCES "extractionjob"("guid_id") ON DELETE RESTRICT;
@@ -1580,6 +1709,9 @@ BEGIN
             FROM _fk_snap_tbr_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE t.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "tboxreconciliation" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "tboxreconciliation"
             ADD CONSTRAINT "FK_tboxreconciliation_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;
@@ -1616,6 +1748,9 @@ BEGIN
             FROM _fk_snap_vd_ksid s
             JOIN "knowledgesystem" ks ON ks.id = s.fk_value
             WHERE v.id = s.row_id;
+        IF was_not_null THEN
+            ALTER TABLE "validationdecision" ALTER COLUMN "knowledgesystemid" SET NOT NULL;
+        END IF;
         ALTER TABLE "validationdecision"
             ADD CONSTRAINT "FK_validationdecision_knowledgesystem_KnowledgeSystemId"
             FOREIGN KEY ("knowledgesystemid") REFERENCES "knowledgesystem"("guid_id") ON DELETE RESTRICT;

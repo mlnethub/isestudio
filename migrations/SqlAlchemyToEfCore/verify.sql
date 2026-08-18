@@ -95,29 +95,7 @@ BEGIN
     ] LOOP
         EXECUTE format('SELECT count(*)::bigint FROM %I', t) INTO rc;
 
-        oc := 0;
-        FOR fk_col IN
-            SELECT c.column_name
-            FROM information_schema.columns c
-            WHERE c.table_schema = 'public'
-              AND c.table_name = t
-              AND c.data_type = 'uuid'
-              AND c.column_name = ANY(fk_cols)
-        LOOP
-            parent_table := _ontopilot_resolve_parent(t, fk_col);
-            IF parent_table IS NULL THEN
-                CONTINUE;
-            END IF;
-            EXECUTE format(
-                'SELECT count(*)::bigint FROM %I t WHERE t.%I IS NOT NULL '
-                'AND NOT EXISTS (SELECT 1 FROM %I p WHERE p.guid_id = t.%I)',
-                t, fk_col, parent_table, fk_col
-            ) INTO oc;
-            -- oc is the count for this FK only; accumulate below.
-            -- (We need a separate variable since oc is also being used
-            --  as the accumulator for the table total.)
-        END LOOP;
-        -- Sum across FKs: re-iterate with an accumulator.
+        -- Sum orphan rows across every uuid-typed FK column.
         oc := 0;
         FOR fk_col IN
             SELECT c.column_name

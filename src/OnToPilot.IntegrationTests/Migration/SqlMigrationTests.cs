@@ -662,8 +662,7 @@ public sealed class SqlMigrationTests : IAsyncLifetime
             await using var c = conn.CreateCommand();
             c.CommandText = $"SELECT count(*)::bigint FROM {table}";
             var actual = (long)(await c.ExecuteScalarAsync())!;
-            Assert.True(actual >= expectedCount,
-                $"table {table}: expected at least {expectedCount} rows after rollback, got {actual}");
+            Assert.Equal(expectedCount, actual);
         }
 
         // No guid_id / legacy_id columns should remain.

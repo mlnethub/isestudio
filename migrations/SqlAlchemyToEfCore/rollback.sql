@@ -248,18 +248,27 @@ END $$;
 -- Cast every uuid-typed FK column back to bigint, populating it with
 -- the parent's id (looked up by the parent's guid_id). For each
 -- (child, fk, parent) tuple we snapshot, drop the FK constraint, cast
--- the column, backfill, and re-add the original bigint constraint.
+-- the column, backfill, conditionally re-add NOT NULL, and re-add the
+-- original <child_table>_<child_fk_col>_fkey constraint with the original
+-- ON DELETE rule so SQLAlchemy reflection finds the relations.
 -- ---------------------------------------------------------------------------
 DO $$
 DECLARE
     rec record;
     snap_table text;
+    original_fk_name text;
+    original_delete_rule text;
+    was_not_null_rb boolean;
+    not_null_clause text;
+    delete_clause text;
 BEGIN
     FOR rec IN
         SELECT
-            tc.table_name  AS child_table,
+            tc.table_name   AS child_table,
             kcu.column_name AS child_fk_col,
-            ccu.table_name  AS parent_table
+            ccu.table_name  AS parent_table,
+            tc.constraint_name AS fk_name,
+            rc.delete_rule  AS on_delete
         FROM information_schema.table_constraints tc
         JOIN information_schema.key_column_usage kcu
           ON tc.constraint_name = kcu.constraint_name
@@ -267,6 +276,9 @@ BEGIN
         JOIN information_schema.constraint_column_usage ccu
           ON ccu.constraint_name = tc.constraint_name
          AND ccu.table_schema = tc.table_schema
+        JOIN information_schema.referential_constraints rc
+          ON rc.constraint_name = tc.constraint_name
+         AND rc.constraint_schema = tc.table_schema
         JOIN information_schema.columns c
           ON c.table_schema = 'public'
          AND c.table_name = tc.table_name
@@ -281,21 +293,29 @@ BEGIN
             'SELECT id AS row_id, %I AS fk_value FROM %I',
             snap_table, rec.child_fk_col, rec.child_table
         );
+
+        -- Drop the existing (forward-migration) FK constraint.
+        original_fk_name := rec.fk_name;
         EXECUTE format(
             'ALTER TABLE %I DROP CONSTRAINT IF EXISTS %I',
-            rec.child_table, (
-                SELECT tc.constraint_name
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                  ON tc.constraint_name = kcu.constraint_name
-                 AND tc.table_schema = kcu.table_schema
-                WHERE tc.constraint_type = 'FOREIGN KEY'
-                  AND tc.table_schema = 'public'
-                  AND tc.table_name = rec.child_table
-                  AND kcu.column_name = rec.child_fk_col
-                LIMIT 1
-            )
+            rec.child_table, original_fk_name
         );
+
+        -- Capture original NOT NULL state so we can re-add it.
+        SELECT c.is_nullable = 'NO' INTO was_not_null_rb
+        FROM information_schema.columns c
+        WHERE c.table_schema = 'public'
+          AND c.table_name = rec.child_table
+          AND c.column_name = rec.child_fk_col;
+
+        -- Cast uuid back to bigint. NOT NULL would prevent the cast
+        -- (USING NULL fills with NULL), so drop it conditionally first.
+        IF was_not_null_rb THEN
+            EXECUTE format(
+                'ALTER TABLE %I ALTER COLUMN %I DROP NOT NULL',
+                rec.child_table, rec.child_fk_col
+            );
+        END IF;
         EXECUTE format(
             'ALTER TABLE %I ALTER COLUMN %I TYPE bigint USING NULL',
             rec.child_table, rec.child_fk_col
@@ -305,6 +325,35 @@ BEGIN
             'JOIN %I p ON p.guid_id = s.fk_value '
             'WHERE c.id = s.row_id',
             rec.child_table, rec.child_fk_col, snap_table, rec.parent_table
+        );
+        IF was_not_null_rb THEN
+            EXECUTE format(
+                'ALTER TABLE %I ALTER COLUMN %I SET NOT NULL',
+                rec.child_table, rec.child_fk_col
+            );
+        END IF;
+
+        -- Re-add the original FK constraint using the Postgres-default
+        -- <child_table>_<child_fk_col>_fkey naming so SQLAlchemy
+        -- reflection finds the relationship. Preserve the original
+        -- ON DELETE rule; PostgreSQL stores it as 'RESTRICT', 'CASCADE',
+        -- 'NO ACTION', 'SET NULL', or 'SET DEFAULT'.
+        original_delete_rule := UPPER(rec.on_delete);
+        delete_clause := CASE original_delete_rule
+            WHEN 'CASCADE'    THEN 'ON DELETE CASCADE'
+            WHEN 'SET NULL'   THEN 'ON DELETE SET NULL'
+            WHEN 'SET DEFAULT' THEN 'ON DELETE SET DEFAULT'
+            WHEN 'RESTRICT'   THEN 'ON DELETE RESTRICT'
+            ELSE '' -- NO ACTION is the default and can be omitted
+        END;
+        EXECUTE format(
+            'ALTER TABLE %I ADD CONSTRAINT %I '
+            'FOREIGN KEY (%I) REFERENCES %I(id) %s',
+            rec.child_table,
+            rec.child_table || '_' || rec.child_fk_col || '_fkey',
+            rec.child_fk_col,
+            rec.parent_table,
+            delete_clause
         );
     END LOOP;
 END $$;
