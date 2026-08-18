@@ -24,6 +24,7 @@ Thumbs.db
 # Local runtime / acceptance artifacts
 *.log
 tmp/
+migration/actual/
 
 # SDD scratch spaces
 .superpowers/
