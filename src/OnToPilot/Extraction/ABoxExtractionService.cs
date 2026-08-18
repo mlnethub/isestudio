@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using OnToPilot.Llm;
+using OnToPilot.Observability;
 using OnToPilot.Ontology;
 using OnToPilot.Parsing;
 
@@ -63,32 +64,55 @@ public sealed class ABoxExtractionService
         ArgumentNullException.ThrowIfNull(chunk);
         ArgumentNullException.ThrowIfNull(existingClassLabels);
 
-        var classListing = existingClassLabels.Count == 0
-            ? "(no classes declared yet)"
-            : string.Join(", ", existingClassLabels);
+        var provider = ResolveProvider(chat);
+        var model = ResolveModel(chat);
 
-        var messages = new List<ChatMessage>
-        {
-            new(ChatRole.System, SystemPrompt),
-            new(ChatRole.User,
-                $"Knowledge system: {ks.GraphIri}\nBase IRI: {ks.BaseIri}\n" +
-                $"Existing TBox classes: {classListing}\n\n" +
-                $"Chunk #{chunk.Idx} text:\n{chunk.Text}"),
-        };
+        return await Telemetry.LlmSource.WithLlmActivity(
+            operationName: "Llm.Extract",
+            provider: provider,
+            model: model,
+            action: async ct =>
+            {
+                var classListing = existingClassLabels.Count == 0
+                    ? "(no classes declared yet)"
+                    : string.Join(", ", existingClassLabels);
 
-        try
-        {
-            var response = await chat.GetResponseAsync(messages, options: null, cancellationToken).ConfigureAwait(false);
-            return ExtractionDeltaParser.ParseABox(response.Text);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is HttpRequestException or IOException)
-        {
-            // Transient provider/network error: see TBoxExtractionService.
-            return ABoxDelta.Empty;
-        }
+                var messages = new List<ChatMessage>
+                {
+                    new(ChatRole.System, SystemPrompt),
+                    new(ChatRole.User,
+                        $"Knowledge system: {ks.GraphIri}\nBase IRI: {ks.BaseIri}\n" +
+                        $"Existing TBox classes: {classListing}\n\n" +
+                        $"Chunk #{chunk.Idx} text:\n{chunk.Text}"),
+                };
+
+                try
+                {
+                    var response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
+                    return ExtractionDeltaParser.ParseABox(response.Text);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or IOException)
+                {
+                    // Transient provider/network error: see TBoxExtractionService.
+                    return ABoxDelta.Empty;
+                }
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string ResolveProvider(IChatClient chat)
+    {
+        var metadata = chat.GetService<ChatClientMetadata>();
+        return metadata?.ProviderName ?? "unknown";
+    }
+
+    private static string ResolveModel(IChatClient chat)
+    {
+        var metadata = chat.GetService<ChatClientMetadata>();
+        return metadata?.DefaultModelId ?? "unknown";
     }
 }

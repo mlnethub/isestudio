@@ -1,6 +1,7 @@
 using System.ClientModel;
 using Microsoft.Extensions.AI;
 using OnToPilot.Llm;
+using OnToPilot.Observability;
 using OnToPilot.Ontology;
 using OnToPilot.Parsing;
 
@@ -65,29 +66,52 @@ public sealed class TBoxExtractionService
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentNullException.ThrowIfNull(chunk);
 
-        var messages = new List<ChatMessage>
-        {
-            new(ChatRole.System, SystemPrompt),
-            new(ChatRole.User,
-                $"Knowledge system: {ks.GraphIri}\nBase IRI: {ks.BaseIri}\nChunk #{chunk.Idx} text:\n{chunk.Text}"),
-        };
+        var provider = ResolveProvider(chat);
+        var model = ResolveModel(chat);
 
-        ChatResponse response;
-        try
-        {
-            response = await chat.GetResponseAsync(messages, options: null, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex) when (ex is HttpRequestException or IOException)
-        {
-            // Transient provider/network error: log via the orchestrator's
-            // progress channel and skip this chunk.
-            return TBoxDelta.Empty;
-        }
+        return await Telemetry.LlmSource.WithLlmActivity(
+            operationName: "Llm.Extract",
+            provider: provider,
+            model: model,
+            action: async ct =>
+            {
+                var messages = new List<ChatMessage>
+                {
+                    new(ChatRole.System, SystemPrompt),
+                    new(ChatRole.User,
+                        $"Knowledge system: {ks.GraphIri}\nBase IRI: {ks.BaseIri}\nChunk #{chunk.Idx} text:\n{chunk.Text}"),
+                };
 
-        return ExtractionDeltaParser.ParseTBox(response.Text);
+                ChatResponse response;
+                try
+                {
+                    response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or IOException)
+                {
+                    // Transient provider/network error: log via the orchestrator's
+                    // progress channel and skip this chunk.
+                    return TBoxDelta.Empty;
+                }
+
+                return ExtractionDeltaParser.ParseTBox(response.Text);
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string ResolveProvider(IChatClient chat)
+    {
+        var metadata = chat.GetService<ChatClientMetadata>();
+        return metadata?.ProviderName ?? "unknown";
+    }
+
+    private static string ResolveModel(IChatClient chat)
+    {
+        var metadata = chat.GetService<ChatClientMetadata>();
+        return metadata?.DefaultModelId ?? "unknown";
     }
 }

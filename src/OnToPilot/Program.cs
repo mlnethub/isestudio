@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.AspNetCore;
+using Npgsql;
 using OnToPilot.Api;
 using OnToPilot.Application.Integration;
 using OnToPilot.Authentication;
@@ -14,9 +15,33 @@ using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Startup;
 using OnToPilot.Integration;
 using OnToPilot.Mcp;
+using OnToPilot.Observability;
 using OnToPilot.Serialization;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ---- Structured logging (Serilog) ----
+// Wire Serilog as the host logger so log events flow through the
+// redaction processor before any sink writes them. The processor scrubs
+// password / API key / bearer / session / prompt / document body fields
+// from every property — see SecretRedactionProcessor for the rule set.
+// Production deployments plug a non-Console sink in via configuration;
+// the contract is just "the enricher runs before the sink".
+builder.Host.UseSerilog((context, services, configuration) =>
+{
+    configuration
+        .ReadFrom.Configuration(context.Configuration)
+        .ReadFrom.Services(services)
+        .Enrich.FromLogContext()
+        .Enrich.WithMachineName()
+        .Enrich.WithThreadId()
+        .Enrich.With(new SecretRedactionProcessor())
+        .WriteTo.Console();
+});
 
 // Wire the source-generated JSON serializer context so every typed DTO
 // the controllers return (FastApiError, OntologyResponse, ChangePreview,
@@ -147,6 +172,27 @@ builder.Services.AddAuthorization();
 // the rest of the pipeline wiring.
 builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
+
+// ---- OpenTelemetry ----
+// Subscribe to every OnToPilot.* ActivitySource (defined in
+// OnToPilot.Observability.Telemetry) and the shared "OnToPilot" meter.
+// ASP.NET Core + Npgsql instrumentation provide the rest. The brief
+// requires this exact wiring so a new source / meter only needs to be
+// added in Telemetry.cs — no Program.cs edit.
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService(
+        serviceName: "OnToPilot",
+        serviceVersion: typeof(Program).Assembly.GetName().Version?.ToString() ?? "1.0.0"))
+    .WithTracing(tracing => tracing
+        .AddSource("OnToPilot.*")
+        .AddAspNetCoreInstrumentation()
+        .AddHttpClientInstrumentation()
+        .AddNpgsql())
+    .WithMetrics(metrics => metrics
+        .AddMeter("OnToPilot")
+        .AddAspNetCoreInstrumentation()
+        .AddRuntimeInstrumentation()
+        .AddProcessInstrumentation());
 
 // ---- MCP transport ----
 // The MCP transport is registered with the SDK's HttpServer transport in
