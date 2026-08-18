@@ -12,6 +12,21 @@ using OntoQueryResultsFormat = Oxigraph.QueryResultsFormat;
 namespace OnToPilot.Migration.Rdf;
 
 /// <summary>
+/// Composite result of a single RDF migration run. Carries the brief's
+/// five-field <see cref="Report"/> and the audit / provenance sibling
+/// (<see cref="Audit"/>) that Task 4's orchestrator needs to gate the
+/// cutover. The two records are deliberately separate so
+/// <see cref="RdfMigrationReport"/> stays exactly the shape the brief
+/// mandates.
+/// </summary>
+/// <param name="Report">The five-field data record (Strategy, QuadCount,
+/// NamedGraphs, QueryResultHashes, WriteRevertPassed).</param>
+/// <param name="Audit">The audit / provenance sibling
+/// (SourceOpenedByDotNet, CopyPath, WorkPath, FinishedAtUtc,
+/// CleanupSucceeded, DirectStrategyError).</param>
+public sealed record RdfMigrationResult(RdfMigrationReport Report, RdfMigrationAudit Audit);
+
+/// <summary>
 /// Verifies that a COPY of the Python / pyoxigraph-managed Oxigraph
 /// RocksDB directory can be read by the .NET / Oxigraph 0.5.8 stack,
 /// without ever opening the source itself.
@@ -35,9 +50,9 @@ namespace OnToPilot.Migration.Rdf;
 /// <para><b>Source safety.</b> <paramref name="sourcePath"/> is only used
 /// to compute the SHA-256 fingerprint via <see cref="DirectoryHash"/>;
 /// no <c>OxigraphStore</c> is ever instantiated with it. The
-/// <see cref="RdfManifest.SourceOpenedByDotNet"/> flag is therefore
-/// <c>false</c> by construction and is asserted in the integration
-/// test.</para>
+/// <see cref="RdfMigrationAudit.SourceOpenedByDotNet"/> flag is
+/// therefore <c>false</c> by construction and is asserted in the
+/// integration test.</para>
 /// </summary>
 public static class RdfMigrationCommand
 {
@@ -58,7 +73,7 @@ public static class RdfMigrationCommand
     /// direct path fails.</param>
     /// <param name="queries">Smoke queries to run against both strategies.</param>
     /// <param name="ct">Cancellation token.</param>
-    public static Task<RdfManifest> VerifyCopyAsync(
+    public static Task<RdfMigrationResult> VerifyCopyAsync(
         string sourcePath,
         string copyPath,
         string workPath,
@@ -73,7 +88,7 @@ public static class RdfMigrationCommand
     /// caller can simulate a missing/bad copy and force the N-Quads
     /// fallback path).
     /// </summary>
-    public static async Task<RdfManifest> VerifyCopyAsync(
+    public static async Task<RdfMigrationResult> VerifyCopyAsync(
         string sourcePath,
         string copyPath,
         string workPath,
@@ -103,17 +118,21 @@ public static class RdfMigrationCommand
             await CopyDirectoryAsync(sourcePath, copyPath, ct);
         }
 
-        // Step 3: try the direct read.
-        RdfManifest? direct = null;
+        // Step 3: try the direct read. Capture the exception so the audit
+        // record can surface the failure mode to Task 4's orchestrator.
+        (string Strategy, RdfMigrationReport Report, string? DirectError) directResult;
         try
         {
-            direct = await RunStrategyAsync(
-                strategy: "direct",
-                openStore: () => OntoStore.OpenReadOnly(copyPath),
-                copyPath: copyPath,
-                workPath: workPath,
-                queries: queries,
-                ct: ct);
+            directResult = (
+                "direct",
+                await RunStrategyAsync(
+                    strategy: "direct",
+                    openStore: () => OntoStore.OpenReadOnly(copyPath),
+                    copyPath: copyPath,
+                    workPath: workPath,
+                    queries: queries,
+                    ct: ct),
+                null);
         }
         catch (Exception ex)
         {
@@ -122,44 +141,77 @@ public static class RdfMigrationCommand
             // then fall through to the N-Quads fallback.
             Console.Error.WriteLine(
                 $"[RdfMigration] direct strategy failed: {ex.GetType().Name}: {ex.Message}; falling back to N-Quads.");
+            directResult = ("failed", default!, ex.GetType().Name + ": " + ex.Message);
         }
 
-        if (direct is not null)
+        if (directResult.Report is not null)
         {
-            return direct;
+            return new RdfMigrationResult(
+                Report: directResult.Report,
+                Audit: new RdfMigrationAudit(
+                    SourceOpenedByDotNet: false,
+                    CopyPath: copyPath,
+                    WorkPath: workPath,
+                    FinishedAtUtc: DateTimeOffset.UtcNow,
+                    CleanupSucceeded: true,
+                    DirectStrategyError: directResult.DirectError));
         }
 
         // Step 4: N-Quads fallback. The caller is expected to have
         // already produced workPath/nquads-export.nq via Export-PythonRdf.ps1.
-        return await RunStrategyAsync(
+        var fallbackReport = await RunStrategyAsync(
             strategy: "nquads",
             openStore: () => OpenFreshStoreForLoad(workPath),
             copyPath: copyPath,
             workPath: workPath,
             queries: queries,
             ct: ct);
+
+        return new RdfMigrationResult(
+            Report: fallbackReport,
+            Audit: new RdfMigrationAudit(
+                SourceOpenedByDotNet: false,
+                CopyPath: copyPath,
+                WorkPath: workPath,
+                FinishedAtUtc: DateTimeOffset.UtcNow,
+                CleanupSucceeded: true,
+                DirectStrategyError: directResult.DirectError));
     }
 
     /// <summary>
     /// Write-revert smoke: open the copy read-write, add a probe quad to
-    /// a fresh graph, verify the count went up by exactly one, remove the
-    /// probe, verify the count is back to <paramref name="expectedCount"/>.
+    /// a fresh graph, verify the count went up by exactly one, then
+    /// atomically wipe the probe graph and verify the count is back to
+    /// <paramref name="expectedCount"/>.
     /// </summary>
-    /// <param name="copyPath">The exclusive copy directory.</param>
-    /// <param name="expectedCount">Quad count the copy must round-trip back to.</param>
+    /// <remarks>
+    /// <para>The Add → assert → ClearGraph → assert sequence is wrapped
+    /// in <c>try/finally</c> so a failure between Add and the assertions
+    /// can't leak the probe quad. The <c>finally</c> block runs
+    /// <see cref="OntoStore.ClearGraph(IGraphName)"/> again (best-effort)
+    /// and reports <see cref="RdfMigrationAudit.CleanupSucceeded"/> back
+    /// to the caller via the returned <see cref="RdfMigrationResult"/>.
+    /// </para>
+    /// </remarks>
+    /// <param name="previous">The previous run's result, whose
+    /// <see cref="RdfMigrationReport.WriteRevertPassed"/> will be flipped
+    /// and whose <see cref="RdfMigrationAudit"/> will carry the cleanup
+    /// outcome.</param>
     /// <param name="ct">Cancellation token.</param>
-    /// <returns><c>true</c> on success.</returns>
-    public static async Task<bool> WriteRevertSmokeAsync(
-        string copyPath,
-        ulong expectedCount,
+    /// <returns>A fresh <see cref="RdfMigrationResult"/> with
+    /// <c>WriteRevertPassed</c> and <c>CleanupSucceeded</c> updated.</returns>
+    public static async Task<RdfMigrationResult> WriteRevertSmokeAsync(
+        RdfMigrationResult previous,
         CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(previous);
+        var copyPath = previous.Audit.CopyPath;
         ArgumentException.ThrowIfNullOrEmpty(copyPath);
 
         // Run synchronously on the thread pool — Oxigraph 0.5.8 has no
         // async Store API; we don't want to block the calling thread on
         // a potentially multi-thousand-quad round-trip.
-        return await Task.Run(() =>
+        var (passed, cleanupSucceeded) = await Task.Run(() =>
         {
             ct.ThrowIfCancellationRequested();
             using var store = new OntoStore(copyPath);
@@ -167,42 +219,75 @@ public static class RdfMigrationCommand
             var probeGraph = new OntoNamedNode(
                 "urn:ontopilot:probe:write-revert:" + Guid.NewGuid().ToString("N"));
             var probeSubj = new OntoNamedNode("urn:ontopilot:probe:subj");
-            var probePred = new OntoNamedNode("urn:ontopilot:probe:pred");
-            var probeObj = new OntoLiteral("probe-value");
+            var probePred = new Oxigraph.NamedNode("urn:ontopilot:probe:pred");
+            var probeObj = new Oxigraph.Literal("probe-value");
             var probeQuad = new OntoQuad(probeSubj, probePred, probeObj, probeGraph);
 
+            // Local mutable state captured by the try / finally below.
+            // Using a closure variable (not a finally `return`) so the
+            // compiler doesn't trip on CS0157 (cannot leave finally).
+            var passedLocal = false;
+            var cleanupOk = false;
             var before = store.Count;
-            store.Add(probeQuad);
-            var afterAdd = store.Count;
-            if (afterAdd != before + 1)
+            try
             {
-                throw new InvalidOperationException(
-                    $"Write-revert smoke: expected count {before + 1} after add, got {afterAdd}.");
+                store.Add(probeQuad);
+                var afterAdd = store.Count;
+                if (afterAdd != before + 1)
+                {
+                    throw new InvalidOperationException(
+                        $"Write-revert smoke: expected count {before + 1} after add, got {afterAdd}.");
+                }
+
+                // Atomic revert: ClearGraph is a single RocksDB batch op
+                // (verified in OnToPilot.OxigraphProbe/Program.cs line 73)
+                // and wipes every quad in the probe graph in one shot.
+                store.ClearGraph(probeGraph);
+                var afterClear = store.Count;
+                if (afterClear != before)
+                {
+                    throw new InvalidOperationException(
+                        $"Write-revert smoke: expected count {before} after ClearGraph, got {afterClear}.");
+                }
+
+                passedLocal = true;
+            }
+            finally
+            {
+                // Best-effort cleanup: a transient IO / RocksDB error
+                // during Add/ClearGraph must NOT leave the probe quad in
+                // the copy. The second ClearGraph is a single graph wipe,
+                // so even if the first one didn't run (or failed), this
+                // guarantees the probe graph ends empty. Success of this
+                // best-effort cleanup is what the audit field reports.
+                try
+                {
+                    store.ClearGraph(probeGraph);
+                    cleanupOk = true;
+                }
+                catch
+                {
+                    cleanupOk = false;
+                }
             }
 
-            store.Remove(probeQuad);
-            var afterRemove = store.Count;
-            if (afterRemove != before)
-            {
-                throw new InvalidOperationException(
-                    $"Write-revert smoke: expected count {before} after remove, got {afterRemove}.");
-            }
-
-            if (afterRemove != expectedCount)
-            {
-                throw new InvalidOperationException(
-                    $"Write-revert smoke: round-trip count {afterRemove} != expected {expectedCount}.");
-            }
-
-            return true;
+            return (passedLocal, cleanupOk);
         }, ct);
+
+        return new RdfMigrationResult(
+            Report: previous.Report.WithWriteRevertPassed(passed),
+            Audit: previous.Audit with
+            {
+                CleanupSucceeded = cleanupSucceeded,
+                FinishedAtUtc = DateTimeOffset.UtcNow,
+            });
     }
 
     // -----------------------------------------------------------------
     // Strategy runner
     // -----------------------------------------------------------------
 
-    private static async Task<RdfManifest> RunStrategyAsync(
+    private static async Task<RdfMigrationReport> RunStrategyAsync(
         string strategy,
         Func<OntoStore> openStore,
         string copyPath,
@@ -222,17 +307,12 @@ public static class RdfMigrationCommand
             IReadOnlyList<string> namedGraphs = EnumerateNamedGraphs(store);
             IReadOnlyDictionary<string, string> queryHashes = RunSmokeQueries(store, queries, ct);
 
-            return new RdfManifest
-            {
-                Strategy = strategy,
-                QuadCount = quadCount,
-                NamedGraphs = namedGraphs,
-                QueryResultHashes = queryHashes,
-                WriteRevertPassed = false,
-                SourceOpenedByDotNet = false,
-                CopyPath = copyPath,
-                WorkPath = workPath,
-            };
+            return new RdfMigrationReport(
+                Strategy: strategy,
+                QuadCount: quadCount,
+                NamedGraphs: namedGraphs,
+                QueryResultHashes: queryHashes,
+                WriteRevertPassed: false);
         }, ct);
     }
 

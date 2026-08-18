@@ -85,25 +85,27 @@ public sealed class RdfMigrationTests : IAsyncLifetime
     /// Required verbatim test (the brief). Computes a deterministic
     /// SHA-256 over every file in the source directory before and after
     /// <c>VerifyCopyAsync</c>; the two digests MUST be byte-identical.
-    /// The <c>SourceOpenedByDotNet</c> flag on the report MUST be
-    /// <c>false</c>.
+    /// The <c>SourceOpenedByDotNet</c> flag on the audit sibling MUST be
+    /// <c>false</c> (it stays false by construction because the
+    /// production code never instantiates an <c>OxigraphStore</c> with
+    /// the source path).
     /// </summary>
     [Fact]
     [Trait("Category", "Migration")]
     public async Task Verify_copy_never_opens_or_changes_source_directory()
     {
         var before = DirectoryHash.Compute(SourceStore);
-        var report = await RdfMigrationCommand.VerifyCopyAsync(
+        var result = await RdfMigrationCommand.VerifyCopyAsync(
             SourceStore, ProbeCopy, WorkDir, Queries, CancellationToken.None);
         var after = DirectoryHash.Compute(SourceStore);
 
         Assert.Equal(before, after);
-        Assert.False(report.SourceOpenedByDotNet);
+        Assert.False(result.Audit.SourceOpenedByDotNet);
         // The copy must now exist (the command owns it).
         Assert.True(Directory.Exists(ProbeCopy));
         // The report must record the strategy it picked and a query hash.
-        Assert.NotEmpty(report.Strategy);
-        Assert.NotEmpty(report.QueryResultHashes);
+        Assert.NotEmpty(result.Report.Strategy);
+        Assert.NotEmpty(result.Report.QueryResultHashes);
     }
 
     /// <summary>
@@ -118,10 +120,10 @@ public sealed class RdfMigrationTests : IAsyncLifetime
         var first = await RdfMigrationCommand.VerifyCopyAsync(
             SourceStore, ProbeCopy, WorkDir, Queries, CancellationToken.None);
 
-        Assert.Equal("direct", first.Strategy);
-        Assert.True(first.QuadCount > 0, "synthetic source should have non-zero quads");
-        Assert.True(first.NamedGraphs.Count >= 2, "synthetic source should expose >=2 graphs");
-        Assert.Equal(3, first.NamedGraphs.Count);
+        Assert.Equal("direct", first.Report.Strategy);
+        Assert.True(first.Report.QuadCount > 0, "synthetic source should have non-zero quads");
+        Assert.True(first.Report.NamedGraphs.Count >= 2, "synthetic source should expose >=2 graphs");
+        Assert.Equal(3, first.Report.NamedGraphs.Count);
 
         // Re-run on the same copy — the second run sees an already-populated
         // Oxigraph dir, but the copy we hand in must be a fresh one to
@@ -129,9 +131,9 @@ public sealed class RdfMigrationTests : IAsyncLifetime
         var second = await RdfMigrationCommand.VerifyCopyAsync(
             SourceStore, ProbeCopy, WorkDir, Queries, CancellationToken.None);
 
-        Assert.Equal(first.QuadCount, second.QuadCount);
-        Assert.Equal(first.NamedGraphs.OrderBy(g => g), second.NamedGraphs.OrderBy(g => g));
-        Assert.Equal(first.QueryResultHashes, second.QueryResultHashes);
+        Assert.Equal(first.Report.QuadCount, second.Report.QuadCount);
+        Assert.Equal(first.Report.NamedGraphs.OrderBy(g => g), second.Report.NamedGraphs.OrderBy(g => g));
+        Assert.Equal(first.Report.QueryResultHashes, second.Report.QueryResultHashes);
     }
 
     /// <summary>
@@ -174,35 +176,40 @@ public sealed class RdfMigrationTests : IAsyncLifetime
             SourceStore, missingCopy, fallbackWork, Queries,
             copyFromSource: false, CancellationToken.None);
 
-        Assert.Equal("nquads", fallback.Strategy);
-        Assert.Equal(direct.QuadCount, fallback.QuadCount);
+        Assert.Equal("nquads", fallback.Report.Strategy);
+        Assert.Equal(direct.Report.QuadCount, fallback.Report.QuadCount);
         Assert.Equal(
-            direct.NamedGraphs.OrderBy(g => g).ToArray(),
-            fallback.NamedGraphs.OrderBy(g => g).ToArray());
-        Assert.Equal(direct.QueryResultHashes, fallback.QueryResultHashes);
+            direct.Report.NamedGraphs.OrderBy(g => g).ToArray(),
+            fallback.Report.NamedGraphs.OrderBy(g => g).ToArray());
+        Assert.Equal(direct.Report.QueryResultHashes, fallback.Report.QueryResultHashes);
     }
 
     /// <summary>
     /// Write-revert smoke: the command opens the copy read-write, adds a
     /// probe quad to a fresh graph, verifies the count increased by 1,
-    /// removes the quad, and verifies the count is back to the original.
-    /// This is the structural guarantee that the copy is a true
-    /// read-write Oxigraph directory the cutover can use as its workspace.
+    /// atomically wipes the probe graph (Oxigraph's ClearGraph is a
+    /// single-batch op), and verifies the count is back to the
+    /// original. This is the structural guarantee that the copy is a
+    /// true read-write Oxigraph directory the cutover can use as its
+    /// workspace.
     /// </summary>
     [Fact]
     [Trait("Category", "Migration")]
     public async Task Write_revert_smoke_round_trips_to_original_count()
     {
-        var initialCount = await RdfMigrationCommand.VerifyCopyAsync(
+        var initial = await RdfMigrationCommand.VerifyCopyAsync(
             SourceStore, ProbeCopy, WorkDir, Queries, CancellationToken.None);
 
-        var reverted = await RdfMigrationCommand.WriteRevertSmokeAsync(
-            ProbeCopy, initialCount.QuadCount, CancellationToken.None);
+        var afterRevert = await RdfMigrationCommand.WriteRevertSmokeAsync(
+            initial, CancellationToken.None);
 
-        Assert.True(reverted);
-        var finalReport = await RdfMigrationCommand.VerifyCopyAsync(
+        Assert.True(afterRevert.Report.WriteRevertPassed);
+        Assert.True(afterRevert.Audit.CleanupSucceeded);
+
+        var final = await RdfMigrationCommand.VerifyCopyAsync(
             SourceStore, ProbeCopy, WorkDir, Queries, CancellationToken.None);
-        Assert.Equal(initialCount.QuadCount, finalReport.QuadCount);
+        Assert.Equal(initial.Report.QuadCount, final.Report.QuadCount);
+        Assert.False(final.Report.WriteRevertPassed);
     }
 
     // -----------------------------------------------------------------

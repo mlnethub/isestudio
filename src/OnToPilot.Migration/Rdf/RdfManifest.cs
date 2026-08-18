@@ -4,87 +4,103 @@ using System.Text.Json.Serialization;
 namespace OnToPilot.Migration.Rdf;
 
 /// <summary>
-/// Serializable record of a single RDF migration run. Emitted by
-/// <see cref="RdfMigrationCommand.VerifyCopyAsync"/> as JSON so the
-/// rehearsal / cutover orchestration (Task 4) can diff the direct-read
-/// and N-Quads-fallback manifests and detect any drift between the
-/// strategies.
+/// The five-field positional record the brief mandates for the RDF
+/// migration report. This is the data-only, Task-4-orchestrator-facing
+/// shape — audit / provenance fields live on the sibling
+/// <see cref="RdfMigrationAudit"/> record so the brief's "exactly five
+/// fields" constraint is honoured verbatim.
 ///
-/// <para>The shape mirrors the brief's <c>RdfMigrationReport</c> plus a
-/// few Task-2-only audit fields:
+/// <para>Field semantics:
 /// <list type="bullet">
-///   <item><c>Strategy</c> — <c>"direct"</c> or <c>"nquads"</c>.</item>
-///   <item><c>QuadCount</c> — total quads observed on the chosen strategy.</item>
+///   <item><c>Strategy</c> — <c>"direct"</c> (OxigraphStore.OpenReadOnly
+///   on the copy) or <c>"nquads"</c> (Load(N-Quads) on a fresh store at
+///   <c>workPath</c>).</item>
+///   <item><c>QuadCount</c> — total quads observed on the chosen
+///   strategy.</item>
 ///   <item><c>NamedGraphs</c> — distinct named graphs, sorted.</item>
 ///   <item><c>QueryResultHashes</c> — per-query SHA-256 over the JSON
 ///   serialised result set (deterministic; Oxigraph's
 ///   <c>QuerySolutions.Serialize</c> with the JSON format).</item>
 ///   <item><c>WriteRevertPassed</c> — populated by
-///   <see cref="RdfMigrationCommand.WriteRevertSmokeAsync"/>.</item>
-///   <item><c>SourceOpenedByDotNet</c> — structural guarantee that the
-///   command never instantiated an <c>OxigraphStore</c> with the source
-///   path. Stays <c>false</c> by construction.</item>
+///   <see cref="RdfMigrationCommand.WriteRevertSmokeAsync"/> via
+///   <see cref="WithWriteRevertPassed"/>; the underlying
+///   <see cref="RdfMigrationCommand"/> returns a fresh report rather
+///   than mutating this one so the record stays a positional record.</item>
 /// </list>
 /// </para>
 /// </summary>
-public sealed record RdfManifest
+public sealed record RdfMigrationReport(
+    string Strategy,
+    ulong QuadCount,
+    IReadOnlyList<string> NamedGraphs,
+    IReadOnlyDictionary<string, string> QueryResultHashes,
+    bool WriteRevertPassed)
 {
-    [JsonPropertyName("strategy")]
-    public string Strategy { get; init; } = string.Empty;
-
-    [JsonPropertyName("quadCount")]
-    public ulong QuadCount { get; init; }
-
-    [JsonPropertyName("namedGraphs")]
-    public IReadOnlyList<string> NamedGraphs { get; init; } = Array.Empty<string>();
-
-    [JsonPropertyName("queryResultHashes")]
-    public IReadOnlyDictionary<string, string> QueryResultHashes { get; init; }
-        = new Dictionary<string, string>();
-
-    [JsonPropertyName("writeRevertPassed")]
-    public bool WriteRevertPassed { get; init; }
-
     /// <summary>
-    /// Hard structural flag — the command never opens the source path.
-    /// Stays <c>false</c> by construction; exposed so the verification
-    /// test can assert it explicitly.
+    /// Returns a new <see cref="RdfMigrationReport"/> with
+    /// <c>WriteRevertPassed</c> flipped to <paramref name="passed"/>. The
+    /// rest of the fields are copied by value. Implemented as a `with`
+    /// expression so the positional record stays immutable.
     /// </summary>
-    [JsonPropertyName("sourceOpenedByDotNet")]
-    public bool SourceOpenedByDotNet { get; init; }
+    public RdfMigrationReport WithWriteRevertPassed(bool passed) =>
+        this with { WriteRevertPassed = passed };
 
-    /// <summary>Path of the copy directory the manifest is over.</summary>
-    [JsonPropertyName("copyPath")]
-    public string CopyPath { get; init; } = string.Empty;
-
-    /// <summary>Path of the work directory used for the N-Quads fallback.</summary>
-    [JsonPropertyName("workPath")]
-    public string WorkPath { get; init; } = string.Empty;
-
-    /// <summary>Wall-clock time the run completed at (UTC).</summary>
-    [JsonPropertyName("finishedAtUtc")]
-    public DateTimeOffset FinishedAtUtc { get; init; } = DateTimeOffset.UtcNow;
-
-    /// <summary>Serialise to a JSON string (Task 4 expects UTF-8 JSON).</summary>
-    public string ToJson()
-    {
-        return JsonSerializer.Serialize(this, ManifestJson.Options);
-    }
+    /// <summary>Serialise to JSON for the Task 4 cross-migration manifest.</summary>
+    public string ToJson() => JsonSerializer.Serialize(this, RdfManifestJson.Options);
 
     /// <summary>Deserialise from JSON; used by the parity script when it
-    /// diffs the direct and fallback manifests.</summary>
-    public static RdfManifest FromJson(string json)
-    {
-        return JsonSerializer.Deserialize<RdfManifest>(json, ManifestJson.Options)
-            ?? throw new InvalidDataException("RdfManifest JSON deserialised to null.");
-    }
+    /// diffs the direct and fallback reports.</summary>
+    public static RdfMigrationReport FromJson(string json) =>
+        JsonSerializer.Deserialize<RdfMigrationReport>(json, RdfManifestJson.Options)
+            ?? throw new InvalidDataException("RdfMigrationReport JSON deserialised to null.");
+}
 
-    private static class ManifestJson
+/// <summary>
+/// Sibling audit record to <see cref="RdfMigrationReport"/>. Carries
+/// everything Task 4's orchestrator needs to prove the cutover is safe
+/// without polluting the brief's five-field positional record.
+///
+/// <para>Two design choices the reviewer flagged:
+/// <list type="bullet">
+///   <item><c>SourceOpenedByDotNet</c> stays <c>false</c> by
+///   construction — the production code never instantiates an
+///   <c>OxigraphStore</c> with the source path. The verbatim test in
+///   <see cref="RdfMigrationCommand"/>'s contract asserts this.</item>
+///   <item><c>CleanupSucceeded</c> is set to <c>false</c> by
+///   <see cref="RdfMigrationCommand.WriteRevertSmokeAsync"/>'s finally
+///   block when the <c>ClearGraph</c> best-effort cleanup itself throws
+///   (RocksDB write conflict, IO error). The orchestrator treats
+///   <c>!CleanupSucceeded</c> as a hard gate failure.</item>
+/// </list>
+/// </para>
+/// </summary>
+public sealed record RdfMigrationAudit(
+    bool SourceOpenedByDotNet,
+    string CopyPath,
+    string WorkPath,
+    DateTimeOffset FinishedAtUtc,
+    bool CleanupSucceeded,
+    string? DirectStrategyError)
+{
+    /// <summary>JSON serializer options shared with <see cref="RdfMigrationReport"/>.</summary>
+    internal static readonly JsonSerializerOptions Options = new()
     {
-        internal static readonly JsonSerializerOptions Options = new()
-        {
-            WriteIndented = true,
-            DefaultIgnoreCondition = JsonIgnoreCondition.Never,
-        };
-    }
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+        Converters = { new JsonStringEnumConverter() },
+    };
+}
+
+/// <summary>
+/// JSON serialisation options for <see cref="RdfMigrationReport"/>. Indented
+/// for diff-friendliness when the orchestrator compares the direct and
+/// fallback reports.
+/// </summary>
+internal static class RdfManifestJson
+{
+    internal static readonly JsonSerializerOptions Options = new()
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = JsonIgnoreCondition.Never,
+    };
 }
