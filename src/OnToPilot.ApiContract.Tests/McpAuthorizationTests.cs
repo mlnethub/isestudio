@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -154,6 +155,84 @@ public sealed class McpAuthorizationTests
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
+    /// <summary>
+    /// HTTP-path downgrade coverage. The plan's required test
+    /// (<see cref="Existing_token_loses_write_access_after_membership_downgrade"/>)
+    /// exercises the accessor against a hand-built <see cref="DefaultHttpContext"/>,
+    /// which is load-bearing but not wire-level. This test runs the
+    /// downgrade scenario end-to-end through <c>POST /mcp</c>: the
+    /// bearer middleware parses the header, the principal is
+    /// re-resolved on each call (no caching), and the
+    /// <c>apply_ontology_changes</c> tool body delegates the role
+    /// check to <see cref="McpPrincipalAccessor.RequireRoleAsync"/>.
+    ///
+    /// <para>A regression where the middleware stops re-validating the
+    /// user row between calls (or starts caching the resolved
+    /// principal) would still pass <b>missing</b>/<b>unknown</b> bearer
+    /// tests but trip here: the first call succeeds, then the grant is
+    /// flipped to <c>viewer</c>, and the same bearer on a second
+    /// <c>tools/call</c> must come back with a JSON-RPC error envelope
+    /// (or an <c>isError</c> result body) carrying the
+    /// <c>"editor role"</c> wording the plan pins.</para>
+    /// </summary>
+    [Fact]
+    public async Task Http_path_downgrade_loses_write_access()
+    {
+        using var factory = new Baseline.ApiContractWebApplicationFactory();
+        var (token, ks, user) = await SeedEditorAsync(factory, "test-ks-downgrade-http");
+        var client = factory.CreateClient();
+
+        // Step 1: tools/call apply_ontology_changes succeeds through
+        // the wire path. The bearer middleware authenticates the
+        // caller, the accessor resolves the live editor role, and the
+        // tool body delegates to the dispatcher placeholder (which
+        // returns null and the body returns new { ok = true }).
+        var applyBody = JsonSerializer.Serialize(new
+        {
+            jsonrpc = "2.0",
+            id = 1,
+            method = "tools/call",
+            @params = new
+            {
+                name = "apply_ontology_changes",
+                arguments = new
+                {
+                    operations = new[]
+                    {
+                        new Dictionary<string, object?>
+                        {
+                            ["op"] = "add_class",
+                            ["label"] = "HttpDowngradeProbe",
+                            ["comment"] = "downgrade probe",
+                        },
+                    },
+                    confirm_destructive = true,
+                    reason = "http-path downgrade probe",
+                },
+            },
+        });
+
+        var firstResponse = await PostMcpAsync(client, token, applyBody);
+        var firstBody = await firstResponse.Content.ReadAsStringAsync();
+        Assert.True(
+            firstResponse.IsSuccessStatusCode,
+            $"Expected 2xx for the editor call but got {(int)firstResponse.StatusCode}. Body: {firstBody}");
+
+        // Step 2: flip the seeded grant to viewer. The accessor
+        // re-reads the KS grant row on every tool call, so the very
+        // next request must see the downgrade.
+        await DowngradeToViewerAsync(factory, user.Id, ks.Id);
+
+        // Step 3: same bearer, second tools/call. The role check
+        // fails because the live lookup now returns viewer; the
+        // accessor raises McpToolException("...editor role...") and
+        // the SDK surfaces it via the JSON-RPC isError envelope. The
+        // wording is what the plan pins.
+        var secondResponse = await PostMcpAsync(client, token, applyBody);
+        var secondBody = await secondResponse.Content.ReadAsStringAsync();
+        Assert.Contains("editor role", secondBody, StringComparison.OrdinalIgnoreCase);
+    }
+
     // -----------------------------------------------------------------
     // helpers
     // -----------------------------------------------------------------
@@ -302,5 +381,29 @@ public sealed class McpAuthorizationTests
         cmd.CommandText = $"SELECT COALESCE(MAX(legacy_id), 0) + 1 FROM {table}";
         var raw = await cmd.ExecuteScalarAsync();
         return raw is long l ? l : Convert.ToInt64(raw ?? 1L);
+    }
+
+    /// <summary>
+    /// POST a JSON-RPC envelope to <c>/mcp</c> with the supplied bearer.
+    /// Returns the raw <see cref="HttpResponseMessage"/> so the caller
+    /// can inspect both the status and the body (the SDK surfaces
+    /// <see cref="McpToolException"/> as an <c>isError</c> result body
+    /// that still carries 200 OK).
+    /// </summary>
+    private static async Task<HttpResponseMessage> PostMcpAsync(
+        HttpClient client,
+        string bearer,
+        string body)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/mcp")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Add("Authorization", $"Bearer {bearer}");
+        // Streamable HTTP accepts both application/json and
+        // text/event-stream on the response; the SDK picks whichever
+        // matches the negotiated transport.
+        request.Headers.Add("Accept", "application/json, text/event-stream");
+        return await client.SendAsync(request).ConfigureAwait(false);
     }
 }

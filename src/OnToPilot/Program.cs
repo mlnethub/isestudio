@@ -100,6 +100,26 @@ builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IPasswordService, PasswordService>();
 builder.Services.AddSingleton<KnowledgeSystemAccessService>();
 
+// MCP tool bodies take HttpContext as their first parameter so the
+// accessor can read the bearer-stamped principal items; the MCP SDK's
+// AIFunctionFactory auto-injects DI-registered types via
+// IServiceProviderIsService.IsService. ASP.NET Core ships
+// IHttpContextAccessor in the default builder but not HttpContext
+// itself, so without this registration the SDK's JSON-RPC path fails
+// to bind HttpContext and every tool call throws
+// "The arguments dictionary is missing a value for the required
+// parameter 'httpContext'." Register HttpContext as a scoped service
+// that resolves through the accessor. The IHttpContextAccessor is
+// re-registered here defensively because some test hosts (notably
+// WebApplicationFactory<Program>) do not preserve every default
+// builder registration.
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<HttpContext>(sp =>
+    sp.GetRequiredService<IHttpContextAccessor>().HttpContext
+        ?? throw new InvalidOperationException(
+            "No current HttpContext on the request scope; MCP tool bodies "
+            + "require HttpContext to flow through DI."));
+
 // Bearer-token primitives (scoped to the request DbContext).
 builder.Services.AddScoped<IKnowledgeApiTokenService, KnowledgeApiTokenService>();
 builder.Services.AddScoped<IMcpTokenService, McpTokenService>();
@@ -183,34 +203,13 @@ app.UseMiddleware<FastApiErrorMiddleware>();
 app.UseAuthentication();
 app.UseAuthorization();
 
-// MCP transport: bearer-token authentication runs ahead of the JSON-RPC
-// handler so the SDK sees an authenticated principal on every tool call.
-// Only /mcp is authenticated; the rest of the pipeline keeps its existing
-// session / bearer / contract-test schemes.
-app.UseMiddleware<McpTokenAuthenticationMiddleware>();
-
-// Cap the MCP request body at 1 MiB. Anything larger is rejected with
-// 413 by the Kestrel form-options reader so a malicious client cannot
-// pin a worker thread on a 4 GiB JSON-RPC payload.
-app.UseWhen(
-    context => context.Request.Path.StartsWithSegments("/mcp"),
-    branch =>
-    {
-        branch.Use(async (ctx, next) =>
-        {
-            var feature = ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
-            if (feature is { IsReadOnly: false })
-            {
-                feature.MaxRequestBodySize = 1024 * 1024;
-            }
-            await next().ConfigureAwait(false);
-        });
-    });
-
-// DNS-rebinding protection: reject any /mcp request whose Host header
-// does not match the configured allowed hosts list. This guards the
-// Streamable HTTP transport against the local-lookup-redirect attack
-// FastMCP / the brief both call out.
+// DNS-rebinding protection runs FIRST on /mcp so a malicious origin
+// sending a malformed bearer cannot elicit a 401 envelope before the
+// host check rejects the request — the 401 would otherwise leak that
+// the endpoint exists. This is the same allowlist FastMCP / the brief
+// both call out: localhost, 127.0.0.1, [::1], and the configured
+// OnToPilot:PublicHost. Production deployments override
+// OnToPilot:PublicHost via configuration.
 app.UseWhen(
     context => context.Request.Path.StartsWithSegments("/mcp"),
     branch =>
@@ -233,6 +232,31 @@ app.UseWhen(
                     new { detail = "DNS rebinding rejected: host header not allowed." });
                 await ctx.Response.Body.WriteAsync(body, ctx.RequestAborted).ConfigureAwait(false);
                 return;
+            }
+            await next().ConfigureAwait(false);
+        });
+    });
+
+// MCP transport: bearer-token authentication runs ahead of the JSON-RPC
+// handler so the SDK sees an authenticated principal on every tool call.
+// Only /mcp is authenticated; the rest of the pipeline keeps its existing
+// session / bearer / contract-test schemes. The host-header guard above
+// runs first so a non-allowed host never sees the 401 envelope.
+app.UseMiddleware<McpTokenAuthenticationMiddleware>();
+
+// Cap the MCP request body at 1 MiB. Anything larger is rejected with
+// 413 by the Kestrel form-options reader so a malicious client cannot
+// pin a worker thread on a 4 GiB JSON-RPC payload.
+app.UseWhen(
+    context => context.Request.Path.StartsWithSegments("/mcp"),
+    branch =>
+    {
+        branch.Use(async (ctx, next) =>
+        {
+            var feature = ctx.Features.Get<Microsoft.AspNetCore.Http.Features.IHttpMaxRequestBodySizeFeature>();
+            if (feature is { IsReadOnly: false })
+            {
+                feature.MaxRequestBodySize = 1024 * 1024;
             }
             await next().ConfigureAwait(false);
         });

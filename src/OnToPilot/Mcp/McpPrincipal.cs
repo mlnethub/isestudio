@@ -1,3 +1,4 @@
+using ModelContextProtocol;
 using OnToPilot.Infrastructure.Persistence.Entities;
 
 namespace OnToPilot.Mcp;
@@ -24,8 +25,17 @@ public sealed record McpPrincipal(
 /// JSON-RPC path so the SDK returns the structured error code to the
 /// caller; the SDK wires the message into the wire-protocol
 /// <c>isError</c> response.
+///
+/// <para>The exception derives from <see cref="McpException"/> rather
+/// than <see cref="Exception"/> so the SDK's tool-call pipeline
+/// preserves <see cref="Exception.Message"/> on the wire. Per the SDK
+/// source, only <see cref="McpException"/>-derived exceptions are
+/// surfaced with their message attached; any other exception type is
+/// replaced with a generic <c>"An error occurred invoking 'name'."</c>
+/// envelope, which would hide the role / scope wording the contract
+/// pins.</para>
 /// </summary>
-public sealed class McpToolException : Exception
+public sealed class McpToolException : McpException
 {
     /// <summary>Create a new <see cref="McpToolException"/> with the supplied detail.</summary>
     public McpToolException(string message) : base(message) { }
