@@ -30,4 +30,15 @@
     <ProjectReference Include="..\OnToPilot\OnToPilot.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The differential runner loads its allowlist from this file at
+         runtime; the C# tests load the same file (not a hardcoded
+         subset) so a runner-side allowlist change forces a test
+         recompile + re-run. -->
+    <None Include="..\..\migration\contracts\normalization.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>normalization.json</Link>
+    </None>
+  </ItemGroup>
+
 </Project>

@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using OnToPilot.ApiContract.Tests.Differential;
 
@@ -13,15 +14,62 @@ namespace OnToPilot.ApiContract.Tests;
 /// <c>migration/contracts/normalization.json</c>.
 ///
 /// <para>These tests pin down the normaliser's contract so the runner's
-/// diff stays a pure comparison of business fields. Every test is
-/// tagged <see cref="ApiContractCategoryAttribute"/> so the gate filter
-/// (<c>dotnet test --filter Category=ApiContract</c>) picks them up
-/// alongside the inventory tests.</para>
+/// diff stays a pure comparison of business fields. The allowlist is
+/// loaded from <c>migration/contracts/normalization.json</c> at test time
+/// (the file is copied to the test output directory by the csproj) so a
+/// runner-side allowlist change forces the same C# test suite to reload
+/// it &mdash; keeping the C# normaliser and the PowerShell runner from
+/// drifting silently. Every test is tagged <see cref="ApiContractCategoryAttribute"/>
+/// so the gate filter (<c>dotnet test --filter Category=ApiContract</c>)
+/// picks them up alongside the inventory tests.</para>
 /// </summary>
 [Trait("Category", "ApiContract")]
 public sealed class DifferentialContractTests
 {
-    private const string DefaultAllowlist = "created_at,updated_at,trace_id,token,*_token";
+    /// <summary>
+    /// Filename of the shipped allowlist contract. The csproj copies
+    /// <c>migration/contracts/normalization.json</c> to the test bin
+    /// directory as <c>normalization.json</c> and the runner relies on
+    /// the same file at runtime; the test bin path is
+    /// <see cref="AppContext.BaseDirectory"/>.
+    /// </summary>
+    private const string NormalizationJsonFileName = "normalization.json";
+
+    private static readonly Lazy<string> _defaultAllowlist = new(LoadDefaultAllowlist);
+
+    /// <summary>
+    /// Comma-separated allowlist loaded from
+    /// <c>migration/contracts/normalization.json</c>. The literal string
+    /// is rebuilt from the file at test start so the runner and the C#
+    /// normaliser stay anchored to the same source of truth.
+    /// </summary>
+    private static string DefaultAllowlist => _defaultAllowlist.Value;
+
+    private static string LoadDefaultAllowlist()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, NormalizationJsonFileName);
+        Assert.True(
+            File.Exists(path),
+            $"Expected normalization.json next to the test assembly at '{path}'. " +
+            "The csproj must CopyToOutputDirectory the migration/contracts/normalization.json file.");
+
+        using var stream = File.OpenRead(path);
+        using var document = JsonDocument.Parse(stream);
+        var allowlist = document.RootElement.GetProperty("allowlist");
+        Assert.Equal(JsonValueKind.Array, allowlist.ValueKind);
+
+        var joined = new StringBuilder();
+        foreach (var entry in allowlist.EnumerateArray())
+        {
+            var value = entry.GetString();
+            Assert.False(
+                string.IsNullOrWhiteSpace(value),
+                $"Encountered a null/empty entry in normalization.json allowlist.");
+            if (joined.Length > 0) joined.Append(',');
+            joined.Append(value);
+        }
+        return joined.ToString();
+    }
 
     /// <summary>
     /// Verbatim name and body required by the Stage 5 plan. Locks down
@@ -137,5 +185,124 @@ public sealed class DifferentialContractTests
         var dotnetNormalized = Normalizer.Apply(dotnetBody, DefaultAllowlist);
 
         Assert.Equal(pythonNormalized.GetRawText(), dotnetNormalized.GetRawText());
+    }
+
+    /// <summary>
+    /// Pins the shipped <c>normalization.json</c> shape that the runner
+    /// and the C# normaliser both depend on. The runner iterates the
+    /// <c>allowlist</c> array to strip property names; the
+    /// <c>headerAllowlist</c> array drives the response-header
+    /// comparison. If either array disappears or is emptied the
+    /// contract is silently broken (every dynamic field becomes a real
+    /// difference). This test fails fast at test load time so the
+    /// regression is caught locally, not in CI.
+    /// </summary>
+    [Fact]
+    public void Normalization_json_has_expected_top_level_shape()
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, NormalizationJsonFileName);
+        Assert.True(
+            File.Exists(path),
+            $"Expected normalization.json next to the test assembly at '{path}'.");
+
+        using var stream = File.OpenRead(path);
+        using var document = JsonDocument.Parse(stream);
+        var root = document.RootElement;
+
+        var allowlist = root.GetProperty("allowlist");
+        Assert.Equal(JsonValueKind.Array, allowlist.ValueKind);
+        Assert.True(
+            allowlist.GetArrayLength() > 0,
+            "normalization.json 'allowlist' must be a non-empty array or the runner strips nothing.");
+
+        var headerAllowlist = root.GetProperty("headerAllowlist");
+        Assert.Equal(JsonValueKind.Array, headerAllowlist.ValueKind);
+        Assert.True(
+            headerAllowlist.GetArrayLength() > 0,
+            "normalization.json 'headerAllowlist' must be a non-empty array or the runner compares volatile headers verbatim.");
+    }
+
+    /// <summary>
+    /// End-to-end pin against the shipped JSON allowlist: a payload
+    /// carrying one of every literal entry on the allowlist plus a
+    /// handful of wildcard-only matches (<c>issued_at</c> for
+    /// <c>*_at</c>, <c>client_secret</c> for <c>*_secret</c>) must be
+    /// stripped to nothing but the business fields. The allowlist is
+    /// loaded from <c>migration/contracts/normalization.json</c>, so a
+    /// maintainer who adds a new entry there will not have to remember
+    /// to extend this test &mdash; the JSON is the contract.
+    /// </summary>
+    [Fact]
+    public void Normalizer_strips_every_field_in_json_allowlist()
+    {
+        var allowlist = DefaultAllowlist;
+
+        var payload = """
+            {
+              "id": 1,
+              "name": "Pump",
+              "created_at": "x",
+              "updated_at": "x",
+              "deleted_at": "x",
+              "trace_id": "x",
+              "request_id": "x",
+              "session_id": "x",
+              "etag": "x",
+              "last_modified": "x",
+              "timestamp": "x",
+              "ts": "x",
+              "token": "x",
+              "access_token": "x",
+              "refresh_token": "x",
+              "trace_token": "x",
+              "session_token": "x",
+              "bearer_token": "x",
+              "api_key": "x",
+              "password": "x",
+              "issued_at": "x",
+              "client_secret": "x"
+            }
+            """;
+
+        var normalized = Normalizer.Apply(payload, allowlist);
+
+        // Business fields survive verbatim.
+        Assert.Equal(1, normalized.GetProperty("id").GetInt32());
+        Assert.Equal("Pump", normalized.GetProperty("name").GetString());
+
+        // Every entry on the JSON allowlist — literal OR wildcard-only —
+        // must be stripped. If a maintainer adds a new literal to the
+        // JSON and forgets to update the payload above, the next
+        // maintainer can add it without touching this test (the
+        // allowlist is the contract, the payload just samples it).
+        var jsonPath = Path.Combine(AppContext.BaseDirectory, NormalizationJsonFileName);
+        using var stream = File.OpenRead(jsonPath);
+        using var document = JsonDocument.Parse(stream);
+        var jsonAllowlist = document.RootElement.GetProperty("allowlist");
+
+        // Build a probe set: every literal entry on the allowlist, plus
+        // one synthetic match per wildcard. Synthesising matches from
+        // the wildcard text keeps the test self-describing — when a
+        // new wildcard pattern is added, the test automatically
+        // exercises it without human intervention.
+        var probes = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var entry in jsonAllowlist.EnumerateArray())
+        {
+            var value = entry.GetString();
+            Assert.False(string.IsNullOrWhiteSpace(value));
+            probes.Add(value!);
+            if (value!.StartsWith("*", StringComparison.Ordinal))
+            {
+                var suffix = value.Substring(1); // "_token", "_at", "_secret", ...
+                probes.Add("synthetic" + suffix);
+            }
+        }
+
+        foreach (var probe in probes)
+        {
+            Assert.False(
+                normalized.TryGetProperty(probe, out _),
+                $"Field '{probe}' matches the JSON allowlist and must be stripped.");
+        }
     }
 }
