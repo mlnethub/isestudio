@@ -34,7 +34,7 @@ public sealed class VocabularyService
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
     private readonly ExtractionJobStore _jobStore;
-    private readonly TerminologyService _terminology;
+    private readonly ITerminologySync _terminology;
     private readonly LegacyIdAllocator _allocator;
 
     public VocabularyService(
@@ -44,7 +44,7 @@ public sealed class VocabularyService
         TimeProvider clock,
         KnowledgeSystemAccessService access,
         ExtractionJobStore jobStore,
-        TerminologyService terminology,
+        ITerminologySync terminology,
         LegacyIdAllocator allocator)
     {
         _skos = skos;

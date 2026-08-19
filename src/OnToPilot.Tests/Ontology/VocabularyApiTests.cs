@@ -1,11 +1,14 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using OnToPilot.Authentication;
+using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
+using OnToPilot.Ontology;
 using OnToPilot.Tests.Authentication;
 using OnToPilot.Tests.Extraction;
 using OnToPilot.Tests.Persistence;
@@ -266,6 +269,49 @@ public sealed class VocabularyApiTests
 
         var db = app.CreateDbContext();
         Assert.NotNull(db.AuditEvents.SingleOrDefault(
+            e => e.KnowledgeSystemId == ksGuid
+                 && e.Action == "vocabulary.sync"));
+    }
+
+    [Fact]
+    public async Task Sync_with_terminology_failure_rolls_back_vocabulary_graph()
+    {
+        // Verify the CaptureAsync wrap added in the B7c hardening slice:
+        // when the inner TerminologyService.SyncCore throws partway through
+        // (after writing some quads), the vocabulary graph must roll back
+        // to pre-state instead of leaving partial commits. The production
+        // TerminologyService swallows inner exceptions and surfaces them as
+        // TerminologyResult.Error, which makes the rollback path
+        // unreachable through the real implementation; we swap in a stub
+        // that writes a quad and then throws to exercise
+        // VocabularyService's catch + MarkError + rethrow wiring.
+        await using var app = new RollbackTerminologyFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var (ksId, ksGuid) = await SeedKnowledgeSystemAsync(app, client, "b8-sync-rb");
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/knowledge/{ksId}/vocabulary/sync", new { });
+        // The stub throws InvalidOperationException after writing its
+        // partial mutation; VocabularyService.SyncAsync rethrows, so the
+        // HTTP layer surfaces 500.
+        Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
+
+        // Post-state assertion: the vocabulary graph must NOT carry the
+        // stub's partial mutation quad because the CaptureAsync rolled
+        // the graph back to its pre-state snapshot on dispose.
+        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var ksc = LookupKsContext(app, ksGuid);
+        var postQuads = store.Match(graph: new Oxigraph.NamedNode(ksc.VocabularyGraph));
+        Assert.DoesNotContain(postQuads,
+            q => q.Subject is Oxigraph.NamedNode n
+                 && n.Value.EndsWith("/partial-mutation-marker", StringComparison.Ordinal));
+
+        // Audit row is NOT written because the exception escapes the
+        // capture block before the post-sync audit code runs. That is the
+        // load-bearing difference vs the happy path: partial-failure
+        // callers see no audit row.
+        var db = app.CreateDbContext();
+        Assert.Null(db.AuditEvents.SingleOrDefault(
             e => e.KnowledgeSystemId == ksGuid
                  && e.Action == "vocabulary.sync"));
     }
@@ -604,5 +650,79 @@ public sealed class VocabularyApiTests
         db.SaveChanges();
         db.Entry(release).State = EntityState.Detached;
         db.Entry(deployment).State = EntityState.Detached;
+    }
+
+    private static KsContext LookupKsContext(
+        AuthTestWebApplicationFactory app, Guid ksGuid)
+    {
+        var db = app.CreateDbContext();
+        var ks = db.KnowledgeSystems
+            .Where(k => k.Id == ksGuid)
+            .Select(k => new { k.GraphIri, k.BaseIri })
+            .Single();
+        return new KsContext(ks.GraphIri, ks.BaseIri);
+    }
+
+    /// <summary>
+    /// Test fixture that swaps the production
+    /// <see cref="TerminologyService"/> for a stub that writes one quad
+    /// to the vocabulary graph and then throws. Used by
+    /// <c>Sync_with_terminology_failure_rolls_back_vocabulary_graph</c>
+    /// to exercise the <c>CaptureAsync</c> rollback wiring inside
+    /// <c>VocabularyService.SyncAsync</c> &mdash; the production
+    /// TerminologyService swallows inner exceptions and surfaces them as
+    /// <see cref="TerminologyResult.Error"/>, which makes the
+    /// MarkError-on-exception path unreachable through the real
+    /// implementation.
+    /// </summary>
+    private sealed class RollbackTerminologyFactory : AuthTestWebApplicationFactory
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.ConfigureServices(services =>
+            {
+                var descriptors = services
+                    .Where(d => d.ServiceType == typeof(ITerminologySync))
+                    .ToList();
+                foreach (var desc in descriptors) services.Remove(desc);
+                services.AddSingleton<ITerminologySync, ThrowingTerminologySync>();
+            });
+        }
+    }
+
+    /// <summary>
+    /// Stub ITerminologySync used by
+    /// <see cref="RollbackTerminologyFactory"/>. Writes a single quad to
+    /// the vocabulary graph (so the rollback has something to roll back)
+    /// and then throws. Mirrors the partial-mutation-then-fail failure
+    /// mode the production TerminologyService.SyncCore could exhibit if
+    /// <c>_store.AddQuads</c> or one of its collaborators threw mid-loop.
+    /// </summary>
+    private sealed class ThrowingTerminologySync : ITerminologySync
+    {
+        private readonly StoreWrapper _store;
+
+        public ThrowingTerminologySync(StoreWrapper store)
+        {
+            _store = store;
+        }
+
+        public TerminologyResult SyncAsync(KsContext ks, CancellationToken cancellationToken)
+        {
+            var graph = new Oxigraph.NamedNode(ks.VocabularyGraph);
+            var marker = new Oxigraph.NamedNode(
+                $"{ks.VocabularyGraph.TrimEnd('/')}/partial-mutation-marker");
+            _store.AddQuads(graph, new[]
+            {
+                new Oxigraph.Quad(
+                    marker,
+                    new Oxigraph.NamedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
+                    new Oxigraph.NamedNode("http://example.org/test-marker"),
+                    graph),
+            });
+            throw new InvalidOperationException(
+                "test-forced terminology sync failure (rollback verification)");
+        }
     }
 }

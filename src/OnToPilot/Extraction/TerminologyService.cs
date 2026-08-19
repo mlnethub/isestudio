@@ -47,7 +47,7 @@ public sealed record TerminologyResult(
 /// the column stays in the contract so later tasks can drop in an LLM
 /// stage without a schema change.</para>
 /// </remarks>
-public sealed class TerminologyService
+public sealed class TerminologyService : ITerminologySync
 {
     private readonly StoreWrapper _store;
     private readonly TimeProvider _clock;

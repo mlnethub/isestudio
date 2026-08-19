@@ -49,7 +49,7 @@ public sealed class ExtractionOrchestrator
     private readonly EndpointCapacityCoordinator _capacity;
     private readonly TBoxExtractionService _tbox;
     private readonly ABoxExtractionService _abox;
-    private readonly TerminologyService _terminology;
+    private readonly ITerminologySync _terminology;
     private readonly PromptSnapshotService _promptSnapshot;
     private readonly IExtractionMerger _merger;
     private readonly StoreWrapper _store;
@@ -64,7 +64,7 @@ public sealed class ExtractionOrchestrator
         EndpointCapacityCoordinator capacity,
         TBoxExtractionService tbox,
         ABoxExtractionService abox,
-        TerminologyService terminology,
+        ITerminologySync terminology,
         PromptSnapshotService promptSnapshot,
         IExtractionMerger merger,
         StoreWrapper store,

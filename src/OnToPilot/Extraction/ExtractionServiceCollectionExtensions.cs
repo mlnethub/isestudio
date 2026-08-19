@@ -21,6 +21,7 @@ public static class ExtractionServiceCollectionExtensions
         services.AddSingleton<TBoxExtractionService>();
         services.AddSingleton<ABoxExtractionService>();
         services.AddSingleton<TerminologyService>();
+        services.AddSingleton<ITerminologySync>(sp => sp.GetRequiredService<TerminologyService>());
         services.AddSingleton<PromptSnapshotService>();
         services.AddSingleton<IExtractionMerger, ExtractionMerger>();
         services.AddSingleton<ExtractionOrchestrator>();
