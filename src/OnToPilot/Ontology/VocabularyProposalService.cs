@@ -404,14 +404,32 @@ public sealed class VocabularyProposalService
         TermProposalEntity proposal,
         IReadOnlyDictionary<string, object?>? payload)
     {
+        // Match the dispatcher's wire shape: snake_case + case-insensitive,
+        // so a payload with <c>scheme_iri</c> / <c>pref_label</c> populates
+        // the matching <c>SchemeIri</c> / <c>PrefLabel</c> fields. B7c left
+        // this as case-insensitive-only, which silently dropped every
+        // snake_case field on a real Python wire payload.
         var jsonOptions = new JsonSerializerOptions
         {
+            PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
             PropertyNameCaseInsensitive = true,
         };
 
+        // The Python accept_proposal reference uses the payload that was
+        // stored on the proposal row when the human did not supply a new
+        // one in the request body; we mirror that fallback so the caller
+        // can accept a proposal without re-sending its full payload.
+        var effectivePayload = payload;
+        if ((effectivePayload is null || effectivePayload.Count == 0)
+            && proposal.Payload is not null)
+        {
+            var raw = proposal.Payload.RootElement.GetRawText();
+            effectivePayload = JsonSerializer.Deserialize<Dictionary<string, object?>>(raw, jsonOptions);
+        }
+
         // Round-trip the dict through JSON so we honour the wire field
         // names exactly as the Python backend serialises them.
-        var serialized = JsonSerializer.Serialize(payload ?? new Dictionary<string, object?>());
+        var serialized = JsonSerializer.Serialize(effectivePayload ?? new Dictionary<string, object?>());
         var data = JsonSerializer.Deserialize<SkosConceptData>(serialized, jsonOptions)
                    ?? new SkosConceptData();
 

@@ -94,11 +94,26 @@ public sealed class FakeChat : IChatClient
     /// matches the production Python output. Count defaults to 3.
     /// </summary>
     public FakeChat EnqueueTerminologyProposal(int count = 3)
+        => EnqueueTerminologyProposal(count, sourceChunkIds: null);
+
+    /// <summary>
+    /// Overload of <see cref="EnqueueTerminologyProposal(int)"/> that lets
+    /// the caller control the <c>source_chunk_ids</c> each proposal cites.
+    /// TerminologyAgent filters proposals whose cited chunks are not in the
+    /// loaded set, so a test that seeds real <see cref="OnToPilot.Infrastructure.Persistence.Entities.ChunkEntity"/>
+    /// rows must cite their actual <c>LegacyId</c>s (not the 0..count-1
+    /// indices the parameterless overload uses) for the proposals to
+    /// survive <c>TryBuildProposal</c>.
+    /// </summary>
+    public FakeChat EnqueueTerminologyProposal(int count, IReadOnlyList<long>? sourceChunkIds)
     {
         var entries = new System.Text.StringBuilder();
         for (int i = 0; i < count; i++)
         {
             if (i > 0) entries.Append(',');
+            var sourceIds = sourceChunkIds is { Count: > 0 }
+                ? string.Join(",", sourceChunkIds)
+                : i.ToString();
             entries.Append($$"""
                 {
                   "action": "create",
@@ -111,7 +126,7 @@ public sealed class FakeChat : IChatClient
                   "mapped_entity_iri": null,
                   "confidence": 0.85,
                   "reason": "extracted from chunk {{i}}",
-                  "source_chunk_ids": [{{i}}]
+                  "source_chunk_ids": [{{sourceIds}}]
                 }
                 """);
         }

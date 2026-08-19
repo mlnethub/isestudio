@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Application.Integration;
@@ -2068,7 +2069,11 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var svc = ResolveVocabularyService();
         var data = DeserializeBody<SkosConceptData>(request)
             ?? throw new InvalidOperationException("Request body is required for vocabulary.update_concept.");
-        var iri = request.ResourceId ?? string.Empty;
+        // PATCH /api/knowledge/{ks_id}/vocabulary/concepts has no
+        // {concept_id} segment, so the IRI travels in the body's
+        // <c>iri</c> field. Fall back to ResourceId so callers that
+        // wire a future route segment keep working.
+        var iri = !string.IsNullOrEmpty(data.Iri) ? data.Iri : (request.ResourceId ?? string.Empty);
         return WrapAsync(async () =>
         {
             var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
@@ -2081,7 +2086,12 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeVocabularyDeleteConceptAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveVocabularyService();
-        var iri = request.ResourceId ?? string.Empty;
+        // DELETE /api/knowledge/{ks_id}/vocabulary/concepts has no
+        // {concept_id} segment, so the IRI travels in the request body
+        // under <c>iri</c>. Accept either <c>Dictionary&lt;string,
+        // object?&gt;</c> (the controller's <c>[FromBody] object body</c>
+        // shape) or a raw <see cref="System.Text.Json.JsonElement"/>.
+        var iri = ExtractBodyIri(request) ?? request.ResourceId ?? string.Empty;
         return WrapAsync(async () =>
         {
             var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
@@ -2097,6 +2107,45 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
                 removed_triples = result.Value.RemovedTriples,
             };
         });
+    }
+
+    /// <summary>
+    /// Pull a string <c>iri</c> field out of <paramref name="request"/>'s
+    /// body. Controller routes with <c>[FromBody] object body</c> flow
+    /// through <c>ToBody</c> which wraps the bound value under
+    /// <c>"_"</c>; routes with <c>[FromBody] Dictionary&lt;string, object&gt;</c>
+    /// surface the body directly. Both shapes are checked.
+    /// </summary>
+    private static string? ExtractBodyIri(InternalRequest request)
+    {
+        var body = request.Body;
+        if (body is null) return null;
+
+        // Direct case: <c>iri</c> is a top-level key on the body dict.
+        if (body.TryGetValue("iri", out var raw) && raw is not null)
+        {
+            return raw.ToString();
+        }
+
+        // Wrapped case: body sits under the <c>"_"</c> key as either a
+        // dictionary or a JsonElement object.
+        if (body.TryGetValue("_", out var wrapped) && wrapped is not null)
+        {
+            if (wrapped is IReadOnlyDictionary<string, object?> dict
+                && dict.TryGetValue("iri", out var inner)
+                && inner is not null)
+            {
+                return inner.ToString();
+            }
+            if (wrapped is JsonElement el && el.ValueKind == JsonValueKind.Object
+                && el.TryGetProperty("iri", out var prop)
+                && prop.ValueKind == JsonValueKind.String)
+            {
+                return prop.GetString();
+            }
+        }
+
+        return null;
     }
 
     private Task<object?> InvokeVocabularySyncAsync(InternalRequest request, CancellationToken ct)

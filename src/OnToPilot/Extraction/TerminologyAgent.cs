@@ -248,12 +248,23 @@ public sealed class TerminologyAgent
         var existingSignatures = await QueryExistingSignaturesAsync(ks, signatures, ct).ConfigureAwait(false);
 
         var rows = new List<TermProposalEntity>(pending.Count);
+        // Allocate a unique LegacyId per row from this KS's running max.
+        // Production Postgres assigns these via per-table sequences; SQLite
+        // needs an explicit value, and the contract tests run against
+        // SQLite, so we mirror the WriteAuditAsync pattern (MaxAsync + N)
+        // so each row survives the UNIQUE(legacy_id) index.
+        var nextLegacy = await _db.TermProposals.AsNoTracking()
+            .Where(p => p.KnowledgeSystemId == ks.Id)
+            .Select(p => (long?)p.LegacyId)
+            .MaxAsync(ct)
+            .ConfigureAwait(false) ?? 0L;
         foreach (var row in pending)
         {
             if (existingSignatures.Contains(row.Signature))
             {
                 continue;
             }
+            row.LegacyId = ++nextLegacy;
             _db.TermProposals.Add(row);
             rows.Add(row);
         }
