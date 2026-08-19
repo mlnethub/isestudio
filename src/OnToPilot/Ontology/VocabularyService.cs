@@ -667,20 +667,22 @@ public sealed class VocabularyService
 public static class VocabularyServiceCollectionExtensions
 {
     /// <summary>
-    /// Register the vocabulary slice. <see cref="VocabularyService"/> is
-    /// Scoped (shares the request DbContext); the underlying
-    /// <see cref="SkosManager"/>, <see cref="StoreWrapper"/>,
-    /// <see cref="TimeProvider"/>, <see cref="KnowledgeSystemAccessService"/>,
+    /// Register the vocabulary slice. <see cref="VocabularyService"/> and
+    /// <see cref="VocabularyProposalService"/> are Scoped (share the request
+    /// DbContext); the underlying <see cref="SkosManager"/>,
+    /// <see cref="StoreWrapper"/>, <see cref="TimeProvider"/>,
+    /// <see cref="KnowledgeSystemAccessService"/>,
     /// <see cref="ExtractionJobStore"/>, and <see cref="TerminologyService"/>
     /// are all registered earlier in the DI pipeline (<c>Program.cs</c>
     /// + <c>AddExtractionServices</c>) so the Oxigraph handle and the
     /// cross-request job-state survive HTTP-request boundaries. This helper
-    /// deliberately stays minimal — only the Scoped vocabulary service is
+    /// deliberately stays minimal — only the Scoped vocabulary services are
     /// added here.
     /// </summary>
     public static IServiceCollection AddVocabularyServices(this IServiceCollection services)
     {
         services.AddScoped<VocabularyService>();
+        services.AddScoped<VocabularyProposalService>();
         return services;
     }
 }
