@@ -104,20 +104,20 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // Real reads (list_jobs / get_job) are wired into
             // ExtractionJobStore via InvokeExtractionListJobsAsync /
             // InvokeExtractionGetJobAsync so HTTP callers see the actual
-            // job rows. The three run* arms are still placeholders
-            // (Block 6 will own the LLM/Oxigraph wiring); the
-            // RunWithExtractionGuardAsync wrapper still rejects them
-            // with the 409 envelope when an active job exists, matching
-            // the brief's "抽取进行中的修改返回 409" requirement.
+            // job rows. The three run* arms delegate to ExtractionOrchestrator
+            // via InvokeExtractionAsync; the RunWithExtractionGuardAsync
+            // wrapper still rejects them with the 409 envelope when an
+            // active job exists, matching the brief's "抽取进行中的修改返回
+            // 409" requirement.
             "extraction.run" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
-                () => Task.FromResult<object?>(EmptyExtractionJob())),
+                () => InvokeExtractionAsync(request, "extraction.run", cancellationToken)),
             "extraction.run_combined" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
-                () => Task.FromResult<object?>(EmptyExtractionJob())),
+                () => InvokeExtractionAsync(request, "extraction.run_combined", cancellationToken)),
             "extraction.run_instances" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
-                () => Task.FromResult<object?>(EmptyExtractionJob())),
+                () => InvokeExtractionAsync(request, "extraction.run_instances", cancellationToken)),
             "extraction.list_jobs" => InvokeExtractionListJobsAsync(request, cancellationToken),
             "extraction.get_job" => InvokeExtractionGetJobAsync(request, cancellationToken),
 
@@ -1285,6 +1285,9 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private ExtractionJobStore? ResolveExtractionJobs() =>
         _services.GetService(typeof(ExtractionJobStore)) as ExtractionJobStore;
 
+    private ExtractionOrchestrator? ResolveExtractionOrchestrator() =>
+        _services.GetService(typeof(ExtractionOrchestrator)) as ExtractionOrchestrator;
+
     private Task<object?> InvokeExtractionListJobsAsync(InternalRequest request, CancellationToken ct)
     {
         var jobs = ResolveExtractionJobs();
@@ -1317,6 +1320,42 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             if (row is null) return (object?)EmptyExtractionJob();
             return (object?)ExtractionJobOut.From(row);
         });
+    }
+
+    /// <summary>
+    /// Shared body for the 3 extraction.run* arms. Deserialises the request
+    /// body to <see cref="ExtractionRequest"/>, invokes the matching
+    /// <see cref="ExtractionOrchestrator.Start*Async"/> entry point, and
+    /// projects the resulting job entity to the wire DTO via
+    /// <see cref="ExtractionJobOut.From"/>.
+    /// </summary>
+    private async Task<object?> InvokeExtractionAsync(
+        InternalRequest request, string runKind, CancellationToken cancellationToken)
+    {
+        var body = DeserializeBody<ExtractionRequest>(request);
+        if (body is null)
+        {
+            throw new InvalidOperationException(
+                "extraction body is required (knowledge_system_id, blob_sha, " +
+                "file_name, provider, model, endpoint).");
+        }
+        var orchestrator = ResolveExtractionOrchestrator();
+        if (orchestrator is null)
+        {
+            throw new InvalidOperationException(
+                "ExtractionOrchestrator is not registered in the service container.");
+        }
+
+        var job = runKind switch
+        {
+            "extraction.run"           => await orchestrator.StartTBoxAsync(body, cancellationToken),
+            "extraction.run_combined"  => await orchestrator.StartCombinedAsync(body, cancellationToken),
+            "extraction.run_instances" => await orchestrator.StartABoxAsync(body, cancellationToken),
+            _ => throw new InvalidOperationException(
+                $"Unknown extraction run kind '{runKind}'."),
+        };
+
+        return ExtractionJobOut.From(job);
     }
 
     // Shared empty / placeholder shapes for the document slice. These
