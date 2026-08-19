@@ -37,8 +37,46 @@ public sealed class ABoxManager
 
     /// <summary>
     /// Create a fresh individual in the ABox graph. Returns the minted IRI.
-    /// <paramref name="individualIri"/> is treated as a label / hint and is
-    /// not echoed back; the actual IRI is <c>BaseIri + "ind-" + uuid4[:12]</c>.
+    /// <paramref name="label"/> is written as an <c>rdfs:label</c> triple so
+    /// the read APIs can echo a human-readable name (matches Python
+    /// <c>abox.create_individual</c>); <paramref name="individualIri"/> is
+    /// a hint only — the actual IRI is <c>BaseIri + "ind-" + uuid4[:12]</c>.
+    /// </summary>
+    public string CreateIndividual(KsContext ks, string individualIri, string classIri, string label)
+    {
+        ArgumentNullException.ThrowIfNull(ks);
+        ArgumentException.ThrowIfNullOrEmpty(individualIri);
+        ArgumentException.ThrowIfNullOrEmpty(classIri);
+        ArgumentNullException.ThrowIfNull(label);
+
+        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
+        var iri = MintIri(ks.BaseIri);
+        var clsNode = new OntoNamedNode(classIri);
+        var indNode = new OntoNamedNode(iri);
+
+        var quads = new List<OntoQuad>(3)
+        {
+            new(indNode, Vocabulary.RdfType, Vocabulary.OwlNamedIndividual, aboxGraph),
+            new(indNode, Vocabulary.RdfType, clsNode, aboxGraph),
+        };
+        if (label.Length > 0)
+        {
+            quads.Add(new OntoQuad(
+                indNode,
+                Vocabulary.RdfsLabel,
+                new OntoLiteral(label),
+                aboxGraph));
+        }
+        _store.AddQuads(aboxGraph, quads);
+        return iri;
+    }
+
+    /// <summary>
+    /// Convenience overload that preserves the original call shape for
+    /// callers that don't yet supply a label (the existing unit tests
+    /// and the extraction seed loop assume "no rdfs:label" so the
+    /// caller can decide the label on a separate triple). New
+    /// user-facing callers should pass the 4-arg overload with a label.
     /// </summary>
     public string CreateIndividual(KsContext ks, string individualIri, string classIri)
     {
@@ -259,6 +297,227 @@ public sealed class ABoxManager
             }
         }
         return subjects.ToList();
+    }
+
+    /// <summary>
+    /// Per-class individual counts across the ABox graph. Walks every
+    /// <c>(s rdf:type cls)</c> triple once and tallies; falls back to
+    /// zero for TBox classes that have no instances. Mirrors Python
+    /// <c>abox.counts_by_class</c>.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> CountsByClass(KsContext ks)
+    {
+        ArgumentNullException.ThrowIfNull(ks);
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var q in All(ks))
+        {
+            if (q.Subject is OntoNamedNode
+                && q.Predicate.Value == Vocabulary.RdfType.Value
+                && q.Object is OntoNamedNode cls
+                && cls.Value != Vocabulary.OwlNamedIndividual.Value)
+            {
+                counts[cls.Value] = counts.TryGetValue(cls.Value, out var n) ? n + 1 : 1;
+            }
+        }
+        return counts;
+    }
+
+    /// <summary>
+    /// Project one row of the <c>/abox/individuals</c> listing — IRIs,
+    /// the human-readable label (or local name fallback), and the
+    /// classes the individual declares.
+    /// </summary>
+    public IReadOnlyList<IndividualListItem> ListIndividualsPaged(
+        KsContext ks,
+        IReadOnlyDictionary<string, string> classLabels,
+        string? classIri,
+        string? q,
+        int offset,
+        int limit)
+    {
+        ArgumentNullException.ThrowIfNull(ks);
+        ArgumentNullException.ThrowIfNull(classLabels);
+
+        // Build (subject → set of classIris, subject → label) from a single scan.
+        var classBySubject = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var labelBySubject = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var quad in All(ks))
+        {
+            if (quad.Subject is not OntoNamedNode subj) continue;
+            if (quad.Predicate.Value == Vocabulary.RdfType.Value
+                && quad.Object is OntoNamedNode cls)
+            {
+                if (!classBySubject.TryGetValue(subj.Value, out var set))
+                {
+                    set = new HashSet<string>(StringComparer.Ordinal);
+                    classBySubject[subj.Value] = set;
+                }
+                set.Add(cls.Value);
+            }
+            else if (quad.Predicate.Value == Vocabulary.RdfsLabel.Value
+                && quad.Object is OntoLiteral lit)
+            {
+                labelBySubject[subj.Value] = lit.Value;
+            }
+        }
+
+        var needle = string.IsNullOrWhiteSpace(q) ? null : q.Trim();
+        var filtered = classBySubject.Keys
+            .Where(s => classIri is null || classBySubject[s].Contains(classIri))
+            .Where(s =>
+            {
+                if (needle is null) return true;
+                if (labelBySubject.TryGetValue(s, out var lbl)
+                    && lbl.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+                return s.Contains(needle, StringComparison.OrdinalIgnoreCase);
+            })
+            .OrderBy(s => labelBySubject.TryGetValue(s, out var l) ? l : LocalIri(s),
+                StringComparer.Ordinal)
+            .ToList();
+
+        var page = filtered.Skip(offset).Take(limit).ToList();
+        var items = new List<IndividualListItem>(page.Count);
+        foreach (var iri in page)
+        {
+            var label = labelBySubject.TryGetValue(iri, out var l)
+                ? l
+                : LocalIri(iri);
+            var types = classBySubject[iri]
+                .Where(t => t != Vocabulary.OwlNamedIndividual.Value)
+                .Select(t => t)
+                .ToList();
+            items.Add(new IndividualListItem(iri, label, types));
+        }
+        return items;
+    }
+
+    /// <summary>
+    /// Build the <c>/abox/individuals</c> total count matching
+    /// <see cref="ListIndividualsPaged"/>'s filter (without pagination).
+    /// </summary>
+    public int CountIndividualsPaged(
+        KsContext ks,
+        string? classIri,
+        string? q)
+    {
+        ArgumentNullException.ThrowIfNull(ks);
+        var classBySubject = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+        var labelBySubject = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var quad in All(ks))
+        {
+            if (quad.Subject is not OntoNamedNode subj) continue;
+            if (quad.Predicate.Value == Vocabulary.RdfType.Value
+                && quad.Object is OntoNamedNode cls)
+            {
+                if (!classBySubject.TryGetValue(subj.Value, out var set))
+                {
+                    set = new HashSet<string>(StringComparer.Ordinal);
+                    classBySubject[subj.Value] = set;
+                }
+                set.Add(cls.Value);
+            }
+            else if (quad.Predicate.Value == Vocabulary.RdfsLabel.Value
+                && quad.Object is OntoLiteral lit)
+            {
+                labelBySubject[subj.Value] = lit.Value;
+            }
+        }
+        var needle = string.IsNullOrWhiteSpace(q) ? null : q.Trim();
+        var total = classBySubject.Keys
+            .Count(s => (classIri is null || classBySubject[s].Contains(classIri))
+                && (needle is null
+                    || (labelBySubject.TryGetValue(s, out var l)
+                        && l.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                    || s.Contains(needle, StringComparison.OrdinalIgnoreCase)));
+        return total;
+    }
+
+    /// <summary>
+    /// Read the full individual envelope (types + object + data
+    /// assertions). Returns <c>null</c> when <paramref name="iri"/> has
+    /// no triples in the ABox graph. Mirrors Python
+    /// <c>abox.get_individual</c> minus the per-fact <c>sources</c>
+    /// attachment (deferred to the ABoxProvenanceService wire-up).
+    /// </summary>
+    public IndividualOut? GetIndividual(
+        KsContext ks,
+        string iri,
+        IReadOnlyDictionary<string, string> classLabels,
+        IReadOnlyDictionary<string, string> propLabels)
+    {
+        ArgumentNullException.ThrowIfNull(ks);
+        ArgumentException.ThrowIfNullOrEmpty(iri);
+        ArgumentNullException.ThrowIfNull(classLabels);
+        ArgumentNullException.ThrowIfNull(propLabels);
+
+        var outgoing = _store.Match(subjectIri: iri, graphIri: ks.ABoxGraph);
+        if (outgoing.Count == 0) return null;
+
+        var types = new List<LabeledIri>();
+        var objectAssertions = new List<ObjectAssertionOut>();
+        var dataAssertions = new List<DataAssertionOut>();
+        string? label = null;
+
+        foreach (var quad in outgoing)
+        {
+            if (quad.Predicate.Value == Vocabulary.RdfType.Value
+                && quad.Object is OntoNamedNode cls)
+            {
+                var clsIri = cls.Value;
+                if (clsIri == Vocabulary.OwlNamedIndividual.Value) continue;
+                types.Add(new LabeledIri(clsIri,
+                    classLabels.TryGetValue(clsIri, out var l) ? l : LocalIri(clsIri)));
+            }
+            else if (quad.Predicate.Value == Vocabulary.RdfsLabel.Value
+                && quad.Object is OntoLiteral labelLit)
+            {
+                label = labelLit.Value;
+            }
+            else if (quad.Object is OntoNamedNode target)
+            {
+                var propIri = quad.Predicate.Value;
+                objectAssertions.Add(new ObjectAssertionOut(
+                    Prop: propIri,
+                    PropLabel: propLabels.TryGetValue(propIri, out var l) ? l : LocalIri(propIri),
+                    Target: target.Value,
+                    TargetLabel: LocalIri(target.Value),
+                    Sources: Array.Empty<string>()));
+            }
+            else if (quad.Object is OntoLiteral literal)
+            {
+                var propIri = quad.Predicate.Value;
+                dataAssertions.Add(new DataAssertionOut(
+                    Prop: propIri,
+                    PropLabel: propLabels.TryGetValue(propIri, out var l) ? l : LocalIri(propIri),
+                    Value: literal.Value,
+                    Datatype: literal.Datatype?.Value,
+                    Sources: Array.Empty<string>()));
+            }
+        }
+
+        return new IndividualOut(
+            Iri: iri,
+            Label: label ?? LocalIri(iri),
+            Types: types,
+            ObjectAssertions: objectAssertions,
+            DataAssertions: dataAssertions);
+    }
+
+    /// <summary>
+    /// Compute the local-name fragment of an IRI — the substring after
+    /// the last <c>#</c> or last <c>/</c>. Mirrors the Python
+    /// <c>local_name</c> helper that powers the sidebar fallback label.
+    /// </summary>
+    public static string LocalIri(string iri)
+    {
+        if (string.IsNullOrEmpty(iri)) return string.Empty;
+        var hashIdx = iri.LastIndexOf('#');
+        var slashIdx = iri.LastIndexOf('/');
+        var cut = Math.Max(hashIdx, slashIdx);
+        return cut < 0 ? iri : iri[(cut + 1)..];
     }
 
     /// <summary>

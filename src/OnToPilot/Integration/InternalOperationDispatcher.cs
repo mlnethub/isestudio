@@ -166,11 +166,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // -- abox --
             "abox.add_assertion" => Task.FromResult<object?>(new { ok = true }),
             "abox.remove_assertion" => Task.FromResult<object?>(new { ok = true }),
-            "abox.list_classes" => Task.FromResult<object?>(EmptyListResponse()),
-            "abox.get_individual" => Task.FromResult<object?>(EmptyIndividualRef()),
-            "abox.list_individuals" => Task.FromResult<object?>(EmptyListResponse()),
-            "abox.create_individual" => Task.FromResult<object?>(EmptyIndividualRef()),
-            "abox.delete_individual" => Task.FromResult<object?>(new { ok = true }),
+            "abox.list_classes" => InvokeAboxListClassesAsync(request, cancellationToken),
+            "abox.get_individual" => InvokeAboxGetIndividualAsync(request, cancellationToken),
+            "abox.list_individuals" => InvokeAboxListIndividualsAsync(request, cancellationToken),
+            "abox.create_individual" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeAboxCreateIndividualAsync(request, cancellationToken)),
+            "abox.delete_individual" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeAboxDeleteIndividualAsync(request, cancellationToken)),
             "abox.reset" => Task.FromResult<object?>(EmptyResetAboxResponse()),
             "abox.validate" => Task.FromResult<object?>(EmptyValidateReport()),
             "abox.fix_violation" => Task.FromResult<object?>(EmptyValidateReport()),
@@ -1462,6 +1464,141 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         await RejectIfExtractionActiveAsync(request, cancellationToken).ConfigureAwait(false);
         return await payloadFactory().ConfigureAwait(false);
+    }
+
+    // ----- abox helpers -----
+    // Real implementations for the individual-CRUD half of the ABox
+    // surface. Reads land directly (Viewer role gate inside the service);
+    // writes run through RunWithExtractionGuardAsync (B7a slice) so a
+    // mutation that lands during a running extraction is rejected with
+    // 409 + job_id envelope. Reset / validate / fix_violation /
+    // validation_decisions stay on placeholder factory methods until B7c
+    // wires ABoxValidator.ApplyFix + ValidationDecisionService.
+
+    private ABoxService? ResolveAboxService() =>
+        _services.GetService(typeof(ABoxService)) as ABoxService;
+
+    private Task<object?> InvokeAboxListClassesAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(new { classes = Array.Empty<object>(), total = 0 });
+        }
+        return WrapAsync(async () =>
+        {
+            var out_ = await svc.ListClassesAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)out_ is null
+                ? new { classes = Array.Empty<object>(), total = 0 }
+                : out_;
+        });
+    }
+
+    private Task<object?> InvokeAboxListIndividualsAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(new { items = Array.Empty<object>(), total = 0 });
+        }
+        var classIri = request.Query is not null && request.Query.TryGetValue("class_iri", out var ci)
+            ? ci : null;
+        var q = request.Query is not null && request.Query.TryGetValue("q", out var qq) ? qq : null;
+        var limit = request.Query is not null && request.Query.TryGetValue("limit", out var l)
+            && int.TryParse(l, out var lp) ? lp : 20;
+        var offset = request.Query is not null && request.Query.TryGetValue("offset", out var o)
+            && int.TryParse(o, out var op) ? op : 0;
+        return WrapAsync(async () =>
+        {
+            var out_ = await svc.ListIndividualsAsync(
+                request.KnowledgeSystemId.Value, classIri, q, limit, offset, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)out_ is null
+                ? new { items = Array.Empty<object>(), total = 0 }
+                : out_;
+        });
+    }
+
+    private Task<object?> InvokeAboxGetIndividualAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        var iri = request.Query is not null && request.Query.TryGetValue("iri", out var v) ? v : null;
+        if (svc is null || request.KnowledgeSystemId is null || string.IsNullOrEmpty(iri))
+        {
+            return Task.FromResult<object?>(EmptyIndividualRef());
+        }
+        return WrapAsync(async () =>
+        {
+            var ind = await svc.GetIndividualAsync(
+                request.KnowledgeSystemId.Value, iri!, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(ind ?? EmptyIndividualRef());
+        });
+    }
+
+    private Task<object?> InvokeAboxCreateIndividualAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        {
+            return Task.FromResult<object?>(EmptyIndividualRef());
+        }
+        var body = DeserializeBody<CreateIndividualRequest>(request);
+        if (body is null)
+        {
+            return Task.FromResult<object?>(EmptyIndividualRef());
+        }
+        return WrapAsync(async () =>
+        {
+            var ind = await svc.CreateIndividualAsync(
+                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(ind ?? EmptyIndividualRef());
+        });
+    }
+
+    private Task<object?> InvokeAboxDeleteIndividualAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        var iri = ExtractIriFromBody(request);
+        if (svc is null || request.KnowledgeSystemId is null || string.IsNullOrEmpty(iri))
+        {
+            return Task.FromResult<object?>(new { removed = 0 });
+        }
+        return WrapAsync(async () =>
+        {
+            var resp = await svc.DeleteIndividualAsync(
+                request.KnowledgeSystemId.Value, iri!, request.Actor, ct).ConfigureAwait(false);
+            return (object?)resp is null
+                ? new { removed = 0 }
+                : resp;
+        });
+    }
+
+    /// <summary>
+    /// Pull the <c>iri</c> field out of a loose-body POST. The
+    /// <c>IndividualRef</c> DTO is the documented wire shape; we also
+    /// accept the bare <c>"iri"</c> key so the body shape stays loose
+    /// like the Python side.
+    /// </summary>
+    private static string? ExtractIriFromBody(InternalRequest request)
+    {
+        if (request.Body is null) return null;
+        if (!request.Body.TryGetValue("_", out var raw) || raw is null)
+        {
+            // Direct dict body
+            return request.Body.TryGetValue("iri", out var iri) ? iri?.ToString() : null;
+        }
+        if (raw is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            foreach (var prop in el.EnumerateObject())
+            {
+                if (prop.NameEquals("iri") || prop.NameEquals("Iri"))
+                {
+                    return prop.Value.GetString();
+                }
+            }
+        }
+        return null;
     }
 
     // ----- placeholder payload factories -----

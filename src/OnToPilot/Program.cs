@@ -403,7 +403,12 @@ var rdfRootForwardSlash = rdfRoot.Replace('\\', '/');
 builder.Services.AddSingleton<StoreWrapper>(_ => new StoreWrapper(rdfRootForwardSlash));
 builder.Services.AddSingleton<OntologyEditor>(sp =>
     new OntologyEditor(sp.GetRequiredService<StoreWrapper>()));
+builder.Services.AddSingleton<ABoxManager>(sp =>
+    new ABoxManager(sp.GetRequiredService<StoreWrapper>()));
+builder.Services.AddSingleton<ABoxValidator>(sp =>
+    new ABoxValidator(sp.GetRequiredService<StoreWrapper>()));
 builder.Services.AddOntologyServices();
+builder.Services.AddAboxServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(

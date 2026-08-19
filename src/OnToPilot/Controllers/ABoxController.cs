@@ -27,7 +27,10 @@ public sealed class ABoxController : InternalControllerBase
         => InvokeAsync("abox.list_classes", Req(ks: ks_id), ct);
 
     [HttpGet("api/knowledge/{ks_id:long}/abox/individual")]
-    public Task<IActionResult> GetIndividualAsync(long ks_id, CancellationToken ct)
+    public Task<IActionResult> GetIndividualAsync(
+        long ks_id,
+        [FromQuery(Name = "iri")] string? iri,
+        CancellationToken ct)
         => InvokeAsync("abox.get_individual", Req(ks: ks_id), ct);
 
     [HttpGet("api/knowledge/{ks_id:long}/abox/individuals")]
