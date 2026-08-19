@@ -12,6 +12,7 @@ using OnToPilot.Authentication;
 using OnToPilot.Authorization;
 using OnToPilot.Configuration;
 using OnToPilot.Conflicts;
+using OnToPilot.Documents;
 using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
@@ -20,8 +21,10 @@ using OnToPilot.Integration;
 using OnToPilot.Knowledge;
 using OnToPilot.Mcp;
 using OnToPilot.Observability;
+using OnToPilot.Parsing;
 using OnToPilot.Providers;
 using OnToPilot.Serialization;
+using OnToPilot.Storage;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -365,6 +368,21 @@ builder.Services.AddConflictServices();
 // shares the request DbContext and depends on KnowledgeSystemAccessService
 // (singleton, registered above) for the Viewer / Editor / Owner gates.
 builder.Services.AddKnowledgeServices();
+// Documents slice — upload / parse / chunks / move / contribution / delete
+// with cross-KS blob ref-count. Scoped DocumentService depends on the
+// scoped DbContext; the underlying IBlobStore, IDocumentParser, and
+// Chunker are registered as singletons here so a single instance spans
+// the whole app. Contract-test factories override IDocumentParser /
+// IBlobStore (see AuthTestWebApplicationFactory.ConfigureServices) to
+// inject a TestDocumentParser + per-test temp blob root.
+var blobRoot = builder.Configuration["OnToPilot:Storage:BlobRoot"]
+    ?? Path.Combine(AppContext.BaseDirectory, "data", "blobs");
+builder.Services.AddSingleton<IBlobStore>(_ => new LocalCasBlobStore(blobRoot));
+builder.Services.AddSingleton<IDocumentParser, DocumentParser>();
+builder.Services.AddSingleton<Chunker>(_ => new Chunker(
+    size: DocumentService.DefaultChunkSize,
+    overlap: DocumentService.DefaultChunkOverlap));
+builder.Services.AddDocumentServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(

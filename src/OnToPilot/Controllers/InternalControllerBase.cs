@@ -45,7 +45,12 @@ public abstract class InternalControllerBase : ControllerBase
         return payload is null ? Ok(new { ok = true }) : Ok(payload);
     }
 
-    private Actor ResolveActor()
+    /// <summary>
+    /// Subclasses (e.g. <see cref="DocumentsController"/>) need access
+    /// to the actor when they bypass the facade for operations whose
+    /// request body is not JSON (multipart/form-data file upload).
+    /// </summary>
+    protected Actor ResolveActor()
     {
         // Pull the authenticated user off the request scope; the auth
         // handlers stash the UserEntity under the SessionAuthenticationHandler

@@ -4,7 +4,11 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using OnToPilot.Authentication;
+using OnToPilot.Documents;
 using OnToPilot.Infrastructure.Persistence;
+using OnToPilot.Parsing;
+using OnToPilot.Storage;
+using OnToPilot.Tests.Documents;
 
 namespace OnToPilot.Tests.Authentication;
 
@@ -14,7 +18,7 @@ namespace OnToPilot.Tests.Authentication;
 /// own unique on-disk SQLite database (deleted on dispose) so EF Core opens
 /// a fresh connection without leaking providers across tests.
 /// </summary>
-public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
+public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 {
     public const string AdminUsername = "admin";
     public const string AdminPassword = "admin12345strong";
@@ -23,6 +27,7 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
     public const string OtherPassword = "alice12345strong";
 
     private readonly string _sqlitePath;
+    private readonly string _blobRoot;
     private readonly IPasswordService? _passwordOverride;
 
     public AuthTestWebApplicationFactory() : this(passwordOverride: null)
@@ -37,11 +42,15 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
     /// </summary>
     public AuthTestWebApplicationFactory(IPasswordService? passwordOverride)
     {
+        var testId = Guid.NewGuid().ToString("N");
         var rawPath = Path.Combine(
             Path.GetTempPath(),
-            $"ontopilot-auth-tests-{Guid.NewGuid():N}.db");
+            $"ontopilot-auth-tests-{testId}.db");
         // SQLite connection-string parser is sensitive to backslashes.
         _sqlitePath = rawPath.Replace('\\', '/');
+        _blobRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"ontopilot-blob-{testId}");
         _passwordOverride = passwordOverride;
     }
 
@@ -72,6 +81,23 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
                 foreach (var desc in existing) services.Remove(desc);
                 services.AddSingleton(_passwordOverride);
             }
+
+            // Replace the production document parser with the test fake
+            // so parse contract tests don't depend on DoclingDotNet /
+            // PdfPig native binaries.
+            var parserDescriptors = services
+                .Where(d => d.ServiceType == typeof(IDocumentParser))
+                .ToList();
+            foreach (var desc in parserDescriptors) services.Remove(desc);
+            services.AddSingleton<IDocumentParser, TestDocumentParser>();
+
+            // Per-test isolated blob root so concurrent tests don't share
+            // disk state and orphans accumulate.
+            var blobDescriptors = services
+                .Where(d => d.ServiceType == typeof(IBlobStore))
+                .ToList();
+            foreach (var desc in blobDescriptors) services.Remove(desc);
+            services.AddSingleton<IBlobStore>(_ => new LocalCasBlobStore(_blobRoot));
         });
     }
 
@@ -95,6 +121,8 @@ public sealed class AuthTestWebApplicationFactory : WebApplicationFactory<Progra
         if (disposing)
         {
             try { if (File.Exists(_sqlitePath)) File.Delete(_sqlitePath); }
+            catch { /* ignore — best effort */ }
+            try { if (Directory.Exists(_blobRoot)) Directory.Delete(_blobRoot, recursive: true); }
             catch { /* ignore — best effort */ }
         }
         base.Dispose(disposing);

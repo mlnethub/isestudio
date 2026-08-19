@@ -106,8 +106,13 @@ public sealed class AuthController : ControllerBase
 
         var token = CreateToken();
         var now = _clock.GetUtcNow();
+        var nextSessionLegacy = await _db.AuthSessions.AsNoTracking()
+            .Select(s => (long?)s.LegacyId)
+            .MaxAsync(ct)
+            .ConfigureAwait(false);
         _db.AuthSessions.Add(new AuthSessionEntity
         {
+            LegacyId = (nextSessionLegacy ?? 0L) + 1L,
             Token = token,
             UserId = user!.Id,
             CreatedAt = now,
