@@ -84,6 +84,13 @@ public sealed class TerminologyAgent
     private static readonly JsonSerializerOptions PayloadSerializerOptions = new()
     {
         WriteIndented = false,
+        // Match Python `json.dumps(..., separators=(",", ":"))` so the
+        // signature bytes line up with `terminology_agent._signature()`.
+        // System.Text.Json has no built-in way to change the ": " / ", "
+        // separators — it always emits a single space after a key/value
+        // separator and after each array/property separator when
+        // WriteIndented is false — so we post-process the byte stream via
+        // <see cref="SerializeCompactAsync"/> to drop the whitespace.
     };
 
     private readonly IChatClientFactory _chatFactory;
@@ -196,7 +203,7 @@ public sealed class TerminologyAgent
         }
 
         var allowedChunkIds = new HashSet<long>(chunks.Keys);
-        var rows = new List<TermProposalEntity>(proposals.Count);
+        var pending = new List<TermProposalEntity>(proposals.Count);
         var now = _clock.GetUtcNow();
         foreach (var raw in proposals)
         {
@@ -204,9 +211,35 @@ public sealed class TerminologyAgent
             var row = TryBuildProposal(raw, ks, schemeIri, allowedChunkIds, chunks, now);
             if (row is not null)
             {
-                _db.TermProposals.Add(row);
-                rows.Add(row);
+                pending.Add(row);
             }
+        }
+
+        if (pending.Count == 0)
+        {
+            return Array.Empty<TermProposalEntity>();
+        }
+
+        // Signature dedup: Python `terminology_agent.suggest()` queries
+        // `TermProposal` for an existing row with the same (ks_id,
+        // signature) tuple and skips when one is found, so re-running the
+        // agent on the same chunks does not pile up duplicate rows. We
+        // collect all candidate signatures up front and batch the lookup
+        // into one round trip — the per-row FirstOrDefaultAsync the brief
+        // suggested is O(N) round trips and unnecessary at typical
+        // proposal sizes (<=50 per call).
+        var signatures = pending.Select(r => r.Signature).Distinct().ToList();
+        var existingSignatures = await QueryExistingSignaturesAsync(ks, signatures, ct).ConfigureAwait(false);
+
+        var rows = new List<TermProposalEntity>(pending.Count);
+        foreach (var row in pending)
+        {
+            if (existingSignatures.Contains(row.Signature))
+            {
+                continue;
+            }
+            _db.TermProposals.Add(row);
+            rows.Add(row);
         }
 
         if (rows.Count == 0)
@@ -216,6 +249,25 @@ public sealed class TerminologyAgent
 
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return rows;
+    }
+
+    private async Task<HashSet<string>> QueryExistingSignaturesAsync(
+        KnowledgeSystemEntity ks,
+        IReadOnlyList<string> signatures,
+        CancellationToken ct)
+    {
+        if (signatures.Count == 0)
+        {
+            return new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        var existing = await _db.TermProposals
+            .AsNoTracking()
+            .Where(p => p.KnowledgeSystemId == ks.Id && signatures.Contains(p.Signature))
+            .Select(p => p.Signature)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return new HashSet<string>(existing, StringComparer.Ordinal);
     }
 
     // ----------------------------------------------------------------------
@@ -652,8 +704,15 @@ public sealed class TerminologyAgent
         string? broaderIri,
         string? mappedIri)
     {
-        // Mirrors the sanitized payload Python writes for "create" —
-        // AcceptProposal reads these fields back verbatim.
+        // Mirrors the sanitized "create" payload Python writes at
+        // `terminology_agent.py:184-196` — every key the Python backend
+        // emits must round-trip byte-for-byte so the dedup query and the
+        // signature match. AcceptProposal reads these fields back verbatim.
+        //
+        // Key-order note: `_signature()` calls `json.dumps(..., sort_keys=True)`
+        // so the signature hash is independent of payload key order. The
+        // stored Payload column preserves whatever order Dictionary gives
+        // (insertion order); the reviewer-facing fields are stable.
         return new Dictionary<string, object?>
         {
             ["scheme_iri"] = schemeIri,
@@ -663,7 +722,9 @@ public sealed class TerminologyAgent
             ["alt_labels"] = aliases.ConvertAll(a => new { value = a, language = language }),
             ["hidden_labels"] = Array.Empty<object>(),
             ["description"] = description,
+            ["notation"] = string.Empty,
             ["broader"] = string.IsNullOrEmpty(broaderIri) ? Array.Empty<string>() : new[] { broaderIri },
+            ["related"] = Array.Empty<object>(),
             ["mapped_entity_iri"] = mappedIri,
             ["status"] = "active",
             ["origin"] = "agent",
@@ -701,9 +762,72 @@ public sealed class TerminologyAgent
             ["payload"] = payload,
             ["target_iri"] = targetIri,
         };
-        var bytes = JsonSerializer.SerializeToUtf8Bytes(canonical, PayloadSerializerOptions);
+        // Compact JSON (`separators=(",", ":")` in Python) is required so
+        // the C# signature bytes line up with the Python backend. See
+        // <see cref="SerializeCompactBytes"/> for the post-process.
+        var bytes = SerializeCompactBytes(canonical);
         var hash = SHA256.HashData(bytes);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Serialize an object to UTF-8 JSON with Python's compact separators
+    /// (<c>json.dumps(..., separators=(",", ":"))</c>). System.Text.Json has
+    /// no API to drop the ": " / ", " whitespace it always emits with
+    /// <c>WriteIndented = false</c>, so we walk the resulting bytes and
+    /// strip whitespace that falls outside a JSON string literal. The
+    /// walker handles backslash escapes correctly so an escaped quote
+    /// inside a string does not flip the <c>inString</c> flag.
+    /// </summary>
+    private static byte[] SerializeCompactBytes(object value)
+    {
+        var defaultBytes = JsonSerializer.SerializeToUtf8Bytes(value, PayloadSerializerOptions);
+        if (defaultBytes.Length == 0) return defaultBytes;
+
+        var output = new byte[defaultBytes.Length];
+        var written = 0;
+        var inString = false;
+        var escaped = false;
+        for (var i = 0; i < defaultBytes.Length; i++)
+        {
+            var b = defaultBytes[i];
+            if (escaped)
+            {
+                output[written++] = b;
+                escaped = false;
+                continue;
+            }
+            if (inString)
+            {
+                if (b == (byte)'\\')
+                {
+                    output[written++] = b;
+                    escaped = true;
+                    continue;
+                }
+                if (b == (byte)'"')
+                {
+                    inString = false;
+                }
+                output[written++] = b;
+                continue;
+            }
+            // Outside a string: drop whitespace (System.Text.Json only
+            // emits ' ' and ',' / ': ' as padding here).
+            if (b == (byte)'"' || b == (byte)' ' || b == (byte)'\t' || b == (byte)'\n' || b == (byte)'\r')
+            {
+                if (b == (byte)'"')
+                {
+                    inString = true;
+                }
+                else
+                {
+                    continue;
+                }
+            }
+            output[written++] = b;
+        }
+        return written == defaultBytes.Length ? output : output[..written];
     }
 
     // ----------------------------------------------------------------------
