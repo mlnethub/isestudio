@@ -1,8 +1,11 @@
+using Microsoft.EntityFrameworkCore;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Application.Integration;
 using OnToPilot.Conflicts;
 using OnToPilot.Documents;
 using OnToPilot.Extraction;
+using OnToPilot.Infrastructure.Persistence;
+using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Knowledge;
 using OnToPilot.Ontology;
 using OnToPilot.Providers;
@@ -191,22 +194,28 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "resolution.resolve" => Task.FromResult<object?>(EmptyResolutionDecision()),
 
             // -- vocabulary --
-            "vocabulary.get" => Task.FromResult<object?>(EmptyVocabularyResponse()),
-            "vocabulary.delete_concept" => Task.FromResult<object?>(new { ok = true }),
-            "vocabulary.list_concepts" => Task.FromResult<object?>(EmptyListResponse()),
-            "vocabulary.update_concept" => Task.FromResult<object?>(EmptyConcept()),
-            "vocabulary.create_concept" => Task.FromResult<object?>(EmptyConcept()),
-            "vocabulary.export" => Task.FromResult<object?>(""),
-            "vocabulary.list_proposals" => Task.FromResult<object?>(EmptyListResponse()),
-            "vocabulary.accept_proposal" => Task.FromResult<object?>(EmptyProposal()),
-            "vocabulary.reject_proposal" => Task.FromResult<object?>(EmptyProposal()),
-            "vocabulary.resolve_term" => Task.FromResult<object?>(EmptyListResponse()),
-            "vocabulary.delete_scheme" => Task.FromResult<object?>(new { ok = true }),
-            "vocabulary.list_schemes" => Task.FromResult<object?>(EmptyListResponse()),
-            "vocabulary.update_scheme" => Task.FromResult<object?>(EmptyScheme()),
-            "vocabulary.create_scheme" => Task.FromResult<object?>(EmptyScheme()),
-            "vocabulary.suggest_terms" => Task.FromResult<object?>(EmptyListResponse()),
-            "vocabulary.sync" => Task.FromResult<object?>(EmptySyncResponse()),
+            // Real CRUD via VocabularyService / VocabularyProposalService /
+            // TerminologyAgent (all scoped). Reads go through the Reader
+            // (Viewer) role gate inside the service; writes go through the
+            // Writer (Editor) gate + extraction guard + audit diff (also
+            // inside the service). The dispatcher only resolves the scoped
+            // service + the bound knowledge system and forwards the call.
+            "vocabulary.get" => InvokeVocabularyGetAsync(request, cancellationToken),
+            "vocabulary.delete_concept" => InvokeVocabularyDeleteConceptAsync(request, cancellationToken),
+            "vocabulary.list_concepts" => InvokeVocabularyListConceptsAsync(request, cancellationToken),
+            "vocabulary.update_concept" => InvokeVocabularyUpdateConceptAsync(request, cancellationToken),
+            "vocabulary.create_concept" => InvokeVocabularyCreateConceptAsync(request, cancellationToken),
+            "vocabulary.export" => InvokeVocabularyExportAsync(request, cancellationToken),
+            "vocabulary.list_proposals" => InvokeVocabularyListProposalsAsync(request, cancellationToken),
+            "vocabulary.accept_proposal" => InvokeVocabularyAcceptProposalAsync(request, cancellationToken),
+            "vocabulary.reject_proposal" => InvokeVocabularyRejectProposalAsync(request, cancellationToken),
+            "vocabulary.resolve_term" => InvokeVocabularyResolveTermAsync(request, cancellationToken),
+            "vocabulary.delete_scheme" => InvokeVocabularyDeleteSchemeAsync(request, cancellationToken),
+            "vocabulary.list_schemes" => InvokeVocabularyListSchemesAsync(request, cancellationToken),
+            "vocabulary.update_scheme" => InvokeVocabularyUpdateSchemeAsync(request, cancellationToken),
+            "vocabulary.create_scheme" => InvokeVocabularyCreateSchemeAsync(request, cancellationToken),
+            "vocabulary.suggest_terms" => InvokeVocabularySuggestTermsAsync(request, cancellationToken),
+            "vocabulary.sync" => InvokeVocabularySyncAsync(request, cancellationToken),
 
             // -- prompts --
             "prompts.list" => Task.FromResult<object?>(EmptyPromptList()),
@@ -280,10 +289,10 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "external.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
             "external.individuals" => Task.FromResult<object?>(EmptyListResponse()),
             "external.query" => InvokeExternalQueryAsync(request, cancellationToken),
-            "external.vocabulary.concepts" => Task.FromResult<object?>(EmptyListResponse()),
-            "external.vocabulary.export" => Task.FromResult<object?>(""),
-            "external.vocabulary.resolve" => Task.FromResult<object?>(EmptyListResponse()),
-            "external.vocabulary.schemes" => Task.FromResult<object?>(EmptyListResponse()),
+            "external.vocabulary.concepts" => InvokeExternalVocabularyListConceptsAsync(request, cancellationToken),
+            "external.vocabulary.export" => InvokeExternalVocabularyExportAsync(request, cancellationToken),
+            "external.vocabulary.resolve" => InvokeExternalVocabularyResolveAsync(request, cancellationToken),
+            "external.vocabulary.schemes" => InvokeExternalVocabularyListSchemesAsync(request, cancellationToken),
 
             // -- published (stage 4 task 3) --
             "published.metadata" => Task.FromResult<object?>(EmptyRelease()),
@@ -294,10 +303,10 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "published.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
             "published.individuals" => Task.FromResult<object?>(EmptyListResponse()),
             "published.query" => InvokeExternalQueryAsync(request, cancellationToken),
-            "published.vocabulary.concepts" => Task.FromResult<object?>(EmptyListResponse()),
-            "published.vocabulary.export" => Task.FromResult<object?>(""),
-            "published.vocabulary.resolve" => Task.FromResult<object?>(EmptyListResponse()),
-            "published.vocabulary.schemes" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.vocabulary.concepts" => InvokePublishedVocabularyListConceptsAsync(request, cancellationToken),
+            "published.vocabulary.export" => InvokePublishedVocabularyExportAsync(request, cancellationToken),
+            "published.vocabulary.resolve" => InvokePublishedVocabularyResolveAsync(request, cancellationToken),
+            "published.vocabulary.schemes" => InvokePublishedVocabularyListSchemesAsync(request, cancellationToken),
             "published.release" => Task.FromResult<object?>(EmptyRelease()),
             "published.release.manifest" => Task.FromResult<object?>(EmptyReleaseManifest()),
             "published.release.ontology" => Task.FromResult<object?>(EmptyOntologyResponse()),
@@ -306,10 +315,10 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "published.release.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
             "published.release.individuals" => Task.FromResult<object?>(EmptyListResponse()),
             "published.release.query" => InvokeExternalQueryAsync(request, cancellationToken),
-            "published.release.vocabulary.concepts" => Task.FromResult<object?>(EmptyListResponse()),
-            "published.release.vocabulary.export" => Task.FromResult<object?>(""),
-            "published.release.vocabulary.resolve" => Task.FromResult<object?>(EmptyListResponse()),
-            "published.release.vocabulary.schemes" => Task.FromResult<object?>(EmptyListResponse()),
+            "published.release.vocabulary.concepts" => InvokePublishedReleaseVocabularyListConceptsAsync(request, cancellationToken),
+            "published.release.vocabulary.export" => InvokePublishedReleaseVocabularyExportAsync(request, cancellationToken),
+            "published.release.vocabulary.resolve" => InvokePublishedReleaseVocabularyResolveAsync(request, cancellationToken),
+            "published.release.vocabulary.schemes" => InvokePublishedReleaseVocabularyListSchemesAsync(request, cancellationToken),
 
             _ => throw new NotSupportedException(
                 $"Internal operation '{operation}' is not yet wired in the dispatcher."),
@@ -1787,6 +1796,497 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         }
         return null;
     }
+
+    // ----- vocabulary (Block 8 Task 5) -------------------------------------
+    // Wires the 28 vocabulary dispatcher arms to the scoped services built
+    // in Tasks 2 (VocabularyService) / 3 (VocabularyProposalService) /
+    // 4 (TerminologyAgent). The dispatcher is a Singleton; we resolve each
+    // scoped service per-call via `_services.GetService` (B6b's
+    // ResolveExtractionOrchestrator pattern) and pull the bound knowledge
+    // system from the same root provider so the request DbContext flows
+    // through. Role gates, the extraction guard, and audit diffs all live
+    // inside the services — the dispatcher only forwards.
+    //
+    // Failure modes mirror the other slices:
+    // * Service not registered (unit tests that hand-built the dispatcher)
+    //   → returns a schema-compatible empty payload so the route still 200s.
+    // * Knowledge system not bound / not found → same empty-payload fallback.
+    // * Service throws InvalidOperationException → FastApiErrorMiddleware
+    //   translates it to the { "detail": "..." } envelope the Python
+    //   backend emits.
+
+    private VocabularyService? ResolveVocabularyService() =>
+        _services.GetService(typeof(VocabularyService)) as VocabularyService;
+
+    private VocabularyProposalService? ResolveVocabularyProposalService() =>
+        _services.GetService(typeof(VocabularyProposalService)) as VocabularyProposalService;
+
+    private TerminologyAgent? ResolveTerminologyAgent() =>
+        _services.GetService(typeof(TerminologyAgent)) as TerminologyAgent;
+
+    /// <summary>Resolve the bound <see cref="KnowledgeSystemEntity"/> from the
+    /// internal <c>{ks_id}</c> route id, or <c>null</c> when no KS is bound or
+    /// the DbContext isn't wired (hand-built dispatcher in unit tests).</summary>
+    private async Task<KnowledgeSystemEntity?> ResolveKsAsync(
+        long? knowledgeSystemId, CancellationToken ct)
+    {
+        if (knowledgeSystemId is null) return null;
+        var db = _services.GetService(typeof(OnToPilotDbContext)) as OnToPilotDbContext;
+        if (db is null) return null;
+        return await db.KnowledgeSystems.AsNoTracking()
+            .FirstOrDefaultAsync(k => k.LegacyId == knowledgeSystemId.Value, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Resolve the bound <see cref="KnowledgeSystemEntity"/> from the
+    /// external / published <c>{public_id}</c> route id.</summary>
+    private async Task<KnowledgeSystemEntity?> ResolveKsByPublicIdAsync(
+        string? publicId, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(publicId)) return null;
+        var db = _services.GetService(typeof(OnToPilotDbContext)) as OnToPilotDbContext;
+        if (db is null) return null;
+        return await db.KnowledgeSystems.AsNoTracking()
+            .FirstOrDefaultAsync(k => k.PublicId == publicId, ct)
+            .ConfigureAwait(false);
+    }
+
+    private static string? QueryString(InternalRequest request, string key) =>
+        request.Query is not null && request.Query.TryGetValue(key, out var v) ? v : null;
+
+    private static int QueryInt(InternalRequest request, string key, int fallback) =>
+        request.Query is not null && request.Query.TryGetValue(key, out var v)
+            && int.TryParse(v, out var n)
+            ? n
+            : fallback;
+
+    /// <summary>Pull the optional <c>payload</c> override for an accept
+    /// proposal decision. Supports both a pre-deserialized dictionary and a
+    /// <see cref="JsonElement"/> (the shape <see cref="DeserializeBody{T}"/>
+    /// materialises for nested <c>object</c> values).</summary>
+    private static IReadOnlyDictionary<string, object?>? ExtractPayload(
+        Dictionary<string, object?>? body)
+    {
+        if (body is null) return null;
+        if (!body.TryGetValue("payload", out var raw) || raw is null) return null;
+        if (raw is IReadOnlyDictionary<string, object?> dict) return dict;
+        if (raw is System.Text.Json.JsonElement el)
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<
+                Dictionary<string, object?>>(el.GetRawText(), DeserializeOptions);
+        }
+        return null;
+    }
+
+    /// <summary>Parse the <c>chunk_ids</c> list for <c>vocabulary.suggest_terms</c>
+    /// — accepts either a <see cref="JsonElement"/> array (the
+    /// <see cref="DeserializeBody{T}"/> shape) or a plain enumerable.</summary>
+    private static IReadOnlyList<long> ExtractChunkIds(Dictionary<string, object?>? body)
+    {
+        if (body is null) return Array.Empty<long>();
+        if (!body.TryGetValue("chunk_ids", out var raw) || raw is null)
+            return Array.Empty<long>();
+        var result = new List<long>();
+        if (raw is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            foreach (var item in el.EnumerateArray())
+            {
+                if (item.ValueKind == System.Text.Json.JsonValueKind.Number
+                    && item.TryGetInt64(out var n)) result.Add(n);
+                else if (item.ValueKind == System.Text.Json.JsonValueKind.String
+                    && long.TryParse(item.GetString(), out var s)) result.Add(s);
+            }
+        }
+        else if (raw is System.Collections.IEnumerable enumerable)
+        {
+            foreach (var item in enumerable)
+            {
+                if (item is long l) result.Add(l);
+                else if (item is int i) result.Add(i);
+                else if (item is System.Text.Json.JsonElement je
+                    && je.ValueKind == System.Text.Json.JsonValueKind.Number
+                    && je.TryGetInt64(out var n2)) result.Add(n2);
+                else if (item is string str && long.TryParse(str, out var s2)) result.Add(s2);
+            }
+        }
+        return result;
+    }
+
+    // -- internal vocabulary reads --
+
+    private Task<object?> InvokeVocabularyGetAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyVocabularyResponse();
+            var view = await svc.GetVocabularyAsync(ks, request.Actor, ct).ConfigureAwait(false);
+            return (object?)view ?? EmptyVocabularyResponse();
+        });
+    }
+
+    private Task<object?> InvokeVocabularyListSchemesAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyListResponse();
+            var schemes = await svc.ListSchemesAsync(ks, request.Actor, ct).ConfigureAwait(false);
+            if (schemes is null) return (object?)EmptyListResponse();
+            return (object?)new { items = schemes, total = schemes.Count };
+        });
+    }
+
+    private Task<object?> InvokeVocabularyListConceptsAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var schemeIri = QueryString(request, "scheme_iri");
+        var q = QueryString(request, "q");
+        var status = QueryString(request, "status");
+        var mapping = QueryString(request, "mapping");
+        var origin = QueryString(request, "origin");
+        var limit = QueryInt(request, "limit", 100);
+        var offset = QueryInt(request, "offset", 0);
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyListResponse();
+            var page = await svc.ListConceptsAsync(
+                ks, schemeIri, q, status, mapping, origin, limit, offset,
+                request.Actor, ct).ConfigureAwait(false);
+            if (page is null) return (object?)EmptyListResponse();
+            return (object?)new { items = page.Items, total = page.Total };
+        });
+    }
+
+    private Task<object?> InvokeVocabularyResolveTermAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var q = QueryString(request, "q") ?? string.Empty;
+        var language = QueryString(request, "language");
+        var limit = QueryInt(request, "limit", 10);
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyListResponse();
+            var result = await svc.ResolveTermAsync(ks, q, language, limit, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (result is null) return (object?)EmptyListResponse();
+            return (object?)new { items = result.Value.Items, total = result.Value.Total };
+        });
+    }
+
+    private Task<object?> InvokeVocabularyExportAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var fmt = QueryString(request, "fmt") ?? "n-quads";
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)"";
+            var bytes = await svc.ExportVocabularyAsync(ks, fmt, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (bytes is null) return (object?)"";
+            return (object?)System.Text.Encoding.UTF8.GetString(bytes);
+        });
+    }
+
+    // -- internal vocabulary writes (scheme) --
+
+    private Task<object?> InvokeVocabularyCreateSchemeAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var data = DeserializeBody<SkosSchemeData>(request)
+            ?? throw new InvalidOperationException("Request body is required for vocabulary.create_scheme.");
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyScheme();
+            var view = await svc.CreateSchemeAsync(ks, data, request.Actor, ct).ConfigureAwait(false);
+            return (object?)view ?? EmptyScheme();
+        });
+    }
+
+    private Task<object?> InvokeVocabularyUpdateSchemeAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var data = DeserializeBody<SkosSchemeData>(request)
+            ?? throw new InvalidOperationException("Request body is required for vocabulary.update_scheme.");
+        var iri = request.ResourceId ?? string.Empty;
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null || string.IsNullOrEmpty(iri)) return (object?)EmptyScheme();
+            var view = await svc.UpdateSchemeAsync(ks, iri, data, request.Actor, ct).ConfigureAwait(false);
+            return (object?)view ?? EmptyScheme();
+        });
+    }
+
+    private Task<object?> InvokeVocabularyDeleteSchemeAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var iri = request.ResourceId ?? string.Empty;
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null || string.IsNullOrEmpty(iri))
+            {
+                return (object?)new { deleted = (string?)null, removed_triples = 0 };
+            }
+            var result = await svc.DeleteSchemeAsync(ks, iri, request.Actor, ct).ConfigureAwait(false);
+            if (result is null) return (object?)new { deleted = iri, removed_triples = 0 };
+            return (object?)new
+            {
+                deleted = result.Value.DeletedIri,
+                removed_triples = result.Value.RemovedTriples,
+            };
+        });
+    }
+
+    // -- internal vocabulary writes (concept) --
+
+    private Task<object?> InvokeVocabularyCreateConceptAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var data = DeserializeBody<SkosConceptData>(request)
+            ?? throw new InvalidOperationException("Request body is required for vocabulary.create_concept.");
+        var schemeIri = data.SchemeIri;
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyConcept();
+            var view = await svc.CreateConceptAsync(ks, schemeIri, data, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)view ?? EmptyConcept();
+        });
+    }
+
+    private Task<object?> InvokeVocabularyUpdateConceptAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var data = DeserializeBody<SkosConceptData>(request)
+            ?? throw new InvalidOperationException("Request body is required for vocabulary.update_concept.");
+        var iri = request.ResourceId ?? string.Empty;
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null || string.IsNullOrEmpty(iri)) return (object?)EmptyConcept();
+            var view = await svc.UpdateConceptAsync(ks, iri, data, request.Actor, ct).ConfigureAwait(false);
+            return (object?)view ?? EmptyConcept();
+        });
+    }
+
+    private Task<object?> InvokeVocabularyDeleteConceptAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var iri = request.ResourceId ?? string.Empty;
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null || string.IsNullOrEmpty(iri))
+            {
+                return (object?)new { deleted = (string?)null, removed_triples = 0 };
+            }
+            var result = await svc.DeleteConceptAsync(ks, iri, request.Actor, ct).ConfigureAwait(false);
+            if (result is null) return (object?)new { deleted = iri, removed_triples = 0 };
+            return (object?)new
+            {
+                deleted = result.Value.DeletedIri,
+                removed_triples = result.Value.RemovedTriples,
+            };
+        });
+    }
+
+    private Task<object?> InvokeVocabularySyncAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptySyncResponse();
+            var result = await svc.SyncAsync(ks, request.Actor, ct).ConfigureAwait(false);
+            return (object?)result ?? EmptySyncResponse();
+        });
+    }
+
+    // -- internal vocabulary proposals + suggest --
+
+    private Task<object?> InvokeVocabularyListProposalsAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyProposalService();
+        var status = QueryString(request, "status");
+        var q = QueryString(request, "q");
+        var limit = QueryInt(request, "limit", 100);
+        var offset = QueryInt(request, "offset", 0);
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyListResponse();
+            var result = await svc.ListProposalsAsync(
+                ks, status, q, limit, offset, request.Actor, ct).ConfigureAwait(false);
+            if (result is null) return (object?)EmptyListResponse();
+            return (object?)new { items = result.Value.Items, total = result.Value.Total };
+        });
+    }
+
+    private Task<object?> InvokeVocabularyAcceptProposalAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyProposalService();
+        var body = DeserializeBody<Dictionary<string, object?>>(request);
+        var payload = ExtractPayload(body);
+        var note = body?["note"]?.ToString() ?? string.Empty;
+        var proposalId = Guid.TryParse(request.ResourceId, out var pid) ? pid : Guid.Empty;
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null || proposalId == Guid.Empty)
+                return (object?)EmptyProposal();
+            var result = await svc.AcceptProposalAsync(
+                ks, proposalId, payload, note, request.Actor, ct).ConfigureAwait(false);
+            if (result is null) return (object?)EmptyProposal();
+            return (object?)new
+            {
+                proposal = result.Value.Proposal,
+                concept = result.Value.Concept,
+            };
+        });
+    }
+
+    private Task<object?> InvokeVocabularyRejectProposalAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyProposalService();
+        var body = DeserializeBody<Dictionary<string, object?>>(request);
+        var note = body?["note"]?.ToString() ?? string.Empty;
+        var proposalId = Guid.TryParse(request.ResourceId, out var pid) ? pid : Guid.Empty;
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null || proposalId == Guid.Empty)
+                return (object?)EmptyProposal();
+            var proposal = await svc.RejectProposalAsync(
+                ks, proposalId, note, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(proposal ?? EmptyProposal());
+        });
+    }
+
+    private Task<object?> InvokeVocabularySuggestTermsAsync(InternalRequest request, CancellationToken ct)
+    {
+        var agent = ResolveTerminologyAgent();
+        var body = DeserializeBody<Dictionary<string, object?>>(request);
+        var schemeIri = body?["scheme_iri"]?.ToString() ?? string.Empty;
+        var model = body?["model"]?.ToString();
+        var chunkIds = ExtractChunkIds(body);
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            if (agent is null || ks is null) return (object?)EmptyListResponse();
+            var proposals = await agent.SuggestAsync(ks, schemeIri, chunkIds, model, ct)
+                .ConfigureAwait(false);
+            return (object?)new { items = proposals, total = proposals.Count };
+        });
+    }
+
+    // -- external / published / published.release vocabulary reads --
+    // All three surfaces resolve the KS by public id and delegate to the
+    // same VocabularyService read methods (the Reader gate inside the
+    // service enforces access). The release-pinned graph distinction is a
+    // future extension; for now the read is identical across the three.
+
+    private Task<object?> InvokeVocabularyListConceptsPublishedAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var schemeIri = QueryString(request, "scheme_iri");
+        var q = QueryString(request, "q");
+        var status = QueryString(request, "status");
+        var mapping = QueryString(request, "mapping");
+        var origin = QueryString(request, "origin");
+        var limit = QueryInt(request, "limit", 100);
+        var offset = QueryInt(request, "offset", 0);
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsByPublicIdAsync(request.PublicId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyListResponse();
+            var page = await svc.ListConceptsAsync(
+                ks, schemeIri, q, status, mapping, origin, limit, offset,
+                request.Actor, ct).ConfigureAwait(false);
+            if (page is null) return (object?)EmptyListResponse();
+            return (object?)new { items = page.Items, total = page.Total };
+        });
+    }
+
+    private Task<object?> InvokeVocabularyExportPublishedAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var fmt = QueryString(request, "fmt") ?? "n-quads";
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsByPublicIdAsync(request.PublicId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)"";
+            var bytes = await svc.ExportVocabularyAsync(ks, fmt, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (bytes is null) return (object?)"";
+            return (object?)System.Text.Encoding.UTF8.GetString(bytes);
+        });
+    }
+
+    private Task<object?> InvokeVocabularyResolvePublishedAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        var q = QueryString(request, "q") ?? string.Empty;
+        var language = QueryString(request, "language");
+        var limit = QueryInt(request, "limit", 10);
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsByPublicIdAsync(request.PublicId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyListResponse();
+            var result = await svc.ResolveTermAsync(ks, q, language, limit, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (result is null) return (object?)EmptyListResponse();
+            return (object?)new { items = result.Value.Items, total = result.Value.Total };
+        });
+    }
+
+    private Task<object?> InvokeVocabularyListSchemesPublishedAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveVocabularyService();
+        return WrapAsync(async () =>
+        {
+            var ks = await ResolveKsByPublicIdAsync(request.PublicId, ct).ConfigureAwait(false);
+            if (svc is null || ks is null) return (object?)EmptyListResponse();
+            var schemes = await svc.ListSchemesAsync(ks, request.Actor, ct).ConfigureAwait(false);
+            if (schemes is null) return (object?)EmptyListResponse();
+            return (object?)new { items = schemes, total = schemes.Count };
+        });
+    }
+
+    private Task<object?> InvokeExternalVocabularyListConceptsAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyListConceptsPublishedAsync(request, ct);
+    private Task<object?> InvokeExternalVocabularyExportAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyExportPublishedAsync(request, ct);
+    private Task<object?> InvokeExternalVocabularyResolveAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyResolvePublishedAsync(request, ct);
+    private Task<object?> InvokeExternalVocabularyListSchemesAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyListSchemesPublishedAsync(request, ct);
+
+    private Task<object?> InvokePublishedVocabularyListConceptsAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyListConceptsPublishedAsync(request, ct);
+    private Task<object?> InvokePublishedVocabularyExportAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyExportPublishedAsync(request, ct);
+    private Task<object?> InvokePublishedVocabularyResolveAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyResolvePublishedAsync(request, ct);
+    private Task<object?> InvokePublishedVocabularyListSchemesAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyListSchemesPublishedAsync(request, ct);
+
+    private Task<object?> InvokePublishedReleaseVocabularyListConceptsAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyListConceptsPublishedAsync(request, ct);
+    private Task<object?> InvokePublishedReleaseVocabularyExportAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyExportPublishedAsync(request, ct);
+    private Task<object?> InvokePublishedReleaseVocabularyResolveAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyResolvePublishedAsync(request, ct);
+    private Task<object?> InvokePublishedReleaseVocabularyListSchemesAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeVocabularyListSchemesPublishedAsync(request, ct);
 
     // ----- placeholder payload factories -----
     // Each returns the documented schema for the operation so contract
