@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Application.Integration;
+using OnToPilot.Infrastructure.Persistence.Entities;
 
 namespace OnToPilot.Controllers;
 
@@ -47,9 +48,15 @@ public abstract class InternalControllerBase : ControllerBase
     private Actor ResolveActor()
     {
         // Pull the authenticated user off the request scope; the auth
-        // handlers stash it under the SessionAuthenticationHandler key.
+        // handlers stash the UserEntity under the SessionAuthenticationHandler
+        // key. We hand the actor the user's Guid so downstream services can
+        // resolve the full row via a primary-key lookup.
         if (HttpContext.Items.TryGetValue("auth.user", out var raw) && raw is not null)
         {
+            if (raw is OnToPilot.Infrastructure.Persistence.Entities.UserEntity user)
+            {
+                return new Actor(user.Id.ToString(), user.DisplayName ?? user.Username);
+            }
             return new Actor(raw.ToString() ?? "system");
         }
         return new Actor("anonymous");

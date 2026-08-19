@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Authentication;
@@ -10,12 +11,16 @@ using OnToPilot.Application.Integration;
 using OnToPilot.Authentication;
 using OnToPilot.Authorization;
 using OnToPilot.Configuration;
+using OnToPilot.Conflicts;
 using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
+using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Infrastructure.Startup;
 using OnToPilot.Integration;
+using OnToPilot.Knowledge;
 using OnToPilot.Mcp;
 using OnToPilot.Observability;
+using OnToPilot.Providers;
 using OnToPilot.Serialization;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -23,6 +28,172 @@ using OpenTelemetry.Trace;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ---- Migration entry point ----
+// When invoked with `--migrate`, apply EF Core migrations against the
+// configured persistence provider and exit. The docker-compose `migrate`
+// init service uses this exact image so the migration logic and the
+// DbContext stay co-located — no `dotnet-ef` global tool is needed in
+// the runtime image (the migration C# files are compiled into the
+// assembly, and EF Core ships the runtime to apply them).
+//
+// Compose wires `backend.depends_on.migrate` with
+// `service_completed_successfully`, so the API never starts against a
+// schema that's behind the migrations baked into the image. Idempotent:
+// re-running is safe because EF Core consults `__EFMigrationsHistory`.
+if (args.Contains("--migrate"))
+{
+    var migrateConfig = new ConfigurationBuilder()
+        .AddEnvironmentVariables()
+        .Build();
+
+    var provider = migrateConfig["OnToPilot:Persistence:Provider"] ?? "npgsql";
+    var optionsBuilder = new DbContextOptionsBuilder<OnToPilotDbContext>();
+    if (string.Equals(provider, "sqlite", StringComparison.OrdinalIgnoreCase))
+    {
+        var sqlite = migrateConfig["OnToPilot:Persistence:SqliteConnection"]
+            ?? "Data Source=:memory:";
+        optionsBuilder.UseSqlite(sqlite);
+    }
+    else
+    {
+        var npgsql = migrateConfig["OnToPilot:Persistence:ConnectionString"]
+            ?? throw new InvalidOperationException(
+                "OnToPilot:Persistence:ConnectionString is required for the --migrate entry point.");
+        optionsBuilder.UseNpgsql(npgsql);
+    }
+
+    await using var migrateDb = new OnToPilotDbContext(optionsBuilder.Options);
+    Console.WriteLine($"[migrate] Applying EF Core migrations against provider '{provider}'...");
+    await migrateDb.Database.MigrateAsync().ConfigureAwait(false);
+    Console.WriteLine("[migrate] Done.");
+    return;
+}
+
+// ---- Seed-admin entry point ----
+// When invoked with `--seed-admin`, insert the first administrator user
+// into the database and exit. Same pattern as `--migrate`: an init-style
+// container (or a one-off `docker compose run`) uses the backend image
+// with a different ENTRYPOINT so the seeding logic and the password
+// service stay co-located with the application.
+//
+// Inputs come from environment variables so compose can wire them
+// through `environment:` without touching CLI argv parsing:
+//   SEED_ADMIN_USERNAME      required
+//   SEED_ADMIN_PASSWORD      required; validated via PasswordService
+//                            with bootstrap=true (rejects published example
+//                            passwords, requires ≥12 chars, ≤72 UTF-8 bytes)
+//   SEED_ADMIN_DISPLAY_NAME  optional; falls back to the username
+//
+// Idempotency contract:
+//   * No users at all          → insert, exit 0
+//   * Username exists & admin  → already done, exit 0 (re-runs are no-ops)
+//   * Username exists & not admin → refuse with exit 1 (operator typo)
+//   * A different admin already exists → refuse with exit 1 (don't
+//     silently duplicate; operator must drop the existing row in SQL if
+//     they really want to reseed with a new username)
+//
+// Invoke via docker compose after migrations have run:
+//   docker compose --profile bootstrap run --rm seed-admin
+if (args.Contains("--seed-admin"))
+{
+    var seedConfig = new ConfigurationBuilder()
+        .AddEnvironmentVariables()
+        .Build();
+
+    var username = seedConfig["SEED_ADMIN_USERNAME"];
+    var password = seedConfig["SEED_ADMIN_PASSWORD"];
+    var displayName = seedConfig["SEED_ADMIN_DISPLAY_NAME"];
+
+    if (string.IsNullOrWhiteSpace(username))
+    {
+        throw new InvalidOperationException(
+            "SEED_ADMIN_USERNAME is required for --seed-admin.");
+    }
+    if (string.IsNullOrEmpty(password))
+    {
+        throw new InvalidOperationException(
+            "SEED_ADMIN_PASSWORD is required for --seed-admin.");
+    }
+
+    // Reuse the same provider/connection-string resolver as --migrate so
+    // SQLite (tests, dev) and PostgreSQL (compose, prod) are honored
+    // identically.
+    var seedProvider = seedConfig["OnToPilot:Persistence:Provider"] ?? "npgsql";
+    var seedOptionsBuilder = new DbContextOptionsBuilder<OnToPilotDbContext>();
+    if (string.Equals(seedProvider, "sqlite", StringComparison.OrdinalIgnoreCase))
+    {
+        var sqlite = seedConfig["OnToPilot:Persistence:SqliteConnection"]
+            ?? "Data Source=:memory:";
+        seedOptionsBuilder.UseSqlite(sqlite);
+    }
+    else
+    {
+        var npgsql = seedConfig["OnToPilot:Persistence:ConnectionString"]
+            ?? throw new InvalidOperationException(
+                "OnToPilot:Persistence:ConnectionString is required for --seed-admin.");
+        seedOptionsBuilder.UseNpgsql(npgsql);
+    }
+
+    await using var seedDb = new OnToPilotDbContext(seedOptionsBuilder.Options);
+
+    // Refuse if a DIFFERENT admin already exists — silently inserting a
+    // second admin would make the bootstrap check pass against the wrong
+    // account. The operator must drop the existing row in SQL if they
+    // really want to reseed with a new username.
+    var existingAdmin = await seedDb.Users
+        .Where(u => u.IsAdmin)
+        .Select(u => u.Username)
+        .FirstOrDefaultAsync()
+        .ConfigureAwait(false);
+    if (existingAdmin is not null && !string.Equals(existingAdmin, username, StringComparison.Ordinal))
+    {
+        throw new InvalidOperationException(
+            $"Refused to seed: an admin user '{existingAdmin}' already exists. " +
+            "Drop the existing admin row in SQL if you really want to reseed with a different username.");
+    }
+
+    // Idempotent: if THIS username already exists and is already an admin,
+    // we treat the call as a no-op success. The bootstrap check downstream
+    // then sees a populated users table and proceeds.
+    var existingSame = await seedDb.Users
+        .FirstOrDefaultAsync(u => u.Username == username)
+        .ConfigureAwait(false);
+    if (existingSame is not null)
+    {
+        if (!existingSame.IsAdmin)
+        {
+            throw new InvalidOperationException(
+                $"Refused to seed: user '{username}' exists but is not an admin. " +
+                "Update the IsAdmin flag in SQL, or pick a different username.");
+        }
+        Console.WriteLine($"[seed-admin] Admin '{username}' already exists; nothing to do.");
+        return;
+    }
+
+    // Validate the password with bootstrap=true so published-example
+    // passwords (admin / changeme / password / …) are rejected — matches
+    // the Python backend's ADMIN_PASSWORD safety rule and migration
+    // invariant #7 ("no hardcoded admin credentials").
+    var passwordService = new PasswordService();
+    passwordService.Validate(password, bootstrap: true);
+
+    var admin = new UserEntity
+    {
+        Id = Guid.NewGuid(),
+        Username = username,
+        DisplayName = string.IsNullOrWhiteSpace(displayName) ? username : displayName,
+        PasswordHash = passwordService.Hash(password),
+        IsAdmin = true,
+        Active = true,
+        CreatedAt = DateTimeOffset.UtcNow,
+    };
+    seedDb.Users.Add(admin);
+    await seedDb.SaveChangesAsync().ConfigureAwait(false);
+
+    Console.WriteLine($"[seed-admin] Created admin '{admin.Username}' (id={admin.Id}).");
+    return;
+}
 
 // ---- Structured logging (Serilog) ----
 // Wire Serilog as the host logger so log events flow through the
@@ -51,8 +222,30 @@ builder.Host.UseSerilog((context, services, configuration) =>
 // emits until the Stage 2/3 services land; once those become typed DTOs
 // they take the source-gen path and skip reflection entirely. See
 // src/OnToPilot/Serialization/OnToPilotJsonContext.cs.
+// Wire the source-generated JSON serializer context so every typed DTO
+// the controllers return (FastApiError, OntologyResponse, ChangePreview,
+// QueryResponse) hits System.Text.Json's compile-time path. The
+// resolver chain keeps the default reflection-based resolver in place
+// for the anonymous placeholder payloads the InternalOperationDispatcher
+// emits until the Stage 2/3 services land; once those become typed DTOs
+// they take the source-gen path and skip reflection entirely. See
+// src/OnToPilot/Serialization/OnToPilotJsonContext.cs.
+//
+// PropertyNamingPolicy = SnakeCaseLower: the FastAPI-compatibility
+// contract emits snake_case on the wire (see FastApiError.Detail,
+// FastApiErrorMiddleware.JobId, PromptSnapshotService.Prompts and the
+// comment in FastApiErrorMiddleware line 115). Without an explicit
+// naming policy ASP.NET Core's System.Text.Json defaults to camelCase,
+// so /api/auth/me returned { "isAdmin": true } while the frontend User
+// type reads `is_admin` and the admin UI silently hid for every
+// authenticated user. The frontend `api.updateMe` / `createUser` calls
+// also send snake_case request bodies; `object body` model binding then
+// binds against the same naming policy, so setting it here aligns
+// both directions at once. DTOs that need a fixed wire name use
+// [JsonPropertyName] and override this default (see FastApiError).
 builder.Services.AddControllers().AddJsonOptions(options =>
 {
+    options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower;
     options.JsonSerializerOptions.TypeInfoResolver = JsonTypeInfoResolver.Combine(
         OnToPilotJsonContext.Default,
         new DefaultJsonTypeInfoResolver());
@@ -153,6 +346,25 @@ builder.Services.AddScoped<IMcpTokenService, McpTokenService>();
 builder.Services.AddScoped<BootstrapAdminService>();
 builder.Services.AddScoped<StaleJobRecoveryService>();
 builder.Services.AddScoped<LegacyBackfillService>();
+// IHttpClientFactory registration — consumed by ProviderService for the
+// GET {baseUrl}/models probe in providers.test. ChatClientFactory /
+// EmbeddingGeneratorFactory construct HttpClient directly and don't need
+// this, but the scoped provider CRUD service does.
+builder.Services.AddHttpClient();
+// Provider CRUD service — replaces the dispatcher placeholders for
+// providers.list / .create / .update / .delete / .test. Scoped so it
+// shares the request's OnToPilotDbContext.
+builder.Services.AddProviderServices();
+// Conflicts slice — detect / list / get_context / dismiss / reopen / resolve
+// / reconciliations CRUD. Service is Scoped (shares the request DbContext);
+// the optional StoreWrapper + ExtractionJobStore are resolved per-request
+// through IServiceProvider so the SQLite contract-test path runs without
+// an embedded Oxigraph.
+builder.Services.AddConflictServices();
+// Knowledge slice — KS CRUD + membership + review stats. Scoped service
+// shares the request DbContext and depends on KnowledgeSystemAccessService
+// (singleton, registered above) for the Viewer / Editor / Owner gates.
+builder.Services.AddKnowledgeServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(

@@ -1,7 +1,10 @@
 using OnToPilot.Application.Foundation;
 using OnToPilot.Application.Integration;
+using OnToPilot.Conflicts;
 using OnToPilot.Extraction;
+using OnToPilot.Knowledge;
 using OnToPilot.Ontology;
+using OnToPilot.Providers;
 
 namespace OnToPilot.Integration;
 
@@ -62,17 +65,20 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "auth.update_user" => Task.FromResult<object?>(EmptyUser()),
 
             // -- knowledge --
-            "knowledge.list" => Task.FromResult<object?>(Array.Empty<object>()),
-            "knowledge.create" => Task.FromResult<object?>(EmptyKnowledgeSystem()),
-            "knowledge.delete" => Task.FromResult<object?>(new { ok = true }),
-            "knowledge.get" => Task.FromResult<object?>(EmptyKnowledgeSystem()),
-            "knowledge.update" => Task.FromResult<object?>(EmptyKnowledgeSystem()),
-            "knowledge.list_members" => Task.FromResult<object?>(Array.Empty<object>()),
-            "knowledge.add_member" => Task.FromResult<object?>(Array.Empty<object>()),
-            "knowledge.grantable_users" => Task.FromResult<object?>(Array.Empty<object>()),
-            "knowledge.remove_member" => Task.FromResult<object?>(new { ok = true }),
-            "knowledge.member_detail" => Task.FromResult<object?>(EmptyMember()),
-            "knowledge.review_counts" => Task.FromResult<object?>(EmptyReviewCounts()),
+            // Real CRUD via KnowledgeService (scoped). Role gates
+            // (Viewer / Editor / Owner) are enforced inside the service
+            // against the request's session user.
+            "knowledge.list" => InvokeKnowledgeListAsync(request, cancellationToken),
+            "knowledge.create" => InvokeKnowledgeCreateAsync(request, cancellationToken),
+            "knowledge.delete" => InvokeKnowledgeDeleteAsync(request, cancellationToken),
+            "knowledge.get" => InvokeKnowledgeGetAsync(request, cancellationToken),
+            "knowledge.update" => InvokeKnowledgeUpdateAsync(request, cancellationToken),
+            "knowledge.list_members" => InvokeKnowledgeListMembersAsync(request, cancellationToken),
+            "knowledge.add_member" => InvokeKnowledgeAddMemberAsync(request, cancellationToken),
+            "knowledge.grantable_users" => InvokeKnowledgeGrantableUsersAsync(request, cancellationToken),
+            "knowledge.remove_member" => InvokeKnowledgeRemoveMemberAsync(request, cancellationToken),
+            "knowledge.member_detail" => InvokeKnowledgeMemberDetailAsync(request, cancellationToken),
+            "knowledge.review_counts" => InvokeKnowledgeReviewCountsAsync(request, cancellationToken),
 
             // -- ontology --
             "ontology.get" => InvokeOntologyGetAsync(request, cancellationToken),
@@ -100,15 +106,21 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "extraction.get_job" => Task.FromResult<object?>(EmptyExtractionJob()),
 
             // -- conflicts --
-            "conflicts.list" => Task.FromResult<object?>(Array.Empty<object>()),
-            "conflicts.detect" => Task.FromResult<object?>(Array.Empty<object>()),
-            "conflicts.get_context" => Task.FromResult<object?>(EmptyConflict()),
-            "conflicts.dismiss" => Task.FromResult<object?>(EmptyConflict()),
-            "conflicts.reopen" => Task.FromResult<object?>(EmptyConflict()),
-            "conflicts.resolve" => Task.FromResult<object?>(EmptyConflict()),
-            "conflicts.list_reconciliations" => Task.FromResult<object?>(EmptyListResponse()),
-            "conflicts.revoke_reconciliation" => Task.FromResult<object?>(new { ok = true }),
-            "conflicts.edit_reconciliation_reason" => Task.FromResult<object?>(EmptyReconciliation()),
+            // Real CRUD via ConflictService (scoped). The helpers below
+            // resolve the service from IServiceProvider, deserialize the
+            // body, and project the typed result back to the caller. The
+            // service degrades gracefully when StoreWrapper isn't wired
+            // (SQLite contract-test factory) — the SQL paths still work
+            // and detect returns the stored open list.
+            "conflicts.list" => InvokeConflictListAsync(request, cancellationToken),
+            "conflicts.detect" => InvokeConflictDetectAsync(request, cancellationToken),
+            "conflicts.get_context" => InvokeConflictGetContextAsync(request, cancellationToken),
+            "conflicts.dismiss" => InvokeConflictDismissAsync(request, cancellationToken),
+            "conflicts.reopen" => InvokeConflictReopenAsync(request, cancellationToken),
+            "conflicts.resolve" => InvokeConflictResolveAsync(request, cancellationToken),
+            "conflicts.list_reconciliations" => InvokeConflictListReconciliationsAsync(request, cancellationToken),
+            "conflicts.revoke_reconciliation" => InvokeConflictRevokeReconciliationAsync(request, cancellationToken),
+            "conflicts.edit_reconciliation_reason" => InvokeConflictEditReconciliationReasonAsync(request, cancellationToken),
 
             // -- documents --
             "documents.list" => Task.FromResult<object?>(Array.Empty<object>()),
@@ -187,11 +199,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "rdf.import" => Task.FromResult<object?>(EmptyImportResponse()),
 
             // -- providers --
-            "providers.list" => Task.FromResult<object?>(Array.Empty<object>()),
-            "providers.create" => Task.FromResult<object?>(EmptyProvider()),
-            "providers.test" => Task.FromResult<object?>(EmptyProviderTestResult()),
-            "providers.delete" => Task.FromResult<object?>(new { ok = true }),
-            "providers.update" => Task.FromResult<object?>(EmptyProvider()),
+            // Real CRUD via ProviderService (scoped). The helpers below
+            // resolve the service from IServiceProvider, deserialize the
+            // body, and project the typed result back to the caller.
+            "providers.list" => InvokeProviderListAsync(request, cancellationToken),
+            "providers.create" => InvokeProviderCreateAsync(request, cancellationToken),
+            "providers.test" => InvokeProviderTestAsync(request, cancellationToken),
+            "providers.delete" => InvokeProviderDeleteAsync(request, cancellationToken),
+            "providers.update" => InvokeProviderUpdateAsync(request, cancellationToken),
 
             // -- settings --
             "settings.list_models" => Task.FromResult<object?>(EmptyListResponse()),
@@ -346,10 +361,586 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             .ContinueWith(t => (object?)t.Result, ct);
     }
 
+    // ---- providers ----------------------------------------------------------
+    // Provider CRUD lives behind ProviderService (scoped). The dispatcher
+    // is a Singleton; we resolve the service per-call so the scoped
+    // OnToPilotDbContext the controller already opened flows through.
+    //
+    // Body shape: controllers bind [FromBody] to a typed record (or the
+    // loose `object` body for handlers that need it). InternalControllerBase
+    // wraps loose bodies under a single "_" key (see
+    // InternalControllerBase.ToBody), so we read from "Body["_"]" when the
+    // caller didn't already pre-deserialize.
+    //
+    // Failure modes:
+    // * Service not registered (unit tests that hand-built the dispatcher)
+    //   → returns a schema-compatible empty payload so the route still 200s.
+    // * ProviderService throws InvalidOperationException → FastApiErrorMiddleware
+    //   translates it to the { "detail": "..." } envelope the Python
+    //   backend emits.
+
+    private ProviderService? ResolveProviderService() =>
+        _services.GetService(typeof(ProviderService)) as ProviderService;
+
+    /// <summary>
+    /// Pull the typed body for an operation. Controllers bind the loose
+    /// <c>object</c> body which the framework materializes as a
+    /// <see cref="System.Text.Json.JsonElement"/> via the AddJsonOptions
+    /// input formatter. We deserialize with the same snake_case naming
+    /// policy the controllers emit (see Program.cs AddJsonOptions) so the
+    /// wire shape <c>api_key</c> / <c>base_url</c> maps cleanly onto the
+    /// PascalCase record properties. Case-insensitive matching is on by
+    /// default in System.Text.Json, so mixed-case input is accepted too.
+    /// </summary>
+    private static readonly System.Text.Json.JsonSerializerOptions DeserializeOptions = new()
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower,
+        PropertyNameCaseInsensitive = true,
+    };
+
+    private static T? DeserializeBody<T>(InternalRequest request) where T : class
+    {
+        if (request.Body is null) return null;
+        if (!request.Body.TryGetValue("_", out var raw) || raw is null) return null;
+        if (raw is T typed) return typed;
+        if (raw is System.Text.Json.JsonElement element)
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<T>(element.GetRawText(), DeserializeOptions);
+        }
+        return null;
+    }
+
+    private Task<object?> InvokeProviderListAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveProviderService();
+        if (svc is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.ListAsync(ct).ConfigureAwait(false);
+            return (object?)rows;
+        });
+    }
+
+    private Task<object?> InvokeProviderCreateAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveProviderService();
+        var body = DeserializeBody<ProviderCreateRequest>(request);
+        if (svc is null || body is null)
+        {
+            // Caller (controller) didn't supply one OR service not wired.
+            // Surface as a 422-like envelope via the global middleware by
+            // throwing — preserves the Python parity contract.
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for providers.create.");
+            }
+            return Task.FromResult<object?>(null);
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.CreateAsync(body, ct).ConfigureAwait(false);
+            return (object?)row;
+        });
+    }
+
+    private Task<object?> InvokeProviderUpdateAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveProviderService();
+        var body = DeserializeBody<ProviderPatchRequest>(request);
+        var id = Guid.TryParse(request.ResourceId, out var parsed) ? parsed : Guid.Empty;
+        if (svc is null || body is null || id == Guid.Empty)
+        {
+            if (id == Guid.Empty)
+            {
+                throw new InvalidOperationException("provider id must be a valid UUID.");
+            }
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for providers.update.");
+            }
+            return Task.FromResult<object?>(null);
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.UpdateAsync(id, body, ct).ConfigureAwait(false);
+            return (object?)row;
+        });
+    }
+
+    private Task<object?> InvokeProviderDeleteAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveProviderService();
+        var id = Guid.TryParse(request.ResourceId, out var parsed) ? parsed : Guid.Empty;
+        if (svc is null || id == Guid.Empty)
+        {
+            if (id == Guid.Empty)
+            {
+                throw new InvalidOperationException("provider id must be a valid UUID.");
+            }
+            return Task.FromResult<object?>(new { ok = true });
+        }
+        return WrapAsync(async () =>
+        {
+            var removed = await svc.DeleteAsync(id, ct).ConfigureAwait(false);
+            return (object?)new { deleted = removed ? 1 : 0 };
+        });
+    }
+
+    private Task<object?> InvokeProviderTestAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveProviderService();
+        var body = DeserializeBody<ProviderTestRequest>(request);
+        if (svc is null || body is null)
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for providers.test.");
+            }
+            return Task.FromResult<object?>(null);
+        }
+        return WrapAsync(async () =>
+        {
+            var result = await svc.TestAsync(body, ct).ConfigureAwait(false);
+            return (object?)result;
+        });
+    }
+
+    /// <summary>
+    /// Funnel every async provider helper through one place so we can
+    /// later attach a uniform cross-cutting concern (logging, telemetry).
+    /// </summary>
+    private static async Task<object?> WrapAsync(Func<Task<object?>> body)
+    {
+        return await body().ConfigureAwait(false);
+    }
+
+    // ---- conflicts ---------------------------------------------------------
+    // Conflict queue + reconciliation memory CRUD lives behind
+    // ConflictService (scoped). The dispatcher is a Singleton; we resolve
+    // the service per-call so the scoped OnToPilotDbContext the controller
+    // already opened flows through.
+    //
+    // Body shape: controllers bind [FromBody] to a typed record (or the
+    // loose `object` body for handlers that need it). InternalControllerBase
+    // wraps loose bodies under a single "_" key (see
+    // InternalControllerBase.ToBody), so we read from "Body["_"]" when the
+    // caller didn't already pre-deserialize.
+    //
+    // Failure modes:
+    // * Service not registered (unit tests that hand-built the dispatcher)
+    //   → returns a schema-compatible empty payload so the route still 200s.
+    // * ConflictService throws InvalidOperationException → FastApiErrorMiddleware
+    //   translates it to the { "detail": "..." } envelope the Python
+    //   backend emits.
+
+    private ConflictService? ResolveConflictService() =>
+        _services.GetService(typeof(ConflictService)) as ConflictService;
+
+    /// <summary>
+    /// Parse the optional <c>status</c> / <c>ctype</c> query params. Python
+    /// accepts <c>all</c> as a sentinel that bypasses the default
+    /// <c>status="open"</c> filter; pass that through unchanged.
+    /// </summary>
+    private static (string Status, string? Ctype) ReadConflictFilters(InternalRequest request)
+    {
+        var status = "open";
+        string? ctype = null;
+        if (request.Query is not null)
+        {
+            if (request.Query.TryGetValue("status", out var s) && !string.IsNullOrEmpty(s))
+            {
+                status = s!;
+            }
+            if (request.Query.TryGetValue("ctype", out var c) && !string.IsNullOrEmpty(c))
+            {
+                ctype = c;
+            }
+        }
+        return (status, ctype);
+    }
+
+    private Task<object?> InvokeConflictListAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveConflictService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        var (status, ctype) = ReadConflictFilters(request);
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.ListAsync(request.KnowledgeSystemId.Value, status, ctype, ct)
+                .ConfigureAwait(false);
+            return (object?)rows;
+        });
+    }
+
+    private Task<object?> InvokeConflictDetectAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveConflictService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.DetectAsync(request.KnowledgeSystemId.Value, ct)
+                .ConfigureAwait(false);
+            return (object?)rows;
+        });
+    }
+
+    private Task<object?> InvokeConflictGetContextAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveConflictService();
+        if (svc is null || request.KnowledgeSystemId is null
+            || !Guid.TryParse(request.ResourceId, out var conflictId))
+        {
+            return Task.FromResult<object?>(EmptyConflict());
+        }
+        return WrapAsync(async () =>
+        {
+            var ctx = await svc.GetContextAsync(request.KnowledgeSystemId.Value, conflictId, ct)
+                .ConfigureAwait(false);
+            return (object?)(ctx ?? EmptyConflict());
+        });
+    }
+
+    private Task<object?> InvokeConflictDismissAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveConflictService();
+        if (svc is null || request.KnowledgeSystemId is null
+            || !Guid.TryParse(request.ResourceId, out var conflictId))
+        {
+            return Task.FromResult<object?>(EmptyConflict());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.DismissAsync(request.KnowledgeSystemId.Value, conflictId,
+                request.Actor.UserId, ct).ConfigureAwait(false);
+            return (object?)(row ?? EmptyConflict());
+        });
+    }
+
+    private Task<object?> InvokeConflictReopenAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveConflictService();
+        if (svc is null || request.KnowledgeSystemId is null
+            || !Guid.TryParse(request.ResourceId, out var conflictId))
+        {
+            return Task.FromResult<object?>(EmptyConflict());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.ReopenAsync(request.KnowledgeSystemId.Value, conflictId,
+                request.Actor.UserId, ct).ConfigureAwait(false);
+            return (object?)(row ?? EmptyConflict());
+        });
+    }
+
+    private Task<object?> InvokeConflictResolveAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveConflictService();
+        var body = DeserializeBody<ResolveConflictRequest>(request);
+        if (svc is null || request.KnowledgeSystemId is null
+            || !Guid.TryParse(request.ResourceId, out var conflictId)
+            || body is null || string.IsNullOrEmpty(body.ResolutionId))
+        {
+            if (body is null || string.IsNullOrEmpty(body.ResolutionId))
+            {
+                throw new InvalidOperationException(
+                    "Request body with resolution_id is required for conflicts.resolve.");
+            }
+            return Task.FromResult<object?>(EmptyConflict());
+        }
+        return WrapAsync(async () =>
+        {
+            var response = await svc.ResolveAsync(request.KnowledgeSystemId.Value, conflictId,
+                body.ResolutionId, request.Actor.UserId, ct).ConfigureAwait(false);
+            if (response is null)
+            {
+                return (object?)new
+                {
+                    resolved_cid = 0L,
+                    open_conflicts = Array.Empty<object>(),
+                    view = new { },
+                };
+            }
+            return (object?)response;
+        });
+    }
+
+    private Task<object?> InvokeConflictListReconciliationsAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveConflictService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(EmptyListResponse());
+        }
+        var query = request.Query is not null && request.Query.TryGetValue("q", out var q) ? q : null;
+        var limit = request.Query is not null && request.Query.TryGetValue("limit", out var l)
+            && int.TryParse(l, out var lp) ? lp : 50;
+        var offset = request.Query is not null && request.Query.TryGetValue("offset", out var o)
+            && int.TryParse(o, out var op) ? op : 0;
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.ListReconciliationsAsync(request.KnowledgeSystemId.Value,
+                query, limit, offset, ct).ConfigureAwait(false);
+            return (object?)rows;
+        });
+    }
+
+    private Task<object?> InvokeConflictRevokeReconciliationAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveConflictService();
+        if (svc is null || request.KnowledgeSystemId is null
+            || !Guid.TryParse(request.ResourceId, out var reconciliationId))
+        {
+            return Task.FromResult<object?>(new { ok = false });
+        }
+        return WrapAsync(async () =>
+        {
+            var legacyId = await svc.RevokeReconciliationAsync(request.KnowledgeSystemId.Value,
+                reconciliationId, request.Actor.UserId, ct).ConfigureAwait(false);
+            return (object?)new { deleted = legacyId.HasValue ? 1 : 0 };
+        });
+    }
+
+    private Task<object?> InvokeConflictEditReconciliationReasonAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveConflictService();
+        var body = DeserializeBody<EditReconciliationReasonRequest>(request);
+        if (svc is null || request.KnowledgeSystemId is null
+            || !Guid.TryParse(request.ResourceId, out var reconciliationId))
+        {
+            return Task.FromResult<object?>(EmptyReconciliation());
+        }
+        var reason = body?.Reason ?? string.Empty;
+        return WrapAsync(async () =>
+        {
+            var result = await svc.EditReconciliationReasonAsync(request.KnowledgeSystemId.Value,
+                reconciliationId, reason, request.Actor.UserId, ct).ConfigureAwait(false);
+            if (result is null)
+            {
+                return (object?)EmptyReconciliation();
+            }
+            return (object?)new
+            {
+                id = result.Value.Id,
+                reason = result.Value.Reason,
+            };
+        });
+    }
+
     private static object EmptyQueryResponse() => new
     {
         rows = Array.Empty<object>(),
     };
+
+    // ---- knowledge --------------------------------------------------------
+    // KS CRUD + membership + review stats. Real delegation to
+    // KnowledgeService (scoped); the service enforces Viewer / Editor /
+    // Owner role gates against the request's session user.
+    //
+    // Failure modes:
+    // * Service not registered (unit tests that hand-built the dispatcher)
+    //   → returns a schema-compatible empty payload so the route still 200s.
+    // * KnowledgeService throws InvalidOperationException → FastApiErrorMiddleware
+    //   translates it to the { "detail": "..." } envelope the Python
+    //   backend emits.
+
+    private KnowledgeService? ResolveKnowledgeService() =>
+        _services.GetService(typeof(KnowledgeService)) as KnowledgeService;
+
+    private Task<object?> InvokeKnowledgeListAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        if (svc is null) return Task.FromResult<object?>(Array.Empty<object>());
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.ListAsync(request.Actor, ct).ConfigureAwait(false);
+            return (object?)rows;
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeGetAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(EmptyKnowledgeSystem());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.GetAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(row ?? EmptyKnowledgeSystem());
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeCreateAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        var body = DeserializeBody<CreateKnowledgeSystemRequest>(request);
+        if (svc is null || body is null)
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for knowledge.create.");
+            }
+            return Task.FromResult<object?>(EmptyKnowledgeSystem());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.CreateAsync(body, request.Actor, ct).ConfigureAwait(false);
+            return (object?)row;
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeUpdateAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        var body = DeserializeBody<UpdateKnowledgeSystemRequest>(request);
+        if (svc is null || body is null || request.KnowledgeSystemId is null)
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for knowledge.update.");
+            }
+            return Task.FromResult<object?>(EmptyKnowledgeSystem());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.UpdateAsync(request.KnowledgeSystemId.Value, body, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(row ?? EmptyKnowledgeSystem());
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeDeleteAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(new { deleted = 0L });
+        }
+        return WrapAsync(async () =>
+        {
+            var deleted = await svc.DeleteAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)new { deleted = deleted ?? 0L };
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeListMembersAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.ListMembersAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (rows is null) return (object?)Array.Empty<object>();
+            return (object?)rows;
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeAddMemberAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        var body = DeserializeBody<AddMemberRequest>(request);
+        if (svc is null || body is null || request.KnowledgeSystemId is null)
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for knowledge.add_member.");
+            }
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.AddMemberAsync(request.KnowledgeSystemId.Value, body, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (rows is null) return (object?)Array.Empty<object>();
+            return (object?)rows;
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeGrantableUsersAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        var query = request.Query is not null && request.Query.TryGetValue("q", out var q) ? q : null;
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.GrantableUsersAsync(request.KnowledgeSystemId.Value, query,
+                request.Actor, ct).ConfigureAwait(false);
+            if (rows is null) return (object?)Array.Empty<object>();
+            return (object?)rows;
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeRemoveMemberAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        if (svc is null || request.KnowledgeSystemId is null
+            || !long.TryParse(request.ResourceId, out var userLegacyId))
+        {
+            return Task.FromResult<object?>(new { removed = 0L });
+        }
+        return WrapAsync(async () =>
+        {
+            var removed = await svc.RemoveMemberAsync(request.KnowledgeSystemId.Value, userLegacyId,
+                request.Actor, ct).ConfigureAwait(false);
+            return (object?)new { removed = removed ?? 0L };
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeMemberDetailAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        if (svc is null || request.KnowledgeSystemId is null
+            || !long.TryParse(request.ResourceId, out var userLegacyId))
+        {
+            return Task.FromResult<object?>(EmptyMember());
+        }
+        return WrapAsync(async () =>
+        {
+            var detail = await svc.MemberDetailAsync(request.KnowledgeSystemId.Value, userLegacyId,
+                request.Actor, ct).ConfigureAwait(false);
+            return (object?)(detail ?? EmptyMember());
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeReviewCountsAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(EmptyReviewCounts());
+        }
+        return WrapAsync(async () =>
+        {
+            var counts = await svc.ReviewCountsAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(counts ?? EmptyReviewCounts());
+        });
+    }
 
     private static object EmptyOntologyResponse() => new
     {
@@ -650,19 +1241,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         graph_iri = string.Empty,
         triples_added = 0,
-    };
-
-    private static object EmptyProvider() => new
-    {
-        id = Guid.Empty,
-        name = string.Empty,
-        kind = string.Empty,
-    };
-
-    private static object EmptyProviderTestResult() => new
-    {
-        ok = true,
-        latency_ms = 0,
     };
 
     private static object EmptySettings() => new
