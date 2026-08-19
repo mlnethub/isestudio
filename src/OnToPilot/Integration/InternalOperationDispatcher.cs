@@ -175,11 +175,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
                 () => InvokeAboxCreateIndividualAsync(request, cancellationToken)),
             "abox.delete_individual" => RunWithExtractionGuardAsync(request, cancellationToken,
                 () => InvokeAboxDeleteIndividualAsync(request, cancellationToken)),
-            "abox.reset" => Task.FromResult<object?>(EmptyResetAboxResponse()),
-            "abox.validate" => Task.FromResult<object?>(EmptyValidateReport()),
-            "abox.fix_violation" => Task.FromResult<object?>(EmptyValidateReport()),
-            "abox.list_validation_decisions" => Task.FromResult<object?>(EmptyListResponse()),
-            "abox.revoke_validation_decision" => Task.FromResult<object?>(new { ok = true }),
+            "abox.reset" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeAboxResetAsync(request, cancellationToken)),
+            "abox.validate" => InvokeAboxValidateAsync(request, cancellationToken),
+            "abox.fix_violation" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeAboxFixViolationAsync(request, cancellationToken)),
+            "abox.list_validation_decisions" => InvokeAboxListValidationDecisionsAsync(request, cancellationToken),
+            "abox.revoke_validation_decision" => InvokeAboxRevokeValidationDecisionAsync(request, cancellationToken),
 
             // -- resolution --
             "resolution.list_decisions" => Task.FromResult<object?>(EmptyListResponse()),
@@ -1613,6 +1615,110 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             var ind = await svc.RemoveAssertionAsync(
                 request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
             return (object?)(ind ?? EmptyIndividualRef());
+        });
+    }
+
+    // ----------------------------------------------------------------------
+    // B7c — reset / validate / fix_violation / validation decisions
+    // ----------------------------------------------------------------------
+
+    private Task<object?> InvokeAboxResetAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        {
+            return Task.FromResult<object?>(EmptyResetAboxResponse());
+        }
+        var body = DeserializeBody<ResetAboxRequest>(request);
+        if (body is null)
+        {
+            return Task.FromResult<object?>(EmptyResetAboxResponse());
+        }
+        return WrapAsync(async () =>
+        {
+            var resp = await svc.ResetAsync(
+                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(resp ?? EmptyResetAboxResponse());
+        });
+    }
+
+    private Task<object?> InvokeAboxValidateAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(EmptyValidateReport());
+        }
+        return WrapAsync(async () =>
+        {
+            var resp = await svc.ValidateAsync(
+                request.KnowledgeSystemId.Value, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(resp ?? EmptyValidateReport());
+        });
+    }
+
+    private Task<object?> InvokeAboxFixViolationAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        {
+            return Task.FromResult<object?>(EmptyValidateReport());
+        }
+        var body = DeserializeBody<FixViolationRequest>(request);
+        if (body is null)
+        {
+            return Task.FromResult<object?>(EmptyValidateReport());
+        }
+        return WrapAsync(async () =>
+        {
+            var resp = await svc.FixViolationAsync(
+                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(resp ?? EmptyValidateReport());
+        });
+    }
+
+    private Task<object?> InvokeAboxListValidationDecisionsAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(EmptyListResponse());
+        }
+        var q = request.Query is not null && request.Query.TryGetValue("q", out var qq) ? qq : null;
+        var limit = (int)ParseLongOrDefault(
+            request.Query is not null && request.Query.TryGetValue("limit", out var l) ? l : null,
+            50);
+        var offset = (int)ParseLongOrDefault(
+            request.Query is not null && request.Query.TryGetValue("offset", out var o) ? o : null,
+            0);
+        return WrapAsync(async () =>
+        {
+            var resp = await svc.ListValidationDecisionsAsync(
+                request.KnowledgeSystemId.Value, q, limit, offset, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(resp ?? EmptyListResponse());
+        });
+    }
+
+    private Task<object?> InvokeAboxRevokeValidationDecisionAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null
+            || string.IsNullOrEmpty(request.ResourceId)
+            || !Guid.TryParse(request.ResourceId, out var did))
+        {
+            return Task.FromResult<object?>(new { revoked = Guid.Empty });
+        }
+        return WrapAsync(async () =>
+        {
+            var resp = await svc.RevokeValidationDecisionAsync(
+                request.KnowledgeSystemId.Value, did, request.Actor, ct)
+                .ConfigureAwait(false);
+            return resp is null
+                ? (object?)new { revoked = Guid.Empty }
+                : resp;
         });
     }
 

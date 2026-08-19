@@ -11,22 +11,33 @@ namespace OnToPilot.Ontology;
 /// <summary>
 /// One ABox-level violation surfaced by <see cref="ABoxValidator"/>.
 /// <see cref="Severity"/> is <c>"error"</c> or <c>"warning"</c>; the report
-/// is sorted with errors first. <see cref="Fixes"/> is the list of ABox ops
-/// that would resolve the violation.
+/// is sorted with errors first. <see cref="Individual"/> identifies the
+/// subject individual (with its <c>rdfs:label</c> snapshot so the UI can
+/// show "<i>Rex</i>" instead of the raw IRI). <see cref="Fixes"/> is the
+/// list of ABox ops that would resolve the violation.
 /// </summary>
 public sealed record ABoxViolation(
     string Id,
     string Type,
     string Severity,
+    LabeledIri Individual,
     string Summary,
     IReadOnlyList<ABoxViolationFix> Fixes);
 
 /// <summary>
-/// One-click fix op attached to a violation. <see cref="OpKind"/> mirrors
-/// the <c>kind</c> field of the Python <c>abox_validate.apply_fix</c>
-/// payload.
+/// One-click fix op attached to a violation. <see cref="Op"/> carries the
+/// raw payload dispatched by <see cref="ABoxValidator"/> so the
+/// <c>abox.validate</c> response can round-trip back into a
+/// <see cref="FixViolationRequest.Op"/> without the frontend having to
+/// reconstruct the per-kind fields (<c>iri</c> / <c>prop</c> /
+/// <c>target</c> / <c>value</c> / <c>class_iri</c> / <c>xsd</c>). The
+/// discriminator is always the <c>kind</c> key in <see cref="Op"/>
+/// (mirrors Python <c>abox_validate.apply_fix</c> dispatch).
 /// </summary>
-public sealed record ABoxViolationFix(string Id, string Label, string OpKind);
+public sealed record ABoxViolationFix(
+    string Id,
+    string Label,
+    IReadOnlyDictionary<string, object?> Op);
 
 /// <summary>Aggregate result of <see cref="ABoxValidator.Validate"/>.</summary>
 public sealed record ABoxValidationReport(
@@ -210,10 +221,12 @@ public sealed class ABoxValidator
                     Id: Sig("placeholder", ind),
                     Type: "placeholder",
                     Severity: "error",
+                    Individual: new LabeledIri(ind, label),
                     Summary: $"\"{label}\" is a placeholder, not a stable individual identity.",
                     Fixes: new[]
                     {
-                        new ABoxViolationFix("delete", "Delete this placeholder individual", "delete_individual"),
+                        new ABoxViolationFix("delete", "Delete this placeholder individual",
+                        new Dictionary<string, object?> { ["kind"] = "delete_individual", ["iri"] = ind }),
                     }));
             }
             if (direct.Count > MaxDirectTypes)
@@ -222,10 +235,12 @@ public sealed class ABoxValidator
                     Id: Sig("type_count", ind),
                     Type: "type_count",
                     Severity: "error",
+                    Individual: new LabeledIri(ind, label),
                     Summary: $"\"{label}\" has {direct.Count} direct types, indicating that unrelated mentions were probably merged into one individual.",
                     Fixes: new[]
                     {
-                        new ABoxViolationFix("delete", "Delete this over-merged individual", "delete_individual"),
+                        new ABoxViolationFix("delete", "Delete this over-merged individual",
+                        new Dictionary<string, object?> { ["kind"] = "delete_individual", ["iri"] = ind }),
                     }));
             }
         }
@@ -241,11 +256,14 @@ public sealed class ABoxValidator
                     Id: Sig("disjoint", ind, a, b),
                     Type: "disjoint",
                     Severity: "error",
+                    Individual: new LabeledIri(ind, Ilabel(ind)),
                     Summary: $"\"{Ilabel(ind)}\" is typed as both \"{clabel(a)}\" and \"{clabel(b)}\", which are disjoint.",
                     Fixes: new[]
                     {
-                        new ABoxViolationFix("rm_a", $"Remove type \"{clabel(a)}\"", "remove_type"),
-                        new ABoxViolationFix("rm_b", $"Remove type \"{clabel(b)}\"", "remove_type"),
+                        new ABoxViolationFix("rm_a", $"Remove type \"{clabel(a)}\"",
+                            new Dictionary<string, object?> { ["kind"] = "remove_type", ["iri"] = ind, ["class_iri"] = a }),
+                        new ABoxViolationFix("rm_b", $"Remove type \"{clabel(b)}\"",
+                            new Dictionary<string, object?> { ["kind"] = "remove_type", ["iri"] = ind, ["class_iri"] = b }),
                     }));
             }
         }
@@ -286,10 +304,16 @@ public sealed class ABoxValidator
                     Id: Sig("domain", s, p),
                     Type: "domain",
                     Severity: "warning",
+                    Individual: new LabeledIri(s, Ilabel(s)),
                     Summary: $"\"{Ilabel(s)}\" uses \"{dr.Label}\" with a type disjoint from its domain.",
                     Fixes: new[]
                     {
-                        new ABoxViolationFix("rm", "Remove this relationship", "remove_object_assertion"),
+                        new ABoxViolationFix("rm", "Remove this relationship",
+                            new Dictionary<string, object?>
+                            {
+                                ["kind"] = "remove_object_assertion",
+                                ["subject"] = s, ["prop"] = p, ["target"] = o,
+                            }),
                     }));
             }
             var rc = UnionConflict(o, dr.RangeMembers);
@@ -299,10 +323,16 @@ public sealed class ABoxValidator
                     Id: Sig("range", s, p, o),
                     Type: "range",
                     Severity: "warning",
+                    Individual: new LabeledIri(o, Ilabel(o)),
                     Summary: $"\"{Ilabel(o)}\" is the target of \"{dr.Label}\" with a type disjoint from its range.",
                     Fixes: new[]
                     {
-                        new ABoxViolationFix("rm", "Remove this relationship", "remove_object_assertion"),
+                        new ABoxViolationFix("rm", "Remove this relationship",
+                            new Dictionary<string, object?>
+                            {
+                                ["kind"] = "remove_object_assertion",
+                                ["subject"] = s, ["prop"] = p, ["target"] = o,
+                            }),
                     }));
             }
         }
@@ -317,10 +347,16 @@ public sealed class ABoxValidator
                     Id: Sig("domain", s, p),
                     Type: "domain",
                     Severity: "warning",
+                    Individual: new LabeledIri(s, Ilabel(s)),
                     Summary: $"\"{Ilabel(s)}\" uses \"{dr.Label}\" with a type disjoint from its domain.",
                     Fixes: new[]
                     {
-                        new ABoxViolationFix("rm", "Remove this attribute", "remove_data_assertion"),
+                        new ABoxViolationFix("rm", "Remove this attribute",
+                            new Dictionary<string, object?>
+                            {
+                                ["kind"] = "remove_data_assertion",
+                                ["subject"] = s, ["prop"] = p, ["value"] = value, ["datatype"] = dt,
+                            }),
                     }));
             }
             if (dr.Range is { } rng && rng.StartsWith(Vocabulary.Xsd, StringComparison.Ordinal))
@@ -332,11 +368,22 @@ public sealed class ABoxValidator
                         Id: Sig("datatype", s, p, value),
                         Type: "datatype",
                         Severity: "warning",
+                        Individual: new LabeledIri(s, Ilabel(s)),
                         Summary: $"\"{Ilabel(s)}\": \"{dr.Label}\" = \"{value}\" is not a valid {xsdLocal}.",
                         Fixes: new[]
                         {
-                            new ABoxViolationFix("relax", $"Change \"{dr.Label}\" to text", "relax_range"),
-                            new ABoxViolationFix("rm", "Remove this attribute", "remove_data_assertion"),
+                            new ABoxViolationFix("relax", $"Change \"{dr.Label}\" to text",
+                                new Dictionary<string, object?>
+                                {
+                                    ["kind"] = "relax_range",
+                                    ["prop"] = p, ["prop_label"] = dr.Label, ["xsd"] = xsdLocal,
+                                }),
+                            new ABoxViolationFix("rm", "Remove this attribute",
+                            new Dictionary<string, object?>
+                            {
+                                ["kind"] = "remove_data_assertion",
+                                ["subject"] = s, ["prop"] = p, ["value"] = value, ["datatype"] = dt,
+                            }),
                         }));
                 }
             }

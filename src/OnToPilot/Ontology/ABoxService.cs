@@ -5,6 +5,9 @@ using OnToPilot.Authorization;
 using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
+using Oxigraph;
+using OntoNamedNode = Oxigraph.NamedNode;
+using OntoQuad = Oxigraph.Quad;
 
 namespace OnToPilot.Ontology;
 
@@ -39,6 +42,9 @@ public sealed class ABoxService
     private readonly ABoxManager _manager;
     private readonly ABoxProvenanceService _provenance;
     private readonly StoreWrapper _store;
+    private readonly ABoxValidator _validator;
+    private readonly ValidationDecisionService _decisions;
+    private readonly OntologyEditor _editor;
 
     public ABoxService(
         OnToPilotDbContext db,
@@ -46,7 +52,10 @@ public sealed class ABoxService
         KnowledgeSystemAccessService access,
         ABoxManager manager,
         ABoxProvenanceService provenance,
-        StoreWrapper store)
+        StoreWrapper store,
+        ABoxValidator validator,
+        ValidationDecisionService decisions,
+        OntologyEditor editor)
     {
         _db = db;
         _clock = clock;
@@ -54,6 +63,9 @@ public sealed class ABoxService
         _manager = manager;
         _provenance = provenance;
         _store = store;
+        _validator = validator;
+        _decisions = decisions;
+        _editor = editor;
     }
 
     // ----------------------------------------------------------------------
@@ -629,6 +641,316 @@ public sealed class ABoxService
             ["datatype"] = req.Datatype,
             ["fact_key"] = factKey,
         };
+    }
+
+    // ----------------------------------------------------------------------
+    // B7c — reset / validate / fix_violation / validation decisions
+    // ----------------------------------------------------------------------
+
+    /// <summary>
+    /// Wipe the ABox graph + provenance + resolution rows for one KS.
+    /// Mirrors Python <c>backend/app/api/abox.py::reset_abox</c>: the
+    /// <c>confirm</c> guard rejects a UI typo, the extraction guard
+    /// blocks a reset during a running extraction (wired by the
+    /// dispatcher arm via <see cref="InternalOperationDispatcher.RunWithExtractionGuardAsync"/>),
+    /// and the audit row carries the removed-quads byte[] so history
+    /// replay can roll back the wipe.
+    /// </summary>
+    public async Task<ResetAboxResponse?> ResetAsync(
+        long ksId, ResetAboxRequest req, Actor actor, CancellationToken ct)
+    {
+        if (!req.Confirm)
+        {
+            throw new InvalidOperationException(
+                "confirm=true is required to reset all instances");
+        }
+        var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
+        if (ks is null) return null;
+
+        var provenanceRows = await _db.AboxProvenances.AsNoTracking()
+            .CountAsync(p => p.KnowledgeSystemId == ks.Id, ct)
+            .ConfigureAwait(false);
+        var resolutionRows = await _db.EntityResolutions.AsNoTracking()
+            .CountAsync(r => r.KnowledgeSystemId == ks.Id, ct)
+            .ConfigureAwait(false);
+
+        var aboxGraph = new OntoNamedNode(ks.GraphIri.TrimEnd('/') + "/abox");
+        var preBytes = _store.DumpNQuads(aboxGraph);
+        await using (var cap = await _store
+            .CaptureAsync(ks.GraphIri.TrimEnd('/') + "/abox", revertOnError: false, waitTimeout: null, ct)
+            .ConfigureAwait(false))
+        {
+            try
+            {
+                _store.ReplaceGraph(aboxGraph, Array.Empty<OntoQuad>());
+            }
+            catch
+            {
+                cap.MarkError();
+                throw;
+            }
+        }
+        var postBytes = _store.DumpNQuads(aboxGraph);
+        var (added, removed) = StoreWrapper.DiffNQuads(preBytes, postBytes);
+
+        // SQL cleanup mirrors Python: drop AboxProvenance + EntityResolution
+        // rows for this KS so a fresh extraction starts from a blank slate.
+        var provenanceDeletes = await _db.AboxProvenances
+            .Where(p => p.KnowledgeSystemId == ks.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        _db.AboxProvenances.RemoveRange(provenanceDeletes);
+        var resolutionDeletes = await _db.EntityResolutions
+            .Where(r => r.KnowledgeSystemId == ks.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        _db.EntityResolutions.RemoveRange(resolutionDeletes);
+
+        await WriteAuditAsync(ks.Id, user!, "abox.reset",
+            "Reset all instances for re-extraction",
+            new Dictionary<string, object?>
+            {
+                    ["provenance_rows"] = provenanceRows,
+                    ["resolution_rows"] = resolutionRows,
+            },
+            aboxGraph.Value, added, removed, ct).ConfigureAwait(false);
+
+        return new ResetAboxResponse(removed.Length, provenanceRows, resolutionRows);
+    }
+
+    /// <summary>
+    /// Run <see cref="ABoxValidator"/> against the KS and return the
+    /// wire-shaped report. Read-side only &mdash; no extraction guard.
+    /// </summary>
+    public async Task<ValidationReportOut?> ValidateAsync(
+        long ksId, Actor actor, CancellationToken ct)
+    {
+        var (_, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
+        if (ks is null) return null;
+        var ksc = ToKsContext(ks);
+        var report = _validator.Validate(ksc);
+        return MapReport(report);
+    }
+
+    /// <summary>
+    /// Apply one fix op. Mirrors Python
+    /// <c>backend/app/api/abox.py::fix_violation</c>:
+    /// <list type="bullet">
+    /// <item><c>delete_individual</c> &mdash; ABox <see cref="ABoxManager.DeleteIndividual"/></item>
+    /// <item><c>remove_type</c> &mdash; <see cref="ABoxManager.RemoveType"/></item>
+    /// <item><c>remove_object_assertion</c> &mdash;
+    ///   <see cref="ABoxManager.RemoveObjectAssertion"/></item>
+    /// <item><c>remove_data_assertion</c> &mdash;
+    ///   <see cref="ABoxManager.RemoveDataAssertion"/></item>
+    /// <item><c>relax_range</c> &mdash; schema edit on the TBox graph
+    ///   (<see cref="OntologyEditor.UpdateProperty"/> with
+    ///   <c>range: "string"</c>); also records a validation decision
+    ///   so a future <c>ValidationAgent</c> reuses the same preference.</item>
+    /// </list>
+    /// Returns a fresh validation report so the UI can re-render the
+    /// violation list with the fix applied.
+    /// </summary>
+    public async Task<ValidationReportOut?> FixViolationAsync(
+        long ksId, FixViolationRequest req, Actor actor, CancellationToken ct)
+    {
+        var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
+        if (user is null || ks is null) return null;
+
+        var op = req.Op ?? new Dictionary<string, JsonElement>();
+        if (!op.TryGetValue("kind", out var kindEl) || kindEl.ValueKind != JsonValueKind.String)
+        {
+            throw new InvalidOperationException("Fix op requires a 'kind' field.");
+        }
+        var kind = kindEl.GetString()!;
+
+        byte[] added, removed;
+        string graphIri;
+        var ksc = ToKsContext(ks);
+
+        if (kind == "relax_range")
+        {
+            // Schema edit on the TBox graph, not the ABox graph.
+            // NOTE: do NOT wrap this in our own CaptureAsync —
+            // OntologyEditor.ApplyEditAsync opens its own capture on the
+            // same graphIri, which would trip
+            // GraphWriteCoordinator's LockRecursionException → 409 path.
+            // The inner capture owns the revert-or-commit semantics; we
+            // only need pre/post dumps around the call for the audit
+            // diff.
+            var propIri = RequireString(op, "prop");
+            var propLabel = op.AsString("prop_label") ?? propIri;
+            var xsd = op.AsString("xsd");
+            graphIri = ks.GraphIri;
+            var tboxGraph = new OntoNamedNode(graphIri);
+            var preBytes = _store.DumpNQuads(tboxGraph);
+            _editor.ApplyEditAsync(graphIri, ksc.BaseIri,
+                new Dictionary<string, object?>
+                {
+                    ["op"] = "update_property",
+                    ["iri"] = propIri,
+                    ["range"] = "string",
+                }, ct).GetAwaiter().GetResult();
+            var postBytes = _store.DumpNQuads(tboxGraph);
+            (added, removed) = StoreWrapper.DiffNQuads(preBytes, postBytes);
+
+            // Remember the human's preference so the future agent
+            // doesn't re-judge this property next triage.
+            await _decisions.RecordDecisionAsync(
+                ks.Id, propIri, propLabel, xsd,
+                "relax", "human relaxed the range to text",
+                user!.DisplayName ?? user.Username, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            graphIri = ksc.ABoxGraph;
+            var aboxGraph = new OntoNamedNode(graphIri);
+            var preBytes = _store.DumpNQuads(aboxGraph);
+            await using (var cap = await _store
+                .CaptureAsync(graphIri, revertOnError: false, waitTimeout: null, ct)
+                .ConfigureAwait(false))
+            {
+                try
+                {
+                    ApplyFixOp(ksc, kind, op);
+                }
+                catch
+                {
+                    cap.MarkError();
+                    throw;
+                }
+            }
+            var postBytes = _store.DumpNQuads(aboxGraph);
+            (added, removed) = StoreWrapper.DiffNQuads(preBytes, postBytes);
+        }
+
+        await WriteAuditAsync(ks.Id, user, "abox.fix_violation",
+            req.Summary ?? $"Fixed instance violation ({kind})",
+            JsonElementDictToObject(op),
+            graphIri, added, removed, ct).ConfigureAwait(false);
+
+        var report = _validator.Validate(ksc);
+        return MapReport(report);
+    }
+
+    /// <summary>List persisted validation decisions for one KS.</summary>
+    public async Task<ValidationDecisionListOut?> ListValidationDecisionsAsync(
+        long ksId, string? q, int limit, int offset, Actor actor, CancellationToken ct)
+    {
+        var (_, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
+        if (ks is null) return null;
+        return await _decisions
+            .ListDecisionsAsync(ks.Id, q, limit, offset, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Forget one decision row. Returns the revoked id, or <c>null</c>
+    /// when no row matched (the caller can map null → 404).
+    /// </summary>
+    public async Task<RevokeValidationDecisionResponse?> RevokeValidationDecisionAsync(
+        long ksId, Guid decisionId, Actor actor, CancellationToken ct)
+    {
+        var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
+        if (ks is null) return null;
+        var revoked = await _decisions.RevokeAsync(ks.Id, decisionId, ct).ConfigureAwait(false);
+        if (revoked is null) return null;
+        await WriteAuditAsync(ks.Id, user!, "validation.revoke",
+            "Forgot validation memory",
+            new Dictionary<string, object?> { ["decision_id"] = revoked },
+            null, Array.Empty<byte>(), Array.Empty<byte>(), ct).ConfigureAwait(false);
+        return new RevokeValidationDecisionResponse(revoked.Value);
+    }
+
+    // ----------------------------------------------------------------------
+    // B7c helpers
+    // ----------------------------------------------------------------------
+
+    /// <summary>
+    /// Dispatch a single ABox fix op (everything except
+    /// <c>relax_range</c>, which lands on the TBox graph). Mirrors the
+    /// Python <c>backend/app/ontology/abox_validate.py::apply_fix</c>
+    /// dispatch table.
+    /// </summary>
+    private void ApplyFixOp(KsContext ks, string kind, Dictionary<string, JsonElement> op)
+    {
+        switch (kind)
+        {
+            case "delete_individual":
+                _manager.DeleteIndividual(ks, RequireString(op, "iri"));
+                return;
+            case "remove_type":
+                _manager.RemoveType(ks, RequireString(op, "iri"), RequireString(op, "class_iri"));
+                return;
+            case "remove_object_assertion":
+                _manager.RemoveObjectAssertion(ks,
+                    RequireString(op, "subject"),
+                    RequireString(op, "prop"),
+                    RequireString(op, "target"));
+                return;
+            case "remove_data_assertion":
+            {
+                var subject = RequireString(op, "subject");
+                var prop = RequireString(op, "prop");
+                var value = RequireString(op, "value");
+                var datatype = op.AsString("datatype");
+                _manager.RemoveDataAssertion(ks, subject, prop, value, datatype);
+                return;
+            }
+            default:
+                throw new InvalidOperationException($"Unknown fix op kind: {kind}");
+        }
+    }
+
+    /// <summary>Pull a required string field out of a fix op, or throw a 400-friendly error.</summary>
+    private static string RequireString(Dictionary<string, JsonElement> op, string key)
+    {
+        var s = op.AsString(key);
+        if (string.IsNullOrWhiteSpace(s))
+        {
+            throw new InvalidOperationException($"Fix op requires a non-empty '{key}' field.");
+        }
+        return s!;
+    }
+
+    /// <summary>
+    /// Convert a <c>Dictionary&lt;string, JsonElement&gt;</c> fix-op into
+    /// the <c>Dictionary&lt;string, object?&gt;</c> shape the audit row
+    /// expects. JsonElement values are unwrapped to their underlying
+    /// primitive (<see cref="string"/>, <see cref="long"/>,
+    /// <see cref="double"/>, <see cref="bool"/>, <c>null</c>) so the
+    /// audit row stays JSON-friendly.
+    /// </summary>
+    private static Dictionary<string, object?> JsonElementDictToObject(
+        Dictionary<string, JsonElement> op)
+    {
+        var result = new Dictionary<string, object?>(op.Count);
+        foreach (var (k, el) in op)
+        {
+            result[k] = el.ValueKind switch
+            {
+                JsonValueKind.String => el.GetString(),
+                JsonValueKind.Number => el.TryGetInt64(out var l) ? (object?)l : el.GetDouble(),
+                JsonValueKind.True => true,
+                JsonValueKind.False => false,
+                JsonValueKind.Null => null,
+                _ => el.GetRawText(),
+            };
+        }
+        return result;
+    }
+
+    /// <summary>Map the validator's internal report to the wire DTO.</summary>
+    private static ValidationReportOut MapReport(ABoxValidationReport report)
+    {
+        var violations = report.Violations
+            .Select(v => new ValidationViolationOut(
+                v.Id, v.Type, v.Severity, v.Individual, v.Summary,
+                v.Fixes.Select(f => new ViolationFixOut(f.Id, f.Label, f.Op)).ToList()))
+            .ToList();
+        return new ValidationReportOut(
+            violations,
+            new ValidationReportCounts(report.ErrorCount, report.WarningCount),
+            report.Truncated);
     }
 }
 
