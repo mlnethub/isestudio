@@ -419,6 +419,12 @@ builder.Services.AddValidationDecisionServices();
 // from prior commit keeps every WebApplicationFactory-driven extraction
 // test green.
 builder.Services.AddExtractionServices();
+// Vocabulary slice — Scoped VocabularyService wraps SkosManager methods +
+// extraction guard + Reader/Writer role gate + audit pre/post diff (B7c
+// ABoxService pattern). SkosManager is registered here as a singleton
+// (depends on the singleton StoreWrapper); the underlying TerminologyService
+// + ExtractionJobStore come from AddExtractionServices above.
+builder.Services.AddVocabularyServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(
