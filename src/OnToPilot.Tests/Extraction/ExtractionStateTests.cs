@@ -107,7 +107,7 @@ public sealed class ExtractionStateTests : IDisposable
         var before = Store.DumpNQuads(Ks.TBoxGraph);
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
         await Jobs.WaitAsync(job.Id);
-        Assert.Equal("failed", (await Jobs.GetAsync(job.Id)).Status);
+        Assert.Equal("failed", (await Jobs.GetAsync(job.Id))!.Status);
         Assert.Equal(before, Store.DumpNQuads(Ks.TBoxGraph));
     }
 
@@ -121,7 +121,7 @@ public sealed class ExtractionStateTests : IDisposable
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
         await Jobs.WaitAsync(job.Id);
 
-        var finished = await Jobs.GetAsync(job.Id);
+        var finished = (await Jobs.GetAsync(job.Id))!;
         Assert.Equal("failed", finished.Status);
         Assert.Contains("merge failed", finished.Error);
         Assert.NotNull(finished.FinishedAt);
@@ -310,8 +310,8 @@ public sealed class ExtractionStateTests : IDisposable
         while (DateTime.UtcNow < deadline)
         {
             var job = await Jobs.GetAsync(id);
-            if (predicate(job)) return job;
-            if (job.Status is "completed" or "failed")
+            if (job is not null && predicate(job)) return job;
+            if (job is not null && job.Status is "completed" or "failed")
             {
                 throw new InvalidOperationException(
                     $"Job reached '{job.Status}' before the predicate held (error: {job.Error ?? "none"}).");

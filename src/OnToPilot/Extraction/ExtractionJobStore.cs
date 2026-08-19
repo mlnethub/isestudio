@@ -87,13 +87,54 @@ public sealed class ExtractionJobStore
         return job;
     }
 
-    /// <summary>Fetch the current row.</summary>
-    public async Task<ExtractionJobEntity> GetAsync(Guid id, CancellationToken cancellationToken = default)
+    /// <summary>Fetch the current row, or <c>null</c> when no row matches.</summary>
+    public async Task<ExtractionJobEntity?> GetAsync(Guid id, CancellationToken cancellationToken = default)
     {
         await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
         var job = await db.ExtractionJobs.AsNoTracking()
-            .FirstAsync(j => j.Id == id, cancellationToken).ConfigureAwait(false);
+            .FirstOrDefaultAsync(j => j.Id == id, cancellationToken).ConfigureAwait(false);
         return job;
+    }
+
+    /// <summary>
+    /// List every job for the supplied knowledge system, newest first.
+    /// Used by <c>GET /api/knowledge/{ks_id}/jobs</c>. The SQLite test
+    /// store refuses DateTimeOffset in ORDER BY, so the rows are
+    /// materialised and sorted client-side the same way
+    /// <c>KnowledgeService.ListAsync</c> works around the limitation.
+    /// </summary>
+    public async Task<IReadOnlyList<ExtractionJobEntity>> ListAsync(
+        Guid knowledgeSystemId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var rows = await db.ExtractionJobs.AsNoTracking()
+            .Where(j => j.KnowledgeSystemId == knowledgeSystemId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        rows.Sort((a, b) => b.CreatedAt.CompareTo(a.CreatedAt));
+        return rows;
+    }
+
+    /// <summary>
+    /// Long-id convenience overload of <see cref="ListAsync(Guid, CancellationToken)"/>:
+    /// looks up the knowledge system's Guid primary key from its legacy
+    /// route id, then delegates. Returns an empty list when the legacy
+    /// id is unknown so the dispatcher can surface a stable empty
+    /// response without crashing the test factory.
+    /// </summary>
+    public async Task<IReadOnlyList<ExtractionJobEntity>> ListAsync(
+        long knowledgeSystemLegacyId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+        var ksGuid = await db.KnowledgeSystems.AsNoTracking()
+            .Where(k => k.LegacyId == knowledgeSystemLegacyId)
+            .Select(k => (Guid?)k.Id)
+            .FirstOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (ksGuid is null) return Array.Empty<ExtractionJobEntity>();
+        return await ListAsync(ksGuid.Value, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -304,6 +345,14 @@ public sealed class ExtractionJobStore
         while (true)
         {
             var job = await GetAsync(id, cancellationToken).ConfigureAwait(false);
+            if (job is null)
+            {
+                // The job row was deleted out from under the waiter; the
+                // boot-time StaleJobRecoveryService would have logged a
+                // warning, and there's nothing more we can do here.
+                throw new InvalidOperationException(
+                    $"Extraction job {id} disappeared while waiting for it to terminate.");
+            }
             if (ExtractionWire.IsTerminal(job.Status)) return job;
             if (_clock.GetUtcNow() >= deadline)
             {

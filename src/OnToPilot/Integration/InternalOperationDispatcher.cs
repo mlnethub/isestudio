@@ -94,6 +94,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "ontology.sources" => Task.FromResult<object?>(Array.Empty<object>()),
 
             // -- extraction --
+            // Real reads (list_jobs / get_job) are wired into
+            // ExtractionJobStore via InvokeExtractionListJobsAsync /
+            // InvokeExtractionGetJobAsync so HTTP callers see the actual
+            // job rows. The three run* arms are still placeholders
+            // (Block 6 will own the LLM/Oxigraph wiring); the
+            // RunWithExtractionGuardAsync wrapper still rejects them
+            // with the 409 envelope when an active job exists, matching
+            // the brief's "抽取进行中的修改返回 409" requirement.
             "extraction.run" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
                 () => Task.FromResult<object?>(EmptyExtractionJob())),
@@ -103,8 +111,8 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "extraction.run_instances" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
                 () => Task.FromResult<object?>(EmptyExtractionJob())),
-            "extraction.list_jobs" => Task.FromResult<object?>(Array.Empty<object>()),
-            "extraction.get_job" => Task.FromResult<object?>(EmptyExtractionJob()),
+            "extraction.list_jobs" => InvokeExtractionListJobsAsync(request, cancellationToken),
+            "extraction.get_job" => InvokeExtractionGetJobAsync(request, cancellationToken),
 
             // -- conflicts --
             // Real CRUD via ConflictService (scoped). The helpers below
@@ -1159,6 +1167,50 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             var resp = await svc.ParseBatchAsync(
                 request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
             return (object?)(resp ?? EmptyParseBatchResponse());
+        });
+    }
+
+    // ----- extraction read helpers -----
+    // The two extraction read endpoints (list_jobs / get_job) live on
+    // a singleton ExtractionJobStore that opens a fresh DbContext per
+    // call via its IDbContextFactory. The dispatcher resolves the
+    // store from DI and projects the entity rows to ExtractionJobOut
+    // so the wire shape matches the Python ExtractionJob SQLModel.
+
+    private ExtractionJobStore? ResolveExtractionJobs() =>
+        _services.GetService(typeof(ExtractionJobStore)) as ExtractionJobStore;
+
+    private Task<object?> InvokeExtractionListJobsAsync(InternalRequest request, CancellationToken ct)
+    {
+        var jobs = ResolveExtractionJobs();
+        if (jobs is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        return WrapAsync(async () =>
+        {
+            var rows = await jobs.ListAsync(request.KnowledgeSystemId.Value, ct)
+                .ConfigureAwait(false);
+            return (object?)rows.Select(ExtractionJobOut.From).ToList();
+        });
+    }
+
+    private Task<object?> InvokeExtractionGetJobAsync(InternalRequest request, CancellationToken ct)
+    {
+        var jobs = ResolveExtractionJobs();
+        if (jobs is null || request.KnowledgeSystemId is null
+            || !Guid.TryParse(request.ResourceId, out var jobId))
+        {
+            return Task.FromResult<object?>(EmptyExtractionJob());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await jobs.GetAsync(jobId, ct).ConfigureAwait(false);
+            // Job id is scoped to its KS: a job owned by a different
+            // KS surfaces as the empty placeholder (matches the Python
+            // 404 envelope without forcing the dispatcher to throw).
+            if (row is null) return (object?)EmptyExtractionJob();
+            return (object?)ExtractionJobOut.From(row);
         });
     }
 

@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Authorization;
+using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Ontology;
@@ -54,6 +55,7 @@ public sealed class DocumentService
     private readonly IBlobStore _blobs;
     private readonly IDocumentParser _parser;
     private readonly Chunker _chunker;
+    private readonly ExtractionJobStore _extractionJobs;
     private readonly ILogger<DocumentService>? _logger;
 
     public DocumentService(
@@ -63,6 +65,7 @@ public sealed class DocumentService
         IBlobStore blobs,
         IDocumentParser parser,
         Chunker chunker,
+        ExtractionJobStore extractionJobs,
         ILogger<DocumentService>? logger = null)
     {
         _db = db;
@@ -71,6 +74,7 @@ public sealed class DocumentService
         _blobs = blobs;
         _parser = parser;
         _chunker = chunker;
+        _extractionJobs = extractionJobs;
         _logger = logger;
     }
 
@@ -583,26 +587,21 @@ public sealed class DocumentService
 
     /// <summary>
     /// Reject the operation when an extraction is in flight for this KS.
-    /// Mirrors Python <c>extraction_active</c>. <see cref="GraphWriteCoordinator"/>
-    /// raises <see cref="Ontology.GraphWriteConflictException"/> when two
-    /// writers race for the same graph; we use the same exception type
-    /// so the existing <c>FastApiErrorMiddleware</c> maps it to a 409
-    /// envelope.
+    /// Mirrors Python <c>extraction_active</c>. The <c>job_id</c> from
+    /// the active row is surfaced in the 409 envelope so the client can
+    /// poll <c>GET /api/knowledge/{ks_id}/jobs/{job_id}</c> for the
+    /// extraction that blocked the mutation.
     /// </summary>
     private async Task EnsureNoActiveExtractionAsync(Guid ksId, CancellationToken ct)
     {
-        var active = await _db.ExtractionJobs.AsNoTracking()
-            .AnyAsync(j => j.KnowledgeSystemId == ksId
-                && (j.Status == "pending" || j.Status == "running"), ct)
+        var activeJobId = await _extractionJobs
+            .FindActiveJobAsync(ksId, ct)
             .ConfigureAwait(false);
-        if (active)
+        if (activeJobId is { } jobId)
         {
-            // Maps to HTTP 409 via FastApiErrorMiddleware — same envelope
-            // shape the brief's "抽取进行中的修改返回 409" requirement
-            // mandates (we don't have a job id to surface yet because
-            // Block 5 will own the extraction lifecycle).
             throw new GraphWriteConflictException(
-                "An extraction is in progress; try again after it finishes.");
+                "An extraction is in progress; try again after it finishes.",
+                jobId);
         }
     }
 
