@@ -27,11 +27,16 @@ public sealed class ValidationDecisionService
 {
     private readonly OnToPilotDbContext _db;
     private readonly TimeProvider _clock;
+    private readonly LegacyIdAllocator _allocator;
 
-    public ValidationDecisionService(OnToPilotDbContext db, TimeProvider clock)
+    public ValidationDecisionService(
+        OnToPilotDbContext db,
+        TimeProvider clock,
+        LegacyIdAllocator allocator)
     {
         _db = db;
         _clock = clock;
+        _allocator = allocator;
     }
 
     /// <summary>
@@ -83,13 +88,9 @@ public sealed class ValidationDecisionService
         }
         else
         {
-            var nextLegacy = await _db.ValidationDecisions.AsNoTracking()
-                .Select(d => (long?)d.LegacyId)
-                .MaxAsync(ct)
-                .ConfigureAwait(false);
             _db.ValidationDecisions.Add(new ValidationDecisionEntity
             {
-                LegacyId = (nextLegacy ?? 0L) + 1L,
+                LegacyId = await _allocator.NextAsync<ValidationDecisionEntity>(ct).ConfigureAwait(false),
                 KnowledgeSystemId = ksId,
                 PropertyIri = propertyIri,
                 PropertyLabel = propertyLabel,

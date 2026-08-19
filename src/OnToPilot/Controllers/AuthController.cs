@@ -50,19 +50,22 @@ public sealed class AuthController : ControllerBase
     private readonly IPasswordService _passwords;
     private readonly TimeProvider _clock;
     private readonly IIntegrationApiFacade _facade;
+    private readonly LegacyIdAllocator _allocator;
 
     public AuthController(
         OnToPilotDbContext db,
         IOptions<OnToPilotOptions> options,
         IPasswordService passwords,
         TimeProvider clock,
-        IIntegrationApiFacade facade)
+        IIntegrationApiFacade facade,
+        LegacyIdAllocator allocator)
     {
         _db = db;
         _options = options.Value;
         _passwords = passwords;
         _clock = clock;
         _facade = facade;
+        _allocator = allocator;
     }
 
     /// <summary>
@@ -106,13 +109,9 @@ public sealed class AuthController : ControllerBase
 
         var token = CreateToken();
         var now = _clock.GetUtcNow();
-        var nextSessionLegacy = await _db.AuthSessions.AsNoTracking()
-            .Select(s => (long?)s.LegacyId)
-            .MaxAsync(ct)
-            .ConfigureAwait(false);
         _db.AuthSessions.Add(new AuthSessionEntity
         {
-            LegacyId = (nextSessionLegacy ?? 0L) + 1L,
+            LegacyId = await _allocator.NextAsync<AuthSessionEntity>(ct).ConfigureAwait(false),
             Token = token,
             UserId = user!.Id,
             CreatedAt = now,

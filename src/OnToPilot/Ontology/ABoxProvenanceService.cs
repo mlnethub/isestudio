@@ -23,11 +23,16 @@ public sealed class ABoxProvenanceService
 {
     private readonly OnToPilotDbContext _db;
     private readonly TimeProvider _clock;
+    private readonly LegacyIdAllocator _allocator;
 
-    public ABoxProvenanceService(OnToPilotDbContext db, TimeProvider clock)
+    public ABoxProvenanceService(
+        OnToPilotDbContext db,
+        TimeProvider clock,
+        LegacyIdAllocator allocator)
     {
         _db = db;
         _clock = clock;
+        _allocator = allocator;
     }
 
     /// <summary>
@@ -62,13 +67,9 @@ public sealed class ABoxProvenanceService
         }
         else
         {
-            var nextLegacy = await _db.AboxProvenances.AsNoTracking()
-                .Select(p => (long?)p.LegacyId)
-                .MaxAsync(ct)
-                .ConfigureAwait(false);
             _db.AboxProvenances.Add(new AboxProvenanceEntity
             {
-                LegacyId = (nextLegacy ?? 0L) + 1L,
+                LegacyId = await _allocator.NextAsync<AboxProvenanceEntity>(ct).ConfigureAwait(false),
                 KnowledgeSystemId = ksId,
                 FactKey = factKey,
                 Method = method,

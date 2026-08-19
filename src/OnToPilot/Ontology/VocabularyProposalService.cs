@@ -34,6 +34,7 @@ public sealed class VocabularyProposalService
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
     private readonly ExtractionJobStore _jobStore;
+    private readonly LegacyIdAllocator _allocator;
 
     public VocabularyProposalService(
         OnToPilotDbContext db,
@@ -41,7 +42,8 @@ public sealed class VocabularyProposalService
         StoreWrapper store,
         TimeProvider clock,
         KnowledgeSystemAccessService access,
-        ExtractionJobStore jobStore)
+        ExtractionJobStore jobStore,
+        LegacyIdAllocator allocator)
     {
         _db = db;
         _skos = skos;
@@ -49,6 +51,7 @@ public sealed class VocabularyProposalService
         _clock = clock;
         _access = access;
         _jobStore = jobStore;
+        _allocator = allocator;
     }
 
     // ----------------------------------------------------------------------
@@ -461,13 +464,9 @@ public sealed class VocabularyProposalService
         byte[] added, byte[] removed,
         CancellationToken token)
     {
-        var nextLegacy = await _db.AuditEvents.AsNoTracking()
-            .Select(a => (long?)a.LegacyId)
-            .MaxAsync(token)
-            .ConfigureAwait(false);
         _db.AuditEvents.Add(new AuditEventEntity
         {
-            LegacyId = (nextLegacy ?? 0L) + 1L,
+            LegacyId = await _allocator.NextAsync<AuditEventEntity>(token).ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
             ActorName = actor.DisplayName ?? actor.Username,

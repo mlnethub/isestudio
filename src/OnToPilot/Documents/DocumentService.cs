@@ -56,6 +56,7 @@ public sealed class DocumentService
     private readonly IDocumentParser _parser;
     private readonly Chunker _chunker;
     private readonly ExtractionJobStore _extractionJobs;
+    private readonly LegacyIdAllocator _allocator;
     private readonly ILogger<DocumentService>? _logger;
 
     public DocumentService(
@@ -66,6 +67,7 @@ public sealed class DocumentService
         IDocumentParser parser,
         Chunker chunker,
         ExtractionJobStore extractionJobs,
+        LegacyIdAllocator allocator,
         ILogger<DocumentService>? logger = null)
     {
         _db = db;
@@ -75,6 +77,7 @@ public sealed class DocumentService
         _parser = parser;
         _chunker = chunker;
         _extractionJobs = extractionJobs;
+        _allocator = allocator;
         _logger = logger;
     }
 
@@ -835,35 +838,23 @@ public sealed class DocumentService
         return cleaned.Length == 0 ? "/" : "/" + cleaned;
     }
 
-    private async Task<long> NextDocumentLegacyIdAsync(CancellationToken ct)
+    private Task<long> NextDocumentLegacyIdAsync(CancellationToken ct)
     {
-        var max = await _db.Documents.AsNoTracking()
-            .Select(d => (long?)d.LegacyId)
-            .MaxAsync(ct)
-            .ConfigureAwait(false);
-        return (max ?? 0L) + 1L;
+        return _allocator.NextAsync<DocumentEntity>(ct);
     }
 
-    private async Task<long> NextChunkLegacyIdAsync(CancellationToken ct)
+    private Task<long> NextChunkLegacyIdAsync(CancellationToken ct)
     {
-        var max = await _db.Chunks.AsNoTracking()
-            .Select(c => (long?)c.LegacyId)
-            .MaxAsync(ct)
-            .ConfigureAwait(false);
-        return (max ?? 0L) + 1L;
+        return _allocator.NextAsync<ChunkEntity>(ct);
     }
 
     private async Task WriteAuditAsync(
         Guid ksId, UserEntity actor, string action, string summary,
         JsonElement? detail, CancellationToken token)
     {
-        var nextLegacy = await _db.AuditEvents.AsNoTracking()
-            .Select(a => (long?)a.LegacyId)
-            .MaxAsync(token)
-            .ConfigureAwait(false);
         _db.AuditEvents.Add(new AuditEventEntity
         {
-            LegacyId = (nextLegacy ?? 0L) + 1L,
+            LegacyId = await _allocator.NextAsync<AuditEventEntity>(token).ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
             ActorName = actor.DisplayName ?? actor.Username,

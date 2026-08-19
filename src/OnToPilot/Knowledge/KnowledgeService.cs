@@ -35,15 +35,18 @@ public sealed class KnowledgeService
     private readonly OnToPilotDbContext _db;
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
+    private readonly LegacyIdAllocator _allocator;
 
     public KnowledgeService(
         OnToPilotDbContext db,
         TimeProvider clock,
-        KnowledgeSystemAccessService access)
+        KnowledgeSystemAccessService access,
+        LegacyIdAllocator allocator)
     {
         _db = db;
         _clock = clock;
         _access = access;
+        _allocator = allocator;
     }
 
     // ----------------------------------------------------------------------
@@ -600,13 +603,9 @@ public sealed class KnowledgeService
         return ids;
     }
 
-    private async Task<long> NextLegacyIdAsync(CancellationToken ct)
+    private Task<long> NextLegacyIdAsync(CancellationToken ct)
     {
-        var max = await _db.KnowledgeSystems.AsNoTracking()
-            .Select(k => (long?)k.LegacyId)
-            .MaxAsync(ct)
-            .ConfigureAwait(false);
-        return (max ?? 0L) + 1L;
+        return _allocator.NextAsync<KnowledgeSystemEntity>(ct);
     }
 
     private async Task<IReadOnlyList<KnowledgeSystemOut>> ProjectAsync(
@@ -680,15 +679,12 @@ public sealed class KnowledgeService
         JsonElement? detail, CancellationToken token)
     {
         // auditevent.legacy_id has a UNIQUE index — every row needs a
-        // fresh integer. The Python parity layer uses an autoincrement
-        // PK there; we materialise a sequential id from the running max.
-        var nextLegacy = await _db.AuditEvents.AsNoTracking()
-            .Select(a => (long?)a.LegacyId)
-            .MaxAsync(token)
-            .ConfigureAwait(false);
+        // fresh integer. LegacyIdAllocator serializes concurrent writers
+        // via pg_advisory_xact_lock on the audit_events table; SQLite is
+        // single-writer and uses a plain MAX+1.
         _db.AuditEvents.Add(new AuditEventEntity
         {
-            LegacyId = (nextLegacy ?? 0L) + 1L,
+            LegacyId = await _allocator.NextAsync<AuditEventEntity>(token).ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
             ActorName = actor.DisplayName ?? actor.Username,

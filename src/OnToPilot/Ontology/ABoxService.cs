@@ -45,6 +45,7 @@ public sealed class ABoxService
     private readonly ABoxValidator _validator;
     private readonly ValidationDecisionService _decisions;
     private readonly OntologyEditor _editor;
+    private readonly LegacyIdAllocator _allocator;
 
     public ABoxService(
         OnToPilotDbContext db,
@@ -55,7 +56,8 @@ public sealed class ABoxService
         StoreWrapper store,
         ABoxValidator validator,
         ValidationDecisionService decisions,
-        OntologyEditor editor)
+        OntologyEditor editor,
+        LegacyIdAllocator allocator)
     {
         _db = db;
         _clock = clock;
@@ -66,6 +68,7 @@ public sealed class ABoxService
         _validator = validator;
         _decisions = decisions;
         _editor = editor;
+        _allocator = allocator;
     }
 
     // ----------------------------------------------------------------------
@@ -515,13 +518,9 @@ public sealed class ABoxService
         byte[] added, byte[] removed,
         CancellationToken token)
     {
-        var nextLegacy = await _db.AuditEvents.AsNoTracking()
-            .Select(a => (long?)a.LegacyId)
-            .MaxAsync(token)
-            .ConfigureAwait(false);
         var entity = new AuditEventEntity
         {
-            LegacyId = (nextLegacy ?? 0L) + 1L,
+            LegacyId = await _allocator.NextAsync<AuditEventEntity>(token).ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
             ActorName = actor.DisplayName ?? actor.Username,

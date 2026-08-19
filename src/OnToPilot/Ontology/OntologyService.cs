@@ -38,19 +38,22 @@ public sealed class OntologyService
     private readonly KnowledgeSystemAccessService _access;
     private readonly OntologyEditor _editor;
     private readonly StoreWrapper _store;
+    private readonly LegacyIdAllocator _allocator;
 
     public OntologyService(
         OnToPilotDbContext db,
         TimeProvider clock,
         KnowledgeSystemAccessService access,
         OntologyEditor editor,
-        StoreWrapper store)
+        StoreWrapper store,
+        LegacyIdAllocator allocator)
     {
         _db = db;
         _clock = clock;
         _access = access;
         _editor = editor;
         _store = store;
+        _allocator = allocator;
     }
 
     // ----------------------------------------------------------------------
@@ -190,10 +193,6 @@ public sealed class OntologyService
         byte[] added, byte[] removed,
         CancellationToken token)
     {
-        var nextLegacy = await _db.AuditEvents.AsNoTracking()
-            .Select(a => (long?)a.LegacyId)
-            .MaxAsync(token)
-            .ConfigureAwait(false);
         JsonDocument? detailDoc = null;
         if (detail is not null)
         {
@@ -202,7 +201,7 @@ public sealed class OntologyService
         }
         _db.AuditEvents.Add(new AuditEventEntity
         {
-            LegacyId = (nextLegacy ?? 0L) + 1L,
+            LegacyId = await _allocator.NextAsync<AuditEventEntity>(token).ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
             ActorName = actor.DisplayName ?? actor.Username,

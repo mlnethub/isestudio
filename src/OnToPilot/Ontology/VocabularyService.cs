@@ -35,6 +35,7 @@ public sealed class VocabularyService
     private readonly KnowledgeSystemAccessService _access;
     private readonly ExtractionJobStore _jobStore;
     private readonly TerminologyService _terminology;
+    private readonly LegacyIdAllocator _allocator;
 
     public VocabularyService(
         SkosManager skos,
@@ -43,7 +44,8 @@ public sealed class VocabularyService
         TimeProvider clock,
         KnowledgeSystemAccessService access,
         ExtractionJobStore jobStore,
-        TerminologyService terminology)
+        TerminologyService terminology,
+        LegacyIdAllocator allocator)
     {
         _skos = skos;
         _store = store;
@@ -52,6 +54,7 @@ public sealed class VocabularyService
         _access = access;
         _jobStore = jobStore;
         _terminology = terminology;
+        _allocator = allocator;
     }
 
     // ----------------------------------------------------------------------
@@ -517,7 +520,39 @@ public sealed class VocabularyService
         if (user is null || ksc is null) return null;
 
         var pre = _store.DumpNQuads(ksc.VocabularyGraph);
-        var result = _terminology.SyncAsync(ksc, ct);
+        TerminologyResult result;
+        // Wrap the terminology pass in a CaptureAsync so a mid-loop failure
+        // in TerminologyService.SyncCore (which writes quads directly via
+        // StoreWrapper.AddQuads) rolls the vocabulary graph back to the
+        // pre-state snapshot rather than leaving a partial commit. The
+        // sibling writers (CreateScheme / UpdateScheme / CreateConcept / ...)
+        // already open their own CaptureAsync; SyncAsync was the lone
+        // exception. The graph-side rollback is automatic on dispose when
+        // cap.MarkError() fires; the audit row below still records what was
+        // attempted so operators can see the partial diff.
+        await using (var cap = await _store
+            .CaptureAsync(ksc.VocabularyGraph, revertOnError: false, waitTimeout: null, ct)
+            .ConfigureAwait(false))
+        {
+            try
+            {
+                result = _terminology.SyncAsync(ksc, ct);
+                if (result.Error is not null)
+                {
+                    cap.MarkError();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                cap.MarkError();
+                throw;
+            }
+            catch
+            {
+                cap.MarkError();
+                throw;
+            }
+        }
         var post = _store.DumpNQuads(ksc.VocabularyGraph);
         var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
 
@@ -641,13 +676,9 @@ public sealed class VocabularyService
         byte[] added, byte[] removed,
         CancellationToken token)
     {
-        var nextLegacy = await _db.AuditEvents.AsNoTracking()
-            .Select(a => (long?)a.LegacyId)
-            .MaxAsync(token)
-            .ConfigureAwait(false);
         _db.AuditEvents.Add(new AuditEventEntity
         {
-            LegacyId = (nextLegacy ?? 0L) + 1L,
+            LegacyId = await _allocator.NextAsync<AuditEventEntity>(token).ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
             ActorName = actor.DisplayName ?? actor.Username,

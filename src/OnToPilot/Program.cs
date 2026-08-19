@@ -317,6 +317,11 @@ builder.Services.AddDbContextFactory<OnToPilotDbContext>((sp, options) =>
 // uses its own IDbContextFactory.
 builder.Services.AddSingleton<ExtractionJobStore>();
 
+// Scoped LegacyId allocator. PG path takes a per-table pg_advisory_xact_lock
+// so concurrent writers on the same table serialize; SQLite path falls back
+// to plain MAX+1 (single-writer DB). See LegacyIdAllocator.cs for rationale.
+builder.Services.AddScoped<LegacyIdAllocator>();
+
 // ---- Auth services ----
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IPasswordService, PasswordService>();

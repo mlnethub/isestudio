@@ -112,16 +112,20 @@ public sealed class TerminologyAgent
     private readonly IChatClientFactory _chatFactory;
     private readonly OnToPilotDbContext _db;
     private readonly TimeProvider _clock;
+    private readonly LegacyIdAllocator _allocator;
 
     public TerminologyAgent(
         IChatClientFactory chatFactory,
         OnToPilotDbContext db,
+        LegacyIdAllocator allocator,
         TimeProvider? clock = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
         ArgumentNullException.ThrowIfNull(db);
+        ArgumentNullException.ThrowIfNull(allocator);
         _chatFactory = chatFactory;
         _db = db;
+        _allocator = allocator;
         _clock = clock ?? TimeProvider.System;
     }
 
@@ -248,23 +252,23 @@ public sealed class TerminologyAgent
         var existingSignatures = await QueryExistingSignaturesAsync(ks, signatures, ct).ConfigureAwait(false);
 
         var rows = new List<TermProposalEntity>(pending.Count);
-        // Allocate a unique LegacyId per row from this KS's running max.
-        // Production Postgres assigns these via per-table sequences; SQLite
-        // needs an explicit value, and the contract tests run against
-        // SQLite, so we mirror the WriteAuditAsync pattern (MaxAsync + N)
-        // so each row survives the UNIQUE(legacy_id) index.
-        var nextLegacy = await _db.TermProposals.AsNoTracking()
-            .Where(p => p.KnowledgeSystemId == ks.Id)
-            .Select(p => (long?)p.LegacyId)
-            .MaxAsync(ct)
-            .ConfigureAwait(false) ?? 0L;
+        // Allocate the worst-case contiguous LegacyId range up front, then
+        // walk pending and skip duplicates. Per-row NextAsync would return
+        // the same id for every iteration because SELECT MAX runs in
+        // autocommit and doesn't see rows queued for SaveChanges — the
+        // original pre-refactor code worked by computing MAX once and
+        // incrementing in memory. NextNAsync preserves that semantic (one
+        // MAX read + contiguous range) while routing the MAX read through
+        // the same pg_advisory_xact_lock path the single-row allocator uses.
+        var batch = await _allocator.NextNAsync<TermProposalEntity>(pending.Count, ct).ConfigureAwait(false);
+        var batchIndex = 0;
         foreach (var row in pending)
         {
             if (existingSignatures.Contains(row.Signature))
             {
                 continue;
             }
-            row.LegacyId = ++nextLegacy;
+            row.LegacyId = batch[batchIndex++];
             _db.TermProposals.Add(row);
             rows.Add(row);
         }
