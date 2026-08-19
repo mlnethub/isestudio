@@ -411,6 +411,14 @@ builder.Services.AddOntologyServices();
 builder.Services.AddAboxServices();
 builder.Services.AddAboxProvenanceServices();
 builder.Services.AddValidationDecisionServices();
+// Extraction slice — wires ExtractionOrchestrator + its 8 collaborators as
+// singletons. The orchestrator owns the in-process Task.Run job lifecycle
+// (ExtractionJobStore singleton + per-job background work), so it must be
+// a singleton; every collaborator is either stateless or thread-safe.
+// Test factory override (IChatClientFactory -> FakeChatClientFactory.Default)
+// from prior commit keeps every WebApplicationFactory-driven extraction
+// test green.
+builder.Services.AddExtractionServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(
