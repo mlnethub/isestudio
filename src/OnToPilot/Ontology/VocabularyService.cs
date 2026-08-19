@@ -671,17 +671,15 @@ public static class VocabularyServiceCollectionExtensions
     /// Scoped (shares the request DbContext); the underlying
     /// <see cref="SkosManager"/>, <see cref="StoreWrapper"/>,
     /// <see cref="TimeProvider"/>, <see cref="KnowledgeSystemAccessService"/>,
-    /// and <see cref="ExtractionJobStore"/> are singletons registered in
-    /// <c>Program.cs</c> so the Oxigraph handle and the cross-request
-    /// job-state survive HTTP-request boundaries. <see cref="TerminologyService"/>
-    /// is registered by <c>AddExtractionServices()</c> earlier in the
-    /// pipeline, so we resolve it through DI rather than registering it
-    /// again here.
+    /// <see cref="ExtractionJobStore"/>, and <see cref="TerminologyService"/>
+    /// are all registered earlier in the DI pipeline (<c>Program.cs</c>
+    /// + <c>AddExtractionServices</c>) so the Oxigraph handle and the
+    /// cross-request job-state survive HTTP-request boundaries. This helper
+    /// deliberately stays minimal — only the Scoped vocabulary service is
+    /// added here.
     /// </summary>
     public static IServiceCollection AddVocabularyServices(this IServiceCollection services)
     {
-        services.AddSingleton<SkosManager>(sp =>
-            new SkosManager(sp.GetRequiredService<StoreWrapper>()));
         services.AddScoped<VocabularyService>();
         return services;
     }

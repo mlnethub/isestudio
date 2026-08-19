@@ -424,6 +424,8 @@ builder.Services.AddExtractionServices();
 // ABoxService pattern). SkosManager is registered here as a singleton
 // (depends on the singleton StoreWrapper); the underlying TerminologyService
 // + ExtractionJobStore come from AddExtractionServices above.
+builder.Services.AddSingleton<SkosManager>(sp =>
+    new SkosManager(sp.GetRequiredService<StoreWrapper>()));
 builder.Services.AddVocabularyServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
