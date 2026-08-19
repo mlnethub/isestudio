@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
@@ -84,13 +85,28 @@ public sealed class TerminologyAgent
     private static readonly JsonSerializerOptions PayloadSerializerOptions = new()
     {
         WriteIndented = false,
+        // UTF-8 vs \uXXXX escape parity (Round 2 finding).
+        //
+        // Python's `json.dumps(..., ensure_ascii=True)` (the default)
+        // escapes every non-ASCII byte to a `\uXXXX` sequence before
+        // hashing in `_signature()`. System.Text.Json's default encoder
+        // is `JavaScriptEncoder.Default`, which already escapes
+        // non-ASCII to `\uXXXX` — but we set it explicitly so a future
+        // contributor who switches the encoder to one of the `Unsafe*`
+        // variants (which emit raw UTF-8 bytes) doesn't silently break
+        // signature parity for Chinese, accented, Cyrillic, or other
+        // non-English terminology.
+        //
+        // Separator parity (Round 1 finding).
+        //
         // Match Python `json.dumps(..., separators=(",", ":"))` so the
         // signature bytes line up with `terminology_agent._signature()`.
         // System.Text.Json has no built-in way to change the ": " / ", "
         // separators — it always emits a single space after a key/value
         // separator and after each array/property separator when
         // WriteIndented is false — so we post-process the byte stream via
-        // <see cref="SerializeCompactAsync"/> to drop the whitespace.
+        // <see cref="SerializeCompactBytes"/> to drop the whitespace.
+        Encoder = JavaScriptEncoder.Default,
     };
 
     private readonly IChatClientFactory _chatFactory;
@@ -709,6 +725,10 @@ public sealed class TerminologyAgent
         // emits must round-trip byte-for-byte so the dedup query and the
         // signature match. AcceptProposal reads these fields back verbatim.
         //
+        // Nested objects are emitted as Dictionary<string, object?>
+        // (rather than anonymous types) so <see cref="SortKeysDeep"/> can
+        // recursively reorder their keys at signature-hash time.
+        //
         // Key-order note: `_signature()` calls `json.dumps(..., sort_keys=True)`
         // so the signature hash is independent of payload key order. The
         // stored Payload column preserves whatever order Dictionary gives
@@ -718,8 +738,19 @@ public sealed class TerminologyAgent
             ["scheme_iri"] = schemeIri,
             ["action"] = action,
             ["language"] = language,
-            ["pref_labels"] = new[] { new { value = term, language = language } },
-            ["alt_labels"] = aliases.ConvertAll(a => new { value = a, language = language }),
+            ["pref_labels"] = new[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["value"] = term,
+                    ["language"] = language,
+                },
+            },
+            ["alt_labels"] = aliases.ConvertAll(a => new Dictionary<string, object?>
+            {
+                ["value"] = a,
+                ["language"] = language,
+            }),
             ["hidden_labels"] = Array.Empty<object>(),
             ["description"] = description,
             ["notation"] = string.Empty,
@@ -750,16 +781,29 @@ public sealed class TerminologyAgent
         return evidence;
     }
 
-    private static string ComputeSignature(string action, string? targetIri, Dictionary<string, object?> payload)
+    /// <summary>
+    /// Internal so parity tests in <c>OnToPilot.Tests</c> can lock the
+    /// Python-equivalent signature for known payloads (Round 2 finding).
+    /// </summary>
+    internal static string ComputeSignature(string action, string? targetIri, Dictionary<string, object?> payload)
     {
         // Mirrors `terminology_agent._signature()`: a sorted, compact JSON of
         // (action, target_iri, payload) hashed with SHA-256. Two proposals
         // that sanitise to the same (action, target, payload) collapse to
         // one signature so the dedup query in the next pass catches them.
+        //
+        // Round 2 finding: Python's `json.dumps(..., sort_keys=True)`
+        // sorts at every depth, not just the top level. C#'s default
+        // Dictionary preserves insertion order, so a payload built with
+        // anonymous types (or a Dictionary that was inserted into out of
+        // order) would produce a different byte stream from Python's.
+        // <see cref="SortKeysDeep"/> walks the entire graph and converts
+        // every nested IDictionary to a SortedDictionary so the byte
+        // stream matches Python for any payload shape.
         var canonical = new SortedDictionary<string, object?>(StringComparer.Ordinal)
         {
             ["action"] = action,
-            ["payload"] = payload,
+            ["payload"] = SortKeysDeep(payload),
             ["target_iri"] = targetIri,
         };
         // Compact JSON (`separators=(",", ":")` in Python) is required so
@@ -771,6 +815,42 @@ public sealed class TerminologyAgent
     }
 
     /// <summary>
+    /// Recursively rewrite every <see cref="IDictionary{TKey, TValue}"/>
+    /// in the supplied graph as a <see cref="SortedDictionary{TKey, TValue}"/>
+    /// so the byte stream System.Text.Json emits matches Python's
+    /// <c>sort_keys=True</c>. Arrays are recursed into but their element
+    /// order is preserved (Python does not sort array elements either).
+    /// </summary>
+    private static object? SortKeysDeep(object? value)
+    {
+        switch (value)
+        {
+            case null:
+                return null;
+            case IDictionary<string, object?> dict:
+            {
+                var sorted = new SortedDictionary<string, object?>(StringComparer.Ordinal);
+                foreach (var kvp in dict)
+                {
+                    sorted[kvp.Key] = SortKeysDeep(kvp.Value);
+                }
+                return sorted;
+            }
+            case System.Collections.IList list when value is not string:
+            {
+                var rebuilt = new List<object?>(list.Count);
+                foreach (var item in list)
+                {
+                    rebuilt.Add(SortKeysDeep(item));
+                }
+                return rebuilt;
+            }
+            default:
+                return value;
+        }
+    }
+
+    /// <summary>
     /// Serialize an object to UTF-8 JSON with Python's compact separators
     /// (<c>json.dumps(..., separators=(",", ":"))</c>). System.Text.Json has
     /// no API to drop the ": " / ", " whitespace it always emits with
@@ -778,13 +858,26 @@ public sealed class TerminologyAgent
     /// strip whitespace that falls outside a JSON string literal. The
     /// walker handles backslash escapes correctly so an escaped quote
     /// inside a string does not flip the <c>inString</c> flag.
+    ///
+    /// <para>The walker additionally lowercases any <c>\uXXXX</c> escape
+    /// sequence it finds outside a string literal. System.Text.Json's
+    /// <see cref="JavaScriptEncoder.Default"/> emits uppercase hex digits
+    /// (<c>术</c>) while Python's <c>ensure_ascii=True</c> uses
+    /// lowercase (<c>术</c>). Without this fix, the SHA-256 hashes
+    /// for the same logical payload diverge between the two runtimes and
+    /// signature-based dedup silently breaks for non-ASCII terminology
+    /// (Chinese, accented Latin-1, Cyrillic, …).</para>
     /// </summary>
     private static byte[] SerializeCompactBytes(object value)
     {
         var defaultBytes = JsonSerializer.SerializeToUtf8Bytes(value, PayloadSerializerOptions);
         if (defaultBytes.Length == 0) return defaultBytes;
 
-        var output = new byte[defaultBytes.Length];
+        // Pass 1 — strip the ": " / ", " whitespace System.Text.Json
+        // emits with WriteIndented = false. Walker tracks string-vs-
+        // non-string so we only drop whitespace outside a JSON string
+        // literal (whitespace inside a string is meaningful data).
+        var compacted = new byte[defaultBytes.Length];
         var written = 0;
         var inString = false;
         var escaped = false;
@@ -793,7 +886,7 @@ public sealed class TerminologyAgent
             var b = defaultBytes[i];
             if (escaped)
             {
-                output[written++] = b;
+                compacted[written++] = b;
                 escaped = false;
                 continue;
             }
@@ -801,7 +894,7 @@ public sealed class TerminologyAgent
             {
                 if (b == (byte)'\\')
                 {
-                    output[written++] = b;
+                    compacted[written++] = b;
                     escaped = true;
                     continue;
                 }
@@ -809,11 +902,9 @@ public sealed class TerminologyAgent
                 {
                     inString = false;
                 }
-                output[written++] = b;
+                compacted[written++] = b;
                 continue;
             }
-            // Outside a string: drop whitespace (System.Text.Json only
-            // emits ' ' and ',' / ': ' as padding here).
             if (b == (byte)'"' || b == (byte)' ' || b == (byte)'\t' || b == (byte)'\n' || b == (byte)'\r')
             {
                 if (b == (byte)'"')
@@ -825,10 +916,47 @@ public sealed class TerminologyAgent
                     continue;
                 }
             }
-            output[written++] = b;
+            compacted[written++] = b;
         }
-        return written == defaultBytes.Length ? output : output[..written];
+        var compactedSlice = written == defaultBytes.Length ? compacted : compacted[..written];
+
+        // Pass 2 — lowercase any \uXXXX escape sequence anywhere in the
+        // compacted byte stream (Round 2 finding). System.Text.Json's
+        // JavaScriptEncoder.Default emits uppercase hex digits (术
+        // → 术); Python's ensure_ascii=True uses lowercase
+        // (术). Doing the conversion in a separate pass keeps the
+        // inString tracking simple — we only have to recognise the
+        // exact \uXXXX pattern, not also the surrounding context.
+        for (var i = 0; i + 5 < compactedSlice.Length; i++)
+        {
+            if (compactedSlice[i] != (byte)'\\' || compactedSlice[i + 1] != (byte)'u')
+            {
+                continue;
+            }
+            if (!IsAsciiHexDigit(compactedSlice[i + 2])
+                || !IsAsciiHexDigit(compactedSlice[i + 3])
+                || !IsAsciiHexDigit(compactedSlice[i + 4])
+                || !IsAsciiHexDigit(compactedSlice[i + 5]))
+            {
+                continue;
+            }
+            for (var k = 2; k <= 5; k++)
+            {
+                var digit = compactedSlice[i + k];
+                if (digit >= (byte)'A' && digit <= (byte)'F')
+                {
+                    compactedSlice[i + k] = (byte)(digit + 32);
+                }
+            }
+            i += 5;
+        }
+        return compactedSlice;
     }
+
+    private static bool IsAsciiHexDigit(byte c) =>
+        (c >= (byte)'0' && c <= (byte)'9')
+        || (c >= (byte)'A' && c <= (byte)'F')
+        || (c >= (byte)'a' && c <= (byte)'f');
 
     // ----------------------------------------------------------------------
     // Chat-client metadata helpers (mirror TBoxExtractionService)
