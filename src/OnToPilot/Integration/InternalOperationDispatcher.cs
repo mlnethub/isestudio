@@ -82,14 +82,21 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "knowledge.review_counts" => InvokeKnowledgeReviewCountsAsync(request, cancellationToken),
 
             // -- ontology --
+            // Real mutations via OntologyService (scoped). The service
+            // enforces Editor / Owner gates against the request's
+            // session user and writes AuditEvent rows with the byte-exact
+            // N-Quads diff the change produced. The extraction-active
+            // guard has already short-circuited any mutation when the
+            // KS has a live extraction job, so by the time the service
+            // runs the Oxigraph lock is free to take.
             "ontology.get" => InvokeOntologyGetAsync(request, cancellationToken),
             "ontology.edit" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
-                () => Task.FromResult<object?>(EmptyKnowledgeSystem())),
+                () => InvokeOntologyEditAsync(request, cancellationToken)),
             "ontology.export" => Task.FromResult<object?>(""),
             "ontology.reset" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
-                () => Task.FromResult<object?>(EmptyKnowledgeSystem())),
+                () => InvokeOntologyResetAsync(request, cancellationToken)),
             "ontology.provenance" => Task.FromResult<object?>(Array.Empty<object>()),
             "ontology.sources" => Task.FromResult<object?>(Array.Empty<object>()),
 
@@ -337,6 +344,98 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             request.KnowledgeSystemId ?? 0L,
             request.Actor,
             ct).ContinueWith(t => (object?)t.Result, ct);
+    }
+
+    private OntologyService? ResolveOntologyService() =>
+        _services.GetService(typeof(OntologyService)) as OntologyService;
+
+    /// <summary>
+    /// Pull the edit body as a loose dictionary so the JSON the
+    /// frontend sends (with no declared C# type) lands on the service
+    /// call as the same shape. The
+    /// <see cref="System.Text.Json.JsonNamingPolicy.SnakeCaseLower"/>
+    /// naming policy configured in <c>Program.cs</c> means both
+    /// <c>"op"</c> / <c>"label"</c> / <c>"comment"</c> properties are
+    /// accepted without an explicit <c>[JsonPropertyName]</c> per
+    /// field.
+    /// </summary>
+    private static IReadOnlyDictionary<string, object?>? DeserializeOntologyEditBody(
+        InternalRequest request)
+    {
+        if (request.Body is null) return null;
+        if (!request.Body.TryGetValue("_", out var raw) || raw is null) return null;
+        if (raw is System.Text.Json.JsonElement element)
+        {
+            if (element.ValueKind != System.Text.Json.JsonValueKind.Object)
+            {
+                throw new InvalidOperationException(
+                    "Request body must be a JSON object for ontology.edit.");
+            }
+            var dict = new Dictionary<string, object?>(StringComparer.Ordinal);
+            foreach (var prop in element.EnumerateObject())
+            {
+                dict[prop.Name] = JsonElementToObject(prop.Value);
+            }
+            return dict;
+        }
+        if (raw is IReadOnlyDictionary<string, object?> alreadyDict)
+        {
+            return alreadyDict;
+        }
+        return null;
+    }
+
+    private static object? JsonElementToObject(System.Text.Json.JsonElement el) => el.ValueKind switch
+    {
+        System.Text.Json.JsonValueKind.String => el.GetString(),
+        System.Text.Json.JsonValueKind.Number => el.TryGetInt64(out var l) ? l : (object)el.GetDouble(),
+        System.Text.Json.JsonValueKind.True => true,
+        System.Text.Json.JsonValueKind.False => false,
+        System.Text.Json.JsonValueKind.Null => null,
+        _ => el.GetRawText(),
+    };
+
+    private Task<object?> InvokeOntologyEditAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveOntologyService();
+        var op = DeserializeOntologyEditBody(request);
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            // Service not wired (unit test that hand-built the dispatcher)
+            // OR no KS bound — surface an empty KS so the contract test
+            // path still 200s.
+            return Task.FromResult<object?>(EmptyKnowledgeSystem());
+        }
+        if (op is null)
+        {
+            throw new InvalidOperationException(
+                "Request body is required for ontology.edit.");
+        }
+        return WrapAsync(async () =>
+        {
+            var result = await svc.EditAsync(
+                request.KnowledgeSystemId.Value, op, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (result is null) return (object?)EmptyKnowledgeSystem();
+            return (object?)(new { iri = result.Iri });
+        });
+    }
+
+    private Task<object?> InvokeOntologyResetAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveOntologyService();
+        if (svc is null || request.KnowledgeSystemId is null)
+        {
+            return Task.FromResult<object?>(EmptyKnowledgeSystem());
+        }
+        return WrapAsync(async () =>
+        {
+            var result = await svc.ResetAsync(
+                request.KnowledgeSystemId.Value, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (result is null) return (object?)EmptyKnowledgeSystem();
+            return (object?)(new { iri = result.Iri });
+        });
     }
 
     /// <summary>

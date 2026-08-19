@@ -28,6 +28,7 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 
     private readonly string _sqlitePath;
     private readonly string _blobRoot;
+    private readonly string _rdfRoot;
     private readonly IPasswordService? _passwordOverride;
 
     public AuthTestWebApplicationFactory() : this(passwordOverride: null)
@@ -51,6 +52,14 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
         _blobRoot = Path.Combine(
             Path.GetTempPath(),
             $"ontopilot-blob-{testId}");
+        // Per-test Oxigraph path so the singleton StoreWrapper doesn't
+        // share the on-disk store between parallel tests. Oxigraph's
+        // Store ctor refuses backslashes on Windows — normalise here
+        // so the production wiring (with forward slashes) and the test
+        // wiring share the same happy-path.
+        _rdfRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"ontopilot-rdf-{testId}").Replace('\\', '/');
         _passwordOverride = passwordOverride;
     }
 
@@ -98,6 +107,19 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
                 .ToList();
             foreach (var desc in blobDescriptors) services.Remove(desc);
             services.AddSingleton<IBlobStore>(_ => new LocalCasBlobStore(_blobRoot));
+
+            // Per-test Oxigraph handle so the ontology + impact tests
+            // don't share RDF state with each other (writes are land-locked
+            // to the on-disk store). Use the fully-qualified ServiceType
+            // because StoreWrapper is registered in OnToPilot.Ontology and
+            // we don't want to widen the test host's namespace imports.
+            var rdfDescriptors = services
+                .Where(d => d.ServiceType.FullName == "OnToPilot.Ontology.StoreWrapper")
+                .ToList();
+            foreach (var desc in rdfDescriptors) services.Remove(desc);
+            var rdfPath = _rdfRoot;
+            services.AddSingleton(typeof(OnToPilot.Ontology.StoreWrapper),
+                _ => new OnToPilot.Ontology.StoreWrapper(rdfPath));
         });
     }
 
@@ -123,6 +145,8 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             try { if (File.Exists(_sqlitePath)) File.Delete(_sqlitePath); }
             catch { /* ignore — best effort */ }
             try { if (Directory.Exists(_blobRoot)) Directory.Delete(_blobRoot, recursive: true); }
+            catch { /* ignore — best effort */ }
+            try { if (Directory.Exists(_rdfRoot)) Directory.Delete(_rdfRoot, recursive: true); }
             catch { /* ignore — best effort */ }
         }
         base.Dispose(disposing);

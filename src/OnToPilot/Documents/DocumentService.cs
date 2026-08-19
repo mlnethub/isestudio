@@ -441,10 +441,15 @@ public sealed class DocumentService
     }
 
     /// <summary>
-    /// Block 4 returns the placeholder shape (empty <c>systems</c> list).
-    /// Block 6 will populate it via the real <c>_document_impact</c>
-    /// computation that walks <see cref="AxiomProvenanceEntity"/> rows
-    /// and identifies sole-source axioms.
+    /// Walk the doc's <see cref="AxiomProvenanceEntity"/> rows and emit
+    /// the per-KS grouping that <c>documents.impact</c> returns. The
+    /// current computation is intentionally KS-local (a single
+    /// <see cref="ImpactSystem"/> per doc) because the KS-scoped route
+    /// binds <c>{ks_id}</c> already; upstream callers that want a
+    /// cross-KS view pass the <c>systems</c> array through the
+    /// dispatcher. Axiom keys are deduplicated per-KS because the
+    /// brief only cares about which axioms would be at risk if the
+    /// doc were deleted, not how many chunks produced the same axiom.
     /// </summary>
     public async Task<ImpactOut?> ImpactAsync(long ksId, long documentId, Actor actor, CancellationToken ct)
     {
@@ -454,7 +459,66 @@ public sealed class DocumentService
             .FirstOrDefaultAsync(d => d.LegacyId == documentId, ct)
             .ConfigureAwait(false);
         if (doc is null || doc.KnowledgeSystemId != ks.Id) return null;
-        return new ImpactOut(documentId, Array.Empty<ImpactSystem>());
+
+        var chunkIds = await _db.Chunks.AsNoTracking()
+            .Where(c => c.DocumentId == doc.Id)
+            .Select(c => c.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        if (chunkIds.Count == 0)
+        {
+            return new ImpactOut(documentId, Array.Empty<ImpactSystem>());
+        }
+
+        var axiomKeys = await _db.AxiomProvenances.AsNoTracking()
+            .Where(p => p.KnowledgeSystemId == ks.Id
+                && p.ChunkId.HasValue
+                && chunkIds.Contains(p.ChunkId!.Value))
+            .Select(p => p.AxiomKey)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+
+        // Deduplicate + sort for deterministic wire shape.
+        var distinct = new SortedSet<string>(axiomKeys, StringComparer.Ordinal);
+        var axioms = distinct
+            .Select(k => new ImpactAxiom(k, DescribeAxiomKey(k)))
+            .ToList();
+
+        var system = new ImpactSystem(ks.LegacyId, ks.Name, axioms);
+        return new ImpactOut(documentId, new[] { system });
+    }
+
+    /// <summary>
+    /// Human-readable label for an <c>axiom_key</c> in the impact
+    /// response. Mirrors <see cref="Conflicts.ConflictService.DescribeAxiom"/>
+    /// but stays private / scoped here so the documents slice doesn't
+    /// depend on the conflicts slice's exact rendering.
+    /// </summary>
+    private static string DescribeAxiomKey(string axiomKey)
+    {
+        var parts = axiomKey.Split('|', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return axiomKey;
+        var head = parts[0];
+        if (head is "class" or "objprop" or "dataprop" && parts.Length >= 2)
+        {
+            return parts[1];
+        }
+        if ((head == "subClassOf" || head == "disjointWith" || head == "equivalentClass")
+            && parts.Length >= 3)
+        {
+            return head switch
+            {
+                "subClassOf" => $"{parts[1]} ⊑ {parts[2]}",
+                "disjointWith" => $"{parts[1]} ⟂ {parts[2]}",
+                "equivalentClass" => $"{parts[1]} ≡ {parts[2]}",
+                _ => $"{parts[1]} {head} {parts[2]}",
+            };
+        }
+        if (head is "domain" or "range" && parts.Length >= 3)
+        {
+            return $"{parts[1]} {head} {parts[2]}";
+        }
+        return axiomKey;
     }
 
     // ----------------------------------------------------------------------

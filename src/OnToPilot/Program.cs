@@ -21,6 +21,7 @@ using OnToPilot.Integration;
 using OnToPilot.Knowledge;
 using OnToPilot.Mcp;
 using OnToPilot.Observability;
+using OnToPilot.Ontology;
 using OnToPilot.Parsing;
 using OnToPilot.Providers;
 using OnToPilot.Serialization;
@@ -383,6 +384,26 @@ builder.Services.AddSingleton<Chunker>(_ => new Chunker(
     size: DocumentService.DefaultChunkSize,
     overlap: DocumentService.DefaultChunkOverlap));
 builder.Services.AddDocumentServices();
+
+// ---- Ontology slice ----
+// The Oxigraph store is a process-wide singleton (the underlying
+// handle is thread-safe + file-locked). Production and the contract
+// test factory both honour the same "OnToPilot:Storage:RdfRoot" key
+// so a per-test temp dir isolates parallel runs. The OntologyEditor
+// wraps the same singleton with the GraphWriteCoordinator lock and
+// the per-edit capture / revert helper.
+var rdfRoot = builder.Configuration["OnToPilot:Storage:RdfRoot"]
+    ?? Path.Combine(AppContext.BaseDirectory, "data", "rdf");
+// Oxigraph's Store ctor is sensitive to backslashes on Windows —
+// the connection-string parser used for SQLite above silently
+// tolerates them, but Oxigraph throws InvalidStoreHandleException
+// when the path is not a forward-slash URI. Normalise once here so
+// every test / production call site stays portable.
+var rdfRootForwardSlash = rdfRoot.Replace('\\', '/');
+builder.Services.AddSingleton<StoreWrapper>(_ => new StoreWrapper(rdfRootForwardSlash));
+builder.Services.AddSingleton<OntologyEditor>(sp =>
+    new OntologyEditor(sp.GetRequiredService<StoreWrapper>()));
+builder.Services.AddOntologyServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(

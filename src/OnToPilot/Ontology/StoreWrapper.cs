@@ -241,6 +241,56 @@ public sealed class StoreWrapper : IDisposable
         return DumpNQuads(new OntoNamedNode(graphIri));
     }
 
+    /// <summary>
+    /// Compute the symmetric set difference between two N-Quads
+    /// serialisations of the same graph. Returns the added and removed
+    /// N-Quads blobs in the same dump format <see cref="DumpNQuads"/>
+    /// produces, so they round-trip through <see cref="LoadNQuads"/> on
+    /// rollback. Lines are deduplicated by their full text (after
+    /// trimming the trailing newline) so a triple added twice still
+    /// counts as zero net additions.
+    /// </summary>
+    public static (byte[] Added, byte[] Removed) DiffNQuads(byte[] pre, byte[] post)
+    {
+        ArgumentNullException.ThrowIfNull(pre);
+        ArgumentNullException.ThrowIfNull(post);
+
+        var preSet = SplitLines(pre);
+        var postSet = SplitLines(post);
+
+        var added = new SortedSet<string>(postSet, StringComparer.Ordinal);
+        var removed = new SortedSet<string>(preSet, StringComparer.Ordinal);
+        added.ExceptWith(preSet);
+        removed.ExceptWith(postSet);
+
+        return (JoinLines(added), JoinLines(removed));
+    }
+
+    private static HashSet<string> SplitLines(byte[] bytes)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        if (bytes.Length == 0) return result;
+        var text = Encoding.UTF8.GetString(bytes);
+        foreach (var line in text.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var trimmed = line.TrimEnd('\r', ' ');
+            if (trimmed.Length > 0) result.Add(trimmed);
+        }
+        return result;
+    }
+
+    private static byte[] JoinLines(SortedSet<string> lines)
+    {
+        if (lines.Count == 0) return Array.Empty<byte>();
+        var sb = new StringBuilder(lines.Count * 64);
+        foreach (var line in lines)
+        {
+            sb.Append(line);
+            sb.Append('\n');
+        }
+        return Encoding.UTF8.GetBytes(sb.ToString());
+    }
+
     // Centralised term writer — see NQuadsTermWriter for the canonical
     // N-Quads encoding rules. Keeping this as a thin delegate (rather than
     // inlining the body) means dumps, conflict signatures, and exports

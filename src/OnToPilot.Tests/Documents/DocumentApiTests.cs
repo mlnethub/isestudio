@@ -370,21 +370,84 @@ public sealed class DocumentApiTests
     }
 
     [Fact]
-    public async Task Impact_returns_empty_placeholder()
+    public async Task Impact_returns_empty_systems_when_no_provenance()
     {
+        // Sanity baseline: with a parsed-but-empty doc there is no
+        // provenance to walk, so the response shape stays the same as
+        // before Block 6 — empty systems array, document id echoed.
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "impact");
+        var (ksId, _) = await CreateKsAsync(app, client, "impact-empty");
         var upload = await UploadAsync(client, ksId, "i.txt", "i\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         var docId = created.GetProperty("id").GetInt64();
+        await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
 
         var impact = await client.GetAsync(
             $"/api/knowledge/{ksId}/documents/{docId}/impact");
         Assert.Equal(HttpStatusCode.OK, impact.StatusCode);
         var body = await impact.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(docId, body.GetProperty("document_id").GetInt64());
-        Assert.Equal(0, body.GetProperty("systems").GetArrayLength());
+
+        // Block 6 always reports the owning KS even when there is no
+        // provenance to walk: the caller needs to see "this doc is in
+        // KS X but contributes nothing yet" rather than a silent empty
+        // envelope that could be mistaken for "KS missing".
+        var systems = body.GetProperty("systems");
+        Assert.Equal(1, systems.GetArrayLength());
+        Assert.Equal(ksId, systems[0].GetProperty("knowledge_system_id").GetInt64());
+        Assert.Equal(0, systems[0].GetProperty("axioms").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Impact_walks_provenance_rows_per_system()
+    {
+        // Block 6 finally wires the impact service: it walks every
+        // AxiomProvenanceEntity row whose ChunkId belongs to this doc
+        // and groups them by KnowledgeSystem. Duplicate axiom keys
+        // collapse to a single entry per system because the brief is
+        // "what would break if this doc were deleted", not "how many
+        // chunks produced the same axiom".
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var (ksId, ksGuid) = await CreateKsAsync(app, client, "impact");
+        var upload = await UploadAsync(client, ksId, "i.txt", "i\n", folder: "/");
+        var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        var docId = created.GetProperty("id").GetInt64();
+        await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
+
+        var chunkId = LookupFirstChunkId(app, ksGuid);
+        // Two distinct axioms, then a duplicate that must collapse.
+        SeedAxiomProvenance(app, ksGuid, chunkId, "subClassOf|dog|Animal");
+        SeedAxiomProvenance(app, ksGuid, chunkId, "class|Animal");
+        SeedAxiomProvenance(app, ksGuid, chunkId, "subClassOf|dog|Animal");
+
+        var impact = await client.GetAsync(
+            $"/api/knowledge/{ksId}/documents/{docId}/impact");
+        Assert.Equal(HttpStatusCode.OK, impact.StatusCode);
+        var body = await impact.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        Assert.Equal(docId, body.GetProperty("document_id").GetInt64());
+
+        var systems = body.GetProperty("systems");
+        Assert.Equal(1, systems.GetArrayLength());
+
+        var system = systems[0];
+        Assert.Equal(ksId, system.GetProperty("knowledge_system_id").GetInt64());
+        Assert.Equal($"ks-impact", system.GetProperty("knowledge_system_name").GetString());
+
+        var axioms = system.GetProperty("axioms");
+        Assert.Equal(2, axioms.GetArrayLength());
+        var keys = axioms.EnumerateArray()
+            .Select(a => a.GetProperty("axiom_key").GetString())
+            .OrderBy(s => s, StringComparer.Ordinal)
+            .ToList();
+        Assert.Equal("class|Animal", keys[0]);
+        Assert.Equal("subClassOf|dog|Animal", keys[1]);
+        // The human-readable description is computed by DocumentService's
+        // DescribeAxiomKey helper: "subClassOf|dog|Animal" maps to
+        // "dog ⊑ Animal" using the ⊑ notation.
+        Assert.Equal("dog ⊑ Animal", axioms[1]
+            .GetProperty("description").GetString());
     }
 
     // -----------------------------------------------------------------
