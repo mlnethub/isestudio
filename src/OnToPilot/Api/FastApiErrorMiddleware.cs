@@ -69,6 +69,32 @@ public sealed class FastApiErrorMiddleware
                 new ConflictDetail(ex.Message, ex.JobId)).ConfigureAwait(false);
             return;
         }
+        catch (ResourceInUseException ex)
+        {
+            // Distinct from GraphWriteConflictException: a delete was
+            // refused because some other row still references the target
+            // (e.g. a knowledge system pointing at the provider row).
+            // The wire shape is the plain-string {"detail": "..."} the
+            // Python FastAPI backend emits in the same scenario.
+            await WriteEnvelopeAsync(context, StatusCodes.Status409Conflict, ex.Message)
+                .ConfigureAwait(false);
+            return;
+        }
+        catch (SkosValidationException ex)
+        {
+            // SKOS vocabulary validation failures (missing scheme_iri on a
+            // create proposal, unknown pref-label, duplicate language,
+            // etc.) are client-input problems, not server faults. Surface
+            // them as 422 Unprocessable Entity so the caller can react
+            // rather than treat the response as an opaque 5xx. The wire
+            // shape is the plain-string {"detail": "..."} envelope the
+            // Python FastAPI backend emits for Pydantic ValidationError.
+            _logger.LogInformation(
+                "SKOS payload validation refused: {Reason}", ex.Message);
+            await WriteEnvelopeAsync(context, StatusCodes.Status422UnprocessableEntity, ex.Message)
+                .ConfigureAwait(false);
+            return;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Unhandled exception in OnToPilot pipeline");

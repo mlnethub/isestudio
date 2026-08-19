@@ -177,10 +177,10 @@ public sealed class VocabularyApiTests
             app, client, ksId, schemeIri, "Dog");
 
         // Note: the DELETE route has no {concept_id} segment, so the IRI must
-        // travel in the body. The dispatcher's delete helper reads ResourceId
-        // (null for this route) — this verifies the wire path returns 200 with
-        // the {deleted, removed_triples} envelope and does not crash. A
-        // follow-up route change can wire the IRI through to real removal.
+        // travel in the body. The dispatcher's delete helper now reads the
+        // body before falling back to ResourceId (null for this route), so
+        // the wire path reaches VocabularyService.DeleteConceptAsync and
+        // both removes the concept from the graph AND writes an audit row.
         var delete = await client.SendAsync(new HttpRequestMessage(
             HttpMethod.Delete, $"/api/knowledge/{ksId}/vocabulary/concepts")
         {
@@ -189,6 +189,17 @@ public sealed class VocabularyApiTests
         Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
         var raw = await delete.Content.ReadAsStringAsync();
         Assert.Contains("removed_triples", raw);
+
+        // Graph should no longer carry any triple whose subject is the
+        // concept IRI in the vocabulary graph. A no-op delete would still
+        // pass the audit assertion above, so this is the load-bearing
+        // check that the SKOS write actually happened.
+        var store = app.Services.GetRequiredService<OnToPilot.Ontology.StoreWrapper>();
+        var vocabGraph = LookupKsVocabIri(app, ksGuid);
+        var remaining = store.Match(
+            subjectIri: conceptIri,
+            graphIri: vocabGraph);
+        Assert.Empty(remaining);
 
         var db = app.CreateDbContext();
         Assert.NotNull(db.AuditEvents.SingleOrDefault(
