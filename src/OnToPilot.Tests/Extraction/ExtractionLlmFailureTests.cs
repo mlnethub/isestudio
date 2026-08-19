@@ -17,6 +17,7 @@ namespace OnToPilot.Tests.Extraction;
 /// mark the job failed. Silently returning <c>TBoxDelta.Empty</c> would
 /// let a provider outage masquerade as a successful empty extraction.
 /// </summary>
+[Collection(ExtractionTestCollection.Name)]
 public sealed class ExtractionLlmFailureTests : IDisposable
 {
     private const string GraphIri = "http://ontopilot.local/ks/llm-failure-tests";
@@ -48,12 +49,15 @@ public sealed class ExtractionLlmFailureTests : IDisposable
         _jobs = new ExtractionJobStore(_contexts, TimeProvider.System);
         _chat = new ThrowingChat(new InvalidOperationException("simulated provider auth failure"));
 
+        FakeChatClientFactory.Default.Reset();
+        FakeChatClientFactory.Default.UseClient(_chat);
+
         _orchestrator = new ExtractionOrchestrator(
             _jobs,
             blobs,
             new DocumentParser(),
             new Chunker(size: 200, overlap: 20),
-            new SingleClientFactory(_chat),
+            FakeChatClientFactory.Default,
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(),
             new ABoxExtractionService(),
@@ -119,6 +123,7 @@ public sealed class ExtractionLlmFailureTests : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
+        FakeChatClientFactory.Default.Reset();
         _store.Dispose();
         _contexts.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
@@ -184,14 +189,6 @@ public sealed class ExtractionLlmFailureTests : IDisposable
         }
         using var stream = new MemoryStream(Encoding.UTF8.GetBytes(text.ToString()));
         return blobs.PutAsync(stream, CancellationToken.None).GetAwaiter().GetResult().Sha256;
-    }
-
-    /// <summary>Hands the orchestrator the fixture's throwing chat client.</summary>
-    private sealed class SingleClientFactory : IChatClientFactory
-    {
-        private readonly IChatClient _client;
-        public SingleClientFactory(IChatClient client) => _client = client;
-        public IChatClient Create(LlmProviderConfig config) => _client;
     }
 
     /// <summary>

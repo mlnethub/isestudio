@@ -3,12 +3,15 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using OnToPilot.Authentication;
 using OnToPilot.Documents;
 using OnToPilot.Infrastructure.Persistence;
+using OnToPilot.Llm;
 using OnToPilot.Parsing;
 using OnToPilot.Storage;
 using OnToPilot.Tests.Documents;
+using OnToPilot.Tests.Extraction;
 
 namespace OnToPilot.Tests.Authentication;
 
@@ -120,6 +123,11 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             var rdfPath = _rdfRoot;
             services.AddSingleton(typeof(OnToPilot.Ontology.StoreWrapper),
                 _ => new OnToPilot.Ontology.StoreWrapper(rdfPath));
+
+            // B6b: override production IChatClientFactory with the shared test fake
+            // so all extraction tests drive the orchestrator through FakeChat.
+            services.RemoveAll<IChatClientFactory>();
+            services.AddSingleton<IChatClientFactory>(FakeChatClientFactory.Default);
         });
     }
 

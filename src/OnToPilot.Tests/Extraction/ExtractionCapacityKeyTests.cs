@@ -25,6 +25,7 @@ namespace OnToPilot.Tests.Extraction;
 /// permit always increments the counter, a job blocked at the semaphore
 /// never does.</para>
 /// </summary>
+[Collection(ExtractionTestCollection.Name)]
 public sealed class ExtractionCapacityKeyTests : IDisposable
 {
     private readonly string _root;
@@ -50,6 +51,9 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
         _jobs = new ExtractionJobStore(_contexts, TimeProvider.System);
         _merger = new FakeMerger(new ExtractionMerger(_store));
 
+        FakeChatClientFactory.Default.Reset();
+        FakeChatClientFactory.Default.UseClient(_chat);
+
         // ConcurrencyLimit = 1 so each bucket holds exactly one permit:
         // any two jobs on the same endpoint must serialise on that permit,
         // while two jobs on different endpoints each draw their own permit
@@ -59,7 +63,7 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
             _blobs,
             new DocumentParser(),
             new Chunker(size: 200, overlap: 20),
-            new FakeChatClientFactory(_chat),
+            FakeChatClientFactory.Default,
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(),
             new ABoxExtractionService(),
@@ -157,6 +161,7 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
+        FakeChatClientFactory.Default.Reset();
         _chat.Release();
         _store.Dispose();
         _contexts.Dispose();
@@ -238,13 +243,5 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
         }
         using var stream = new MemoryStream(Encoding.UTF8.GetBytes(text.ToString()));
         return blobs.PutAsync(stream, CancellationToken.None).GetAwaiter().GetResult().Sha256;
-    }
-
-    /// <summary>Hands the orchestrator the fixture's canned chat client.</summary>
-    private sealed class FakeChatClientFactory : IChatClientFactory
-    {
-        private readonly IChatClient _client;
-        public FakeChatClientFactory(IChatClient client) => _client = client;
-        public IChatClient Create(LlmProviderConfig config) => _client;
     }
 }

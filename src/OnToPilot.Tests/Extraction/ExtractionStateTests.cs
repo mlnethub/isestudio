@@ -21,6 +21,7 @@ namespace OnToPilot.Tests.Extraction;
 /// <see cref="Chunker"/>, SQLite-backed <see cref="ExtractionJobStore"/>);
 /// only the LLM call is faked, so no external service is contacted.</para>
 /// </summary>
+[Collection(ExtractionTestCollection.Name)]
 public sealed class ExtractionStateTests : IDisposable
 {
     private const string GraphIri = "http://ontopilot.local/ks/extraction-tests";
@@ -68,12 +69,15 @@ public sealed class ExtractionStateTests : IDisposable
         Jobs = new ExtractionJobStore(_contexts, TimeProvider.System);
         Merger = new FakeMerger(new ExtractionMerger(Store));
 
+        FakeChatClientFactory.Default.Reset();
+        FakeChatClientFactory.Default.UseClient(FakeChat);
+
         Orchestrator = new ExtractionOrchestrator(
             Jobs,
             blobs,
             new DocumentParser(),
             new Chunker(size: 200, overlap: 20),
-            new FakeChatClientFactory(FakeChat),
+            FakeChatClientFactory.Default,
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(),
             new ABoxExtractionService(),
@@ -376,6 +380,7 @@ public sealed class ExtractionStateTests : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
+        FakeChatClientFactory.Default.Reset();
         FakeChat.Release();
         Store.Dispose();
         _contexts.Dispose();
@@ -388,13 +393,5 @@ public sealed class ExtractionStateTests : IDisposable
             // The Oxigraph handle can linger briefly on Windows; a stale
             // temp directory must never fail a test run.
         }
-    }
-
-    /// <summary>Hands the orchestrator the fixture's canned chat client.</summary>
-    private sealed class FakeChatClientFactory : IChatClientFactory
-    {
-        private readonly FakeChat _chat;
-        public FakeChatClientFactory(FakeChat chat) => _chat = chat;
-        public IChatClient Create(LlmProviderConfig config) => _chat;
     }
 }
