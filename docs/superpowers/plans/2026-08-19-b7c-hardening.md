@@ -245,12 +245,25 @@ correctness will be validated when the next PG-flavored integration test
 is added.
 
 A test for `Sync_with_terminology_error_rolls_back_graph_and_writes_audit_with_diff`
-was **deferred**. `TerminologyService` is a concrete class, not an interface;
-injecting a stub that throws would require either an interface refactor or
-widening `InternalsVisibleTo`. The `CaptureAsync` rollback mechanics are
-already exercised by the existing `Create_concept_writes_to_vocabulary_graph_and_audit`,
-`Update_concept_*`, and `Delete_concept_*` tests which use the same
-`CaptureAsync` machinery; `SyncAsync` simply applies the same pattern.
+was **deferred** in the first commit (`c5849f7`) and **closed** by a follow-up
+commit (`899fec4`). The fix:
+
+1. Add a minimal `ITerminologySync` interface exposing only `SyncAsync(KsContext, CancellationToken)`.
+2. Make `TerminologyService` (still sealed) implement it; DI registers
+   `ITerminologySync → TerminologyService` (same singleton instance).
+3. Switch `VocabularyService` and `ExtractionOrchestrator` to depend on
+   `ITerminologySync` instead of the concrete class.
+4. Add `VocabularyApiTests.Sync_with_terminology_failure_rolls_back_vocabulary_graph`
+   which swaps in a `ThrowingTerminologySync` stub (writes a quad then
+   throws) via a `RollbackTerminologyFactory` subclass that overrides the
+   `ITerminologySync` registration.
+
+The test asserts: HTTP returns 500, vocabulary graph does NOT contain the
+stub's partial-mutation quad (CaptureAsync rolled back), and no
+`vocabulary.sync` audit row was written (exception escapes the capture
+block before the post-sync audit code runs). The test was verified to
+catch the regression it targets by temporarily disabling the
+`cap.MarkError()` call in the `catch` arm.
 
 ---
 
