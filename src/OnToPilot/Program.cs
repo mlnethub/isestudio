@@ -409,6 +409,7 @@ builder.Services.AddSingleton<ABoxValidator>(sp =>
     new ABoxValidator(sp.GetRequiredService<StoreWrapper>()));
 builder.Services.AddOntologyServices();
 builder.Services.AddAboxServices();
+builder.Services.AddAboxProvenanceServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(

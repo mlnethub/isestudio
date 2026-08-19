@@ -85,3 +85,19 @@ public sealed record IndividualRef(string Iri);
 
 /// <summary>Return shape for <c>POST /abox/individuals/delete</c>.</summary>
 public sealed record DeleteIndividualResponse(int Removed);
+
+/// <summary>
+/// Request body for <c>POST /abox/assertions</c> and
+/// <c>POST /abox/assertions/delete</c>. Mirrors the Python
+/// <c>backend/app/api/abox.py::Assertion</c> Pydantic model. The
+/// <see cref="Kind"/> discriminator picks between object (uses
+/// <see cref="Target"/>) and data (uses <see cref="Value"/> +
+/// optional <see cref="Datatype"/>) handling.
+/// </summary>
+public sealed record AssertionRequest(
+    string Subject,
+    string Prop,
+    string Kind,
+    string? Target,
+    string? Value,
+    string? Datatype);

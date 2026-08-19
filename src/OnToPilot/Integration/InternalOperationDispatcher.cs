@@ -164,8 +164,10 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "documents.parse" => InvokeDocumentParseAsync(request, cancellationToken),
 
             // -- abox --
-            "abox.add_assertion" => Task.FromResult<object?>(new { ok = true }),
-            "abox.remove_assertion" => Task.FromResult<object?>(new { ok = true }),
+            "abox.add_assertion" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeAboxAddAssertionAsync(request, cancellationToken)),
+            "abox.remove_assertion" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeAboxRemoveAssertionAsync(request, cancellationToken)),
             "abox.list_classes" => InvokeAboxListClassesAsync(request, cancellationToken),
             "abox.get_individual" => InvokeAboxGetIndividualAsync(request, cancellationToken),
             "abox.list_individuals" => InvokeAboxListIndividualsAsync(request, cancellationToken),
@@ -1571,6 +1573,46 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             return (object?)resp is null
                 ? new { removed = 0 }
                 : resp;
+        });
+    }
+
+    private Task<object?> InvokeAboxAddAssertionAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        {
+            return Task.FromResult<object?>(EmptyIndividualRef());
+        }
+        var body = DeserializeBody<AssertionRequest>(request);
+        if (body is null)
+        {
+            return Task.FromResult<object?>(EmptyIndividualRef());
+        }
+        return WrapAsync(async () =>
+        {
+            var ind = await svc.AddAssertionAsync(
+                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(ind ?? EmptyIndividualRef());
+        });
+    }
+
+    private Task<object?> InvokeAboxRemoveAssertionAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAboxService();
+        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        {
+            return Task.FromResult<object?>(EmptyIndividualRef());
+        }
+        var body = DeserializeBody<AssertionRequest>(request);
+        if (body is null)
+        {
+            return Task.FromResult<object?>(EmptyIndividualRef());
+        }
+        return WrapAsync(async () =>
+        {
+            var ind = await svc.RemoveAssertionAsync(
+                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(ind ?? EmptyIndividualRef());
         });
     }
 

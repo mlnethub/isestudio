@@ -37,6 +37,7 @@ public sealed class ABoxService
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
     private readonly ABoxManager _manager;
+    private readonly ABoxProvenanceService _provenance;
     private readonly StoreWrapper _store;
 
     public ABoxService(
@@ -44,12 +45,14 @@ public sealed class ABoxService
         TimeProvider clock,
         KnowledgeSystemAccessService access,
         ABoxManager manager,
+        ABoxProvenanceService provenance,
         StoreWrapper store)
     {
         _db = db;
         _clock = clock;
         _access = access;
         _manager = manager;
+        _provenance = provenance;
         _store = store;
     }
 
@@ -195,6 +198,143 @@ public sealed class ABoxService
             ksc.ABoxGraph, added, removed, ct).ConfigureAwait(false);
 
         return _manager.GetIndividual(ksc, iri, classLabels, propLabels);
+    }
+
+    /// <summary>
+    /// Add an object- or data-property assertion to an existing individual.
+    /// Mirrors <c>backend/app/api/abox.py::add_assertion</c>: Editor role,
+    /// subject must exist, <paramref name="req.Prop"/> must be a declared
+    /// TBox property, object-kind assertions require the target IRI to
+    /// exist as an ABox individual, and data-kind assertions require a
+    /// non-empty <paramref name="req.Value"/>. The mutation is wrapped in
+    /// a capture block (revert-on-error), the audit row captures the
+    /// N-Quads diff, and the matching <c>AboxProvenanceEntity</c> row is
+    /// upserted so the extraction pipeline and the manual-edit pipeline
+    /// write to the same canonical-keyed provenance table.
+    /// </summary>
+    public async Task<IndividualOut?> AddAssertionAsync(
+        long ksId,
+        AssertionRequest req,
+        Actor actor,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(req);
+        var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
+        if (user is null || ks is null) return null;
+
+        var kind = NormalizeKind(req.Kind);
+        var prop = NormalizeProp(req.Prop);
+        var (subjectIri, targetIri, value, datatype) = NormalizeAssertionFields(req, kind);
+
+        var ksc = ToKsContext(ks);
+        var classLabels = await LoadClassLabelsAsync(ks, ct).ConfigureAwait(false);
+        var propLabels = await LoadPropertyLabelsAsync(ks, ct).ConfigureAwait(false);
+
+        if (!propLabels.ContainsKey(prop))
+            throw new InvalidOperationException("Unknown property.");
+        if (!IndividualExists(ksc, subjectIri))
+            throw new InvalidOperationException("Subject not found.");
+        if (kind == "object" && !IndividualExists(ksc, targetIri!))
+            throw new InvalidOperationException("Target individual not found.");
+
+        var factKey = StatementProvenanceService.AssertionKey(subjectIri, prop, kind, targetIri, value);
+
+        var pre = _store.DumpNQuads(ksc.ABoxGraph);
+        bool changed;
+        await using (var cap = await _store.CaptureAsync(ksc.ABoxGraph, revertOnError: false, waitTimeout: null, ct).ConfigureAwait(false))
+        {
+            try
+            {
+                changed = kind == "object"
+                    ? _manager.AddObjectAssertion(ksc, subjectIri, prop, targetIri!)
+                    : _manager.AddDataAssertion(ksc, subjectIri, prop, value!, datatype);
+            }
+            catch
+            {
+                cap.MarkError();
+                throw;
+            }
+        }
+        var post = _store.DumpNQuads(ksc.ABoxGraph);
+        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+
+        var audit = await WriteAuditAsync(ks.Id, user, "abox.add_assertion",
+            BuildAssertionSummary(req, propLabels, subjectIri, "Added"),
+            BuildAssertionDetail(req, factKey),
+            ksc.ABoxGraph, added, removed, ct).ConfigureAwait(false);
+
+        if (changed)
+        {
+            await _provenance.RecordFactAsync(
+                ks.Id, factKey, audit.Id,
+                method: "manual",
+                actorName: audit.ActorName,
+                ct).ConfigureAwait(false);
+        }
+
+        return _manager.GetIndividual(ksc, subjectIri, classLabels, propLabels);
+    }
+
+    /// <summary>
+    /// Remove an object- or data-property assertion. Mirrors the Python
+    /// <c>abox.remove_assertion</c> path: Editor role, same validations as
+    /// add, capture + revert, audit <c>abox.remove_assertion</c>, and
+    /// delete the matching <c>AboxProvenanceEntity</c> row so the provenance
+    /// surface stays in lock-step with the RDF graph.
+    /// </summary>
+    public async Task<IndividualOut?> RemoveAssertionAsync(
+        long ksId,
+        AssertionRequest req,
+        Actor actor,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(req);
+        var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
+        if (user is null || ks is null) return null;
+
+        var kind = NormalizeKind(req.Kind);
+        var prop = NormalizeProp(req.Prop);
+        var (subjectIri, targetIri, value, datatype) = NormalizeAssertionFields(req, kind);
+
+        var ksc = ToKsContext(ks);
+        var classLabels = await LoadClassLabelsAsync(ks, ct).ConfigureAwait(false);
+        var propLabels = await LoadPropertyLabelsAsync(ks, ct).ConfigureAwait(false);
+
+        if (!IndividualExists(ksc, subjectIri))
+            throw new InvalidOperationException("Subject not found.");
+        if (kind == "object" && string.IsNullOrEmpty(targetIri))
+            throw new InvalidOperationException("Target individual is required.");
+
+        var factKey = StatementProvenanceService.AssertionKey(subjectIri, prop, kind, targetIri, value);
+
+        var pre = _store.DumpNQuads(ksc.ABoxGraph);
+        await using (var cap = await _store.CaptureAsync(ksc.ABoxGraph, revertOnError: false, waitTimeout: null, ct).ConfigureAwait(false))
+        {
+            try
+            {
+                if (kind == "object") _manager.RemoveObjectAssertion(ksc, subjectIri, prop, targetIri!);
+                else _manager.RemoveDataAssertion(ksc, subjectIri, prop, value!, datatype);
+            }
+            catch
+            {
+                cap.MarkError();
+                throw;
+            }
+        }
+        var post = _store.DumpNQuads(ksc.ABoxGraph);
+        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+
+        await WriteAuditAsync(ks.Id, user, "abox.remove_assertion",
+            BuildAssertionSummary(req, propLabels, subjectIri, "Removed"),
+            BuildAssertionDetail(req, factKey),
+            ksc.ABoxGraph, added, removed, ct).ConfigureAwait(false);
+
+        // Provenance delete is idempotent: a no-op RDF remove just leaves
+        // the row count at zero. Keeps manual-edit provenance in lock-step
+        // with the RDF graph without a pre-check.
+        await _provenance.RemoveFactsAsync(ks.Id, factKey, ct).ConfigureAwait(false);
+
+        return _manager.GetIndividual(ksc, subjectIri, classLabels, propLabels);
     }
 
     /// <summary>
@@ -356,7 +496,7 @@ public sealed class ABoxService
         GraphIri: ks.GraphIri,
         BaseIri: ks.BaseIri);
 
-    private async Task WriteAuditAsync(
+    private async Task<AuditEventEntity> WriteAuditAsync(
         Guid ksId, UserEntity actor, string action, string summary,
         IReadOnlyDictionary<string, object?> detail,
         string? graph,
@@ -367,7 +507,7 @@ public sealed class ABoxService
             .Select(a => (long?)a.LegacyId)
             .MaxAsync(token)
             .ConfigureAwait(false);
-        _db.AuditEvents.Add(new AuditEventEntity
+        var entity = new AuditEventEntity
         {
             LegacyId = (nextLegacy ?? 0L) + 1L,
             KnowledgeSystemId = ksId,
@@ -380,8 +520,115 @@ public sealed class ABoxService
             Added = added.Length == 0 ? null : added,
             Removed = removed.Length == 0 ? null : removed,
             CreatedAt = _clock.GetUtcNow(),
-        });
+        };
+        _db.AuditEvents.Add(entity);
         await _db.SaveChangesAsync(token).ConfigureAwait(false);
+        return entity;
+    }
+
+    // ----------------------------------------------------------------------
+    // Assertion helpers
+    // ----------------------------------------------------------------------
+
+    /// <summary>
+    /// Normalise the <c>kind</c> field — accepts <c>"object"</c> / <c>"data"</c>
+    /// in any case (Python sends <c>"object"</c> / <c>"data"</c> verbatim),
+    /// rejects everything else with a 400-friendly message.
+    /// </summary>
+    private static string NormalizeKind(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            throw new InvalidOperationException("kind is required.");
+        var k = raw.Trim().ToLowerInvariant();
+        return k switch
+        {
+            "object" => "object",
+            "data" => "data",
+            _ => throw new InvalidOperationException("kind must be 'object' or 'data'."),
+        };
+    }
+
+    /// <summary>Trim and require a non-empty property IRI.</summary>
+    private static string NormalizeProp(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            throw new InvalidOperationException("prop is required.");
+        return raw.Trim();
+    }
+
+    /// <summary>
+    /// Pull the request body into a uniform tuple the add/remove paths
+    /// share: <c>(subject, target?, value?, datatype?)</c> after validating
+    /// that the kind-specific fields are present (object → target,
+    /// data → value).
+    /// </summary>
+    private static (string Subject, string? Target, string? Value, string? Datatype)
+        NormalizeAssertionFields(AssertionRequest req, string kind)
+    {
+        var subject = (req.Subject ?? string.Empty).Trim();
+        if (subject.Length == 0)
+            throw new InvalidOperationException("subject is required.");
+        if (kind == "object")
+        {
+            var target = (req.Target ?? string.Empty).Trim();
+            if (target.Length == 0)
+                throw new InvalidOperationException("Object assertion requires a target.");
+            return (subject, target, null, null);
+        }
+        var value = req.Value;
+        if (value is null)
+            throw new InvalidOperationException("Data assertion requires a value.");
+        return (subject, null, value, string.IsNullOrWhiteSpace(req.Datatype) ? null : req.Datatype.Trim());
+    }
+
+    /// <summary>
+    /// Cheap "does this IRI have any ABox quads?" check — wraps
+    /// <see cref="StoreWrapper.Match(string, string, string, string, string?)"/>
+    /// with just the subject + graph predicate. Avoids the cost of pulling
+    /// the full <see cref="IndividualOut"/> envelope on the validation path.
+    /// </summary>
+    private bool IndividualExists(KsContext ksc, string iri) =>
+        _store.Match(subjectIri: iri, graphIri: ksc.ABoxGraph).Count > 0;
+
+    /// <summary>
+    /// Human-readable audit summary for an assertion operation. Mirrors
+    /// the Python <c>_assert_summary(a, prop_labels, subj_label, verb)</c>
+    /// helper &mdash; object kind renders <c>"&lt;verb&gt; "&lt;label&gt;"
+    /// —&lt;prop&gt;&rarr; (individual)"</c>, data kind renders
+    /// <c>"&lt;verb&gt; &lt;prop&gt; = "&lt;value&gt;" on "&lt;label&gt;"</c>.
+    /// </summary>
+    private static string BuildAssertionSummary(
+        AssertionRequest req,
+        IReadOnlyDictionary<string, string> propLabels,
+        string subjectIri,
+        string verb)
+    {
+        var propLabel = propLabels.TryGetValue(req.Prop, out var pl)
+            ? pl
+            : ABoxManager.LocalIri(req.Prop);
+        if (string.Equals(req.Kind, "object", StringComparison.OrdinalIgnoreCase))
+            return $"{verb} \"{subjectIri}\" —{propLabel}→ (individual)";
+        return $"{verb} {propLabel} = \"{req.Value}\" on \"{subjectIri}\"";
+    }
+
+    /// <summary>
+    /// Detail JSON for the audit row. Includes the fact key so history
+    /// replay / roll-back can identify the canonical provenance key the
+    /// assertion was filed under.
+    /// </summary>
+    private static IReadOnlyDictionary<string, object?> BuildAssertionDetail(
+        AssertionRequest req, string factKey)
+    {
+        return new Dictionary<string, object?>
+        {
+            ["subject"] = req.Subject,
+            ["prop"] = req.Prop,
+            ["kind"] = req.Kind,
+            ["target"] = req.Target,
+            ["value"] = req.Value,
+            ["datatype"] = req.Datatype,
+            ["fact_key"] = factKey,
+        };
     }
 }
 
