@@ -24,6 +24,7 @@ public static class ExtractionServiceCollectionExtensions
         services.AddSingleton<PromptSnapshotService>();
         services.AddSingleton<IExtractionMerger, ExtractionMerger>();
         services.AddSingleton<ExtractionOrchestrator>();
+        services.AddScoped<TerminologyAgent>();
         return services;
     }
 }

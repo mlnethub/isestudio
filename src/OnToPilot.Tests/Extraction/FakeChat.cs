@@ -82,30 +82,45 @@ public sealed class FakeChat : IChatClient
     public FakeChat EnqueueValidABoxDelta() => Enqueue(ValidABoxDelta);
 
     /// <summary>
-    /// Enqueue N LLM replies shaped like a terminology proposal batch. Each reply
-    /// is a JSON object with one proposal entry the TerminologyAgent can parse
-    /// into a TermProposal row. Count defaults to 3.
+    /// Enqueue one LLM reply shaped like a terminology proposal batch. The reply
+    /// is a JSON object with <c>{"proposals": [...]}</c> containing
+    /// <paramref name="count"/> proposal entries the TerminologyAgent can parse
+    /// into <c>TermProposalEntity</c> rows. Mirrors the
+    /// <c>backend/app/ontology/terminology_agent.py:suggest()</c> envelope:
+    /// each proposal entry uses Python field names
+    /// (<c>action</c>, <c>preferred_label</c>, <c>target_concept_iri</c>,
+    /// <c>alternate_labels</c>, <c>language</c>, <c>confidence</c>,
+    /// <c>reason</c>, <c>source_chunk_ids</c>) so the agent's JSON parser
+    /// matches the production Python output. Count defaults to 3.
     /// </summary>
     public FakeChat EnqueueTerminologyProposal(int count = 3)
     {
+        var entries = new System.Text.StringBuilder();
         for (int i = 0; i < count; i++)
         {
-            var json = $$"""
+            if (i > 0) entries.Append(',');
+            entries.Append($$"""
                 {
-                  "term": "term-{{i}}",
                   "action": "create",
-                  "scheme_iri": "http://example.org/scheme",
-                  "pref_label": "Term {{i}}",
-                  "alt_labels": ["alt-{{i}}"],
+                  "preferred_label": "Term {{i}}",
+                  "language": "en",
+                  "alternate_labels": ["alt-{{i}}"],
+                  "hidden_labels": [],
                   "description": "Auto-suggested term {{i}}",
-                  "reason": "extracted from chunk {{i}}",
+                  "broader_concept_iri": null,
+                  "mapped_entity_iri": null,
                   "confidence": 0.85,
-                  "evidence": ["chunk-{{i}}"],
+                  "reason": "extracted from chunk {{i}}",
                   "source_chunk_ids": [{{i}}]
                 }
-                """;
-            Enqueue(json);
+                """);
         }
+        var json = $$"""
+            {
+              "proposals": [{{entries}}]
+            }
+            """;
+        Enqueue(json);
         return this;
     }
 

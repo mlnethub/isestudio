@@ -1,0 +1,724 @@
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.AI;
+using OnToPilot.Infrastructure.Persistence;
+using OnToPilot.Infrastructure.Persistence.Entities;
+using OnToPilot.Llm;
+using OnToPilot.Observability;
+
+namespace OnToPilot.Extraction;
+
+/// <summary>
+/// LLM-driven terminology proposal pass. Mirrors
+/// <c>backend/app/ontology/terminology_agent.py:suggest()</c>: it asks the
+/// chat model for controlled-terminology changes scoped to one
+/// <see cref="KnowledgeSystemEntity"/> and one SKOS scheme, then persists
+/// the result as <see cref="TermProposalEntity"/> rows with
+/// <c>Status = "pending"</c>.
+///
+/// <para>This service is <b>advisory only</b>. It never writes to the SKOS
+/// vocabulary graph &mdash; that write happens later in
+/// <c>VocabularyProposalService.AcceptProposalAsync</c> when a human
+/// resolves the pending row. The same Python backend invariant holds here:
+/// the agent is the suggester, the reviewer is the writer.</para>
+///
+/// <para>The agent is registered as a <see cref="ServiceLifetime.Scoped"/>
+/// service so the orchestrator / dispatcher can resolve it per request and
+/// the EF <see cref="OnToPilotDbContext"/> flows through naturally.</para>
+/// </summary>
+public sealed class TerminologyAgent
+{
+    /// <summary>Prompt registry key the orchestration snapshot references.</summary>
+    public const string PromptKey = "terminology.propose";
+
+    /// <summary>
+    /// System prompt sent to the LLM. Mirrors the
+    /// <c>terminology.steward</c> default in
+    /// <c>backend/app/ontology/terminology_agent.py</c>: the model returns
+    /// one JSON object with <c>{"proposals": [...]}</c>; each entry uses one
+    /// of three actions (<c>create</c> | <c>add_alias</c> | <c>update</c>)
+    /// and the action-specific fields documented below. The model may emit
+    /// an empty <c>proposals</c> array &mdash; that is a valid response.
+    /// </summary>
+    public const string SystemPrompt = """
+        You are a controlled-terminology steward. Read source excerpts, the current SKOS
+        vocabulary, the ontology, and past human decisions. Propose precise terminology governance
+        changes, but do not invent unsupported terms.
+
+        Return ONLY one JSON object: {"proposals": [...]}.
+        Each proposal must use exactly one action:
+
+        1. Create a new controlled concept:
+        {"action":"create","preferred_label":"...","language":"en","alternate_labels":["..."],
+         "hidden_labels":[],"description":"...","broader_concept_iri":null,
+         "mapped_entity_iri":null,"confidence":0.0,"reason":"...","source_chunk_ids":[1]}
+
+        2. Add genuine synonyms to an existing concept:
+        {"action":"add_alias","target_concept_iri":"...","alternate_labels":["..."],
+         "language":"en","confidence":0.0,"reason":"...","source_chunk_ids":[1]}
+
+        3. Add a broader relation or ontology mapping to an existing concept:
+        {"action":"update","target_concept_iri":"...","broader_concept_iri":null,
+         "mapped_entity_iri":null,"confidence":0.0,"reason":"...","source_chunk_ids":[1]}
+
+        Rules:
+        - Distinguish synonyms from subtypes. A subtype such as "permanent-magnet motor" is not an alias
+          of "motor"; create a narrower concept instead and set its broader concept.
+        - Every proposed preferred or alternate label MUST occur verbatim in at least one cited source
+          chunk. Do not synthesize contextual names.
+        - An alternate label must be a substitutable name for the same concept, not a definition,
+          description, metaphor, sentence fragment, or related phrase.
+        - Add a broader concept only when "Every target concept is necessarily a broader concept" is
+          true. Created-by, managed-by, used-by, contains, and part-of relations are NOT broader links.
+        - One mapped ontology entity has one controlled concept. For a spelling/spacing variant of an
+          already mapped entity, propose add_alias on its existing concept instead of create.
+        - Reuse only IRIs explicitly supplied below. Never fabricate a target, broader, or mapped IRI.
+        - Do not repeat an existing preferred/alternative/hidden label.
+        - Prefer the source language. Keep explanations concise and evidence-based.
+        - Skip uncertain noise rather than proposing it. Empty proposals are valid.
+        - Human decisions below are authoritative; do not repeat rejected proposals.
+        """;
+
+    private static readonly JsonSerializerOptions PayloadSerializerOptions = new()
+    {
+        WriteIndented = false,
+    };
+
+    private readonly IChatClientFactory _chatFactory;
+    private readonly OnToPilotDbContext _db;
+    private readonly TimeProvider _clock;
+
+    public TerminologyAgent(
+        IChatClientFactory chatFactory,
+        OnToPilotDbContext db,
+        TimeProvider? clock = null)
+    {
+        ArgumentNullException.ThrowIfNull(chatFactory);
+        ArgumentNullException.ThrowIfNull(db);
+        _chatFactory = chatFactory;
+        _db = db;
+        _clock = clock ?? TimeProvider.System;
+    }
+
+    /// <summary>
+    /// Run an LLM-driven propose pass. Loads the cited chunks, sends them
+    /// (plus scheme context + the steward system prompt) to the configured
+    /// chat client, parses the JSON <c>{"proposals": [...]}</c> reply, and
+    /// inserts one <see cref="TermProposalEntity"/> row per accepted
+    /// proposal with <c>Status = "pending"</c>. Does NOT touch the RDF
+    /// graph &mdash; the SKOS write happens later at
+    /// <c>AcceptProposal</c> time.
+    /// </summary>
+    /// <param name="ks">Owning knowledge system.</param>
+    /// <param name="schemeIri">
+    /// SKOS scheme IRI the proposals should be scoped to. Recorded in the
+    /// payload so the reviewer can tell which scheme the agent considered.
+    /// </param>
+    /// <param name="chunkIds">
+    /// <see cref="ChunkEntity.LegacyId"/> values the LLM should consider as
+    /// source excerpts. Mirrors the Python <c>chunks[:max_chunks]</c>
+    /// trimming &mdash; the caller is expected to have already capped the
+    /// list to the configured maximum.
+    /// </param>
+    /// <param name="model">
+    /// Optional model override. When <c>null</c>, the LLM provider row's
+    /// <c>Model</c> column is used. Empty string falls back too (treated
+    /// as <c>null</c>).
+    /// </param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <returns>The newly inserted <see cref="TermProposalEntity"/> rows.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when no LLM provider is configured for the knowledge system
+    /// (or the system default).
+    /// </exception>
+    public async Task<IReadOnlyList<TermProposalEntity>> SuggestAsync(
+        KnowledgeSystemEntity ks,
+        string schemeIri,
+        IReadOnlyList<long> chunkIds,
+        string? model,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(ks);
+        ArgumentException.ThrowIfNullOrEmpty(schemeIri);
+        ArgumentNullException.ThrowIfNull(chunkIds);
+        ct.ThrowIfCancellationRequested();
+
+        if (chunkIds.Count == 0)
+        {
+            return Array.Empty<TermProposalEntity>();
+        }
+
+        var chunks = await LoadChunksAsync(ks, chunkIds, ct).ConfigureAwait(false);
+        if (chunks.Count == 0)
+        {
+            return Array.Empty<TermProposalEntity>();
+        }
+
+        var providerConfig = await BuildProviderConfigAsync(ks, model, ct).ConfigureAwait(false);
+        var chat = _chatFactory.Create(providerConfig);
+
+        var provider = ResolveProvider(chat);
+        var resolvedModel = ResolveModel(chat);
+
+        var proposals = await Telemetry.LlmSource.WithLlmActivity(
+            operationName: "Llm.TermSuggest",
+            provider: provider,
+            model: resolvedModel,
+            action: async innerCt =>
+            {
+                var messages = BuildMessages(ks, schemeIri, chunks);
+                ChatResponse response;
+                try
+                {
+                    response = await chat.GetResponseAsync(messages, options: null, innerCt).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or IOException)
+                {
+                    // Transient provider/network failure: do not abort the
+                    // whole dispatch. Return an empty proposal set so the
+                    // dispatcher can still surface a (smaller) result.
+                    return Array.Empty<JsonElement>();
+                }
+
+                return ParseProposals(response.Text);
+            },
+            cancellationToken: ct).ConfigureAwait(false);
+
+        if (proposals.Count == 0)
+        {
+            return Array.Empty<TermProposalEntity>();
+        }
+
+        var allowedChunkIds = new HashSet<long>(chunks.Keys);
+        var rows = new List<TermProposalEntity>(proposals.Count);
+        var now = _clock.GetUtcNow();
+        foreach (var raw in proposals)
+        {
+            ct.ThrowIfCancellationRequested();
+            var row = TryBuildProposal(raw, ks, schemeIri, allowedChunkIds, chunks, now);
+            if (row is not null)
+            {
+                _db.TermProposals.Add(row);
+                rows.Add(row);
+            }
+        }
+
+        if (rows.Count == 0)
+        {
+            return Array.Empty<TermProposalEntity>();
+        }
+
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return rows;
+    }
+
+    // ----------------------------------------------------------------------
+    // Chunk loading
+    // ----------------------------------------------------------------------
+
+    private async Task<Dictionary<long, ChunkEntity>> LoadChunksAsync(
+        KnowledgeSystemEntity ks,
+        IReadOnlyList<long> chunkIds,
+        CancellationToken ct)
+    {
+        // Order by Idx within each document to keep chunk ordering stable
+        // across calls; chunkId is the Python-era integer id, so the
+        // dictionary key is LegacyId. The chunk rows are linked to
+        // DocumentEntity, so we join to filter on the parent document's
+        // knowledge system — the brief requested `db.Chunks.Where(c =>
+        // chunkIds.Contains(c.Id))`; LegacyId is the wire-format id the
+        // Python backend uses for chunks.
+        var rows = await _db.Chunks
+            .Join(_db.Documents,
+                c => c.DocumentId,
+                d => d.Id,
+                (c, d) => new { Chunk = c, Document = d })
+            .Where(join => join.Document.KnowledgeSystemId == ks.Id
+                && chunkIds.Contains(join.Chunk.LegacyId))
+            .OrderBy(join => join.Chunk.DocumentId).ThenBy(join => join.Chunk.Idx)
+            .Select(join => join.Chunk)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        return rows.ToDictionary(c => c.LegacyId);
+    }
+
+    // ----------------------------------------------------------------------
+    // Provider config (resolve ProviderEntity → LlmProviderConfig)
+    // ----------------------------------------------------------------------
+
+    private async Task<LlmProviderConfig> BuildProviderConfigAsync(
+        KnowledgeSystemEntity ks,
+        string? model,
+        CancellationToken ct)
+    {
+        var providerId = ks.LlmProviderId;
+        if (providerId is null)
+        {
+            // Fall back to the singleton SystemConfig row's default provider.
+            var sys = await _db.SystemConfigs.AsNoTracking()
+                .FirstOrDefaultAsync(ct)
+                .ConfigureAwait(false);
+            providerId = sys?.LlmProviderId;
+        }
+
+        if (providerId is null)
+        {
+            throw new InvalidOperationException(
+                "No LLM provider is configured for this knowledge system " +
+                "(neither ks.LlmProviderId nor system_config.LlmProviderId is set).");
+        }
+
+        var provider = await _db.Providers.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == providerId.Value, ct)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"LLM provider row {providerId} referenced by knowledge system {ks.Id} was not found.");
+
+        // The chat factory dispatches by Provider name; the ProviderEntity
+        // table only stores a BaseUrl (treated as an OpenAI-compatible HTTP
+        // endpoint) plus credentials. Routing through "openai-compatible"
+        // is the safest default — it works for every endpoint that exposes
+        // an OpenAI-shaped /v1/chat/completions surface.
+        var resolvedModel = string.IsNullOrWhiteSpace(model) ? provider.Model : model!;
+        return new LlmProviderConfig
+        {
+            Provider = "openai-compatible",
+            ApiKey = provider.ApiKey,
+            Endpoint = provider.BaseUrl,
+            Model = resolvedModel,
+            ConcurrencyLimit = LlmProviderConfig.ValidateConcurrencyLimit(provider.ConcurrencyLimit),
+        };
+    }
+
+    // ----------------------------------------------------------------------
+    // Message construction
+    // ----------------------------------------------------------------------
+
+    private static List<ChatMessage> BuildMessages(
+        KnowledgeSystemEntity ks,
+        string schemeIri,
+        IReadOnlyDictionary<long, ChunkEntity> chunks)
+    {
+        var sourceBlocks = new List<string>(chunks.Count);
+        foreach (var (chunkId, chunk) in chunks)
+        {
+            var excerpt = chunk.Text.Length > 2000 ? chunk.Text[..2000] : chunk.Text;
+            sourceBlocks.Add($"[chunk:{chunkId}]\n{excerpt}");
+        }
+
+        var prompt =
+            "CURRENT CONTROLLED TERMS SCHEME:\n" + schemeIri +
+            "\n\nSOURCE EXCERPTS:\n" + string.Join("\n\n", sourceBlocks) +
+            "\n\nPropose controlled-terminology changes.";
+
+        return new List<ChatMessage>
+        {
+            new(ChatRole.System, SystemPrompt),
+            new(ChatRole.User, prompt),
+        };
+    }
+
+    // ----------------------------------------------------------------------
+    // Reply parsing
+    // ----------------------------------------------------------------------
+
+    private static IReadOnlyList<JsonElement> ParseProposals(string reply)
+    {
+        if (string.IsNullOrWhiteSpace(reply))
+        {
+            return Array.Empty<JsonElement>();
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(reply);
+            var root = doc.RootElement;
+            JsonElement proposals;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                proposals = root;
+            }
+            else if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("proposals", out var nested)
+                && nested.ValueKind == JsonValueKind.Array)
+            {
+                proposals = nested;
+            }
+            else
+            {
+                return Array.Empty<JsonElement>();
+            }
+
+            var list = new List<JsonElement>(proposals.GetArrayLength());
+            foreach (var entry in proposals.EnumerateArray())
+            {
+                if (entry.ValueKind == JsonValueKind.Object)
+                {
+                    list.Add(entry.Clone());
+                }
+            }
+            return list;
+        }
+        catch (JsonException)
+        {
+            // Malformed LLM reply — treat as zero proposals rather than
+            // aborting the whole suggest pass.
+            return Array.Empty<JsonElement>();
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Per-proposal row construction
+    // ----------------------------------------------------------------------
+
+    private static TermProposalEntity? TryBuildProposal(
+        JsonElement raw,
+        KnowledgeSystemEntity ks,
+        string schemeIri,
+        HashSet<long> allowedChunkIds,
+        IReadOnlyDictionary<long, ChunkEntity> chunks,
+        DateTimeOffset now)
+    {
+        var action = ResolveAction(raw);
+        var sourceIds = ResolveSourceChunkIds(raw, allowedChunkIds);
+        if (sourceIds.Count == 0)
+        {
+            // Every proposal needs at least one cited chunk so the
+            // reviewer can find the evidence. Drop silently — matches the
+            // Python `continue` when no source ids remain.
+            return null;
+        }
+
+        var term = ResolveTerm(raw, action);
+        if (string.IsNullOrWhiteSpace(term))
+        {
+            return null;
+        }
+
+        var targetIri = ResolveTargetIri(raw);
+        var language = ResolveLanguage(raw);
+        var description = ResolveDescription(raw, action);
+        var aliases = ResolveAliases(raw, action, language, term);
+        var confidence = ClampConfidence(raw);
+        var reason = ResolveReason(raw);
+
+        var payload = BuildPayload(
+            action: action,
+            schemeIri: schemeIri,
+            language: language,
+            term: term!,
+            aliases: aliases,
+            description: description,
+            broaderIri: ResolveBroader(raw),
+            mappedIri: ResolveMapped(raw));
+
+        var evidence = BuildEvidence(sourceIds, chunks);
+        var sourceIdsJson = JsonSerializer.SerializeToUtf8Bytes(sourceIds, PayloadSerializerOptions);
+        var evidenceJson = JsonSerializer.SerializeToUtf8Bytes(evidence, PayloadSerializerOptions);
+        var payloadJson = JsonSerializer.SerializeToUtf8Bytes(payload, PayloadSerializerOptions);
+
+        var signature = ComputeSignature(action, targetIri, payload);
+
+        return new TermProposalEntity
+        {
+            Id = Guid.NewGuid(),
+            KnowledgeSystemId = ks.Id,
+            Signature = signature,
+            Action = action,
+            Term = term!,
+            TargetIri = targetIri,
+            Status = "pending",
+            Payload = JsonDocument.Parse(payloadJson),
+            Confidence = confidence,
+            Reason = reason,
+            Evidence = JsonDocument.Parse(evidenceJson),
+            SourceChunkIds = JsonDocument.Parse(sourceIdsJson),
+            ExtractionJobId = null,
+            ProposedBy = "terminology-agent",
+            CreatedAt = now,
+        };
+    }
+
+    private static string ResolveAction(JsonElement raw)
+    {
+        if (raw.TryGetProperty("action", out var prop) && prop.ValueKind == JsonValueKind.String)
+        {
+            var s = prop.GetString();
+            if (string.Equals(s, "create", StringComparison.OrdinalIgnoreCase)) return "create";
+            if (string.Equals(s, "add_alias", StringComparison.OrdinalIgnoreCase)) return "add_alias";
+            if (string.Equals(s, "update", StringComparison.OrdinalIgnoreCase)) return "update";
+        }
+        return "create";
+    }
+
+    private static string? ResolveTargetIri(JsonElement raw)
+    {
+        if (raw.TryGetProperty("target_concept_iri", out var prop) && prop.ValueKind == JsonValueKind.String)
+        {
+            var s = prop.GetString();
+            return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+        return null;
+    }
+
+    private static string? ResolveTerm(JsonElement raw, string action)
+    {
+        // For "create": preferred_label is the canonical term.
+        if (raw.TryGetProperty("preferred_label", out var pref) && pref.ValueKind == JsonValueKind.String)
+        {
+            var s = pref.GetString();
+            if (!string.IsNullOrWhiteSpace(s)) return s!.Trim();
+        }
+
+        // For "add_alias": the first alternate label carries the term on the row.
+        if (action == "add_alias"
+            && raw.TryGetProperty("alternate_labels", out var al)
+            && al.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in al.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    var s = item.GetString();
+                    if (!string.IsNullOrWhiteSpace(s)) return s!.Trim();
+                }
+            }
+        }
+
+        // For "update" / fallback: target_concept_iri is recorded as the term
+        // (matches the Python `concept_by_iri[target]["display_label"]`).
+        var target = ResolveTargetIri(raw);
+        if (!string.IsNullOrEmpty(target)) return target;
+
+        return null;
+    }
+
+    private static string ResolveLanguage(JsonElement raw)
+    {
+        if (raw.TryGetProperty("language", out var prop) && prop.ValueKind == JsonValueKind.String)
+        {
+            var s = prop.GetString();
+            if (!string.IsNullOrWhiteSpace(s)) return s!.Trim();
+        }
+        return "en";
+    }
+
+    private static string ResolveDescription(JsonElement raw, string action)
+    {
+        if (action != "create") return string.Empty;
+        if (raw.TryGetProperty("description", out var prop) && prop.ValueKind == JsonValueKind.String)
+        {
+            var s = prop.GetString();
+            if (!string.IsNullOrWhiteSpace(s))
+            {
+                // Match the Python `[str(raw.get("description", "")).strip()[:1000]]` cap.
+                return s!.Trim().Length > 1000 ? s!.Trim()[..1000] : s!.Trim();
+            }
+        }
+        return string.Empty;
+    }
+
+    private static List<string> ResolveAliases(JsonElement raw, string action, string language, string? term)
+    {
+        var result = new List<string>();
+        if (!raw.TryGetProperty("alternate_labels", out var prop) || prop.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        foreach (var item in prop.EnumerateArray())
+        {
+            if (item.ValueKind != JsonValueKind.String) continue;
+            var s = item.GetString();
+            if (string.IsNullOrWhiteSpace(s)) continue;
+            var trimmed = s!.Trim();
+            if (action == "create" && string.Equals(trimmed, term, StringComparison.Ordinal))
+            {
+                continue;
+            }
+            result.Add(trimmed);
+        }
+        return result;
+    }
+
+    private static string? ResolveBroader(JsonElement raw)
+    {
+        if (raw.TryGetProperty("broader_concept_iri", out var prop) && prop.ValueKind == JsonValueKind.String)
+        {
+            var s = prop.GetString();
+            return string.IsNullOrWhiteSpace(s) ? null : s!.Trim();
+        }
+        return null;
+    }
+
+    private static string? ResolveMapped(JsonElement raw)
+    {
+        if (raw.TryGetProperty("mapped_entity_iri", out var prop) && prop.ValueKind == JsonValueKind.String)
+        {
+            var s = prop.GetString();
+            return string.IsNullOrWhiteSpace(s) ? null : s!.Trim();
+        }
+        return null;
+    }
+
+    private static List<long> ResolveSourceChunkIds(JsonElement raw, HashSet<long> allowedChunkIds)
+    {
+        var result = new List<long>();
+        if (!raw.TryGetProperty("source_chunk_ids", out var prop) || prop.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        foreach (var item in prop.EnumerateArray())
+        {
+            long parsedLong;
+            try
+            {
+                if (item.ValueKind == JsonValueKind.Number)
+                {
+                    parsedLong = item.GetInt64();
+                }
+                else if (item.ValueKind == JsonValueKind.String)
+                {
+                    parsedLong = long.Parse(item.GetString() ?? string.Empty, CultureInfo.InvariantCulture);
+                }
+                else
+                {
+                    continue;
+                }
+            }
+            catch (Exception ex) when (ex is FormatException or OverflowException)
+            {
+                continue;
+            }
+
+            if (allowedChunkIds.Contains(parsedLong) && !result.Contains(parsedLong))
+            {
+                result.Add(parsedLong);
+            }
+        }
+        return result;
+    }
+
+    private static double? ClampConfidence(JsonElement raw)
+    {
+        if (!raw.TryGetProperty("confidence", out var prop)) return null;
+        double v;
+        try
+        {
+            v = prop.ValueKind switch
+            {
+                JsonValueKind.Number => prop.GetDouble(),
+                JsonValueKind.String => double.Parse(prop.GetString() ?? string.Empty, CultureInfo.InvariantCulture),
+                _ => double.NaN,
+            };
+        }
+        catch (Exception ex) when (ex is FormatException or OverflowException)
+        {
+            return null;
+        }
+        if (double.IsNaN(v) || double.IsInfinity(v)) return null;
+        if (v < 0.0) return 0.0;
+        if (v > 1.0) return 1.0;
+        return v;
+    }
+
+    private static string? ResolveReason(JsonElement raw)
+    {
+        if (!raw.TryGetProperty("reason", out var prop) || prop.ValueKind != JsonValueKind.String)
+        {
+            return null;
+        }
+        var s = prop.GetString();
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        var trimmed = s!.Trim();
+        // Match the Python `[:500]` cap.
+        return trimmed.Length > 500 ? trimmed[..500] : trimmed;
+    }
+
+    private static Dictionary<string, object?> BuildPayload(
+        string action,
+        string schemeIri,
+        string language,
+        string term,
+        List<string> aliases,
+        string description,
+        string? broaderIri,
+        string? mappedIri)
+    {
+        // Mirrors the sanitized payload Python writes for "create" —
+        // AcceptProposal reads these fields back verbatim.
+        return new Dictionary<string, object?>
+        {
+            ["scheme_iri"] = schemeIri,
+            ["action"] = action,
+            ["language"] = language,
+            ["pref_labels"] = new[] { new { value = term, language = language } },
+            ["alt_labels"] = aliases.ConvertAll(a => new { value = a, language = language }),
+            ["hidden_labels"] = Array.Empty<object>(),
+            ["description"] = description,
+            ["broader"] = string.IsNullOrEmpty(broaderIri) ? Array.Empty<string>() : new[] { broaderIri },
+            ["mapped_entity_iri"] = mappedIri,
+            ["status"] = "active",
+            ["origin"] = "agent",
+        };
+    }
+
+    private static List<Dictionary<string, object?>> BuildEvidence(
+        List<long> sourceIds,
+        IReadOnlyDictionary<long, ChunkEntity> chunks)
+    {
+        var evidence = new List<Dictionary<string, object?>>(sourceIds.Count);
+        foreach (var id in sourceIds)
+        {
+            if (!chunks.TryGetValue(id, out var chunk)) continue;
+            var snippet = chunk.Text.Length > 600 ? chunk.Text[..600] : chunk.Text;
+            evidence.Add(new Dictionary<string, object?>
+            {
+                ["chunk_id"] = id,
+                ["document_id"] = chunk.DocumentId,
+                ["snippet"] = snippet.Trim(),
+            });
+        }
+        return evidence;
+    }
+
+    private static string ComputeSignature(string action, string? targetIri, Dictionary<string, object?> payload)
+    {
+        // Mirrors `terminology_agent._signature()`: a sorted, compact JSON of
+        // (action, target_iri, payload) hashed with SHA-256. Two proposals
+        // that sanitise to the same (action, target, payload) collapse to
+        // one signature so the dedup query in the next pass catches them.
+        var canonical = new SortedDictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["action"] = action,
+            ["payload"] = payload,
+            ["target_iri"] = targetIri,
+        };
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(canonical, PayloadSerializerOptions);
+        var hash = SHA256.HashData(bytes);
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    // ----------------------------------------------------------------------
+    // Chat-client metadata helpers (mirror TBoxExtractionService)
+    // ----------------------------------------------------------------------
+
+    private static string ResolveProvider(IChatClient chat)
+    {
+        var metadata = chat.GetService<ChatClientMetadata>();
+        return metadata?.ProviderName ?? "unknown";
+    }
+
+    private static string ResolveModel(IChatClient chat)
+    {
+        var metadata = chat.GetService<ChatClientMetadata>();
+        return metadata?.DefaultModelId ?? "unknown";
+    }
+}
