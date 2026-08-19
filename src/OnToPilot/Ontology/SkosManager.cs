@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
@@ -54,7 +55,9 @@ public sealed record SkosSchemeData(
     string Origin = "manual");
 
 /// <summary>One localizable label set for a SKOS concept.</summary>
-public sealed record SkosLabel(string Value, string Language = "");
+public sealed record SkosLabel(
+    [property: JsonPropertyName("value")] string Value,
+    [property: JsonPropertyName("language")] string Language = "");
 
 /// <summary>Payload for <see cref="SkosManager.CreateConcept"/>.</summary>
 public sealed record SkosConceptData(
@@ -80,62 +83,62 @@ public sealed record SkosConceptData(
 
 /// <summary>One concept as it appears in <see cref="SkosView"/>.</summary>
 public sealed record SkosConceptView(
-    string Iri,
-    string SchemeIri,
-    IReadOnlyList<SkosLabel> PrefLabels,
-    IReadOnlyList<SkosLabel> AltLabels,
-    IReadOnlyList<SkosLabel> HiddenLabels,
-    string DisplayLabel,
-    string Description,
-    string Notation,
-    IReadOnlyList<string> Broader,
-    IReadOnlyList<string> Related,
-    IReadOnlyList<string> BroaderLabels,
-    IReadOnlyList<string> RelatedLabels,
-    string? MappedEntityIri,
-    string Status,
-    string Origin,
-    string CreatedAt,
-    string ModifiedAt);
+    [property: JsonPropertyName("iri")] string Iri,
+    [property: JsonPropertyName("scheme_iri")] string SchemeIri,
+    [property: JsonPropertyName("pref_labels")] IReadOnlyList<SkosLabel> PrefLabels,
+    [property: JsonPropertyName("alt_labels")] IReadOnlyList<SkosLabel> AltLabels,
+    [property: JsonPropertyName("hidden_labels")] IReadOnlyList<SkosLabel> HiddenLabels,
+    [property: JsonPropertyName("display_label")] string DisplayLabel,
+    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("notation")] string Notation,
+    [property: JsonPropertyName("broader")] IReadOnlyList<string> Broader,
+    [property: JsonPropertyName("related")] IReadOnlyList<string> Related,
+    [property: JsonPropertyName("broader_labels")] IReadOnlyList<string> BroaderLabels,
+    [property: JsonPropertyName("related_labels")] IReadOnlyList<string> RelatedLabels,
+    [property: JsonPropertyName("mapped_entity_iri")] string? MappedEntityIri,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("origin")] string Origin,
+    [property: JsonPropertyName("created_at")] string CreatedAt,
+    [property: JsonPropertyName("modified_at")] string ModifiedAt);
 
 /// <summary>One scheme as it appears in <see cref="SkosView"/>.</summary>
 public sealed record SkosSchemeView(
-    string Iri,
-    string Title,
-    IReadOnlyList<SkosLabel> Titles,
-    string Description,
-    IReadOnlyList<SkosLabel> Descriptions,
-    string DefaultLanguage,
-    string Origin,
-    string CreatedAt,
-    string ModifiedAt,
-    int ConceptCount);
+    [property: JsonPropertyName("iri")] string Iri,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("titles")] IReadOnlyList<SkosLabel> Titles,
+    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("descriptions")] IReadOnlyList<SkosLabel> Descriptions,
+    [property: JsonPropertyName("default_language")] string DefaultLanguage,
+    [property: JsonPropertyName("origin")] string Origin,
+    [property: JsonPropertyName("created_at")] string CreatedAt,
+    [property: JsonPropertyName("modified_at")] string ModifiedAt,
+    [property: JsonPropertyName("concept_count")] int ConceptCount);
 
 /// <summary>Curated view of the SKOS graph for one knowledge system.</summary>
 public sealed record SkosView(
-    IReadOnlyList<SkosSchemeView> Schemes,
-    IReadOnlyList<SkosConceptView> Concepts,
-    SkosStats Stats);
+    [property: JsonPropertyName("schemes")] IReadOnlyList<SkosSchemeView> Schemes,
+    [property: JsonPropertyName("concepts")] IReadOnlyList<SkosConceptView> Concepts,
+    [property: JsonPropertyName("stats")] SkosStats Stats);
 
 /// <summary>Roll-up counts surfaced alongside a <see cref="SkosView"/>.</summary>
 public sealed record SkosStats(
-    int SchemeCount,
-    int ConceptCount,
-    int LabelCount,
-    int MappedCount,
-    int UnmappedCount);
+    [property: JsonPropertyName("scheme_count")] int SchemeCount,
+    [property: JsonPropertyName("concept_count")] int ConceptCount,
+    [property: JsonPropertyName("label_count")] int LabelCount,
+    [property: JsonPropertyName("mapped_count")] int MappedCount,
+    [property: JsonPropertyName("unmapped_count")] int UnmappedCount);
 
 /// <summary>One match in <see cref="SkosManager.Resolve"/>.</summary>
 public sealed record SkosMatch(
-    SkosConceptView Concept,
-    SkosLabel MatchedLabel,
-    string MatchType,
-    double Score);
+    [property: JsonPropertyName("concept")] SkosConceptView Concept,
+    [property: JsonPropertyName("matched_label")] SkosLabel MatchedLabel,
+    [property: JsonPropertyName("match_type")] string MatchType,
+    [property: JsonPropertyName("score")] double Score);
 
 /// <summary>One page from <see cref="SkosManager.ListConcepts"/>.</summary>
 public sealed record SkosConceptPage(
-    IReadOnlyList<SkosConceptView> Items,
-    int Total);
+    [property: JsonPropertyName("items")] IReadOnlyList<SkosConceptView> Items,
+    [property: JsonPropertyName("total")] int Total);
 
 /// <summary>Thrown when SKOS payload validation fails (mirrors the Python
 /// <c>VocabularyValidationError</c>).</summary>

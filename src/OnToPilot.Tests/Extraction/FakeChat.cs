@@ -81,6 +81,34 @@ public sealed class FakeChat : IChatClient
     /// <summary>Queue one canned ABox delta reply.</summary>
     public FakeChat EnqueueValidABoxDelta() => Enqueue(ValidABoxDelta);
 
+    /// <summary>
+    /// Enqueue N LLM replies shaped like a terminology proposal batch. Each reply
+    /// is a JSON object with one proposal entry the TerminologyAgent can parse
+    /// into a TermProposal row. Count defaults to 3.
+    /// </summary>
+    public FakeChat EnqueueTerminologyProposal(int count = 3)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            var json = $$"""
+                {
+                  "term": "term-{{i}}",
+                  "action": "create",
+                  "scheme_iri": "http://example.org/scheme",
+                  "pref_label": "Term {{i}}",
+                  "alt_labels": ["alt-{{i}}"],
+                  "description": "Auto-suggested term {{i}}",
+                  "reason": "extracted from chunk {{i}}",
+                  "confidence": 0.85,
+                  "evidence": ["chunk-{{i}}"],
+                  "source_chunk_ids": [{{i}}]
+                }
+                """;
+            Enqueue(json);
+        }
+        return this;
+    }
+
     /// <summary>Queue an arbitrary raw reply body.</summary>
     public FakeChat Enqueue(string reply)
     {
