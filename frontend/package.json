@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:e2e:dotnet": "playwright test --project=dot-net",
+    "test:e2e:dotnet:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
     "@dagrejs/dagre": "^3.1.0",
@@ -39,6 +41,7 @@
     "tw-animate-css": "^1.4.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.50.0",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

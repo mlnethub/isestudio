@@ -12,9 +12,10 @@ without re-deriving the context from the review report.
 
 ## F1 — Playwright project wiring
 
-**Status:** Deferred (Stage 5 follow-up).
+**Status:** Resolved.
 **Discovered by:** `task-2-review.md` item I3 / Implementer concern #1.
-**Owner:** TBD (next Stage 5 task that touches `frontend/e2e/`).
+**Resolved by:** Stage 5 F1 wiring slice (single commit, see
+`git log -- frontend/playwright.config.ts`).
 
 ### Problem
 
@@ -31,30 +32,39 @@ Neither `frontend/playwright.config.ts` nor `@playwright/test` in
 non-executable as shipped — the brief explicitly scoped `frontend/src/`
 and `frontend/package.json` out of Task 2, so this gap is by design.
 
-### Required work (next task)
+### What changed
 
-1. Add `frontend/playwright.config.ts` with at minimum:
-   - `testDir: 'e2e'`
-   - A `dot-net` project that scopes to `e2e/dotnet/**`
-   - A `webServer` block that boots the .NET backend on port 18080
-     (so the existing `beforeAll` `/api/health` probe in `helpers/config.ts`
-     resolves)
-   - Browser matrix (Chromium is sufficient for the smoke suite)
-2. Add `@playwright/test` to `frontend/package.json` devDependencies and
-   pin a version that matches the lockfile conventions used elsewhere
-   in the repo.
-3. Add `pnpm exec playwright install --with-deps chromium` to the
-   operator README so CI/developers can run the suite.
-4. Verify the spec files resolve by running
-   `pnpm --dir frontend exec playwright test e2e/dotnet` end to end
-   against a live .NET backend.
+1. **New** `frontend/playwright.config.ts` — defines `testDir: 'e2e'`
+   with `testMatch: /e2e\/dotnet\/.*\.spec\.ts$/` so the runner scopes
+   itself to the three .NET specs and leaves room for future
+   `e2e/python/**` or `e2e/shadow/**` projects without config edits.
+   Single Chromium project named `dot-net`. The `webServer` block is
+   conditional on `DOTNET_BASE_URL` being unset: when a developer or
+   CI pre-starts the backend, the config leaves it alone; otherwise
+   Playwright boots `dotnet run --project ../src/OnToPilot --urls=http://+:18080`
+   and waits for `/api/health` to respond before letting specs run.
+2. **Modified** `frontend/package.json` — added `@playwright/test`
+   `^1.50.0` to `devDependencies` (lockfile resolved to 1.62.1) plus
+   two scripts: `test:e2e:dotnet` (`playwright test --project=dot-net`)
+   and `test:e2e:dotnet:install` (`playwright install --with-deps chromium`).
+3. **Modified** `frontend/README.md` — added an "End-to-end tests"
+   section documenting the install + run sequence and explaining the
+   `DOTNET_BASE_URL` override + `beforeAll` skip behavior so operators
+   don't see a confusing run on a clean machine.
 
-### Why deferred here
+### Verification
 
-- Touches `frontend/package.json`, which is outside the Stage 5 Task 2
-  brief's allowed change set (`frontend/e2e/` and `migration/` only).
-- Belongs naturally with whichever Stage 5 task formalises the
-  end-to-end CI pipeline.
+- `pnpm exec playwright test e2e/dotnet --list` enumerates 3 specs
+  (upload-extract-publish, vocabulary, session).
+- With `DOTNET_BASE_URL` set to a non-running port,
+  `pnpm exec playwright test e2e/dotnet` reports `3 skipped` — the
+  `beforeAll` health-probe in `helpers/config.ts` short-circuits the
+  suite, matching the plan's expected graceful-no-backend behavior.
+- Without `DOTNET_BASE_URL`, the `webServer` block attempts
+  `dotnet run`; if the local environment cannot satisfy the backend's
+  required env vars (PG connection string, Oxigraph path, etc.) the
+  webServer fails fast with the same DI errors a developer would see
+  when starting the backend by hand — not a Playwright wiring failure.
 
 ---
 
