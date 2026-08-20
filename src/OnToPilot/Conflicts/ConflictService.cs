@@ -30,15 +30,18 @@ public sealed class ConflictService
 
     private readonly OnToPilotDbContext _db;
     private readonly TimeProvider _clock;
+    private readonly LegacyIdAllocator _allocator;
 
     public ConflictService(
         OnToPilotDbContext db,
         TimeProvider clock,
+        LegacyIdAllocator allocator,
         ExtractionJobStore? jobs = null,
         StoreWrapper? store = null)
     {
         _db = db;
         _clock = clock;
+        _allocator = allocator;
         _jobs = jobs;
         _store = store;
     }
@@ -114,13 +117,21 @@ public sealed class ConflictService
             .ToListAsync(ct)
             .ConfigureAwait(false);
         var existingBySig = existing.ToDictionary(c => c.Signature, StringComparer.Ordinal);
+        var newOnes = new List<ConflictEntity>();
 
         foreach (var (sig, d) in bySig)
         {
             var payload = ToPayloadJson(d.Entities, d.Resolutions);
             if (!existingBySig.TryGetValue(sig, out var row))
             {
-                _db.Conflicts.Add(new ConflictEntity
+                // AllocateManyAndPersistAsync adds to the change-tracker
+                // internally; we collect un-keyed entities here so the
+                // allocator can assign distinct LegacyIds under the
+                // per-table pg_advisory_xact_lock. Without this hop, two
+                // detected conflicts in a single batch would both write
+                // LegacyId=0 and the second SaveChanges would trip
+                // ux_conflict_legacy_id with SqlState=23505.
+                newOnes.Add(new ConflictEntity
                 {
                     Id = Guid.NewGuid(),
                     KnowledgeSystemId = ks.Id,
@@ -161,6 +172,10 @@ public sealed class ConflictService
             }
         }
 
+        if (newOnes.Count > 0)
+        {
+            await _allocator.AllocateManyAndPersistAsync(newOnes, ct).ConfigureAwait(false);
+        }
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return await ListAsync(ksId, "open", ctype: null, ct).ConfigureAwait(false);
     }
@@ -397,7 +412,7 @@ public sealed class ConflictService
         // for domain/range conflicts so future auto-reconciliation consults it.
         if (row.Ctype is "domain_multi" or "range_multi")
         {
-            RecordDomainRangeReconciliation(ks.Id, row, resolutionId, chosen.Op, actor);
+            await RecordDomainRangeReconciliation(ks.Id, row, resolutionId, chosen.Op, actor, ct).ConfigureAwait(false);
         }
 
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -509,12 +524,16 @@ public sealed class ConflictService
             .ToListAsync(ct)
             .ConfigureAwait(false);
         var existingBySig = existing.ToDictionary(c => c.Signature, StringComparer.Ordinal);
+        var newOnes = new List<ConflictEntity>();
         foreach (var (sig, d) in bySig)
         {
             var payload = ToPayloadJson(d.Entities, d.Resolutions);
             if (!existingBySig.TryGetValue(sig, out var row))
             {
-                _db.Conflicts.Add(new ConflictEntity
+                // See DetectAsync: collect un-keyed entities into a list
+                // so AllocateManyAndPersistAsync can assign distinct
+                // LegacyIds under the per-table pg_advisory_xact_lock.
+                newOnes.Add(new ConflictEntity
                 {
                     Id = Guid.NewGuid(),
                     KnowledgeSystemId = ks.Id,
@@ -552,16 +571,21 @@ public sealed class ConflictService
                 row.Resolution = "auto-cleared";
             }
         }
+        if (newOnes.Count > 0)
+        {
+            await _allocator.AllocateManyAndPersistAsync(newOnes, ct).ConfigureAwait(false);
+        }
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return await ListAsync(ks.LegacyId, "open", ctype: null, ct).ConfigureAwait(false);
     }
 
-    private void RecordDomainRangeReconciliation(
+    private async Task RecordDomainRangeReconciliation(
         Guid ksId,
         ConflictEntity row,
         string resolutionId,
         IReadOnlyDictionary<string, object?> op,
-        string actor)
+        string actor,
+        CancellationToken ct)
     {
         var slot = row.Ctype == "domain_multi" ? "domain" : "range";
         if (!TryReadPayloadEntity(row, 0, out var propIri, out var propLabel)) return;
@@ -592,7 +616,11 @@ public sealed class ConflictService
             }
         }
 
-        _db.TboxReconciliations.Add(new TboxReconciliationEntity
+        // AllocateAndPersistAsync holds the per-table pg_advisory_xact_lock
+        // until COMMIT so a concurrent reconciliation recorded on the
+        // same knowledge system cannot both INSERT legacy_id=0 and
+        // collide on ux_tboxreconciliation_legacy_id.
+        await _allocator.AllocateAndPersistAsync(new TboxReconciliationEntity
         {
             Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId,
@@ -604,7 +632,7 @@ public sealed class ConflictService
             ChosenLabel = chosenLabel,
             ResolvedBy = string.IsNullOrEmpty(actor) ? null : actor,
             CreatedAt = _clock.GetUtcNow(),
-        });
+        }, ct).ConfigureAwait(false);
     }
 
     private static ConflictOut ToOut(ConflictEntity c, long ksLegacyId) =>
