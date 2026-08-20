@@ -57,7 +57,7 @@ public sealed class ConflictService
     /// Ordered most-severe first (matching the Python <c>order_by(severity.desc(), id)</c>).
     /// </summary>
     public async Task<IReadOnlyList<ConflictOut>> ListAsync(
-        long ksId,
+        Guid ksId,
         string status,
         string? ctype,
         CancellationToken ct)
@@ -82,8 +82,7 @@ public sealed class ConflictService
             .ThenBy(c => c.Id)
             .ToListAsync(ct)
             .ConfigureAwait(false);
-        var legacyId = ks.LegacyId;
-        return rows.ConvertAll(c => ToOut(c, legacyId));
+        return rows.ConvertAll(c => ToOut(c, ks.Id));
     }
 
     // ----------------------------------------------------------------------
@@ -96,7 +95,7 @@ public sealed class ConflictService
     /// <c>sync_conflicts(session, ks, semantic=True)</c>.
     /// </summary>
     public async Task<IReadOnlyList<ConflictOut>> DetectAsync(
-        long ksId,
+        Guid ksId,
         CancellationToken ct)
     {
         var ks = await ResolveKnowledgeSystemAsync(ksId, ct).ConfigureAwait(false)
@@ -191,7 +190,7 @@ public sealed class ConflictService
     /// <c>axiom_key</c> mapping (<c>_conflict_axiom_keys</c> in Python).
     /// </summary>
     public async Task<ConflictContext?> GetContextAsync(
-        long ksId,
+        Guid ksId,
         Guid conflictId,
         CancellationToken ct)
     {
@@ -291,7 +290,7 @@ public sealed class ConflictService
                 Sources: sources));
         }
 
-        return new ConflictContext(ToOut(row, ks.LegacyId), evidence);
+        return new ConflictContext(ToOut(row, ks.Id), evidence);
     }
 
     // ----------------------------------------------------------------------
@@ -299,7 +298,7 @@ public sealed class ConflictService
     // ----------------------------------------------------------------------
 
     public async Task<ConflictOut?> DismissAsync(
-        long ksId,
+        Guid ksId,
         Guid conflictId,
         string actor,
         CancellationToken ct)
@@ -317,11 +316,11 @@ public sealed class ConflictService
         row.ResolvedAt = _clock.GetUtcNow();
         row.Resolution = "dismissed";
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return ToOut(row, ks.LegacyId);
+        return ToOut(row, ks.Id);
     }
 
     public async Task<ConflictOut?> ReopenAsync(
-        long ksId,
+        Guid ksId,
         Guid conflictId,
         string actor,
         CancellationToken ct)
@@ -340,7 +339,7 @@ public sealed class ConflictService
         row.ResolvedAt = null;
         row.Resolution = null;
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return ToOut(row, ks.LegacyId);
+        return ToOut(row, ks.Id);
     }
 
     // ----------------------------------------------------------------------
@@ -355,7 +354,7 @@ public sealed class ConflictService
     /// without a second round-trip.
     /// </summary>
     public async Task<ResolveConflictResponse?> ResolveAsync(
-        long ksId,
+        Guid ksId,
         Guid conflictId,
         string resolutionId,
         string actor,
@@ -428,7 +427,7 @@ public sealed class ConflictService
         // lands in Block 6. The frontend treats null `view` as
         // "no incremental rebuild needed".
         JsonElement view = default;
-        return new ResolveConflictResponse(row.LegacyId, openConflicts, view);
+        return new ResolveConflictResponse(row.Id, openConflicts, view);
     }
 
     // ----------------------------------------------------------------------
@@ -436,7 +435,7 @@ public sealed class ConflictService
     // ----------------------------------------------------------------------
 
     public async Task<ReconciliationListResponse> ListReconciliationsAsync(
-        long ksId,
+        Guid ksId,
         string? query,
         int limit,
         int offset,
@@ -459,12 +458,11 @@ public sealed class ConflictService
             .Take(Math.Clamp(limit, 1, 1000))
             .ToListAsync(ct)
             .ConfigureAwait(false);
-        var legacyId = ks.LegacyId;
-        return new ReconciliationListResponse(rows.ConvertAll(r => ToReconciliationOut(r, legacyId)), total);
+        return new ReconciliationListResponse(rows.ConvertAll(r => ToReconciliationOut(r, ks.Id)), total);
     }
 
-    public async Task<long?> RevokeReconciliationAsync(
-        long ksId,
+    public async Task<Guid?> RevokeReconciliationAsync(
+        Guid ksId,
         Guid reconciliationId,
         string actor,
         CancellationToken ct)
@@ -475,14 +473,14 @@ public sealed class ConflictService
         var row = await _db.TboxReconciliations.FirstOrDefaultAsync(r => r.Id == reconciliationId && r.KnowledgeSystemId == ks.Id, ct)
             .ConfigureAwait(false);
         if (row is null) return null;
-        var legacy = row.LegacyId;
+        var id = row.Id;
         _db.TboxReconciliations.Remove(row);
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return legacy;
+        return id;
     }
 
     public async Task<(Guid Id, string Reason)?> EditReconciliationReasonAsync(
-        long ksId,
+        Guid ksId,
         Guid reconciliationId,
         string? reason,
         string actor,
@@ -505,10 +503,10 @@ public sealed class ConflictService
     // Internals
     // ----------------------------------------------------------------------
 
-    private async Task<KnowledgeSystemEntity?> ResolveKnowledgeSystemAsync(long ksId, CancellationToken ct)
+    private async Task<KnowledgeSystemEntity?> ResolveKnowledgeSystemAsync(Guid ksId, CancellationToken ct)
     {
         return await _db.KnowledgeSystems.AsNoTracking()
-            .FirstOrDefaultAsync(k => k.LegacyId == ksId, ct)
+            .FirstOrDefaultAsync(k => k.Id == ksId, ct)
             .ConfigureAwait(false);
     }
 
@@ -576,7 +574,7 @@ public sealed class ConflictService
             await _allocator.AllocateManyAndPersistAsync(newOnes, ct).ConfigureAwait(false);
         }
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-        return await ListAsync(ks.LegacyId, "open", ctype: null, ct).ConfigureAwait(false);
+        return await ListAsync(ks.Id, "open", ctype: null, ct).ConfigureAwait(false);
     }
 
     private async Task RecordDomainRangeReconciliation(
@@ -635,10 +633,10 @@ public sealed class ConflictService
         }, ct).ConfigureAwait(false);
     }
 
-    private static ConflictOut ToOut(ConflictEntity c, long ksLegacyId) =>
+    private static ConflictOut ToOut(ConflictEntity c, Guid ksId) =>
         new(
             Id: c.Id,
-            KnowledgeSystemId: ksLegacyId,
+            KnowledgeSystemId: ksId,
             Signature: c.Signature,
             Ctype: c.Ctype,
             Severity: c.Severity,
@@ -650,10 +648,10 @@ public sealed class ConflictService
             ResolvedAt: c.ResolvedAt,
             Resolution: c.Resolution);
 
-    private static ReconciliationOut ToReconciliationOut(TboxReconciliationEntity r, long ksLegacyId) =>
+    private static ReconciliationOut ToReconciliationOut(TboxReconciliationEntity r, Guid ksId) =>
         new(
             Id: r.Id,
-            KnowledgeSystemId: ksLegacyId,
+            KnowledgeSystemId: ksId,
             Slot: r.Slot,
             PropertyLabel: r.PropertyLabel,
             PropertyIri: r.PropertyIri,

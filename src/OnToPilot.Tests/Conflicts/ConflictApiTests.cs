@@ -30,7 +30,7 @@ public sealed class ConflictApiTests
         var client = await AuthenticatedClientAsync(app);
         var ks = await SeedKnowledgeSystemAsync(app, "list-empty");
 
-        var response = await client.GetAsync($"/api/knowledge/{ks.LegacyId}/conflicts");
+        var response = await client.GetAsync($"/api/knowledge/{ks.Id}/conflicts");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var rows = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(System.Text.Json.JsonValueKind.Array, rows.ValueKind);
@@ -46,7 +46,7 @@ public sealed class ConflictApiTests
         var ks = await SeedKnowledgeSystemAsync(app, "list-all");
         SeedConflict(app, ks.Id, status: "dismissed", ctype: "duplicate");
 
-        var response = await client.GetAsync($"/api/knowledge/{ks.LegacyId}/conflicts?status=all");
+        var response = await client.GetAsync($"/api/knowledge/{ks.Id}/conflicts?status=all");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var rows = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(1, rows.GetArrayLength());
@@ -63,7 +63,7 @@ public sealed class ConflictApiTests
         SeedConflict(app, ks.Id, status: "open", ctype: "cycle");
         SeedConflict(app, ks.Id, status: "open", ctype: "duplicate");
 
-        var response = await client.GetAsync($"/api/knowledge/{ks.LegacyId}/conflicts?ctype=cycle");
+        var response = await client.GetAsync($"/api/knowledge/{ks.Id}/conflicts?ctype=cycle");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var rows = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(1, rows.GetArrayLength());
@@ -87,7 +87,7 @@ public sealed class ConflictApiTests
         SeedConflict(app, ks.Id, status: "dismissed", ctype: "duplicate", signature: "dup|X|Y");
 
         var response = await client.PostAsJsonAsync(
-            $"/api/knowledge/{ks.LegacyId}/conflicts/detect", new { });
+            $"/api/knowledge/{ks.Id}/conflicts/detect", new { });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var rows = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(0, rows.GetArrayLength());
@@ -96,7 +96,7 @@ public sealed class ConflictApiTests
         // never re-promotes a manually-dismissed conflict into a fresh
         // auto-cleared resolution (the user's earlier judgment wins).
         var dismissed = await client.GetAsync(
-            $"/api/knowledge/{ks.LegacyId}/conflicts?status=dismissed");
+            $"/api/knowledge/{ks.Id}/conflicts?status=dismissed");
         Assert.Equal(HttpStatusCode.OK, dismissed.StatusCode);
         var dismissedRows = await dismissed.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(1, dismissedRows.GetArrayLength());
@@ -113,14 +113,14 @@ public sealed class ConflictApiTests
         var conflictId = SeedConflict(app, ks.Id, status: "open", ctype: "domain_multi");
 
         var dismissResponse = await client.PostAsync(
-            $"/api/knowledge/{ks.LegacyId}/conflicts/{conflictId}/dismiss", content: null);
+            $"/api/knowledge/{ks.Id}/conflicts/{conflictId}/dismiss", content: null);
         Assert.Equal(HttpStatusCode.OK, dismissResponse.StatusCode);
         var dismissed = await dismissResponse.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal("dismissed", dismissed.GetProperty("status").GetString());
         Assert.Equal("dismissed", dismissed.GetProperty("resolution").GetString());
 
         var reopenResponse = await client.PostAsync(
-            $"/api/knowledge/{ks.LegacyId}/conflicts/{conflictId}/reopen", content: null);
+            $"/api/knowledge/{ks.Id}/conflicts/{conflictId}/reopen", content: null);
         Assert.Equal(HttpStatusCode.OK, reopenResponse.StatusCode);
         var reopened = await reopenResponse.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal("open", reopened.GetProperty("status").GetString());
@@ -136,7 +136,7 @@ public sealed class ConflictApiTests
         var ks = await SeedKnowledgeSystemAsync(app, "context");
         var conflictId = SeedConflict(app, ks.Id, status: "open", ctype: "duplicate", signature: "dup|Person|用户");
 
-        var response = await client.GetAsync($"/api/knowledge/{ks.LegacyId}/conflicts/{conflictId}");
+        var response = await client.GetAsync($"/api/knowledge/{ks.Id}/conflicts/{conflictId}");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var ctx = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(conflictId, ctx.GetProperty("conflict").GetProperty("id").GetGuid());
@@ -152,7 +152,7 @@ public sealed class ConflictApiTests
         var ks = await SeedKnowledgeSystemAsync(app, "list-recon");
         SeedReconciliation(app, ks.Id, slot: "domain", label: "owns");
 
-        var response = await client.GetAsync($"/api/knowledge/{ks.LegacyId}/reconciliations");
+        var response = await client.GetAsync($"/api/knowledge/{ks.Id}/reconciliations");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var list = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(1, list.GetProperty("total").GetInt32());
@@ -172,7 +172,7 @@ public sealed class ConflictApiTests
         var rid = SeedReconciliation(app, ks.Id, slot: "range", label: "produces");
 
         var response = await client.PatchAsJsonAsync(
-            $"/api/knowledge/{ks.LegacyId}/reconciliations/{rid}",
+            $"/api/knowledge/{ks.Id}/reconciliations/{rid}",
             new { reason = "Auto-detected; confirm with PO team." });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -191,7 +191,7 @@ public sealed class ConflictApiTests
         var ks = await SeedKnowledgeSystemAsync(app, "revoke-recon");
         var rid = SeedReconciliation(app, ks.Id, slot: "domain", label: "manages");
 
-        var response = await client.DeleteAsync($"/api/knowledge/{ks.LegacyId}/reconciliations/{rid}");
+        var response = await client.DeleteAsync($"/api/knowledge/{ks.Id}/reconciliations/{rid}");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var db = app.CreateDbContext();

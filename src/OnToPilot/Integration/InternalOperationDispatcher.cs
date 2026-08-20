@@ -704,14 +704,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeConflictListAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(Array.Empty<object>());
         }
         var (status, ctype) = ReadConflictFilters(request);
         return WrapAsync(async () =>
         {
-            var rows = await svc.ListAsync(request.KnowledgeSystemId.Value, status, ctype, ct)
+            var rows = await svc.ListAsync(request.KnowledgeSystemGuid.Value, status, ctype, ct)
                 .ConfigureAwait(false);
             return (object?)rows;
         });
@@ -720,13 +720,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeConflictDetectAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(Array.Empty<object>());
         }
         return WrapAsync(async () =>
         {
-            var rows = await svc.DetectAsync(request.KnowledgeSystemId.Value, ct)
+            var rows = await svc.DetectAsync(request.KnowledgeSystemGuid.Value, ct)
                 .ConfigureAwait(false);
             return (object?)rows;
         });
@@ -735,14 +735,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeConflictGetContextAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemId is null
+        if (svc is null || request.KnowledgeSystemGuid is null
             || !Guid.TryParse(request.ResourceId, out var conflictId))
         {
             return Task.FromResult<object?>(EmptyConflict());
         }
         return WrapAsync(async () =>
         {
-            var ctx = await svc.GetContextAsync(request.KnowledgeSystemId.Value, conflictId, ct)
+            var ctx = await svc.GetContextAsync(request.KnowledgeSystemGuid.Value, conflictId, ct)
                 .ConfigureAwait(false);
             return (object?)(ctx ?? EmptyConflict());
         });
@@ -751,14 +751,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeConflictDismissAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemId is null
+        if (svc is null || request.KnowledgeSystemGuid is null
             || !Guid.TryParse(request.ResourceId, out var conflictId))
         {
             return Task.FromResult<object?>(EmptyConflict());
         }
         return WrapAsync(async () =>
         {
-            var row = await svc.DismissAsync(request.KnowledgeSystemId.Value, conflictId,
+            var row = await svc.DismissAsync(request.KnowledgeSystemGuid.Value, conflictId,
                 request.Actor.UserId, ct).ConfigureAwait(false);
             return (object?)(row ?? EmptyConflict());
         });
@@ -767,14 +767,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeConflictReopenAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemId is null
+        if (svc is null || request.KnowledgeSystemGuid is null
             || !Guid.TryParse(request.ResourceId, out var conflictId))
         {
             return Task.FromResult<object?>(EmptyConflict());
         }
         return WrapAsync(async () =>
         {
-            var row = await svc.ReopenAsync(request.KnowledgeSystemId.Value, conflictId,
+            var row = await svc.ReopenAsync(request.KnowledgeSystemGuid.Value, conflictId,
                 request.Actor.UserId, ct).ConfigureAwait(false);
             return (object?)(row ?? EmptyConflict());
         });
@@ -784,7 +784,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveConflictService();
         var body = DeserializeBody<ResolveConflictRequest>(request);
-        if (svc is null || request.KnowledgeSystemId is null
+        if (svc is null || request.KnowledgeSystemGuid is null
             || !Guid.TryParse(request.ResourceId, out var conflictId)
             || body is null || string.IsNullOrEmpty(body.ResolutionId))
         {
@@ -797,13 +797,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         }
         return WrapAsync(async () =>
         {
-            var response = await svc.ResolveAsync(request.KnowledgeSystemId.Value, conflictId,
+            var response = await svc.ResolveAsync(request.KnowledgeSystemGuid.Value, conflictId,
                 body.ResolutionId, request.Actor.UserId, ct).ConfigureAwait(false);
             if (response is null)
             {
                 return (object?)new
                 {
-                    resolved_cid = 0L,
+                    resolved_cid = Guid.Empty,
                     open_conflicts = Array.Empty<object>(),
                     view = new { },
                 };
@@ -815,7 +815,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeConflictListReconciliationsAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(EmptyListResponse());
         }
@@ -826,7 +826,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             && int.TryParse(o, out var op) ? op : 0;
         return WrapAsync(async () =>
         {
-            var rows = await svc.ListReconciliationsAsync(request.KnowledgeSystemId.Value,
+            var rows = await svc.ListReconciliationsAsync(request.KnowledgeSystemGuid.Value,
                 query, limit, offset, ct).ConfigureAwait(false);
             return (object?)rows;
         });
@@ -835,16 +835,16 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeConflictRevokeReconciliationAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemId is null
+        if (svc is null || request.KnowledgeSystemGuid is null
             || !Guid.TryParse(request.ResourceId, out var reconciliationId))
         {
             return Task.FromResult<object?>(new { ok = false });
         }
         return WrapAsync(async () =>
         {
-            var legacyId = await svc.RevokeReconciliationAsync(request.KnowledgeSystemId.Value,
+            var deleted = await svc.RevokeReconciliationAsync(request.KnowledgeSystemGuid.Value,
                 reconciliationId, request.Actor.UserId, ct).ConfigureAwait(false);
-            return (object?)new { deleted = legacyId.HasValue ? 1 : 0 };
+            return (object?)new { deleted = deleted.HasValue ? 1 : 0 };
         });
     }
 
@@ -852,7 +852,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveConflictService();
         var body = DeserializeBody<EditReconciliationReasonRequest>(request);
-        if (svc is null || request.KnowledgeSystemId is null
+        if (svc is null || request.KnowledgeSystemGuid is null
             || !Guid.TryParse(request.ResourceId, out var reconciliationId))
         {
             return Task.FromResult<object?>(EmptyReconciliation());
@@ -860,7 +860,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var reason = body?.Reason ?? string.Empty;
         return WrapAsync(async () =>
         {
-            var result = await svc.EditReconciliationReasonAsync(request.KnowledgeSystemId.Value,
+            var result = await svc.EditReconciliationReasonAsync(request.KnowledgeSystemGuid.Value,
                 reconciliationId, reason, request.Actor.UserId, ct).ConfigureAwait(false);
             if (result is null)
             {

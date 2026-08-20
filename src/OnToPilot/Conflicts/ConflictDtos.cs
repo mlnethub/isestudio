@@ -16,7 +16,7 @@ namespace OnToPilot.Conflicts;
 /// </summary>
 public sealed record ConflictOut(
     Guid Id,
-    long KnowledgeSystemId,
+    Guid KnowledgeSystemId,
     string Signature,
     string Ctype,
     string Severity,
@@ -40,7 +40,7 @@ public sealed record ResolveConflictRequest(string ResolutionId);
 /// view so the frontend can re-render without a second round-trip.
 /// </summary>
 public sealed record ResolveConflictResponse(
-    long ResolvedCid,
+    Guid ResolvedCid,
     IReadOnlyList<ConflictOut> OpenConflicts,
     JsonElement View);
 
@@ -83,7 +83,7 @@ public sealed record ConflictContext(
 /// </summary>
 public sealed record ReconciliationOut(
     Guid Id,
-    long KnowledgeSystemId,
+    Guid KnowledgeSystemId,
     string Slot,
     string PropertyLabel,
     string? PropertyIri,
