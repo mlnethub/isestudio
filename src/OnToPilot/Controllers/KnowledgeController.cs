@@ -23,39 +23,39 @@ public sealed class KnowledgeController : InternalControllerBase
     public Task<IActionResult> CreateAsync([FromBody] object body, CancellationToken ct)
         => InvokeAsync("knowledge.create", ReqWithBody(body), ct);
 
-    [HttpDelete("{ks_id:long}")]
-    public Task<IActionResult> DeleteAsync(long ks_id, CancellationToken ct)
-        => InvokeAsync("knowledge.delete", Req(ks: ks_id), ct);
+    [HttpDelete("{id:guid}")]
+    public Task<IActionResult> DeleteAsync(Guid id, CancellationToken ct)
+        => InvokeAsync("knowledge.delete", ReqGuid(id), ct);
 
-    [HttpGet("{ks_id:long}")]
-    public Task<IActionResult> GetAsync(long ks_id, CancellationToken ct)
-        => InvokeAsync("knowledge.get", Req(ks: ks_id), ct);
+    [HttpGet("{id:guid}")]
+    public Task<IActionResult> GetAsync(Guid id, CancellationToken ct)
+        => InvokeAsync("knowledge.get", ReqGuid(id), ct);
 
-    [HttpPatch("{ks_id:long}")]
-    public Task<IActionResult> UpdateAsync(long ks_id, [FromBody] object body, CancellationToken ct)
-        => InvokeAsync("knowledge.update", ReqWithBody(body, ks: ks_id), ct);
+    [HttpPatch("{id:guid}")]
+    public Task<IActionResult> UpdateAsync(Guid id, [FromBody] object body, CancellationToken ct)
+        => InvokeAsync("knowledge.update", ReqGuidWithBody(body, id), ct);
 
-    [HttpGet("{ks_id:long}/members")]
-    public Task<IActionResult> ListMembersAsync(long ks_id, CancellationToken ct)
-        => InvokeAsync("knowledge.list_members", Req(ks: ks_id), ct);
+    [HttpGet("{id:guid}/members")]
+    public Task<IActionResult> ListMembersAsync(Guid id, CancellationToken ct)
+        => InvokeAsync("knowledge.list_members", ReqGuid(id), ct);
 
-    [HttpPost("{ks_id:long}/members")]
-    public Task<IActionResult> AddMemberAsync(long ks_id, [FromBody] object body, CancellationToken ct)
-        => InvokeAsync("knowledge.add_member", ReqWithBody(body, ks: ks_id), ct);
+    [HttpPost("{id:guid}/members")]
+    public Task<IActionResult> AddMemberAsync(Guid id, [FromBody] object body, CancellationToken ct)
+        => InvokeAsync("knowledge.add_member", ReqGuidWithBody(body, id), ct);
 
-    [HttpGet("{ks_id:long}/members/candidates")]
-    public Task<IActionResult> GrantableUsersAsync(long ks_id, CancellationToken ct)
-        => InvokeAsync("knowledge.grantable_users", Req(ks: ks_id), ct);
+    [HttpGet("{id:guid}/members/candidates")]
+    public Task<IActionResult> GrantableUsersAsync(Guid id, CancellationToken ct)
+        => InvokeAsync("knowledge.grantable_users", ReqGuid(id), ct);
 
-    [HttpDelete("{ks_id:long}/members/{user_id}")]
-    public Task<IActionResult> RemoveMemberAsync(long ks_id, string user_id, CancellationToken ct)
-        => InvokeAsync("knowledge.remove_member", Req(ks: ks_id, res: user_id), ct);
+    [HttpDelete("{id:guid}/members/{user_id}")]
+    public Task<IActionResult> RemoveMemberAsync(Guid id, string user_id, CancellationToken ct)
+        => InvokeAsync("knowledge.remove_member", ReqGuid(id, res: user_id), ct);
 
-    [HttpGet("{ks_id:long}/members/{user_id}/detail")]
-    public Task<IActionResult> MemberDetailAsync(long ks_id, string user_id, CancellationToken ct)
-        => InvokeAsync("knowledge.member_detail", Req(ks: ks_id, res: user_id), ct);
+    [HttpGet("{id:guid}/members/{user_id}/detail")]
+    public Task<IActionResult> MemberDetailAsync(Guid id, string user_id, CancellationToken ct)
+        => InvokeAsync("knowledge.member_detail", ReqGuid(id, res: user_id), ct);
 
-    [HttpGet("{ks_id:long}/review/counts")]
-    public Task<IActionResult> ReviewCountsAsync(long ks_id, CancellationToken ct)
-        => InvokeAsync("knowledge.review_counts", Req(ks: ks_id), ct);
+    [HttpGet("{id:guid}/review/counts")]
+    public Task<IActionResult> ReviewCountsAsync(Guid id, CancellationToken ct)
+        => InvokeAsync("knowledge.review_counts", ReqGuid(id), ct);
 }

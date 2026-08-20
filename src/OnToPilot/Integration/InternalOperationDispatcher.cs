@@ -908,13 +908,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeKnowledgeGetAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(EmptyKnowledgeSystem());
         }
         return WrapAsync(async () =>
         {
-            var row = await svc.GetAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+            var row = await svc.GetAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)(row ?? EmptyKnowledgeSystem());
         });
@@ -944,7 +944,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveKnowledgeService();
         var body = DeserializeBody<UpdateKnowledgeSystemRequest>(request);
-        if (svc is null || body is null || request.KnowledgeSystemId is null)
+        if (svc is null || body is null || request.KnowledgeSystemGuid is null)
         {
             if (body is null)
             {
@@ -955,7 +955,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         }
         return WrapAsync(async () =>
         {
-            var row = await svc.UpdateAsync(request.KnowledgeSystemId.Value, body, request.Actor, ct)
+            var row = await svc.UpdateAsync(request.KnowledgeSystemGuid.Value, body, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)(row ?? EmptyKnowledgeSystem());
         });
@@ -964,28 +964,28 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeKnowledgeDeleteAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
-            return Task.FromResult<object?>(new { deleted = 0L });
+            return Task.FromResult<object?>(new { deleted = Guid.Empty });
         }
         return WrapAsync(async () =>
         {
-            var deleted = await svc.DeleteAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+            var deleted = await svc.DeleteAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
                 .ConfigureAwait(false);
-            return (object?)new { deleted = deleted ?? 0L };
+            return (object?)new { deleted = deleted ?? Guid.Empty };
         });
     }
 
     private Task<object?> InvokeKnowledgeListMembersAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(Array.Empty<object>());
         }
         return WrapAsync(async () =>
         {
-            var rows = await svc.ListMembersAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+            var rows = await svc.ListMembersAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
                 .ConfigureAwait(false);
             if (rows is null) return (object?)Array.Empty<object>();
             return (object?)rows;
@@ -996,7 +996,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveKnowledgeService();
         var body = DeserializeBody<AddMemberRequest>(request);
-        if (svc is null || body is null || request.KnowledgeSystemId is null)
+        if (svc is null || body is null || request.KnowledgeSystemGuid is null)
         {
             if (body is null)
             {
@@ -1007,7 +1007,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         }
         return WrapAsync(async () =>
         {
-            var rows = await svc.AddMemberAsync(request.KnowledgeSystemId.Value, body, request.Actor, ct)
+            var rows = await svc.AddMemberAsync(request.KnowledgeSystemGuid.Value, body, request.Actor, ct)
                 .ConfigureAwait(false);
             if (rows is null) return (object?)Array.Empty<object>();
             return (object?)rows;
@@ -1017,14 +1017,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeKnowledgeGrantableUsersAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(Array.Empty<object>());
         }
         var query = request.Query is not null && request.Query.TryGetValue("q", out var q) ? q : null;
         return WrapAsync(async () =>
         {
-            var rows = await svc.GrantableUsersAsync(request.KnowledgeSystemId.Value, query,
+            var rows = await svc.GrantableUsersAsync(request.KnowledgeSystemGuid.Value, query,
                 request.Actor, ct).ConfigureAwait(false);
             if (rows is null) return (object?)Array.Empty<object>();
             return (object?)rows;
@@ -1034,30 +1034,30 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeKnowledgeRemoveMemberAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemId is null
-            || !long.TryParse(request.ResourceId, out var userLegacyId))
+        if (svc is null || request.KnowledgeSystemGuid is null
+            || !Guid.TryParse(request.ResourceId, out var userId))
         {
-            return Task.FromResult<object?>(new { removed = 0L });
+            return Task.FromResult<object?>(new { removed = Guid.Empty });
         }
         return WrapAsync(async () =>
         {
-            var removed = await svc.RemoveMemberAsync(request.KnowledgeSystemId.Value, userLegacyId,
+            var removed = await svc.RemoveMemberAsync(request.KnowledgeSystemGuid.Value, userId,
                 request.Actor, ct).ConfigureAwait(false);
-            return (object?)new { removed = removed ?? 0L };
+            return (object?)new { removed = removed ?? Guid.Empty };
         });
     }
 
     private Task<object?> InvokeKnowledgeMemberDetailAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemId is null
-            || !long.TryParse(request.ResourceId, out var userLegacyId))
+        if (svc is null || request.KnowledgeSystemGuid is null
+            || !Guid.TryParse(request.ResourceId, out var userId))
         {
             return Task.FromResult<object?>(EmptyMember());
         }
         return WrapAsync(async () =>
         {
-            var detail = await svc.MemberDetailAsync(request.KnowledgeSystemId.Value, userLegacyId,
+            var detail = await svc.MemberDetailAsync(request.KnowledgeSystemGuid.Value, userId,
                 request.Actor, ct).ConfigureAwait(false);
             return (object?)(detail ?? EmptyMember());
         });
@@ -1066,13 +1066,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeKnowledgeReviewCountsAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(EmptyReviewCounts());
         }
         return WrapAsync(async () =>
         {
-            var counts = await svc.ReviewCountsAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+            var counts = await svc.ReviewCountsAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)(counts ?? EmptyReviewCounts());
         });
@@ -2363,7 +2363,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
     private static object EmptyKnowledgeSystem() => new
     {
-        id = 0L,
+        id = Guid.Empty,
         public_id = string.Empty,
         name = string.Empty,
         owner_id = Guid.Empty,

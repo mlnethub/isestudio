@@ -14,7 +14,7 @@ namespace OnToPilot.Knowledge;
 /// re-deriving permissions client-side.
 /// </summary>
 public sealed record KnowledgeSystemOut(
-    long Id,
+    Guid Id,
     string PublicId,
     string Name,
     string Description,
@@ -56,7 +56,7 @@ public sealed record UpdateKnowledgeSystemRequest(
 
 /// <summary>One membership entry on a KS.</summary>
 public sealed record MemberOut(
-    long UserId,
+    Guid UserId,
     string Username,
     string? DisplayName,
     string Role);
@@ -70,7 +70,7 @@ public sealed record AddMemberRequest(string Username, string? Role);
 /// "grantable users" / "candidates".
 /// </summary>
 public sealed record GrantableUserOut(
-    long Id,
+    Guid Id,
     string Username,
     bool IsAdmin);
 
@@ -86,14 +86,14 @@ public sealed record MemberDetailOut(
     IReadOnlyList<MemberActivityEntry> Activity);
 
 public sealed record MemberDetailUser(
-    long Id,
+    Guid Id,
     string Username,
     string? DisplayName,
     bool IsAdmin,
     bool Active);
 
 public sealed record MemberAccessEntry(
-    long KsId,
+    Guid KsId,
     string KsName,
     string Role);
 

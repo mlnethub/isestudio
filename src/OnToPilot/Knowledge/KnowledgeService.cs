@@ -99,7 +99,7 @@ public sealed class KnowledgeService
     /// Fetch a single KS. <see cref="KSRole.None"/> callers get null so
     /// the dispatcher can map to 404.
     /// </summary>
-    public async Task<KnowledgeSystemOut?> GetAsync(long ksId, Actor actor, CancellationToken ct)
+    public async Task<KnowledgeSystemOut?> GetAsync(Guid ksId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -161,7 +161,7 @@ public sealed class KnowledgeService
     /// set. Matches Python <c>UpdateKS</c> exactly.
     /// </summary>
     public async Task<KnowledgeSystemOut?> UpdateAsync(
-        long ksId, UpdateKnowledgeSystemRequest req, Actor actor, CancellationToken ct)
+        Guid ksId, UpdateKnowledgeSystemRequest req, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -229,7 +229,7 @@ public sealed class KnowledgeService
     /// <c>StoreWrapper</c> + <c>BlobStore</c> (Block 5 / 6). When those
     /// land, append the cleanup at the end of this method.
     /// </summary>
-    public async Task<long?> DeleteAsync(long ksId, Actor actor, CancellationToken ct)
+    public async Task<Guid?> DeleteAsync(Guid ksId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -267,7 +267,7 @@ public sealed class KnowledgeService
         _db.KnowledgeSystems.Remove(ks);
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-        return ks.LegacyId;
+        return ks.Id;
     }
 
     // ----------------------------------------------------------------------
@@ -275,7 +275,7 @@ public sealed class KnowledgeService
     // ----------------------------------------------------------------------
 
     /// <summary>List owner + explicit grants for a KS. Viewer-readable.</summary>
-    public async Task<IReadOnlyList<MemberOut>?> ListMembersAsync(long ksId, Actor actor, CancellationToken ct)
+    public async Task<IReadOnlyList<MemberOut>?> ListMembersAsync(Guid ksId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -291,7 +291,7 @@ public sealed class KnowledgeService
             if (owner is not null)
             {
                 result.Add(new MemberOut(
-                    UserId: owner.LegacyId,
+                    UserId: owner.Id,
                     Username: owner.Username,
                     DisplayName: owner.DisplayName,
                     Role: "owner"));
@@ -310,7 +310,7 @@ public sealed class KnowledgeService
         {
             if (!grantUsers.TryGetValue(grant.UserId, out var u)) continue;
             result.Add(new MemberOut(
-                UserId: u.LegacyId,
+                UserId: u.Id,
                 Username: u.Username,
                 DisplayName: u.DisplayName,
                 Role: grant.Role));
@@ -323,7 +323,7 @@ public sealed class KnowledgeService
     /// parity) or if the role is not <c>viewer</c> / <c>editor</c>.
     /// </summary>
     public async Task<IReadOnlyList<MemberOut>?> AddMemberAsync(
-        long ksId, AddMemberRequest req, Actor actor, CancellationToken ct)
+        Guid ksId, AddMemberRequest req, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -383,7 +383,7 @@ public sealed class KnowledgeService
 
         await WriteAuditAsync(ks.Id, user, "member.add",
             $"Granted {roleNorm} to \"{target.Username}\"",
-            BuildDetail(target.LegacyId, roleNorm), ct).ConfigureAwait(false);
+            BuildDetail(target.Id, roleNorm), ct).ConfigureAwait(false);
 
         return await ListMembersAsync(ksId, actor, ct).ConfigureAwait(false);
     }
@@ -393,8 +393,8 @@ public sealed class KnowledgeService
     /// caller is the owner either way; Python returns <c>{removed: id}</c>
     /// unconditionally so a missing grant returns id without an error).
     /// </summary>
-    public async Task<long?> RemoveMemberAsync(
-        long ksId, long userLegacyId, Actor actor, CancellationToken ct)
+    public async Task<Guid?> RemoveMemberAsync(
+        Guid ksId, Guid userId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -406,9 +406,9 @@ public sealed class KnowledgeService
         }
 
         var target = await _db.Users.AsNoTracking()
-            .FirstOrDefaultAsync(u => u.LegacyId == userLegacyId, ct)
+            .FirstOrDefaultAsync(u => u.Id == userId, ct)
             .ConfigureAwait(false);
-        if (target is null) return userLegacyId;
+        if (target is null) return userId;
 
         var grant = await _db.KSGrants
             .FirstOrDefaultAsync(g => g.KnowledgeSystemId == ks.Id && g.UserId == target.Id, ct)
@@ -419,9 +419,9 @@ public sealed class KnowledgeService
             await _db.SaveChangesAsync(ct).ConfigureAwait(false);
             await WriteAuditAsync(ks.Id, user, "member.remove",
                 $"Removed member \"{target.Username}\"",
-                BuildDetail(userLegacyId, null), ct).ConfigureAwait(false);
+                BuildDetail(userId, null), ct).ConfigureAwait(false);
         }
-        return userLegacyId;
+        return userId;
     }
 
     /// <summary>
@@ -429,7 +429,7 @@ public sealed class KnowledgeService
     /// member / the owner). Mirrors Python <c>grantable_users</c>.
     /// </summary>
     public async Task<IReadOnlyList<GrantableUserOut>?> GrantableUsersAsync(
-        long ksId, string? query, Actor actor, CancellationToken ct)
+        Guid ksId, string? query, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -460,7 +460,7 @@ public sealed class KnowledgeService
             .ConfigureAwait(false);
         return candidates
             .Where(u => !taken.Contains(u.Id))
-            .Select(u => new GrantableUserOut(u.LegacyId, u.Username, u.IsAdmin))
+            .Select(u => new GrantableUserOut(u.Id, u.Username, u.IsAdmin))
             .ToList();
     }
 
@@ -471,7 +471,7 @@ public sealed class KnowledgeService
     /// user-table enumeration.
     /// </summary>
     public async Task<MemberDetailOut?> MemberDetailAsync(
-        long ksId, long userLegacyId, Actor actor, CancellationToken ct)
+        Guid ksId, Guid userId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -479,7 +479,7 @@ public sealed class KnowledgeService
         if (role == KSRole.None) return null;
 
         var target = await _db.Users.AsNoTracking()
-            .FirstOrDefaultAsync(u => u.LegacyId == userLegacyId, ct)
+            .FirstOrDefaultAsync(u => u.Id == userId, ct)
             .ConfigureAwait(false);
         if (target is null) return null;
         var targetRole = await _access.GetEffectiveRoleAsync(target, ks, _db, ct).ConfigureAwait(false);
@@ -505,7 +505,7 @@ public sealed class KnowledgeService
             if (accessibleKsIds is not null && !accessibleKsIds.Contains(k.Id)) continue;
             var r = await _access.GetEffectiveRoleAsync(target, k, _db, ct).ConfigureAwait(false);
             if (r == KSRole.None) continue;
-            access.Add(new MemberAccessEntry(k.LegacyId, k.Name, RoleName(r)));
+            access.Add(new MemberAccessEntry(k.Id, k.Name, RoleName(r)));
         }
 
         // Recent activity (30 most-recent audit events for the target).
@@ -526,7 +526,7 @@ public sealed class KnowledgeService
 
         return new MemberDetailOut(
             User: new MemberDetailUser(
-                Id: target.LegacyId,
+                Id: target.Id,
                 Username: target.Username,
                 DisplayName: target.DisplayName,
                 IsAdmin: target.IsAdmin,
@@ -547,7 +547,7 @@ public sealed class KnowledgeService
     /// gracefully to 0 if the validator can't run (the Python backend
     /// catches the exception so a stale ontology never breaks the badge).
     /// </summary>
-    public async Task<ReviewCountsOut?> ReviewCountsAsync(long ksId, Actor actor, CancellationToken ct)
+    public async Task<ReviewCountsOut?> ReviewCountsAsync(Guid ksId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -585,12 +585,12 @@ public sealed class KnowledgeService
     }
 
     private async Task<(UserEntity? User, KnowledgeSystemEntity? Ks)> ResolveUserAndKsAsync(
-        long ksId, Actor actor, CancellationToken ct)
+        Guid ksId, Actor actor, CancellationToken ct)
     {
         var user = await ResolveUserAsync(actor, ct).ConfigureAwait(false);
         if (user is null) return (null, null);
         var ks = await _db.KnowledgeSystems
-            .FirstOrDefaultAsync(k => k.LegacyId == ksId, ct)
+            .FirstOrDefaultAsync(k => k.Id == ksId, ct)
             .ConfigureAwait(false);
         return (user, ks);
     }
@@ -642,7 +642,7 @@ public sealed class KnowledgeService
                             ? KSRole.Viewer
                             : KSRole.None;
             output.Add(new KnowledgeSystemOut(
-                Id: ks.LegacyId,
+                Id: ks.Id,
                 PublicId: ks.PublicId,
                 Name: ks.Name,
                 Description: ks.Description,
@@ -702,11 +702,11 @@ public sealed class KnowledgeService
         }, token).ConfigureAwait(false);
     }
 
-    private static JsonElement? BuildDetail(long userLegacyId, string? role)
+    private static JsonElement? BuildDetail(Guid userId, string? role)
     {
         var payload = role is null
-            ? new Dictionary<string, object?> { ["user_id"] = userLegacyId }
-            : new Dictionary<string, object?> { ["user_id"] = userLegacyId, ["role"] = role };
+            ? new Dictionary<string, object?> { ["user_id"] = userId }
+            : new Dictionary<string, object?> { ["user_id"] = userId, ["role"] = role };
         var doc = JsonDocument.Parse(JsonSerializer.Serialize(payload));
         return doc.RootElement.Clone();
     }

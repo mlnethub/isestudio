@@ -45,18 +45,20 @@ public sealed class KnowledgeApiTests
         });
         Assert.Equal(HttpStatusCode.OK, create.StatusCode);
         var created = await create.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var id = created.GetProperty("id").GetInt64();
-        Assert.True(id > 0);
+        var id = created.GetProperty("id").GetGuid();
+        Assert.NotEqual(Guid.Empty, id);
         Assert.Equal("Test KS", created.GetProperty("name").GetString());
         Assert.Equal("smoke test", created.GetProperty("description").GetString());
         Assert.Equal("owner", created.GetProperty("my_role").GetString());
-        // The graph_iri / base_iri are derived from the assigned id.
-        Assert.Equal($"http://ontopilot.local/ks/{id}", created.GetProperty("graph_iri").GetString());
+        // graph_iri / base_iri still derive from the allocator-assigned
+        // LegacyId (Ruling 1), NOT the wire PK Guid.
+        var legacyId = LookupKsLegacyId(app, id);
+        Assert.Equal($"http://ontopilot.local/ks/{legacyId}", created.GetProperty("graph_iri").GetString());
 
         var get = await client.GetAsync($"/api/knowledge/{id}");
         Assert.Equal(HttpStatusCode.OK, get.StatusCode);
         var fetched = await get.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        Assert.Equal(id, fetched.GetProperty("id").GetInt64());
+        Assert.Equal(id, fetched.GetProperty("id").GetGuid());
         Assert.Equal("Test KS", fetched.GetProperty("name").GetString());
     }
 
@@ -66,7 +68,7 @@ public sealed class KnowledgeApiTests
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
 
-        var (ksId, _) = await CreateKsAsync(app, client, "before");
+        var ksId = await CreateKsAsync(client, "before");
         var patch = await client.PatchAsJsonAsync($"/api/knowledge/{ksId}", new
         {
             name = "after",
@@ -83,17 +85,17 @@ public sealed class KnowledgeApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "doomed");
+        var ksId = await CreateKsAsync(client, "doomed");
 
         // Seed a per-KS row that must be cascaded away.
-        SeedConflict(app, ksGuid, status: "open", ctype: "cycle");
+        SeedConflict(app, ksId, status: "open", ctype: "cycle");
 
         var delete = await client.DeleteAsync($"/api/knowledge/{ksId}");
         Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
 
         var db = app.CreateDbContext();
-        Assert.False(db.KnowledgeSystems.Any(k => k.Id == ksGuid));
-        Assert.False(db.Conflicts.Any(c => c.KnowledgeSystemId == ksGuid));
+        Assert.False(db.KnowledgeSystems.Any(k => k.Id == ksId));
+        Assert.False(db.Conflicts.Any(c => c.KnowledgeSystemId == ksId));
     }
 
     [Fact]
@@ -101,7 +103,7 @@ public sealed class KnowledgeApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "members");
+        var ksId = await CreateKsAsync(client, "members");
 
         // Add a viewer grant to a seeded second user.
         var alice = await SeedUserAsync(app, "alice-viewer", isAdmin: false);
@@ -122,13 +124,13 @@ public sealed class KnowledgeApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "add-remove");
+        var ksId = await CreateKsAsync(client, "add-remove");
         var bob = await SeedUserAsync(app, "bob", isAdmin: false);
 
         await AddMemberAsync(client, ksId, bob.Username, "editor");
 
-        var aliceId = bob.LegacyId;
-        var remove = await client.DeleteAsync($"/api/knowledge/{ksId}/members/{aliceId}");
+        var bobId = bob.Id;
+        var remove = await client.DeleteAsync($"/api/knowledge/{ksId}/members/{bobId}");
         Assert.Equal(HttpStatusCode.OK, remove.StatusCode);
 
         var members = await client.GetAsync($"/api/knowledge/{ksId}/members");
@@ -141,7 +143,7 @@ public sealed class KnowledgeApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "candidates");
+        var ksId = await CreateKsAsync(client, "candidates");
         var alice = await SeedUserAsync(app, "alice-grantable", isAdmin: false);
         var bob = await SeedUserAsync(app, "bob-grantable", isAdmin: false);
         await AddMemberAsync(client, ksId, bob.Username, "viewer");
@@ -161,11 +163,11 @@ public sealed class KnowledgeApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "review-counts");
+        var ksId = await CreateKsAsync(client, "review-counts");
 
-        SeedConflict(app, ksGuid, status: "open", ctype: "cycle");
-        SeedConflict(app, ksGuid, status: "open", ctype: "duplicate");
-        SeedConflict(app, ksGuid, status: "dismissed", ctype: "cycle");
+        SeedConflict(app, ksId, status: "open", ctype: "cycle");
+        SeedConflict(app, ksId, status: "open", ctype: "duplicate");
+        SeedConflict(app, ksId, status: "dismissed", ctype: "cycle");
 
         var response = await client.GetAsync($"/api/knowledge/{ksId}/review/counts");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -230,8 +232,8 @@ public sealed class KnowledgeApiTests
         return u;
     }
 
-    private static async Task<(long LegacyId, Guid Guid)> CreateKsAsync(
-        AuthTestWebApplicationFactory app, HttpClient client, string tag)
+    /// <summary>POST a KS and return its wire primary-key <see cref="Guid"/>.</summary>
+    private static async Task<Guid> CreateKsAsync(HttpClient client, string tag)
     {
         var response = await client.PostAsJsonAsync("/api/knowledge", new
         {
@@ -240,26 +242,22 @@ public sealed class KnowledgeApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var legacy = body.GetProperty("id").GetInt64();
-        // The wire <c>public_id</c> is the hex form of the KS's
-        // <c>PublicId</c> column — a separate, opaque identifier — NOT the
-        // entity's primary-key Guid. Tests that need the PK for FK seeding
-        // (e.g. <c>SeedConflict</c>) look it up via <c>LookupKsGuid</c>.
-        var guid = LookupKsGuid(app, legacy);
-        return (legacy, guid);
+        // The wire `id` is the KS primary-key Guid (the migration removed the
+        // legacy integer from the DTO).
+        return body.GetProperty("id").GetGuid();
     }
 
-    /// <summary>Resolve a KS primary-key Guid from its wire LegacyId.</summary>
-    private static Guid LookupKsGuid(AuthTestWebApplicationFactory app, long legacyId)
+    /// <summary>Resolve a KS allocator-assigned LegacyId from its PK Guid.</summary>
+    private static long LookupKsLegacyId(AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.KnowledgeSystems
-            .Where(k => k.LegacyId == legacyId)
-            .Select(k => k.Id)
+            .Where(k => k.Id == ksId)
+            .Select(k => k.LegacyId)
             .Single();
     }
 
-    private static async Task AddMemberAsync(HttpClient client, long ksId, string username, string role)
+    private static async Task AddMemberAsync(HttpClient client, Guid ksId, string username, string role)
     {
         var response = await client.PostAsJsonAsync($"/api/knowledge/{ksId}/members", new
         {

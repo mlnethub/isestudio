@@ -38,6 +38,21 @@ public abstract class InternalControllerBase : ControllerBase
     protected InternalRequest ReqWithBody(object? body, long? ks = null, string? pub = null, string? res = null, string? res2 = null)
         => new(ks, pub, res, res2, ToBody(body), QueryMap(), ResolveActor());
 
+    /// <summary>
+    /// Build a request envelope for a slice whose route already binds the
+    /// knowledge-system id as a PK <c>Guid</c> (<c>{id:guid}</c>). Carries
+    /// the Guid in <see cref="InternalRequest.KnowledgeSystemGuid"/> so the
+    /// dispatcher forwards it directly to the migrated service signatures.
+    /// </summary>
+    protected InternalRequest ReqGuid(Guid ks, string? pub = null, string? res = null, string? res2 = null)
+        => new(null, pub, res, res2, null, QueryMap(), ResolveActor(), ks);
+
+    /// <summary>
+    /// Body-carrying variant of <see cref="ReqGuid"/>.
+    /// </summary>
+    protected InternalRequest ReqGuidWithBody(object? body, Guid ks, string? pub = null, string? res = null, string? res2 = null)
+        => new(null, pub, res, res2, ToBody(body), QueryMap(), ResolveActor(), ks);
+
     /// <summary>Dispatch the named operation and wrap the result in <c>Ok(...)</c>.</summary>
     protected async Task<IActionResult> InvokeAsync(string operation, InternalRequest request, CancellationToken ct)
     {

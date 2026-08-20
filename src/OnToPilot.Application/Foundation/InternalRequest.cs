@@ -11,6 +11,12 @@ namespace OnToPilot.Application.Foundation;
 /// <para>All fields are nullable so a <c>GET /api/health</c>-style call with
 /// no inputs is a single <c>new InternalRequest(...)</c> with all-null
 /// fields.</para>
+///
+/// <para><see cref="KnowledgeSystemId"/> remains the legacy integer id while
+/// not-yet-migrated slices still resolve their KS by <c>LegacyId</c>.
+/// <see cref="KnowledgeSystemGuid"/> carries the PK <c>Guid</c> for slices
+/// whose routes already bind <c>{id:guid}</c>; it is removed once the
+/// migration reaches the remaining slices.</para>
 /// </summary>
 public sealed record InternalRequest(
     long? KnowledgeSystemId,
@@ -19,4 +25,5 @@ public sealed record InternalRequest(
     string? SecondResourceId,
     IReadOnlyDictionary<string, object?>? Body,
     IReadOnlyDictionary<string, string?>? Query,
-    Actor Actor);
+    Actor Actor,
+    Guid? KnowledgeSystemGuid = null);
