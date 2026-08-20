@@ -241,13 +241,13 @@ public sealed class ContainerSmokeFixture : IAsyncLifetime
     {
         // Testcontainers' IContainerBuilder can also build a Dockerfile,
         // but it does so with the Dockerfile's parent directory as the
-        // build context — and backend/Dockerfile needs the repo root as
-        // context (it `COPY src/ ./src/`). Running the CLI directly is
-        // the only way to set the context to the repo root without
-        // duplicating the Dockerfile.
+        // build context — and the .NET Dockerfile (src/Dockerfile) needs
+        // ./src as its context so `COPY . ./` lands the whole solution.
+        // Running the CLI directly is the only way to set the context
+        // explicitly without duplicating the Dockerfile.
         var (exit, stdout, stderr) = await RunProcessAsync(
             "docker",
-            new[] { "build", "-f", "backend/Dockerfile", "-t", _imageTag, "." },
+            new[] { "build", "-f", "src/Dockerfile", "-t", _imageTag, "src" },
             workingDirectory: _repoRoot,
             timeout: TimeSpan.FromMinutes(10)).ConfigureAwait(false);
         if (exit != 0)

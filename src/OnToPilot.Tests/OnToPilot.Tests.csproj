@@ -25,7 +25,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OnToPilot\OnToPilot.csproj" />
-    <ProjectReference Include="..\OnToPilot.Domain\OnToPilot.Domain.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,0 +1,50 @@
+# Build context for the .NET backend image — applied when docker-compose
+# sets `build.context: ./src` (see docker-compose.yml + migration/compose/
+# docker-compose.shadow.yml). Mirrors .gitignore spirit but tuned for
+# what should NEVER reach the docker build daemon: stale bin/obj/, IDE
+# noise, and the integration-test scaffolding that doesn't need to be
+# compiled into the runtime image.
+
+# --- Build artefacts ---
+**/bin/
+**/obj/
+**/out/
+**/publish/
+**/*.user
+**/*.suo
+
+# --- Editors / IDE ---
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- VCS metadata ---
+.git/
+.gitignore
+.gitattributes
+
+# --- Docker artefacts ---
+Dockerfile
+.dockerignore
+**/Dockerfile
+**/.dockerignore
+docker-compose*.yml
+**/docker-compose*.yml
+
+# --- Test-only projects (IntegrationTests / ApiContract.Tests / Tests) ---
+# These compile fine but don't belong in the runtime image — the publish
+# step targets OnToPilot.csproj explicitly and they don't get pulled in
+# transitively, but a stray reference would silently include them.
+# If a future change ever needs them at build time, remove the matching
+# lines below rather than dropping the whole block.
+OnToPilot.IntegrationTests/
+OnToPilot.ApiContract.Tests/
+OnToPilot.Tests/
+OnToPilot.OxigraphProbe/
+
+# --- Migration tooling ---
+# Migration source projects are dev-only; runtime image does not need them.
+OnToPilot.Migration/

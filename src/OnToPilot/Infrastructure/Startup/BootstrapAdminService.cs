@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Npgsql;
 using OnToPilot.Infrastructure.Persistence;
 
 namespace OnToPilot.Infrastructure.Startup;
@@ -45,6 +46,13 @@ public enum BootstrapOutcome
 /// keeps the same constraint (no default password), but bakes in the
 /// "missing config → refuse to boot" rule so a typo in the deploy manifests
 /// can't accidentally land on a known-weak credential.</para>
+/// <para>On PostgreSQL, the same "refuse to start" rule applies when the
+/// schema itself is missing: a Postgres <c>42P01</c> (undefined_table)
+/// raised against <c>users</c> is operationally equivalent to "the install
+/// has no users" because the operator hasn't run the deploy-time migrations
+/// yet. We catch it and route through the same
+/// <see cref="BootstrapOutcome.BootstrapRequired"/> exit so a fresh compose
+/// stack can't accidentally auto-bootstrap a default schema either.</para>
 /// </remarks>
 public sealed class BootstrapAdminService
 {
@@ -54,6 +62,13 @@ public sealed class BootstrapAdminService
     /// Kubernetes, etc.) can map it to a remediation step.
     /// </summary>
     public const int BootstrapRequiredExitCode = 17;
+
+    /// <summary>
+    /// PostgreSQL SQLSTATE for "undefined table". Surfaced when EF Core
+    /// translates the user-table COUNT into a query that hits a schema
+    /// the deploy-time migrations haven't created yet.
+    /// </summary>
+    private const string PostgresUndefinedTable = "42P01";
 
     private readonly OnToPilotDbContext _db;
     private readonly ILogger<BootstrapAdminService> _logger;
@@ -86,19 +101,43 @@ public sealed class BootstrapAdminService
     public int ExitCode => RequiresExit ? BootstrapRequiredExitCode : 0;
 
     /// <summary>
-    /// Inspect the user table. If it has zero rows, log a clear
+    /// Inspect the user table. If the table is missing or empty, log a clear
     /// "bootstrap required" message and return
     /// <see cref="BootstrapOutcome.BootstrapRequired"/>. Otherwise return
     /// <see cref="BootstrapOutcome.AlreadyBootstrapped"/>.
     /// </summary>
     /// <remarks>
-    /// Safe to invoke multiple times — the check is read-only.
+    /// <para>Safe to invoke multiple times — the check is read-only.</para>
+    /// <para>A missing <c>users</c> table on PostgreSQL (SQLSTATE 42P01) is
+    /// treated as <see cref="BootstrapOutcome.BootstrapRequired"/>, NOT as
+    /// an unhandled exception. The operator's remediation is the same in
+    /// both cases (apply migrations + seed the first admin), so routing
+    /// through the documented exit code keeps the failure mode stable
+    /// across "fresh schema" and "applied schema, no users".</para>
     /// </remarks>
     public async Task<BootstrapOutcome> RunAsync(CancellationToken cancellationToken)
     {
-        var userCount = await _db.Users
-            .CountAsync(cancellationToken)
-            .ConfigureAwait(false);
+        long userCount;
+        try
+        {
+            userCount = await _db.Users
+                .CountAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (IsMissingUsersTable(ex))
+        {
+            // Schema missing on PostgreSQL. Operator must apply migrations
+            // AND seed the first admin — same exit code as the empty-table
+            // path so the runbook only needs one remediation branch.
+            Outcome = BootstrapOutcome.BootstrapRequired;
+            _logger.LogCritical(ex,
+                "Bootstrap required: the users table does not exist. OntoPilot refuses to " +
+                "auto-create the schema or a default admin user (no default password). " +
+                "Apply EF Core migrations and seed the first administrator manually. " +
+                "Process will exit with code {ExitCode}.",
+                BootstrapRequiredExitCode);
+            return Outcome;
+        }
 
         if (userCount == 0)
         {
@@ -118,5 +157,24 @@ public sealed class BootstrapAdminService
         }
 
         return Outcome;
+    }
+
+    /// <summary>
+    /// Walk the exception chain looking for a PostgreSQL <c>42P01</c>
+    /// (undefined_table) error from the <c>users</c> table probe. Other
+    /// failures — auth errors, invalid catalog, network — are intentionally
+    /// left to propagate so they surface as unhandled-exception stack
+    /// traces instead of being silently mis-classified as "needs bootstrap".
+    /// </summary>
+    private static bool IsMissingUsersTable(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException)
+        {
+            if (current is PostgresException pg && pg.SqlState == PostgresUndefinedTable)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }

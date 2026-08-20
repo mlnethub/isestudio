@@ -115,9 +115,9 @@ services:
   backend-net:
     # New .NET backend — same compose family, different data root.
     build:
-      context: ../..
-      dockerfile: backend/Dockerfile
-    env_file: ../../backend/.env
+      context: ../../src
+      dockerfile: Dockerfile
+    env_file: ../../src/.env
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080

@@ -33,3 +33,5 @@ migration/actual/
 **/bin/
 **/obj/
 *.user
+*.vs
+.artifacts

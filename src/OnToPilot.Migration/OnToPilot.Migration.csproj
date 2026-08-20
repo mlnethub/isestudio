@@ -40,7 +40,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OnToPilot.Application\OnToPilot.Application.csproj" />
-    <ProjectReference Include="..\OnToPilot.Domain\OnToPilot.Domain.csproj" />
     <!-- Blob migration (Task 3) reuses MinioBlobStore + IBlobStore + BlobKey
          from the Storage layer; referencing the host project keeps the
          existing tested primitives in play without copying any code. -->

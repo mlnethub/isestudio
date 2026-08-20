@@ -1,5 +1,5 @@
 # OnToPilot self-hosted stack (.NET 10 backend + PostgreSQL + MinIO + Frontend).
-#   cp backend/.env.example backend/.env
+#   cp src/.env.example src/.env
 #   cp .env.example .env && edit .env to set POSTGRES_PASSWORD + MINIO_ACCESS_KEY + MINIO_SECRET_KEY
 #   docker compose up -d --build
 #   open http://localhost:8080
@@ -23,6 +23,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+    # Bind on all interfaces by default so the DB is reachable from the host
+    # (psql / pgAdmin / local dev tools) and from other LAN devices. For a
+    # tighter security posture set POSTGRES_BIND_ADDRESS=127.0.0.1 so only
+    # the host itself can connect.
+    ports:
+      - "${POSTGRES_BIND_ADDRESS:-0.0.0.0}:${POSTGRES_PORT:-5432}:5432"
     restart: unless-stopped
 
   minio:
@@ -43,9 +49,89 @@ services:
       - "9000"   # S3 API
       - "9001"   # Console
 
+  # ---- migrate (init container) ----
+  # Runs the EF Core migrations baked into the backend image and exits.
+  # Uses the SAME image as `backend` (built below) with a different entry
+  # command so the migration logic and the DbContext stay co-located —
+  # no `dotnet-ef` global tool is needed in the runtime image. The
+  # `--migrate` subcommand is handled at the top of `Program.cs` and
+  # calls `Database.MigrateAsync()`, which is idempotent (consults
+  # `__EFMigrationsHistory`) and safe to re-run.
+  #
+  # `restart: "no"` so a transient Postgres hiccup doesn't loop forever;
+  # if migrations fail the operator must inspect logs and re-run. The
+  # backend service below waits on `service_completed_successfully`,
+  # so the API never starts against an un-migrated schema.
+  migrate:
+    image: ontopilot-backend
+    # Override the Dockerfile's ENTRYPOINT (not just CMD) — if we set
+    # `command:` Docker would APPEND the values to the existing ENTRYPOINT,
+    # producing `dotnet OnToPilot.dll dotnet OnToPilot.dll --migrate`, which
+    # means the application's `args[0]` is "dotnet" instead of "--migrate".
+    # Setting `entrypoint:` replaces the Dockerfile's ENTRYPOINT outright
+    # so the app sees `args = ["--migrate"]` and the `--migrate` branch in
+    # Program.cs fires correctly.
+    entrypoint: ["dotnet", "OnToPilot.dll", "--migrate"]
+    env_file: ./src/.env
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      # Same provider/connection string as `backend` — EF Core binds
+      # `OnToPilot:Persistence:ConnectionString` via the double-underscore
+      # delimiter used by ASP.NET Core's EnvironmentVariables provider.
+      OnToPilot__Persistence__Provider: npgsql
+      OnToPilot__Persistence__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-ontopilot};Username=${POSTGRES_USER:-ontopilot};Password=${POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ---- seed-admin (opt-in via --profile bootstrap) ----
+  # Insert the first administrator user into the database and exit. Same
+  # backend image, different entrypoint. NOT started by default — operator
+  # opts in once after migrations have run:
+  #
+  #   docker compose --profile bootstrap run --rm seed-admin
+  #
+  # Credentials are passed via env (not CLI argv) so the operator can
+  # stash them in a secrets manager / .env file without leaking into
+  # `docker compose ps` or shell history. The `--seed-admin` branch in
+  # Program.cs is idempotent — re-running after a successful seed is a
+  # no-op exit 0.
+  seed-admin:
+    image: ontopilot-backend
+    profiles: ["bootstrap"]
+    entrypoint: ["dotnet", "OnToPilot.dll", "--seed-admin"]
+    env_file: ./src/.env
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
+      OnToPilot__Persistence__Provider: npgsql
+      OnToPilot__Persistence__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-ontopilot};Username=${POSTGRES_USER:-ontopilot};Password=${POSTGRES_PASSWORD}
+      # SEED_ADMIN_USERNAME / SEED_ADMIN_PASSWORD are intentionally
+      # interpolated with empty defaults (NOT `${VAR:?...}`) so compose
+      # file parsing doesn't fail when the operator hasn't set them —
+      # profiles don't bypass file-level env interpolation. Program.cs's
+      # --seed-admin branch validates the values and throws with a clear
+      # message if either is missing.
+      SEED_ADMIN_USERNAME: ${SEED_ADMIN_USERNAME:-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      SEED_ADMIN_DISPLAY_NAME: ${SEED_ADMIN_DISPLAY_NAME:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   backend:
-    build: ./backend
-    env_file: ./backend/.env
+    # The .NET Dockerfile lives at `src/Dockerfile` (co-located with the
+    # .NET solution it builds). Build context is `./src` so `COPY . ./`
+    # lands the whole `src/` tree in `/src/` and `dotnet publish
+    # OnToPilot/OnToPilot.csproj` resolves cleanly. `src/.dockerignore`
+    # keeps the build context lean (excludes bin/obj, IDE files,
+    # test-only projects).
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    image: ontopilot-backend   # fixed name so the `migrate` / `seed-admin` init containers can reuse this image
+    env_file: ./src/.env
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       ASPNETCORE_URLS: http://+:8080
@@ -66,6 +152,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ontopilot-data:/app/data
     healthcheck:

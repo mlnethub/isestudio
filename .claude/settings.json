@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir \"E:\\\\GitHub\\\\ontopilot\")",
+      "Read(//e/GitHub/openclaw.net/src/OpenClaw.Ontology/**)",
+      "Bash(dir \"E:\\\\GitHub\\\\openclaw.net\\\\src\\\\OpenClaw.Reasoning\")",
+      "Bash(find \"E:/GitHub/openclaw.net\" -maxdepth 3 -name \"*.sln\" -o -name \"*.csproj\" 2>/dev/null | head -40)",
+      "Read(//e/GitHub/openclaw.net/**)",
+      "Bash(find \"E:/GitHub/openclaw.net\" -maxdepth 1 -name \"*.sln\" 2>/dev/null)",
+      "Read(//e/GitHub/openclaw.net/src/OpenClaw.StandardOntology/**)",
+      "Read(//e/GitHub/openclaw.net/src/OpenClaw.GraphSlicer/**)",
+      "Bash(dotnet --version)",
+      "Bash(dotnet --list-sdks)",
+      "Bash(dotnet restore *)",
+      "WebFetch(domain:www.nuget.org)",
+      "Bash(command -v python)",
+      "Bash(command -v pnpm)",
+      "Bash(pnpm --version)",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(python -c ' *)",
+      "Bash(python -c *)",
+      "Bash(xxd)",
+      "Bash(pwsh -NoProfile -Command '& { $tokens=$errors=$null; [System.Management.Automation.Language.Parser]::ParseFile\\('\\\\''migration/scripts/Test-McpEndpoint.ps1'\\\\'', [ref]$tokens, [ref]$errors\\) | Out-Null; if \\($errors.Count -gt 0\\) { $errors | ForEach-Object { Write-Host $_ }; exit 1 } else { Write-Host '\\\\''PARSE OK'\\\\'' } }')",
+      "Bash(pwsh -NoProfile -Command \"Get-Content migration/contracts/mcp-smoke.json -Raw | ConvertFrom-Json | ConvertTo-Json -Depth 10 | Set-Content -Path /tmp/mcp-smoke-valid.json -Encoding UTF8; Write-Host 'JSON OK'\")",
+      "Bash(~/.dotnet/tools/dotnet-ildasm ~/.nuget/packages/serilog/4.3.1/lib/net8.0/Serilog.dll > /tmp/serilog.il 2>&1 && wc -l /tmp/serilog.il)",
+      "Bash(find ~/.nuget/packages/npgsql.opentelemetry -name \"*.dll\" 2>/dev/null | head -5)",
+      "Read(//c/Users/geffz/.nuget/packages/npgsql.opentelemetry/**)",
+      "Bash(find ~/.nuget/packages/microsoft.extensions.ai -name \"*.dll\" 2>/dev/null | head -5)",
+      "Read(//c/Users/geffz/.nuget/packages/microsoft.extensions.ai/**)",
+      "Bash(find ~/.nuget/packages/microsoft.extensions.ai.abstractions -name \"*.dll\" 2>/dev/null | head -3)",
+      "Read(//c/Users/geffz/.nuget/packages/microsoft.extensions.ai.abstractions/**)",
+      "Bash(echo \"EXIT: $?\")"
+    ],
+    "additionalDirectories": [
+      "\\tmp"
+    ]
+  }
+}

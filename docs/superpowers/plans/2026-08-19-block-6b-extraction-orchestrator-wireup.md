@@ -348,6 +348,10 @@ from prior commit keeps all 20 extraction tests green."
 > **关键**：wire DTO `ExtractionJobOut` 已存在（`ExtractionJobDtos.cs`），含 `From()` 静态工厂。
 > EF entity `ExtractionJobEntity` 的字段都是 string/int/DateTimeOffset（**没有** enum），
 > wire 通过 `[JsonPropertyName]` 锁 snake_case。本任务不新建任何 DTO 文件。
+>
+> **类型名**：dispatcher 使用的是 `InternalRequest`(不是 `IntegrationRequest`),
+> `DeserializeBody<T>(InternalRequest)` 返回 `T?`（无 `label` 参数）。沿用现有 helper,
+> 不要新建。
 
 ### Step 1: 新增 `InvokeExtractionAsync` 私有方法
 
@@ -364,9 +368,15 @@ from prior commit keeps all 20 extraction tests green."
 /// <see cref="ExtractionJobOut.From"/>.
 /// </summary>
 private async Task<object?> InvokeExtractionAsync(
-    IntegrationRequest request, string runKind, CancellationToken cancellationToken)
+    InternalRequest request, string runKind, CancellationToken cancellationToken)
 {
-    var body = DeserializeBody<ExtractionRequest>(request, "extraction body");
+    var body = DeserializeBody<ExtractionRequest>(request);
+    if (body is null)
+    {
+        throw new InvalidOperationException(
+            "extraction body is required (knowledge_system_id, blob_sha, " +
+            "file_name, provider, model, endpoint).");
+    }
     var orchestrator = Resolve<ExtractionOrchestrator>();
 
     var job = runKind switch
@@ -382,39 +392,11 @@ private async Task<object?> InvokeExtractionAsync(
 }
 ```
 
-### Step 2: 检查 `DeserializeBody<T>` helper 是否已存在
+### Step 2: 沿用现有 `DeserializeBody<T>(InternalRequest)` helper
 
-```bash
-grep -n "DeserializeBody<\|JsonSerializer.Deserialize" src/OnToPilot/Integration/InternalOperationDispatcher.cs | head -10
-```
-
-如果 dispatcher 已有 `DeserializeBody<T>(request, label)` 私有静态方法（很可能 — 同文件已大量使用），沿用其签名。否则，新增：
-
-```csharp
-private static T DeserializeBody<T>(IntegrationRequest request, string label)
-{
-    if (request.Body is null)
-    {
-        throw new InvalidOperationException($"{label} is required.");
-    }
-    try
-    {
-        var body = JsonSerializer.Deserialize<T>(
-            request.Body.GetRawText(),
-            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-        if (body is null)
-        {
-            throw new InvalidOperationException($"{label} is null after deserialise.");
-        }
-        return body;
-    }
-    catch (JsonException ex)
-    {
-        throw new InvalidOperationException(
-            $"{label} is malformed: {ex.Message}", ex);
-    }
-}
-```
+`DeserializeBody<T>(InternalRequest request)` 已存在（line 527），使用
+`SnakeCaseLower` naming policy（line 521-525），**自动**处理 `blob_sha` ↔
+`BlobSha` 映射。本步骤无需新增任何 helper — Step 1 已直接调用。
 
 ### Step 3: 替换 3 个 placeholder arm
 

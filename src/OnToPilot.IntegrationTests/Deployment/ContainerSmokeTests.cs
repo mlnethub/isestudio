@@ -5,7 +5,7 @@ namespace OnToPilot.IntegrationTests.Deployment;
 /// <summary>
 /// Smoke tests that prove the production Docker image is bootable end-to-end.
 /// <see cref="ContainerSmokeFixture"/> builds the image with
-/// <c>docker build -f backend/Dockerfile</c>, starts PostgreSQL + MinIO
+/// <c>docker build -f src/Dockerfile src</c>, starts PostgreSQL + MinIO
 /// sidecars on a private network, runs the image, and exposes an
 /// <see cref="System.Net.Http.HttpClient"/> pointed at the published port.
 ///
