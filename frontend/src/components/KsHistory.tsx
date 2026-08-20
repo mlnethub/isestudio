@@ -21,7 +21,7 @@ function categoryOf(action: string) {
 export default function KsHistory({
   ksId, canWrite, onChanged,
 }: {
-  ksId: number
+  ksId: string
   canWrite: boolean
   onChanged?: () => void
 }) {
@@ -53,7 +53,7 @@ export default function KsHistory({
   const [items, setItems] = useState<AuditEvent[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [rollingBack, setRollingBack] = useState<number | null>(null)
+  const [rollingBack, setRollingBack] = useState<string | null>(null)
 
   // Debounce the keyword search.
   useEffect(() => {

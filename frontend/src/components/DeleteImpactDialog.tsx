@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dialog"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
-const key = (ksId: number, axiom: string) => `${ksId}::${axiom}`
+const key = (ksId: string, axiom: string) => `${ksId}::${axiom}`
 
 export default function DeleteImpactDialog({
   ksId,
@@ -26,7 +26,7 @@ export default function DeleteImpactDialog({
   onOpenChange,
   onDeleted,
 }: {
-  ksId: number
+  ksId: string
   doc: DocumentMeta | null
   open: boolean
   onOpenChange: (o: boolean) => void

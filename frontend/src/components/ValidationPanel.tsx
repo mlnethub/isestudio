@@ -42,7 +42,7 @@ type Row = {
 export default function ValidationPanel({
   ksId, canWrite, onChanged,
 }: {
-  ksId: number
+  ksId: string
   canWrite: boolean
   onChanged?: () => void
 }) {

@@ -18,7 +18,7 @@ export type ReviewSub = "conflicts" | "resolution" | "terminology" | "validation
 export default function ReviewPanel({
   ksId, sub, view, canWrite, onChanged,
 }: {
-  ksId: number
+  ksId: string
   sub: string
   view: OntologyView
   canWrite: boolean

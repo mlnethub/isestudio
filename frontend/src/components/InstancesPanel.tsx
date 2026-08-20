@@ -33,7 +33,7 @@ const shortIri = (iri: string) => iri.split(/[#/]/).pop() ?? iri
 export default function InstancesPanel({
   ksId, view, canWrite, onChanged,
 }: {
-  ksId: number
+  ksId: string
   view: OntologyView
   canWrite: boolean
   onChanged?: () => void
@@ -55,8 +55,8 @@ export default function InstancesPanel({
   const [job, setJob] = useState<ExtractionJob | null>(null)
   const [classFilter, setClassFilter] = useState("")
   const [suggestions, setSuggestions] = useState<Record<string, number>>({})
-  const [suggestJobId, setSuggestJobId] = useState<number | null>(null)
-  const [dismissedJobId, setDismissedJobId] = useState<number | null>(null)
+  const [suggestJobId, setSuggestJobId] = useState<string | null>(null)
+  const [dismissedJobId, setDismissedJobId] = useState<string | null>(null)
   const [addingClasses, setAddingClasses] = useState(false)
 
   const loadClasses = useCallback(async () => {
@@ -384,7 +384,7 @@ function ClassRow({ label, count, active, onClick }: { label: string; count: num
 function CreateDialog({
   ksId, view, defaultClass, onClose, onCreated,
 }: {
-  ksId: number
+  ksId: string
   view: OntologyView
   defaultClass: string | null
   onClose: () => void
@@ -445,7 +445,7 @@ function CreateDialog({
 function IndividualSheet({
   ksId, iri, view, canWrite, onClose, onChanged, onDeleted,
 }: {
-  ksId: number
+  ksId: string
   iri: string
   view: OntologyView
   canWrite: boolean
@@ -650,7 +650,7 @@ function AssertionRow({
 function AddAssertion({
   ksId, subject, view, onAdded,
 }: {
-  ksId: number
+  ksId: string
   subject: string
   view: OntologyView
   onAdded: () => void

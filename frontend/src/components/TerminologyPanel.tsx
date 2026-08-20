@@ -67,7 +67,7 @@ function Detail({ label, children }: { label: string; children: ReactNode }) {
 export default function TerminologyPanel({
   ksId, view, canWrite, onChanged,
 }: {
-  ksId: number
+  ksId: string
   view: OntologyView
   canWrite: boolean
   onChanged?: () => void

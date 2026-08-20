@@ -31,7 +31,7 @@ export default function ExtractDialog({
   selectableModes,
   presetDocId,
 }: {
-  ksId: number
+  ksId: string
   open: boolean
   onOpenChange: (o: boolean) => void
   onStarted: (job: ExtractionJob) => void
@@ -39,7 +39,7 @@ export default function ExtractDialog({
   /** If given (2+ modes), a selector lets the user choose; otherwise `mode` is fixed. */
   selectableModes?: Mode[]
   /** Opened from a document row: pre-select that doc and check all its chunks. */
-  presetDocId?: number
+  presetDocId?: string
 }) {
   const { t } = useI18n()
   const modeLabel: Record<Mode, string> = {
@@ -47,9 +47,9 @@ export default function ExtractDialog({
   }
   const [activeMode, setActiveMode] = useState<Mode>(mode)
   const [docs, setDocs] = useState<DocumentMeta[]>([])
-  const [docId, setDocId] = useState<number | null>(null)
+  const [docId, setDocId] = useState<string | null>(null)
   const [chunks, setChunks] = useState<Chunk[]>([])
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const [models, setModels] = useState<string[]>([])
   const [model, setModel] = useState(SYS_MODEL)
   const [running, setRunning] = useState(false)
@@ -80,7 +80,7 @@ export default function ExtractDialog({
     api.getModels().then((m) => setModels(m.models)).catch(() => {})
   }, [open, ksId, t])
 
-  const selectDoc = useCallback(async (id: number) => {
+  const selectDoc = useCallback(async (id: string) => {
     setDocId(id)
     setSelected(new Set())
     try {
@@ -90,7 +90,7 @@ export default function ExtractDialog({
     }
   }, [ksId, t])
 
-  const toggle = (id: number) =>
+  const toggle = (id: string) =>
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
@@ -152,7 +152,7 @@ export default function ExtractDialog({
           <div className="grid grid-cols-2 gap-3">
             <div className="min-w-0 space-y-1.5">
               <Label className="text-xs">{t("extract.document")}</Label>
-              <Select value={docId ? String(docId) : ""} onValueChange={(v) => selectDoc(Number(v))}>
+              <Select value={docId ? String(docId) : ""} onValueChange={(v) => selectDoc(v)}>
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder={t("extract.selectDocument")} />
                 </SelectTrigger>

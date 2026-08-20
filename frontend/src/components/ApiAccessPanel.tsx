@@ -52,7 +52,7 @@ export default function ApiAccessPanel({
   const [scopes, setScopes] = useState<Set<ApiTokenScope>>(new Set(DEFAULT_SCOPES))
   const [created, setCreated] = useState<ApiTokenCreated | null>(null)
   const [revealed, setRevealed] = useState<{ row: ApiToken; token: string } | null>(null)
-  const [revealingId, setRevealingId] = useState<number | null>(null)
+  const [revealingId, setRevealingId] = useState<string | null>(null)
   const baseUrl = useMemo(
     () => `${window.location.origin}/api/v1/knowledge-systems/${ks.public_id}`,
     [ks.public_id],

@@ -73,7 +73,7 @@ function JobResult({ job }: { job: ExtractionJob }) {
   )
 }
 
-export default function ExtractionQueuePanel({ ksId, showTitle = true }: { ksId: number; showTitle?: boolean }) {
+export default function ExtractionQueuePanel({ ksId, showTitle = true }: { ksId: string; showTitle?: boolean }) {
   const { locale, t } = useI18n()
   const [jobs, setJobs] = useState<ExtractionJob[]>([])
   const [filter, setFilter] = useState<StatusFilter>("all")

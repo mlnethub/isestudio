@@ -3,7 +3,7 @@
 export type Role = "owner" | "editor" | "viewer"
 
 export interface User {
-  id: number
+  id: string
   username: string
   display_name: string | null // optional nickname; falls back to username in the UI
   is_admin: boolean
@@ -11,19 +11,19 @@ export interface User {
 }
 
 export interface Member {
-  user_id: number
+  user_id: string
   username: string
   role: Role
 }
 
 export interface GrantableUser {
-  id: number
+  id: string
   username: string
   is_admin: boolean
 }
 
 export interface MemberAccess {
-  ks_id: number
+  ks_id: string
   ks_name: string
   role: Role
 }
@@ -36,13 +36,13 @@ export interface MemberActivity {
 }
 
 export interface MemberDetail {
-  user: { id: number; username: string; is_admin: boolean; active: boolean }
+  user: { id: string; username: string; is_admin: boolean; active: boolean }
   access: MemberAccess[]
   activity: MemberActivity[]
 }
 
 export interface AuditEvent {
-  id: number
+  id: string
   actor_name: string
   action: string
   summary: string
@@ -57,8 +57,8 @@ export interface HistoryResponse {
 }
 
 export interface DocumentMeta {
-  id: number
-  knowledge_system_id: number | null
+  id: string
+  knowledge_system_id: string | null
   sha256: string
   original_filename: string
   folder: string
@@ -89,8 +89,8 @@ export interface DocumentContribution {
 }
 
 export interface Chunk {
-  id: number
-  document_id: number
+  id: string
+  document_id: string
   idx: number
   text: string
   char_start: number
@@ -100,11 +100,11 @@ export interface Chunk {
 }
 
 export interface KnowledgeSystem {
-  id: number
+  id: string
   public_id: string
   name: string
   description: string
-  owner_id: number | null
+  owner_id: string | null
   graph_iri: string
   base_iri: string
   created_at: string
@@ -113,8 +113,8 @@ export interface KnowledgeSystem {
   property_count: number
   axiom_count: number
   llm_model: string | null // per-KS model override; null -> system/.env default
-  llm_provider_id: number | null
-  embedding_provider_id: number | null
+  llm_provider_id: string | null
+  embedding_provider_id: string | null
   embedding_model: string | null
   my_role: Role
 }
@@ -122,7 +122,7 @@ export interface KnowledgeSystem {
 export type ApiTokenScope = "ontology:read" | "vocabulary:read" | "instances:read" | "query:read" | "provenance:read"
 
 export interface ApiToken {
-  id: number
+  id: string
   name: string
   token_prefix: string
   scopes: ApiTokenScope[]
@@ -143,7 +143,7 @@ export interface ApiTokenRevealed {
 }
 
 export interface Provider {
-  id: number
+  id: string
   name: string
   kind: "llm" | "embedding"
   base_url: string
@@ -156,8 +156,8 @@ export interface Provider {
 }
 
 export interface SystemSettings {
-  llm_provider_id: number | null // default LLM model entry
-  embedding_provider_id: number | null // default embedding model entry
+  llm_provider_id: string | null // default LLM model entry
+  embedding_provider_id: string | null // default embedding model entry
   available_models: string[]
   temperature: number // read-only (.env-managed)
 }
@@ -205,7 +205,7 @@ export interface OntologyView {
   }
   labels: Record<string, string>
   stats: { class_count: number; property_count: number; axiom_count: number }
-  knowledge_system?: { id: number; name: string; base_iri: string }
+  knowledge_system?: { id: string; name: string; base_iri: string }
 }
 
 // ---- Controlled terminology (SKOS) ----
@@ -288,14 +288,14 @@ export interface VocabularyConceptInput {
 }
 
 export interface TermProposalEvidence {
-  chunk_id: number
-  document_id: number | null
+  chunk_id: string
+  document_id: string | null
   document: string | null
   snippet: string
 }
 
 export interface TermProposal {
-  id: number
+  id: string
   action: "create" | "add_alias" | "update"
   term: string
   target_iri: string | null
@@ -305,8 +305,8 @@ export interface TermProposal {
   confidence: number | null
   reason: string | null
   evidence: TermProposalEvidence[]
-  source_chunk_ids: number[]
-  extraction_job_id: number | null
+  source_chunk_ids: string[]
+  extraction_job_id: string | null
   proposed_by: string
   resolved_by: string | null
   resolution_note: string | null
@@ -351,12 +351,12 @@ export interface RdfImportResult {
 }
 
 export interface ExtractionJob {
-  id: number
-  knowledge_system_id: number
+  id: string
+  knowledge_system_id: string
   kind: "tbox" | "abox" | "both"
   status: "pending" | "running" | "completed" | "failed"
   model: string
-  chunk_ids: number[]
+  chunk_ids: string[]
   created_at: string
   finished_at: string | null
   log: string
@@ -384,7 +384,7 @@ export interface ExtractionResult {
   properties_added: number
   axioms_added: number
   stats: { class_count: number; property_count: number; axiom_count: number }
-  per_chunk: { chunk_id: number; status: string; axioms: number; error: string | null }[]
+  per_chunk: { chunk_id: string; status: string; axioms: number; error: string | null }[]
 }
 
 // ---- Immutable releases and streaming exports ----
@@ -392,7 +392,7 @@ export type ReleaseStatus = "draft" | "reviewed" | "published" | "deleted"
 export type ReleaseLayer = "tbox" | "vocabulary" | "abox" | "bundle"
 
 export interface ReleaseDeployment {
-  id: number
+  id: string
   status: "provisioning" | "active" | "stopping" | "stopped" | "failed"
   statement_count: number
   provenance_count: number
@@ -432,8 +432,8 @@ export interface ReleaseManifest {
 }
 
 export interface OntologyRelease {
-  id: number
-  knowledge_system_id: number
+  id: string
+  knowledge_system_id: string
   version: string
   status: ReleaseStatus
   title: string
@@ -462,15 +462,15 @@ export interface ReleaseDiffLayer {
 }
 
 export interface ReleaseDiff {
-  from: { id: number; version: string }
-  to: { id: number; version: string }
+  from: { id: string; version: string }
+  to: { id: string; version: string }
   layers: Record<Exclude<ReleaseLayer, "bundle">, ReleaseDiffLayer>
 }
 
 export interface ExportJob {
-  id: number
-  knowledge_system_id: number
-  release_id: number | null
+  id: string
+  knowledge_system_id: string
+  release_id: string | null
   layer: ReleaseLayer
   format: "nquads"
   status: "pending" | "running" | "completed" | "failed"
@@ -496,23 +496,23 @@ export interface ImpactAxiom {
 }
 
 export interface ImpactSystem {
-  knowledge_system_id: number
+  knowledge_system_id: string
   knowledge_system_name: string
   axioms: ImpactAxiom[]
 }
 
 export interface DocumentImpact {
-  document_id: number
+  document_id: string
   systems: ImpactSystem[]
 }
 
 export interface RetractGroup {
-  knowledge_system_id: number
+  knowledge_system_id: string
   axiom_keys: string[]
 }
 
 export interface SourceDoc {
-  document_id: number
+  document_id: string
   filename: string
   folder: string | null
   exists: boolean
@@ -521,7 +521,7 @@ export interface SourceDoc {
 }
 
 export interface ParseResponse {
-  document_id: number
+  document_id: string
   parse_status: string
   parser_backend: string | null
   text_char_count: number | null
@@ -548,8 +548,8 @@ export interface ConflictResolution {
 }
 
 export interface Conflict {
-  id: number
-  knowledge_system_id: number
+  id: string
+  knowledge_system_id: string
   signature: string
   ctype: string
   severity: "error" | "warning"
@@ -567,12 +567,12 @@ export interface Conflict {
 }
 
 export interface ConflictEvidenceSource {
-  chunk_id: number
+  chunk_id: string
   chunk_index: number
-  document_id: number | null
+  document_id: string | null
   document: string | null
   folder: string | null
-  job_id: number | null
+  job_id: string | null
   snippet: string
 }
 
@@ -633,11 +633,11 @@ export interface IndividualList {
 
 /** Where an ABox fact came from: the source chunk (→ document) + a text snippet. */
 export interface AboxSource {
-  chunk_id: number | null
-  document_id: number | null
+  chunk_id: string | null
+  document_id: string | null
   document: string | null
   snippet: string
-  job_id?: number | null
+  job_id?: string | null
   model?: string | null
   prompt_snapshot?: Record<string, unknown> | null
   method?: "extraction" | "manual" | "review"
@@ -687,18 +687,18 @@ export interface ResolutionCandidate {
 }
 
 export interface ResolutionQueueItem {
-  id: number
+  id: string
   surface_form: string
   class_iri: string | null
   class_label: string | null
   confidence: number | null
   candidates: ResolutionCandidate[]
-  source_chunk_id: number | null
+  source_chunk_id: string | null
   created_at: string
 }
 
 export interface ResolutionDecision {
-  id: number
+  id: string
   surface_form: string
   class_label: string | null
   status: "matched" | "new" | "distinct"
@@ -723,7 +723,7 @@ export interface ResolutionDecisions {
 }
 
 export interface Reconciliation {
-  id: number
+  id: string
   slot: string // "domain" | "range"
   property_label: string
   property_iri: string | null
@@ -741,7 +741,7 @@ export interface ReconciliationList {
 }
 
 export interface ValidationDecision {
-  id: number
+  id: string
   property_label: string
   property_iri: string | null
   xsd_type: string | null

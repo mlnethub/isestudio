@@ -55,7 +55,7 @@ export default function SideNav() {
   const { t } = useI18n()
   const pathname = useLocation().pathname
   const seg = pathname.split("/").filter(Boolean)
-  const ksId = seg[0] === "knowledge" && seg[1] != null ? Number(seg[1]) : null
+  const ksId = seg[0] === "knowledge" && seg[1] != null ? seg[1] : null
   const active = seg[2] ?? "overview"
   const activeSub = seg[3] ?? "conflicts"
   const [ks, setKs] = useState<KnowledgeSystem | null>(null)

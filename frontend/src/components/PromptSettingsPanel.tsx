@@ -49,7 +49,7 @@ export default function PromptSettingsPanel({
   ksId,
   canWrite,
 }: {
-  ksId: number
+  ksId: string
   canWrite: boolean
 }) {
   const { locale, t } = useI18n()

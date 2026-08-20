@@ -16,7 +16,7 @@ import {
 } from "@/components/review-bits"
 
 type Row = {
-  id: number
+  id: string
   surface: string
   classLabel: string | null
   decisionStatus: ResolutionDecision["status"] | null
@@ -36,7 +36,7 @@ type Row = {
 export default function ResolutionPanel({
   ksId, canWrite, onChanged,
 }: {
-  ksId: number
+  ksId: string
   canWrite: boolean
   onChanged?: () => void
 }) {
@@ -44,7 +44,7 @@ export default function ResolutionPanel({
   const confirmAction = useConfirm()
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState<number | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
   const [selected, setSelected] = useState<ResolutionQueueItem | null>(null)
   const [query, setQuery] = useState("")
   const [filter, setFilter] = useState<ReviewFilter>("all")
@@ -107,7 +107,7 @@ export default function ResolutionPanel({
   }, [ksId, t])
   useEffect(() => { load() }, [load])
 
-  const resolve = async (id: number, action: "match" | "new", iri?: string) => {
+  const resolve = async (id: string, action: "match" | "new", iri?: string) => {
     setBusy(id)
     try {
       const result = await api.resolveQueueItem(ksId, id, action, iri)

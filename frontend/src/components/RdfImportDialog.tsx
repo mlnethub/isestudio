@@ -42,7 +42,7 @@ export default function RdfImportDialog({
   onOpenChange,
   onImported,
 }: {
-  ksId: number
+  ksId: string
   baseIri: string
   open: boolean
   onOpenChange: (open: boolean) => void

@@ -20,7 +20,7 @@ import { Combobox } from "@/components/ui/combobox"
 const NONE = "__none__"
 const DATATYPES = ["string", "integer", "decimal", "boolean", "date", "dateTime"]
 
-async function apply(ksId: number, op: EditOp, onSaved: (r: EditResult) => void, done: () => void, t: Translate) {
+async function apply(ksId: string, op: EditOp, onSaved: (r: EditResult) => void, done: () => void, t: Translate) {
   try {
     const res = await api.editOntology(ksId, op)
     onSaved(res)
@@ -34,7 +34,7 @@ async function apply(ksId: number, op: EditOp, onSaved: (r: EditResult) => void,
 export function ClassDialog({
   ksId, open, onOpenChange, onSaved, initial,
 }: {
-  ksId: number
+  ksId: string
   open: boolean
   onOpenChange: (o: boolean) => void
   onSaved: (r: EditResult) => void
@@ -89,7 +89,7 @@ export function ClassDialog({
 export function PropertyDialog({
   ksId, open, onOpenChange, onSaved, classes, initial,
 }: {
-  ksId: number
+  ksId: string
   open: boolean
   onOpenChange: (o: boolean) => void
   onSaved: (r: EditResult) => void
@@ -189,7 +189,7 @@ export function PropertyDialog({
 export function AxiomDialog({
   ksId, open, onOpenChange, onSaved, classes,
 }: {
-  ksId: number
+  ksId: string
   open: boolean
   onOpenChange: (o: boolean) => void
   onSaved: (r: EditResult) => void

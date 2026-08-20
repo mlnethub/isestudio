@@ -25,7 +25,7 @@ function RoleBadge({ role }: { role: Role }) {
   return <Badge variant="outline">{t("common.viewer")}</Badge>
 }
 
-export default function MembersPanel({ ksId, canManage }: { ksId: number; canManage: boolean }) {
+export default function MembersPanel({ ksId, canManage }: { ksId: string; canManage: boolean }) {
   const { t } = useI18n()
   const confirmAction = useConfirm()
   const [members, setMembers] = useState<Member[]>([])
@@ -40,7 +40,7 @@ export default function MembersPanel({ ksId, canManage }: { ksId: number; canMan
   const [selected, setSelected] = useState<GrantableUser | null>(null)
   const [q, setQ] = useState("")
   const [page, setPage] = useState(0)
-  const [detailUserId, setDetailUserId] = useState<number | null>(null)
+  const [detailUserId, setDetailUserId] = useState<string | null>(null)
   useEffect(() => { setPage(0) }, [q])
 
   // Search grantable users (debounced) only once the user types — an empty box shows no list.

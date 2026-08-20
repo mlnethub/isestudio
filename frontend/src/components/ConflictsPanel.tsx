@@ -43,7 +43,7 @@ type Row = {
 export default function ConflictsPanel({
   ksId, conflicts, canWrite, onChanged,
 }: {
-  ksId: number
+  ksId: string
   conflicts: Conflict[]
   canWrite: boolean
   onChanged: () => void

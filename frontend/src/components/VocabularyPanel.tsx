@@ -46,7 +46,7 @@ function pickPrimaryScheme(schemes: VocabularyScheme[]): string {
 export default function VocabularyPanel({
   ksId, view, canWrite,
 }: {
-  ksId: number
+  ksId: string
   view: OntologyView
   canWrite: boolean
 }) {
@@ -500,7 +500,7 @@ function LabelGroup({ title, labels }: { title: string; labels: VocabularyConcep
 function SchemeDialog({
   ksId, state, onOpenChange, onSaved,
 }: {
-  ksId: number
+  ksId: string
   state: { open: boolean; initial: VocabularyScheme | null }
   onOpenChange: (open: boolean) => void
   onSaved: () => void
@@ -552,7 +552,7 @@ function SchemeDialog({
 function TermDialog({
   ksId, state, schemes, selectedSchemeIri, entityOptions, onOpenChange, onSaved,
 }: {
-  ksId: number
+  ksId: string
   state: { open: boolean; initial: VocabularyConcept | null }
   schemes: VocabularyScheme[]
   selectedSchemeIri: string

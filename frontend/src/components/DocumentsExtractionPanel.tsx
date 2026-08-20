@@ -12,7 +12,7 @@ export default function DocumentsExtractionPanel({
   canWrite,
   onChanged,
 }: {
-  ksId: number
+  ksId: string
   canWrite: boolean
   onChanged?: () => void
 }) {

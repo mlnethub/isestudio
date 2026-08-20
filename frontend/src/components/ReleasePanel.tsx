@@ -56,7 +56,7 @@ type ToolTab = "versions" | "diff" | "exports"
 export default function ReleasePanel({
   ksId, canWrite, canManage, onChanged,
 }: {
-  ksId: number
+  ksId: string
   canWrite: boolean
   canManage: boolean
   onChanged?: () => void
@@ -71,14 +71,14 @@ export default function ReleasePanel({
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
   const [toolTab, setToolTab] = useState<ToolTab>("versions")
-  const [expandedReleaseId, setExpandedReleaseId] = useState<number | null>(null)
-  const [expandedExportId, setExpandedExportId] = useState<number | null>(null)
+  const [expandedReleaseId, setExpandedReleaseId] = useState<string | null>(null)
+  const [expandedExportId, setExpandedExportId] = useState<string | null>(null)
   const [fromId, setFromId] = useState("")
   const [toId, setToId] = useState("")
   const [exportSource, setExportSource] = useState("")
   const [diff, setDiff] = useState<ReleaseDiff | null>(null)
   const [qualityGateFailure, setQualityGateFailure] = useState<{
-    releaseId: number
+    releaseId: string
     gate: ReleaseQualityGate
   } | null>(null)
 
@@ -170,7 +170,7 @@ export default function ReleasePanel({
   }
 
   const startExport = (layer: ReleaseLayer) => {
-    const releaseId = exportSource === "workspace" ? undefined : Number(exportSource)
+    const releaseId = exportSource === "workspace" ? undefined : exportSource
     return perform(
       `export-${layer}-${exportSource}`,
       () => api.createExport(ksId, layer, releaseId),
@@ -182,7 +182,7 @@ export default function ReleasePanel({
     if (!fromId || !toId || fromId === toId) return
     setBusy("diff")
     try {
-      setDiff(await api.diffReleases(ksId, Number(fromId), Number(toId)))
+      setDiff(await api.diffReleases(ksId, fromId, toId))
     } catch (error) {
       toast.error((error as Error).message.replace(/^\d+:\s*/, ""))
     } finally {

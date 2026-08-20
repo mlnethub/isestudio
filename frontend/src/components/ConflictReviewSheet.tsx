@@ -141,7 +141,7 @@ export default function ConflictReviewSheet({
   onResolve,
   onDismiss,
 }: {
-  ksId: number
+  ksId: string
   conflict: Conflict | null
   canWrite: boolean
   busy: boolean
@@ -173,7 +173,7 @@ export default function ConflictReviewSheet({
     [conflict],
   )
   const evidenceSources = useMemo(() => {
-    const byChunk = new Map<number, { source: ConflictEvidenceSource; axioms: string[] }>()
+    const byChunk = new Map<string, { source: ConflictEvidenceSource; axioms: string[] }>()
     for (const axiom of context?.evidence ?? []) {
       for (const source of axiom.sources) {
         const current = byChunk.get(source.chunk_id)

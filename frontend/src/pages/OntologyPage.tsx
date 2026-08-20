@@ -46,7 +46,7 @@ export default function OntologyPage() {
   const confirmAction = useConfirm()
   const { id, section: sectionParam, sub: subParam } = useParams()
   const [searchParams] = useSearchParams()
-  const ksId = Number(id)
+  const ksId = id ?? ""
   const section = sectionParam ?? "overview"
   const REVIEW_SUBS = ["conflicts", "resolution", "terminology", "validation"]
   const reviewSub = subParam && REVIEW_SUBS.includes(subParam) ? subParam : "conflicts"
@@ -81,7 +81,7 @@ export default function OntologyPage() {
 
   // Ids of jobs this page already finished, so the adopt effect below never re-adopts a job
   // whose completion we just handled (the `jobs` array is briefly stale after refresh()).
-  const finishedJobs = useRef<Set<number>>(new Set())
+  const finishedJobs = useRef<Set<string>>(new Set())
 
   // Adopt a still-running job after a page (re)load — progress is persisted server-side,
   // so a refresh never loses the in-progress extraction.

@@ -21,8 +21,8 @@ export default function SettingsPage() {
   const [providers, setProviders] = useState<Provider[]>([])
   const [s, setS] = useState<SystemSettings | null>(null)
   const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState<number | null>(null)
-  const [testStatus, setTestStatus] = useState<Record<number, "ok" | "fail">>({})
+  const [busy, setBusy] = useState<string | null>(null)
+  const [testStatus, setTestStatus] = useState<Record<string, "ok" | "fail">>({})
   const [editing, setEditing] = useState<Provider | "new" | null>(null)
 
   const load = useCallback(async () => {

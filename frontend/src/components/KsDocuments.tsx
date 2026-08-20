@@ -142,7 +142,7 @@ function FolderCombobox({
 export default function KsDocuments({
   ksId, canWrite, onChanged,
 }: {
-  ksId: number
+  ksId: string
   canWrite: boolean
   onChanged?: () => void
 }) {
@@ -155,7 +155,7 @@ export default function KsDocuments({
   const [serverFolders, setServerFolders] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
-  const [parsing, setParsing] = useState<number | null>(null)
+  const [parsing, setParsing] = useState<string | null>(null)
   const [batchParsing, setBatchParsing] = useState(false)
   const [dragOver, setDragOver] = useState(false)
   const [cwd, setCwd] = useState(() => searchParams.get("folder") || "/")
@@ -163,7 +163,7 @@ export default function KsDocuments({
   const [search, setSearch] = useState("")
   const [debouncedSearch, setDebouncedSearch] = useState("")
   const [page, setPage] = useState(0)
-  const [selectedDocIds, setSelectedDocIds] = useState<Set<number>>(new Set())
+  const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set())
   const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set())
   const [moveDoc, setMoveDoc] = useState<DocumentMeta | null>(null)
   const [moveTarget, setMoveTarget] = useState("/")
@@ -228,7 +228,7 @@ export default function KsDocuments({
 
   const afterChange = useCallback(() => { refresh(); onChanged?.() }, [refresh, onChanged])
 
-  const toggleDocument = (documentId: number) => {
+  const toggleDocument = (documentId: string) => {
     setSelectedDocIds((current) => {
       const next = new Set(current)
       if (next.has(documentId)) next.delete(documentId)
@@ -266,7 +266,7 @@ export default function KsDocuments({
   }
 
   const runBatchParse = useCallback(async (
-    documentIds: number[],
+    documentIds: string[],
     folders: string[],
     clearSelection = false,
   ) => {

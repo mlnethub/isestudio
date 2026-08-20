@@ -106,8 +106,8 @@ export default function DocumentDetailPage() {
   const { locale, t } = useI18n()
   const { id, documentId } = useParams()
   const location = useLocation()
-  const ksId = Number(id)
-  const docId = Number(documentId)
+  const ksId = id ?? ""
+  const docId = documentId ?? ""
   const [document, setDocument] = useState<DocumentMeta | null>(null)
   const [contribution, setContribution] = useState<DocumentContribution | null>(null)
   const [chunks, setChunks] = useState<Chunk[]>([])
@@ -121,7 +121,7 @@ export default function DocumentDetailPage() {
   const backPath = `/knowledge/${ksId}/documents${sourceFolder && sourceFolder !== "/" ? `?folder=${encodeURIComponent(sourceFolder)}` : ""}`
 
   useEffect(() => {
-    if (!Number.isFinite(ksId) || !Number.isFinite(docId)) return
+    if (!ksId || !docId) return
     let cancelled = false
     setLoading(true)
     setError("")
@@ -156,7 +156,7 @@ export default function DocumentDetailPage() {
 
   const searchMatches = useMemo(() => {
     const searchTerm = query.trim()
-    const byChunk = new Map<number, TextMatch[]>()
+    const byChunk = new Map<string, TextMatch[]>()
     const locations: TextMatch[] = []
     if (!searchTerm) return { byChunk, locations, total: 0 }
 
@@ -206,7 +206,7 @@ export default function DocumentDetailPage() {
     return () => window.cancelAnimationFrame(frame)
   }, [activeMatchIndex, page, searchMatches.locations])
 
-  if (!Number.isFinite(ksId) || !Number.isFinite(docId)) {
+  if (!ksId || !docId) {
     return <Navigate to="/" replace />
   }
 

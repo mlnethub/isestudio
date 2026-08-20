@@ -20,8 +20,8 @@ function RoleBadge({ role }: { role: Role }) {
 export default function MemberDetailSheet({
   ksId, userId, onClose,
 }: {
-  ksId: number
-  userId: number
+  ksId: string
+  userId: string
   onClose: () => void
 }) {
   const { locale, t } = useI18n()

@@ -85,8 +85,8 @@ export default function KnowledgePage() {
     setCreating(true)
     try {
       const ks = await api.createKS(name.trim(), desc.trim(), {
-        llm_provider_id: Number(llmProv),         // 0 => system default
-        embedding_provider_id: Number(embProv),
+        llm_provider_id: llmProv === SYS ? undefined : llmProv,         // SYS sentinel => system default
+        embedding_provider_id: embProv === SYS ? undefined : embProv,
       })
       toast.success(t("knowledge.created", { name: ks.name }))
       setOpen(false)
@@ -133,8 +133,8 @@ export default function KnowledgePage() {
       await api.updateKS(editKS.id, {
         name: editName.trim(),
         description: editDesc,
-        llm_provider_id: Number(editLlmProv),        // 0 => clear to system default
-        embedding_provider_id: Number(editEmbProv),
+        llm_provider_id: editLlmProv === SYS ? undefined : editLlmProv,        // SYS sentinel => clear to system default
+        embedding_provider_id: editEmbProv === SYS ? undefined : editEmbProv,
       })
       toast.success(t("common.saved"))
       setEditKS(null)
