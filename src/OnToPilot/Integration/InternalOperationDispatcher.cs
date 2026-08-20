@@ -1319,13 +1319,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeExtractionListJobsAsync(InternalRequest request, CancellationToken ct)
     {
         var jobs = ResolveExtractionJobs();
-        if (jobs is null || request.KnowledgeSystemId is null)
+        if (jobs is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(Array.Empty<object>());
         }
         return WrapAsync(async () =>
         {
-            var rows = await jobs.ListAsync(request.KnowledgeSystemId.Value, ct)
+            var rows = await jobs.ListAsync(request.KnowledgeSystemGuid.Value, ct)
                 .ConfigureAwait(false);
             return (object?)rows.Select(ExtractionJobOut.From).ToList();
         });
@@ -1334,7 +1334,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeExtractionGetJobAsync(InternalRequest request, CancellationToken ct)
     {
         var jobs = ResolveExtractionJobs();
-        if (jobs is null || request.KnowledgeSystemId is null
+        if (jobs is null || request.KnowledgeSystemGuid is null
             || !Guid.TryParse(request.ResourceId, out var jobId))
         {
             return Task.FromResult<object?>(EmptyExtractionJob());

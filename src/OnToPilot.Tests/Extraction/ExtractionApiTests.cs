@@ -153,7 +153,7 @@ public sealed class ExtractionApiTests
         var (ksId, ksGuid) = await CreateKsAsync(app, client, "conflict-delete");
         var upload = await UploadAsync(client, ksId, "x.txt", "x\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         var jobId = SeedExtractionJob(app, ksGuid, kind: "tbox", status: "running", model: "x");
 
@@ -178,7 +178,7 @@ public sealed class ExtractionApiTests
         var (ksId, ksGuid) = await CreateKsAsync(app, client, "conflict-parse");
         var upload = await UploadAsync(client, ksId, "y.txt", "y\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         var jobId = SeedExtractionJob(app, ksGuid, kind: "abox", status: "pending", model: "y");
 
@@ -270,7 +270,7 @@ public sealed class ExtractionApiTests
         return (client, adminId);
     }
 
-    private static async Task<(long LegacyId, Guid Guid)> CreateKsAsync(
+    private static async Task<(Guid KsId, Guid KsGuid)> CreateKsAsync(
         AuthTestWebApplicationFactory app, HttpClient client, string tag)
     {
         var response = await client.PostAsJsonAsync("/api/knowledge", new
@@ -280,22 +280,14 @@ public sealed class ExtractionApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var legacy = body.GetProperty("id").GetInt64();
-        var guid = LookupKsGuid(app, legacy);
-        return (legacy, guid);
-    }
-
-    private static Guid LookupKsGuid(AuthTestWebApplicationFactory app, long legacyId)
-    {
-        var db = app.CreateDbContext();
-        return db.KnowledgeSystems
-            .Where(k => k.LegacyId == legacyId)
-            .Select(k => k.Id)
-            .Single();
+        // The wire `id` is the KS primary-key Guid (the migration dropped
+        // the legacy integer from the DTO).
+        var ksId = body.GetProperty("id").GetGuid();
+        return (ksId, ksId);
     }
 
     private static async Task<HttpResponseMessage> UploadAsync(
-        HttpClient client, long ksId, string fileName, string content, string folder)
+        HttpClient client, Guid ksId, string fileName, string content, string folder)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(content);
         var multipart = new MultipartFormDataContent

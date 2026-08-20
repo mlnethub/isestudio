@@ -398,7 +398,7 @@ public sealed class ExtractionRunApiTests
         return (client, viewerId);
     }
 
-    private static async Task<(long LegacyId, Guid KsGuid)> SeedKnowledgeSystemAsync(
+    private static async Task<(Guid KsId, Guid KsGuid)> SeedKnowledgeSystemAsync(
         AuthTestWebApplicationFactory app, HttpClient client, string tag)
     {
         var response = await client.PostAsJsonAsync("/api/knowledge", new
@@ -408,18 +408,10 @@ public sealed class ExtractionRunApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var legacy = body.GetProperty("id").GetInt64();
-        var guid = LookupKsGuid(app, legacy);
-        return (legacy, guid);
-    }
-
-    private static Guid LookupKsGuid(AuthTestWebApplicationFactory app, long legacyId)
-    {
-        var db = app.CreateDbContext();
-        return db.KnowledgeSystems
-            .Where(k => k.LegacyId == legacyId)
-            .Select(k => k.Id)
-            .Single();
+        // The wire `id` is the KS primary-key Guid (the migration dropped
+        // the legacy integer from the DTO).
+        var ksId = body.GetProperty("id").GetGuid();
+        return (ksId, ksId);
     }
 
     private static string LookupKsTboxIri(AuthTestWebApplicationFactory app, Guid ksGuid)
@@ -452,7 +444,7 @@ public sealed class ExtractionRunApiTests
     }
 
     private static async Task WaitForJobAsync(
-        HttpClient client, long ksId, Guid jobId, TimeSpan timeout)
+        HttpClient client, Guid ksId, Guid jobId, TimeSpan timeout)
     {
         var deadline = DateTimeOffset.UtcNow + timeout;
         while (DateTimeOffset.UtcNow < deadline)

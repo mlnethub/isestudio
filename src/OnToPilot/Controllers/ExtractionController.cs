@@ -5,7 +5,7 @@ using OnToPilot.Application.Integration;
 namespace OnToPilot.Controllers;
 
 /// <summary>
-/// Internal <c>/api/knowledge/{ks_id}/extract*</c> surface &mdash;
+/// Internal <c>/api/knowledge/{id}/extract*</c> surface &mdash;
 /// extraction orchestration (TBox, ABox, combined) and job inspection.
 /// </summary>
 [ApiController]
@@ -14,23 +14,23 @@ public sealed class ExtractionController : InternalControllerBase
 {
     public ExtractionController(IIntegrationApiFacade facade) : base(facade) { }
 
-    [HttpPost("api/knowledge/{ks_id:long}/extract")]
-    public Task<IActionResult> RunAsync(long ks_id, [FromBody] object body, CancellationToken ct)
-        => InvokeAsync("extraction.run", ReqWithBody(body, ks: ks_id), ct);
+    [HttpPost("api/knowledge/{id:guid}/extract")]
+    public Task<IActionResult> RunAsync(Guid id, [FromBody] object body, CancellationToken ct)
+        => InvokeAsync("extraction.run", ReqGuidWithBody(body, id), ct);
 
-    [HttpPost("api/knowledge/{ks_id:long}/extract-all")]
-    public Task<IActionResult> RunCombinedAsync(long ks_id, [FromBody] object body, CancellationToken ct)
-        => InvokeAsync("extraction.run_combined", ReqWithBody(body, ks: ks_id), ct);
+    [HttpPost("api/knowledge/{id:guid}/extract-all")]
+    public Task<IActionResult> RunCombinedAsync(Guid id, [FromBody] object body, CancellationToken ct)
+        => InvokeAsync("extraction.run_combined", ReqGuidWithBody(body, id), ct);
 
-    [HttpPost("api/knowledge/{ks_id:long}/extract-instances")]
-    public Task<IActionResult> RunInstancesAsync(long ks_id, [FromBody] object body, CancellationToken ct)
-        => InvokeAsync("extraction.run_instances", ReqWithBody(body, ks: ks_id), ct);
+    [HttpPost("api/knowledge/{id:guid}/extract-instances")]
+    public Task<IActionResult> RunInstancesAsync(Guid id, [FromBody] object body, CancellationToken ct)
+        => InvokeAsync("extraction.run_instances", ReqGuidWithBody(body, id), ct);
 
-    [HttpGet("api/knowledge/{ks_id:long}/jobs")]
-    public Task<IActionResult> ListJobsAsync(long ks_id, CancellationToken ct)
-        => InvokeAsync("extraction.list_jobs", Req(ks: ks_id), ct);
+    [HttpGet("api/knowledge/{id:guid}/jobs")]
+    public Task<IActionResult> ListJobsAsync(Guid id, CancellationToken ct)
+        => InvokeAsync("extraction.list_jobs", ReqGuid(id), ct);
 
-    [HttpGet("api/knowledge/{ks_id:long}/jobs/{job_id}")]
-    public Task<IActionResult> GetJobAsync(long ks_id, string job_id, CancellationToken ct)
-        => InvokeAsync("extraction.get_job", Req(ks: ks_id, res: job_id), ct);
+    [HttpGet("api/knowledge/{id:guid}/jobs/{job_id}")]
+    public Task<IActionResult> GetJobAsync(Guid id, string job_id, CancellationToken ct)
+        => InvokeAsync("extraction.get_job", ReqGuid(ks: id, res: job_id), ct);
 }
