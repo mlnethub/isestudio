@@ -37,11 +37,15 @@ internal static class ApiContractScenario
 
     private static HttpRequestMessage BuildRequest(OperationCase operation)
     {
-        // Internal paths embed placeholders like {ks_id}; the test
+        // Internal paths embed placeholders like {id}; the test
         // substitutes a fixed id so the controller matches the route and
-        // executes the dispatcher.
+        // executes the dispatcher. After the Guid migration every
+        // {ks_id} slot in the baseline was renamed to {id} and now
+        // binds the `:guid` route constraint, so the substitution must
+        // also be a Guid — the previous `"1"` placeholder now hits the
+        // 404 path because `{id:guid}` rejects a non-Guid value.
         var path = operation.Path
-            .Replace("{ks_id}", "1")
+            .Replace("{id}", Guid.NewGuid().ToString("N"))
             .Replace("{public_id}", "demo")
             .Replace("{publicId}", "demo")
             .Replace("{document_id}", Guid.NewGuid().ToString("N"))
