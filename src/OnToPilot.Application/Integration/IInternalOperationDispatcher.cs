@@ -30,6 +30,17 @@ public interface IInternalOperationDispatcher
         Actor actor,
         CancellationToken cancellationToken);
 
+    /// <summary>
+    /// Guid-keyed overload used by the migrated <c>ontology.get</c> arm
+    /// (<c>InvokeOntologyGetAsync</c>) and the typed facade. The
+    /// <c>long</c> overload above is retained for the out-of-scope MCP
+    /// caller and will be removed when the Stage 2 placeholder is filled.
+    /// </summary>
+    Task<OntologyResponse> GetOntologyAsync(
+        Guid knowledgeSystemId,
+        Actor actor,
+        CancellationToken cancellationToken);
+
     /// <summary>Stage 2/3 helper kept on the dispatcher for the typed facade surface.</summary>
     Task<ChangePreview> PreviewOntologyChangesAsync(
         long knowledgeSystemId,

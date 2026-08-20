@@ -335,10 +335,26 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         // Stage 2 will layer the real OntologyEditor call here; for now
         // return an empty TBox so the typed surface still compiles and the
         // smoke test sees a non-throwing result.
-        return Task.FromResult(new OntologyResponse(
+        return EmptyOntologyResponseAsync();
+    }
+
+    /// <inheritdoc />
+    public Task<OntologyResponse> GetOntologyAsync(
+        Guid knowledgeSystemId,
+        Actor actor,
+        CancellationToken cancellationToken)
+    {
+        // Same Stage 2 placeholder as the long overload. The Guid overload
+        // is the one the migrated ontology.get arm uses; the long overload
+        // is retained only for the out-of-scope MCP caller (1L singleton id)
+        // and will be dropped once the placeholder is filled in Stage 2.
+        return EmptyOntologyResponseAsync();
+    }
+
+    private static Task<OntologyResponse> EmptyOntologyResponseAsync() =>
+        Task.FromResult(new OntologyResponse(
             Classes: Array.Empty<OntologyClass>(),
             Properties: Array.Empty<OntologyProperty>()));
-    }
 
     /// <inheritdoc />
     public Task<ChangePreview> PreviewOntologyChangesAsync(
@@ -355,9 +371,11 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeOntologyGetAsync(InternalRequest request, CancellationToken ct)
     {
         // Reuse the typed helper so the dispatcher and the typed facade
-        // surface stay in lock-step.
+        // surface stay in lock-step. The route binds only the Guid field
+        // (ReqGuid), so read KnowledgeSystemGuid and leave the legacy long
+        // field alone.
         return GetOntologyAsync(
-            request.KnowledgeSystemId ?? 0L,
+            request.KnowledgeSystemGuid ?? Guid.Empty,
             request.Actor,
             ct).ContinueWith(t => (object?)t.Result, ct);
     }
@@ -1444,8 +1462,11 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     /// once Stage 2 lands) is currently <c>pending</c> or <c>running</c>.
     /// The middleware maps the exception to HTTP 409 with the structured
     /// <c>{"detail": { "error": "...", "job_id": "..." }}</c> envelope.
-    /// <para>Routes without a <c>KnowledgeSystemId</c> (admin / cross-ks
-    /// endpoints) are treated as not-affected and pass through.</para>
+    /// <para>Routes carrying neither a <c>KnowledgeSystemId</c> nor a
+    /// <c>KnowledgeSystemGuid</c> (admin / cross-ks endpoints) are treated
+    /// as not-affected and pass through. Both fields are checked because
+    /// the migrated ABox/Ontology routes bind only the Guid bridge field
+    /// via <c>ReqGuid</c>.</para>
     /// </summary>
     private async Task RejectIfExtractionActiveAsync(
         InternalRequest request,

@@ -44,6 +44,15 @@ public sealed class IntegrationApiFacade : IIntegrationApiFacade
     }
 
     /// <inheritdoc />
+    public Task<OntologyResponse> GetOntologyAsync(
+        Guid knowledgeSystemId,
+        Actor actor,
+        CancellationToken cancellationToken)
+    {
+        return _dispatcher.GetOntologyAsync(knowledgeSystemId, actor, cancellationToken);
+    }
+
+    /// <inheritdoc />
     public Task<QueryResponse> QueryAsync(
         string publicId,
         string sparql,

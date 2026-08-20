@@ -21,6 +21,17 @@ public interface IIntegrationApiFacade
         CancellationToken cancellationToken);
 
     /// <summary>
+    /// Guid-keyed overload for the migrated internal <c>ontology.get</c>
+    /// surface. The <c>long</c> overload above is retained for the
+    /// out-of-scope MCP <c>get_ontology</c> caller and will be removed when
+    /// the Stage 2 placeholder is filled.
+    /// </summary>
+    Task<OntologyResponse> GetOntologyAsync(
+        Guid knowledgeSystemId,
+        Actor actor,
+        CancellationToken cancellationToken);
+
+    /// <summary>
     /// Run a read-only SPARQL query against the named knowledge system's
     /// published graph. Used by the external API
     /// (<c>POST /api/v1/knowledge-systems/{public_id}/query</c>); task 3 owns
