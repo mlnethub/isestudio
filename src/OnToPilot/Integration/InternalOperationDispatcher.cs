@@ -354,7 +354,15 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private static Task<OntologyResponse> EmptyOntologyResponseAsync() =>
         Task.FromResult(new OntologyResponse(
             Classes: Array.Empty<OntologyClass>(),
-            Properties: Array.Empty<OntologyProperty>()));
+            ObjectProperties: Array.Empty<OntologyProperty>(),
+            DataProperties: Array.Empty<OntologyProperty>(),
+            Axioms: new OntologyAxioms(
+                SubclassOf: Array.Empty<SubclassAxiom>(),
+                DisjointWith: Array.Empty<PairAxiom>(),
+                EquivalentClass: Array.Empty<PairAxiom>()),
+            Labels: new Dictionary<string, string>(),
+            Stats: new OntologyStats(0, 0, 0),
+            KnowledgeSystem: null));
 
     /// <inheritdoc />
     public Task<ChangePreview> PreviewOntologyChangesAsync(

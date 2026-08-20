@@ -42,7 +42,8 @@ public sealed class FacadeSmokeTests
         var response = await facade.GetOntologyAsync(1, new Actor("system"), CancellationToken.None);
         Assert.NotNull(response);
         Assert.Empty(response.Classes);
-        Assert.Empty(response.Properties);
+        Assert.Empty(response.ObjectProperties);
+        Assert.Empty(response.DataProperties);
     }
 
     /// <summary>

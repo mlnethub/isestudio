@@ -379,10 +379,19 @@ public sealed class OnToPilotMcpTools
             _accessor.RequireScope(principal, McpTokenScopes.McpRead);
             var actor = new Actor(principal.User.Id.ToString());
             var response = await _facade.GetOntologyAsync(1L, actor, ct).ConfigureAwait(false);
+            // The MCP surface flattens the typed DTO's object + data
+            // property split into a single wire field for backward
+            // compatibility with the pre-Stage-2 placeholder. Stage 3
+            // tooling (if it lands an ontology MCP arm of its own) can
+            // split this back into object_properties / data_properties.
+            var combined = new System.Collections.Generic.List<OnToPilot.Application.Foundation.OntologyProperty>(
+                response.ObjectProperties.Count + response.DataProperties.Count);
+            combined.AddRange(response.ObjectProperties);
+            combined.AddRange(response.DataProperties);
             return new
             {
                 classes = response.Classes,
-                properties = response.Properties,
+                properties = combined,
             };
         }, cancellationToken);
     }
