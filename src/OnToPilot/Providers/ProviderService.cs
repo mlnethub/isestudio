@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
+using OnToPilot.Api;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Ontology;
@@ -77,7 +78,7 @@ public sealed class ProviderService
         ValidateCommon(req.Name, req.Kind, req.BaseUrl, req.Model, req.ConcurrencyLimit);
         if (string.IsNullOrEmpty(req.ApiKey))
         {
-            throw new InvalidOperationException("api_key is required when creating a provider.");
+            throw new ValidationException("api_key is required when creating a provider.");
         }
 
         var entity = new ProviderEntity
@@ -307,7 +308,7 @@ public sealed class ProviderService
 
     /// <summary>
     /// Validate the field set shared by create and update. The dispatcher
-    /// maps <see cref="InvalidOperationException"/> to a 4xx envelope via
+    /// maps <see cref="Api.ValidationException"/> to an HTTP 400 envelope via
     /// <see cref="Api.FastApiErrorMiddleware"/>; the error messages are
     /// intentionally human-readable because the dialog surfaces them
     /// verbatim through Sonner toasts.
@@ -316,20 +317,20 @@ public sealed class ProviderService
     {
         if (string.IsNullOrWhiteSpace(name))
         {
-            throw new InvalidOperationException("name is required.");
+            throw new ValidationException("name is required.");
         }
         if (string.IsNullOrWhiteSpace(baseUrl))
         {
-            throw new InvalidOperationException("base_url is required.");
+            throw new ValidationException("base_url is required.");
         }
         if (string.IsNullOrWhiteSpace(model))
         {
-            throw new InvalidOperationException("model is required.");
+            throw new ValidationException("model is required.");
         }
         if (concurrency < Llm.LlmProviderConfig.MinConcurrencyLimit
             || concurrency > Llm.LlmProviderConfig.MaxConcurrencyLimit)
         {
-            throw new InvalidOperationException(
+            throw new ValidationException(
                 $"concurrency_limit must be between {Llm.LlmProviderConfig.MinConcurrencyLimit} "
                 + $"and {Llm.LlmProviderConfig.MaxConcurrencyLimit}.");
         }
@@ -348,7 +349,7 @@ public sealed class ProviderService
         {
             KindLlm => KindLlm,
             KindEmbedding => KindEmbedding,
-            _ => throw new InvalidOperationException(
+            _ => throw new ValidationException(
                 $"kind must be '{KindLlm}' or '{KindEmbedding}'."),
         };
     }

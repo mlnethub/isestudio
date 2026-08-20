@@ -9,6 +9,23 @@ using OnToPilot.Serialization;
 namespace OnToPilot.Api;
 
 /// <summary>
+/// Thrown by service-layer validation guards (required-field checks,
+/// range / enum constraints, length caps). Caught by
+/// <see cref="FastApiErrorMiddleware"/> and translated to HTTP 400 with
+/// the standard FastAPI <c>{"detail": "..."}</c> envelope.
+///
+/// <para>Distinct from <see cref="SkosValidationException"/>: SKOS payload
+/// validation emits 422 (semantically "well-formed but semantically
+/// invalid") to mirror Pydantic's <c>ValidationError</c>; general request
+/// validation emits 400 ("the request itself is malformed").</para>
+/// </summary>
+public sealed class ValidationException : Exception
+{
+    public ValidationException(string message) : base(message) { }
+    public ValidationException(string message, Exception inner) : base(message, inner) { }
+}
+
+/// <summary>
 /// Translates every error response into FastAPI's <c>{"detail": ...}</c>
 /// envelope. The default ASP.NET Core pipeline exposes
 /// <c>application/problem+json</c> for unhandled routes, model validation
@@ -16,13 +33,16 @@ namespace OnToPilot.Api;
 /// "..."}</c> instead and our existing client tooling depends on that shape.
 /// </summary>
 /// <remarks>
-/// <para>The middleware handles three failure shapes:</para>
+/// <para>The middleware handles four failure shapes:</para>
 /// <list type="number">
 ///   <item>Unhandled exceptions → HTTP 500 <c>{"detail": "Internal server error"}</c> (no stack trace is ever leaked).</item>
 ///   <item><see cref="GraphWriteConflictException"/> → HTTP 409 with the
 ///         structured <c>{"detail": { "error": "...", "job_id": "..." }}</c>
 ///         envelope the brief's "抽取进行中的修改返回 409" requirement
 ///         mandates (an extraction is in progress, a mutation tried to land).</item>
+///   <item><see cref="ValidationException"/> → HTTP 400 with the plain-string
+///         <c>{"detail": "..."}</c> envelope (request-input problems:
+///         missing required field, length cap, kind / range enum, etc.).</item>
 ///   <item>Empty 4xx responses (e.g. unmatched routes) → envelope with a status-appropriate message.</item>
 /// </list>
 /// <para>Per-endpoint 401/403/404 details are emitted by the controller /
@@ -92,6 +112,21 @@ public sealed class FastApiErrorMiddleware
             _logger.LogInformation(
                 "SKOS payload validation refused: {Reason}", ex.Message);
             await WriteEnvelopeAsync(context, StatusCodes.Status422UnprocessableEntity, ex.Message)
+                .ConfigureAwait(false);
+            return;
+        }
+        catch (ValidationException ex)
+        {
+            // Service-layer validation guards (required-field checks,
+            // length caps, range / kind enum) emit this. Surface as 400
+            // Bad Request with the plain-string {"detail": "..."}
+            // envelope so contract tests that POST an empty body see a
+            // 4xx (client error) instead of a 5xx (server fault). The
+            // message is intentional and surfaced verbatim through the
+            // frontend toast, so keep it human-readable.
+            _logger.LogInformation(
+                "Request validation refused: {Reason}", ex.Message);
+            await WriteEnvelopeAsync(context, StatusCodes.Status400BadRequest, ex.Message)
                 .ConfigureAwait(false);
             return;
         }

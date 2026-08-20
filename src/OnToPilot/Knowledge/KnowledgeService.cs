@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using OnToPilot.Api;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Authorization;
 using OnToPilot.Infrastructure.Persistence;
@@ -118,11 +119,11 @@ public sealed class KnowledgeService
     {
         if (string.IsNullOrWhiteSpace(req.Name))
         {
-            throw new InvalidOperationException("name is required.");
+            throw new ValidationException("name is required.");
         }
         if (req.Name.Trim().Length > MaxNameLength)
         {
-            throw new InvalidOperationException($"name must be {MaxNameLength} characters or fewer.");
+            throw new ValidationException($"name must be {MaxNameLength} characters or fewer.");
         }
         var user = await ResolveUserAsync(actor, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Authenticated user not found.");
@@ -167,7 +168,7 @@ public sealed class KnowledgeService
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Editor)
         {
-            throw new InvalidOperationException(
+            throw new ValidationException(
                 "Editor access is required to update a knowledge system.");
         }
 
@@ -176,11 +177,11 @@ public sealed class KnowledgeService
             var trimmed = req.Name.Trim();
             if (trimmed.Length == 0)
             {
-                throw new InvalidOperationException("name cannot be empty.");
+                throw new ValidationException("name cannot be empty.");
             }
             if (trimmed.Length > MaxNameLength)
             {
-                throw new InvalidOperationException($"name must be {MaxNameLength} characters or fewer.");
+                throw new ValidationException($"name must be {MaxNameLength} characters or fewer.");
             }
             ks.Name = trimmed;
         }
@@ -188,7 +189,7 @@ public sealed class KnowledgeService
         {
             if (req.Description.Length > MaxDescriptionLength)
             {
-                throw new InvalidOperationException(
+                throw new ValidationException(
                     $"description must be {MaxDescriptionLength} characters or fewer.");
             }
             ks.Description = req.Description;
@@ -235,7 +236,7 @@ public sealed class KnowledgeService
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Owner)
         {
-            throw new InvalidOperationException(
+            throw new ValidationException(
                 "Owner access is required to delete a knowledge system.");
         }
 
@@ -329,20 +330,20 @@ public sealed class KnowledgeService
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Owner)
         {
-            throw new InvalidOperationException(
+            throw new ValidationException(
                 "Owner access is required to manage members.");
         }
 
         var roleNorm = (req.Role ?? "viewer").Trim().ToLowerInvariant();
         if (roleNorm is not ("viewer" or "editor"))
         {
-            throw new InvalidOperationException("role must be viewer or editor.");
+            throw new ValidationException("role must be viewer or editor.");
         }
 
         var username = (req.Username ?? string.Empty).Trim();
         if (username.Length == 0)
         {
-            throw new InvalidOperationException("username is required.");
+            throw new ValidationException("username is required.");
         }
         var target = await _db.Users.AsNoTracking()
             .FirstOrDefaultAsync(u => u.Username == username, ct)
@@ -353,7 +354,7 @@ public sealed class KnowledgeService
         }
         if (ks.OwnerId.HasValue && ks.OwnerId.Value == target.Id)
         {
-            throw new InvalidOperationException("This user is the owner.");
+            throw new ValidationException("This user is the owner.");
         }
 
         var existing = await _db.KSGrants
@@ -361,19 +362,24 @@ public sealed class KnowledgeService
             .ConfigureAwait(false);
         if (existing is null)
         {
-            _db.KSGrants.Add(new KSGrantEntity
+            var grant = new KSGrantEntity
             {
                 KnowledgeSystemId = ks.Id,
                 UserId = target.Id,
                 Role = roleNorm,
                 CreatedAt = _clock.GetUtcNow(),
-            });
+            };
+            // AllocateAndPersistAsync holds the per-table
+            // pg_advisory_xact_lock until COMMIT so two concurrent
+            // add-member calls cannot both INSERT legacy_id=0 and
+            // collide on ux_ksgrant_legacy_id.
+            await _allocator.AllocateAndPersistAsync(grant, ct).ConfigureAwait(false);
         }
         else
         {
             existing.Role = roleNorm;
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         await WriteAuditAsync(ks.Id, user, "member.add",
             $"Granted {roleNorm} to \"{target.Username}\"",
@@ -395,7 +401,7 @@ public sealed class KnowledgeService
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Owner)
         {
-            throw new InvalidOperationException(
+            throw new ValidationException(
                 "Owner access is required to manage members.");
         }
 
@@ -430,7 +436,7 @@ public sealed class KnowledgeService
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Owner)
         {
-            throw new InvalidOperationException(
+            throw new ValidationException(
                 "Owner access is required to view grantable users.");
         }
 
