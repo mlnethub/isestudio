@@ -402,7 +402,7 @@ public sealed class VocabularyApiTests
     // -----------------------------------------------------------------
 
     private static async Task<string> CreateSchemeAsync(
-        AuthTestWebApplicationFactory app, HttpClient client, long ksId, string title)
+        AuthTestWebApplicationFactory app, HttpClient client, Guid ksId, string title)
     {
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/vocabulary/schemes",
@@ -420,7 +420,7 @@ public sealed class VocabularyApiTests
     }
 
     private static async Task<string> CreateConceptAsync(
-        AuthTestWebApplicationFactory app, HttpClient client, long ksId,
+        AuthTestWebApplicationFactory app, HttpClient client, Guid ksId,
         string schemeIri, string prefLabel)
     {
         var response = await client.PostAsJsonAsync(
@@ -480,7 +480,7 @@ public sealed class VocabularyApiTests
         return (client, adminId);
     }
 
-    private static async Task<(long LegacyId, Guid KsGuid)> SeedKnowledgeSystemAsync(
+    private static async Task<(Guid KsId, Guid KsGuid)> SeedKnowledgeSystemAsync(
         AuthTestWebApplicationFactory app, HttpClient client, string tag)
     {
         var response = await client.PostAsJsonAsync("/api/knowledge", new
@@ -490,18 +490,10 @@ public sealed class VocabularyApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var legacy = body.GetProperty("id").GetInt64();
-        var guid = LookupKsGuid(app, legacy);
-        return (legacy, guid);
-    }
-
-    private static Guid LookupKsGuid(AuthTestWebApplicationFactory app, long legacyId)
-    {
-        var db = app.CreateDbContext();
-        return db.KnowledgeSystems
-            .Where(k => k.LegacyId == legacyId)
-            .Select(k => k.Id)
-            .Single();
+        // The wire `id` is the KS primary-key Guid (the migration removed
+        // the legacy integer from the DTO).
+        var ksId = body.GetProperty("id").GetGuid();
+        return (ksId, ksId);
     }
 
     private static string LookupKsPublicId(

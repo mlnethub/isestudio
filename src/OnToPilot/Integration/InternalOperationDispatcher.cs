@@ -1861,6 +1861,22 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     }
 
     /// <summary>Resolve the bound <see cref="KnowledgeSystemEntity"/> from the
+    /// internal <c>{id:guid}</c> route id, or <c>null</c> when no KS is bound or
+    /// the DbContext isn't wired (hand-built dispatcher in unit tests).
+    /// Mirrors the <c>long?</c> overload above so the two code paths are
+    /// semantically identical — callers can switch with no behavioural change.</summary>
+    private async Task<KnowledgeSystemEntity?> ResolveKsAsync(
+        Guid? knowledgeSystemId, CancellationToken ct)
+    {
+        if (knowledgeSystemId is null) return null;
+        var db = _services.GetService(typeof(OnToPilotDbContext)) as OnToPilotDbContext;
+        if (db is null) return null;
+        return await db.KnowledgeSystems.AsNoTracking()
+            .FirstOrDefaultAsync(k => k.Id == knowledgeSystemId.Value, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>Resolve the bound <see cref="KnowledgeSystemEntity"/> from the
     /// external / published <c>{public_id}</c> route id.</summary>
     private async Task<KnowledgeSystemEntity?> ResolveKsByPublicIdAsync(
         string? publicId, CancellationToken ct)
@@ -1941,7 +1957,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var svc = ResolveVocabularyService();
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null) return (object?)EmptyVocabularyResponse();
             var view = await svc.GetVocabularyAsync(ks, request.Actor, ct).ConfigureAwait(false);
             return (object?)view ?? EmptyVocabularyResponse();
@@ -1953,7 +1969,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var svc = ResolveVocabularyService();
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null) return (object?)EmptyListResponse();
             var schemes = await svc.ListSchemesAsync(ks, request.Actor, ct).ConfigureAwait(false);
             if (schemes is null) return (object?)EmptyListResponse();
@@ -1973,7 +1989,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var offset = QueryInt(request, "offset", 0);
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null) return (object?)EmptyListResponse();
             var page = await svc.ListConceptsAsync(
                 ks, schemeIri, q, status, mapping, origin, limit, offset,
@@ -1991,7 +2007,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var limit = QueryInt(request, "limit", 10);
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null) return (object?)EmptyListResponse();
             var result = await svc.ResolveTermAsync(ks, q, language, limit, request.Actor, ct)
                 .ConfigureAwait(false);
@@ -2006,7 +2022,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var fmt = QueryString(request, "fmt") ?? "n-quads";
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null) return (object?)"";
             var bytes = await svc.ExportVocabularyAsync(ks, fmt, request.Actor, ct)
                 .ConfigureAwait(false);
@@ -2024,7 +2040,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             ?? throw new InvalidOperationException("Request body is required for vocabulary.create_scheme.");
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null) return (object?)EmptyScheme();
             var view = await svc.CreateSchemeAsync(ks, data, request.Actor, ct).ConfigureAwait(false);
             return (object?)view ?? EmptyScheme();
@@ -2039,7 +2055,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var iri = request.ResourceId ?? string.Empty;
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null || string.IsNullOrEmpty(iri)) return (object?)EmptyScheme();
             var view = await svc.UpdateSchemeAsync(ks, iri, data, request.Actor, ct).ConfigureAwait(false);
             return (object?)view ?? EmptyScheme();
@@ -2052,7 +2068,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var iri = request.ResourceId ?? string.Empty;
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null || string.IsNullOrEmpty(iri))
             {
                 return (object?)new { deleted = (string?)null, removed_triples = 0 };
@@ -2077,7 +2093,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var schemeIri = data.SchemeIri;
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null) return (object?)EmptyConcept();
             var view = await svc.CreateConceptAsync(ks, schemeIri, data, request.Actor, ct)
                 .ConfigureAwait(false);
@@ -2097,7 +2113,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var iri = !string.IsNullOrEmpty(data.Iri) ? data.Iri : (request.ResourceId ?? string.Empty);
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null || string.IsNullOrEmpty(iri)) return (object?)EmptyConcept();
             var view = await svc.UpdateConceptAsync(ks, iri, data, request.Actor, ct).ConfigureAwait(false);
             return (object?)view ?? EmptyConcept();
@@ -2115,7 +2131,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var iri = ExtractBodyIri(request) ?? request.ResourceId ?? string.Empty;
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null || string.IsNullOrEmpty(iri))
             {
                 return (object?)new { deleted = (string?)null, removed_triples = 0 };
@@ -2174,7 +2190,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var svc = ResolveVocabularyService();
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null) return (object?)EmptySyncResponse();
             var result = await svc.SyncAsync(ks, request.Actor, ct).ConfigureAwait(false);
             return (object?)result ?? EmptySyncResponse();
@@ -2192,7 +2208,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var offset = QueryInt(request, "offset", 0);
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null) return (object?)EmptyListResponse();
             var result = await svc.ListProposalsAsync(
                 ks, status, q, limit, offset, request.Actor, ct).ConfigureAwait(false);
@@ -2210,7 +2226,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var proposalId = Guid.TryParse(request.ResourceId, out var pid) ? pid : Guid.Empty;
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null || proposalId == Guid.Empty)
                 return (object?)EmptyProposal();
             var result = await svc.AcceptProposalAsync(
@@ -2232,7 +2248,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var proposalId = Guid.TryParse(request.ResourceId, out var pid) ? pid : Guid.Empty;
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (svc is null || ks is null || proposalId == Guid.Empty)
                 return (object?)EmptyProposal();
             var proposal = await svc.RejectProposalAsync(
@@ -2250,7 +2266,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var chunkIds = ExtractChunkIds(body);
         return WrapAsync(async () =>
         {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemId, ct).ConfigureAwait(false);
+            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
             if (agent is null || ks is null) return (object?)EmptyListResponse();
             var proposals = await agent.SuggestAsync(ks, schemeIri, chunkIds, model, ct)
                 .ConfigureAwait(false);

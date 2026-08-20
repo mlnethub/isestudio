@@ -128,7 +128,7 @@ public sealed class VocabularyProposalApiTests
         return proposal.Id;
     }
 
-    private static async Task<string> CreateSchemeAsync(HttpClient client, long ksId)
+    private static async Task<string> CreateSchemeAsync(HttpClient client, Guid ksId)
     {
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/vocabulary/schemes",
@@ -179,7 +179,7 @@ public sealed class VocabularyProposalApiTests
         return (client, adminId);
     }
 
-    private static async Task<(long LegacyId, Guid KsGuid)> SeedKnowledgeSystemAsync(
+    private static async Task<(Guid KsId, Guid KsGuid)> SeedKnowledgeSystemAsync(
         AuthTestWebApplicationFactory app, HttpClient client, string tag)
     {
         var response = await client.PostAsJsonAsync("/api/knowledge", new
@@ -189,12 +189,9 @@ public sealed class VocabularyProposalApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var legacy = body.GetProperty("id").GetInt64();
-        var db = app.CreateDbContext();
-        var guid = db.KnowledgeSystems
-            .Where(k => k.LegacyId == legacy)
-            .Select(k => k.Id)
-            .Single();
-        return (legacy, guid);
+        // The wire `id` is the KS primary-key Guid (the migration removed
+        // the legacy integer from the DTO).
+        var ksId = body.GetProperty("id").GetGuid();
+        return (ksId, ksId);
     }
 }
