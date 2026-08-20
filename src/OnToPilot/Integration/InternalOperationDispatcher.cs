@@ -1090,21 +1090,21 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private static long ParseLongOrDefault(string? s, long fallback) =>
         long.TryParse(s, out var parsed) ? parsed : fallback;
 
-    private static long? ParseDocumentId(InternalRequest request) =>
+    private static Guid? ParseDocumentId(InternalRequest request) =>
         request.ResourceId is null
             ? null
-            : long.TryParse(request.ResourceId, out var n) ? n : null;
+            : Guid.TryParse(request.ResourceId, out var id) ? id : null;
 
     private Task<object?> InvokeDocumentListAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveDocumentService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(Array.Empty<object>());
         }
         return WrapAsync(async () =>
         {
-            var rows = await svc.ListAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+            var rows = await svc.ListAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)(rows ?? (object)Array.Empty<object>());
         });
@@ -1113,7 +1113,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeDocumentListPageAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveDocumentService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(new
             {
@@ -1134,7 +1134,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var page = await svc.ListPageAsync(
-                request.KnowledgeSystemId.Value, folder, q, status,
+                request.KnowledgeSystemGuid.Value, folder, q, status,
                 (int)limit, (int)offset, request.Actor, ct).ConfigureAwait(false);
             if (page is not null) return (object?)page;
             return (object?)new
@@ -1150,13 +1150,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveDocumentService();
         var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemId is null || docId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
         {
             return Task.FromResult<object?>(EmptyDocument());
         }
         return WrapAsync(async () =>
         {
-            var doc = await svc.GetAsync(request.KnowledgeSystemId.Value, docId.Value, request.Actor, ct)
+            var doc = await svc.GetAsync(request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)(doc ?? EmptyDocument());
         });
@@ -1167,7 +1167,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var svc = ResolveDocumentService();
         var docId = ParseDocumentId(request);
         var body = DeserializeBody<MoveRequest>(request);
-        if (svc is null || request.KnowledgeSystemId is null || docId is null || body is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || docId is null || body is null)
         {
             if (body is null)
             {
@@ -1178,7 +1178,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var doc = await svc.MoveAsync(
-                request.KnowledgeSystemId.Value, docId.Value, body, request.Actor, ct)
+                request.KnowledgeSystemGuid.Value, docId.Value, body, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)(doc ?? EmptyDocument());
         });
@@ -1188,14 +1188,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveDocumentService();
         var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemId is null || docId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
         {
             return Task.FromResult<object?>(Array.Empty<object>());
         }
         return WrapAsync(async () =>
         {
             var rows = await svc.ListChunksAsync(
-                request.KnowledgeSystemId.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
             return (object?)(rows ?? (object)Array.Empty<object>());
         });
     }
@@ -1204,14 +1204,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveDocumentService();
         var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemId is null || docId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
         {
             return Task.FromResult<object?>(EmptyContribution());
         }
         return WrapAsync(async () =>
         {
             var contrib = await svc.ContributionAsync(
-                request.KnowledgeSystemId.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
             return (object?)(contrib ?? EmptyContribution());
         });
     }
@@ -1220,14 +1220,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveDocumentService();
         var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemId is null || docId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
         {
             return Task.FromResult<object?>(EmptyImpact());
         }
         return WrapAsync(async () =>
         {
             var impact = await svc.ImpactAsync(
-                request.KnowledgeSystemId.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
             return (object?)(impact ?? EmptyImpact());
         });
     }
@@ -1236,14 +1236,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveDocumentService();
         var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemId is null || docId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
         {
             return Task.FromResult<object?>(new { ok = false });
         }
         return WrapAsync(async () =>
         {
             var ok = await svc.DeleteAsync(
-                request.KnowledgeSystemId.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
             return (object)new { ok };
         });
     }
@@ -1252,14 +1252,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveDocumentService();
         var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemId is null || docId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
         {
             return Task.FromResult<object?>(EmptyParseResponse());
         }
         return WrapAsync(async () =>
         {
             var resp = await svc.ParseAsync(
-                request.KnowledgeSystemId.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
             return (object?)(resp ?? EmptyParseResponse());
         });
     }
@@ -1268,7 +1268,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveDocumentService();
         var body = DeserializeBody<ParseBatchIn>(request);
-        if (svc is null || request.KnowledgeSystemId is null || body is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || body is null)
         {
             if (body is null)
             {
@@ -1280,7 +1280,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var resp = await svc.ParseBatchAsync(
-                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
             return (object?)(resp ?? EmptyParseBatchResponse());
         });
     }
@@ -1375,7 +1375,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     // without the documents package loaded).
     private static object EmptyDocument() => new
     {
-        id = 0L,
+        id = Guid.Empty,
         knowledge_system_id = Guid.Empty,
         sha256 = string.Empty,
         original_filename = string.Empty,
@@ -1396,7 +1396,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
     private static object EmptyContribution() => new
     {
-        document_id = 0L,
+        document_id = Guid.Empty,
         chunk_count = 0,
         axiom_count = 0,
         individual_count = 0,
@@ -1404,13 +1404,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
     private static object EmptyImpact() => new
     {
-        document_id = 0L,
+        document_id = Guid.Empty,
         systems = Array.Empty<object>(),
     };
 
     private static object EmptyParseResponse() => new
     {
-        document_id = 0L,
+        document_id = Guid.Empty,
         parse_status = "pending",
         parser_backend = (string?)null,
         text_char_count = (int?)null,

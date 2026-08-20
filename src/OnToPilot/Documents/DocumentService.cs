@@ -86,7 +86,7 @@ public sealed class DocumentService
     // ----------------------------------------------------------------------
 
     /// <summary>List every document in the KS, newest first.</summary>
-    public async Task<IReadOnlyList<DocumentOut>?> ListAsync(long ksId, Actor actor, CancellationToken ct)
+    public async Task<IReadOnlyList<DocumentOut>?> ListAsync(Guid ksId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -106,7 +106,7 @@ public sealed class DocumentService
     /// enumeration.
     /// </summary>
     public async Task<DocumentListResponse?> ListPageAsync(
-        long ksId, string? folder, string? q, string? status,
+        Guid ksId, string? folder, string? q, string? status,
         int limit, int offset, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
@@ -173,7 +173,7 @@ public sealed class DocumentService
     /// document in this KS already references the same bytes.
     /// </summary>
     public async Task<DocumentOut> UploadAsync(
-        long ksId, Stream content, string fileName, string? mime,
+        Guid ksId, Stream content, string fileName, string? mime,
         long sizeBytes, string folder, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
@@ -203,7 +203,7 @@ public sealed class DocumentService
             await _db.SaveChangesAsync(ct).ConfigureAwait(false);
             await WriteAuditAsync(ks.Id, user, "document.upload",
                 $"Re-uploaded \"{existing.OriginalFilename}\" (deduped)",
-                BuildDocumentDetail(existing.LegacyId, existing.Sha256, dedup: true),
+                BuildDocumentDetail(existing.Id, existing.Sha256, dedup: true),
                 ct).ConfigureAwait(false);
             return Project(existing);
         }
@@ -229,18 +229,18 @@ public sealed class DocumentService
 
         await WriteAuditAsync(ks.Id, user, "document.upload",
             $"Uploaded \"{doc.OriginalFilename}\"",
-            BuildDocumentDetail(doc.LegacyId, doc.Sha256, dedup: false),
+            BuildDocumentDetail(doc.Id, doc.Sha256, dedup: false),
             ct).ConfigureAwait(false);
         return Project(doc);
     }
 
-    /// <summary>Fetch a single document by wire LegacyId. Null on miss.</summary>
-    public async Task<DocumentOut?> GetAsync(long ksId, long documentId, Actor actor, CancellationToken ct)
+    /// <summary>Fetch a single document by wire Id (Guid PK). Null on miss.</summary>
+    public async Task<DocumentOut?> GetAsync(Guid ksId, Guid documentId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
         var doc = await _db.Documents.AsNoTracking()
-            .FirstOrDefaultAsync(d => d.LegacyId == documentId, ct)
+            .FirstOrDefaultAsync(d => d.Id == documentId, ct)
             .ConfigureAwait(false);
         if (doc is null || doc.KnowledgeSystemId != ks.Id) return null;
         return Project(doc);
@@ -251,12 +251,12 @@ public sealed class DocumentService
     /// <c>move_document</c>.
     /// </summary>
     public async Task<DocumentOut?> MoveAsync(
-        long ksId, long documentId, MoveRequest req, Actor actor, CancellationToken ct)
+        Guid ksId, Guid documentId, MoveRequest req, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
         var doc = await _db.Documents
-            .FirstOrDefaultAsync(d => d.LegacyId == documentId, ct)
+            .FirstOrDefaultAsync(d => d.Id == documentId, ct)
             .ConfigureAwait(false);
         if (doc is null || doc.KnowledgeSystemId != ks.Id) return null;
 
@@ -272,7 +272,7 @@ public sealed class DocumentService
 
         await WriteAuditAsync(ks.Id, user, "document.move",
             $"Moved \"{doc.OriginalFilename}\" to {doc.Folder}",
-            BuildDocumentDetail(doc.LegacyId, doc.Folder), ct).ConfigureAwait(false);
+            BuildDocumentDetail(doc.Id, doc.Folder), ct).ConfigureAwait(false);
         return Project(doc);
     }
 
@@ -286,14 +286,14 @@ public sealed class DocumentService
     /// the replaced chunks → persist. Mirrors Python
     /// <c>_parse_document</c> (documents.py:192-260).
     /// </summary>
-    public async Task<ParseResponse?> ParseAsync(long ksId, long documentId, Actor actor, CancellationToken ct)
+    public async Task<ParseResponse?> ParseAsync(Guid ksId, Guid documentId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
         await EnsureNoActiveExtractionAsync(ks.Id, ct).ConfigureAwait(false);
 
         var doc = await _db.Documents
-            .FirstOrDefaultAsync(d => d.LegacyId == documentId, ct)
+            .FirstOrDefaultAsync(d => d.Id == documentId, ct)
             .ConfigureAwait(false);
         if (doc is null || doc.KnowledgeSystemId != ks.Id) return null;
 
@@ -305,7 +305,7 @@ public sealed class DocumentService
     /// Mirrors Python <c>parse_documents_batch</c>.
     /// </summary>
     public async Task<ParseBatchResponse?> ParseBatchAsync(
-        long ksId, ParseBatchIn body, Actor actor, CancellationToken ct)
+        Guid ksId, ParseBatchIn body, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -313,13 +313,13 @@ public sealed class DocumentService
 
         var selectors = new List<System.Linq.Expressions.Expression<Func<DocumentEntity, bool>>>(capacity: 2);
 
-        var docIds = (body.DocumentIds ?? Array.Empty<long>())
-            .Where(id => id > 0)
+        var docIds = (body.DocumentIds ?? Array.Empty<Guid>())
+            .Where(id => id != Guid.Empty)
             .Distinct()
             .ToList();
         if (docIds.Count > 0)
         {
-            selectors.Add(d => docIds.Contains(d.LegacyId));
+            selectors.Add(d => docIds.Contains(d.Id));
         }
 
         var folders = (body.Folders ?? Array.Empty<string>())
@@ -372,12 +372,12 @@ public sealed class DocumentService
 
     /// <summary>List chunks for a document in <see cref="ChunkEntity.Idx"/> order.</summary>
     public async Task<IReadOnlyList<ChunkOut>?> ListChunksAsync(
-        long ksId, long documentId, Actor actor, CancellationToken ct)
+        Guid ksId, Guid documentId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
         var doc = await _db.Documents.AsNoTracking()
-            .FirstOrDefaultAsync(d => d.LegacyId == documentId, ct)
+            .FirstOrDefaultAsync(d => d.Id == documentId, ct)
             .ConfigureAwait(false);
         if (doc is null || doc.KnowledgeSystemId != ks.Id) return null;
 
@@ -387,8 +387,8 @@ public sealed class DocumentService
             .ConfigureAwait(false);
         chunks.Sort((a, b) => a.Idx.CompareTo(b.Idx));
         return chunks.Select(c => new ChunkOut(
-            Id: c.LegacyId,
-            DocumentId: doc.LegacyId,
+            Id: c.Id,
+            DocumentId: doc.Id,
             Idx: c.Idx,
             Text: c.Text,
             CharStart: c.CharStart,
@@ -402,12 +402,12 @@ public sealed class DocumentService
     /// document's chunks. Mirrors Python <c>document_contribution</c>.
     /// </summary>
     public async Task<ContributionOut?> ContributionAsync(
-        long ksId, long documentId, Actor actor, CancellationToken ct)
+        Guid ksId, Guid documentId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
         var doc = await _db.Documents.AsNoTracking()
-            .FirstOrDefaultAsync(d => d.LegacyId == documentId, ct)
+            .FirstOrDefaultAsync(d => d.Id == documentId, ct)
             .ConfigureAwait(false);
         if (doc is null || doc.KnowledgeSystemId != ks.Id) return null;
 
@@ -454,12 +454,12 @@ public sealed class DocumentService
     /// brief only cares about which axioms would be at risk if the
     /// doc were deleted, not how many chunks produced the same axiom.
     /// </summary>
-    public async Task<ImpactOut?> ImpactAsync(long ksId, long documentId, Actor actor, CancellationToken ct)
+    public async Task<ImpactOut?> ImpactAsync(Guid ksId, Guid documentId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
         var doc = await _db.Documents.AsNoTracking()
-            .FirstOrDefaultAsync(d => d.LegacyId == documentId, ct)
+            .FirstOrDefaultAsync(d => d.Id == documentId, ct)
             .ConfigureAwait(false);
         if (doc is null || doc.KnowledgeSystemId != ks.Id) return null;
 
@@ -487,7 +487,7 @@ public sealed class DocumentService
             .Select(k => new ImpactAxiom(k, DescribeAxiomKey(k)))
             .ToList();
 
-        var system = new ImpactSystem(ks.LegacyId, ks.Name, axioms);
+        var system = new ImpactSystem(ks.Id, ks.Name, axioms);
         return new ImpactOut(documentId, new[] { system });
     }
 
@@ -535,14 +535,14 @@ public sealed class DocumentService
     /// <c>delete_document</c> (documents.py:462-510) minus the RDF
     /// retraction step (Block 6 territory).
     /// </summary>
-    public async Task<bool> DeleteAsync(long ksId, long documentId, Actor actor, CancellationToken ct)
+    public async Task<bool> DeleteAsync(Guid ksId, Guid documentId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return false;
         await EnsureNoActiveExtractionAsync(ks.Id, ct).ConfigureAwait(false);
 
         var doc = await _db.Documents
-            .FirstOrDefaultAsync(d => d.LegacyId == documentId, ct)
+            .FirstOrDefaultAsync(d => d.Id == documentId, ct)
             .ConfigureAwait(false);
         if (doc is null || doc.KnowledgeSystemId != ks.Id) return false;
 
@@ -631,7 +631,7 @@ public sealed class DocumentService
     /// <c>_doc_in_ks</c> raising <c>HTTPException(404)</c>.
     /// </summary>
     private async Task<(UserEntity? User, KnowledgeSystemEntity? Ks)> RequireRoleAsync(
-        long ksId, Actor actor, KSRole minimum, CancellationToken ct)
+        Guid ksId, Actor actor, KSRole minimum, CancellationToken ct)
     {
         if (!Guid.TryParse(actor.UserId, out var userGuid)) return (null, null);
         var user = await _db.Users.AsNoTracking()
@@ -640,7 +640,7 @@ public sealed class DocumentService
         if (user is null) return (null, null);
 
         var ks = await _db.KnowledgeSystems.AsNoTracking()
-            .FirstOrDefaultAsync(k => k.LegacyId == ksId, ct)
+            .FirstOrDefaultAsync(k => k.Id == ksId, ct)
             .ConfigureAwait(false);
         if (ks is null) return (null, null);
 
@@ -706,11 +706,11 @@ public sealed class DocumentService
 
                 await WriteAuditAsync(ks.Id, user, "document.parse",
                     $"Parsed \"{doc.OriginalFilename}\" ({doc.ChunkCount} chunks)",
-                    BuildDocumentDetail(doc.LegacyId, doc.ChunkCount),
+                    BuildDocumentDetail(doc.Id, doc.ChunkCount),
                     ct).ConfigureAwait(false);
 
                 return new ParseResponse(
-                    DocumentId: doc.LegacyId,
+                    DocumentId: doc.Id,
                     ParseStatus: doc.ParseStatus,
                     ParserBackend: parsed.Backend,
                     TextCharCount: doc.TextCharCount,
@@ -721,7 +721,7 @@ public sealed class DocumentService
             {
                 _logger?.LogWarning(ex,
                     "Parse failed for document {DocId} ({Filename})",
-                    doc.LegacyId, doc.OriginalFilename);
+                    doc.Id, doc.OriginalFilename);
 
                 // Detach any pending changes to avoid poisoning SaveChanges.
                 foreach (var entry in _db.ChangeTracker.Entries().ToList())
@@ -745,7 +745,7 @@ public sealed class DocumentService
                 }
 
                 return new ParseResponse(
-                    DocumentId: doc.LegacyId,
+                    DocumentId: doc.Id,
                     ParseStatus: "failed",
                     ParserBackend: null,
                     TextCharCount: null,
@@ -815,7 +815,7 @@ public sealed class DocumentService
     }
 
     private static DocumentOut Project(DocumentEntity d) => new(
-        Id: d.LegacyId,
+        Id: d.Id,
         KnowledgeSystemId: d.KnowledgeSystemId ?? Guid.Empty,
         Sha256: d.Sha256,
         OriginalFilename: d.OriginalFilename,
@@ -861,7 +861,7 @@ public sealed class DocumentService
         }, token).ConfigureAwait(false);
     }
 
-    private static JsonElement? BuildDocumentDetail(long documentId, object payload, bool? dedup = null)
+    private static JsonElement? BuildDocumentDetail(Guid documentId, object payload, bool? dedup = null)
     {
         var dict = new Dictionary<string, object?> { ["document_id"] = documentId };
         if (dedup.HasValue) dict["dedup"] = dedup.Value;

@@ -8,7 +8,7 @@ namespace OnToPilot.Documents;
 /// automatically.
 /// </summary>
 public sealed record DocumentOut(
-    long Id,
+    Guid Id,
     Guid KnowledgeSystemId,
     string Sha256,
     string OriginalFilename,
@@ -40,7 +40,7 @@ public sealed record DocumentListResponse(
 /// <c>backend/app/api/documents.py::ParseResponse</c>.
 /// </summary>
 public sealed record ParseResponse(
-    long DocumentId,
+    Guid DocumentId,
     string ParseStatus,
     string? ParserBackend,
     int? TextCharCount,
@@ -52,7 +52,7 @@ public sealed record ParseResponse(
 /// <c> folders</c> must be supplied.
 /// </summary>
 public sealed record ParseBatchIn(
-    IReadOnlyList<long> DocumentIds,
+    IReadOnlyList<Guid> DocumentIds,
     IReadOnlyList<string> Folders,
     bool Recursive = true);
 
@@ -79,7 +79,7 @@ public sealed record MoveRequest(
 /// document's chunks. Matches Python <c>document_contribution</c>.
 /// </summary>
 public sealed record ContributionOut(
-    long DocumentId,
+    Guid DocumentId,
     int ChunkCount,
     int AxiomCount,
     int IndividualCount);
@@ -96,7 +96,7 @@ public sealed record ImpactAxiom(
 /// Per-KS impact grouping (placeholder shape — Block 6 populates).
 /// </summary>
 public sealed record ImpactSystem(
-    long KnowledgeSystemId,
+    Guid KnowledgeSystemId,
     string KnowledgeSystemName,
     IReadOnlyList<ImpactAxiom> Axioms);
 
@@ -105,7 +105,7 @@ public sealed record ImpactSystem(
 /// list; Block 6 wires the real <c> _document_impact</c> computation.
 /// </summary>
 public sealed record ImpactOut(
-    long DocumentId,
+    Guid DocumentId,
     IReadOnlyList<ImpactSystem> Systems);
 
 /// <summary>
@@ -113,8 +113,8 @@ public sealed record ImpactOut(
 /// <c> Chunk</c> in Python.
 /// </summary>
 public sealed record ChunkOut(
-    long Id,
-    long DocumentId,
+    Guid Id,
+    Guid DocumentId,
     int Idx,
     string Text,
     int CharStart,

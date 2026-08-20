@@ -34,7 +34,7 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "list-empty");
+        var ksId = await CreateKsAsync(client,"list-empty");
 
         var response = await client.GetAsync($"/api/knowledge/{ksId}/documents");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -48,7 +48,7 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "upload-list");
+        var ksId = await CreateKsAsync(client,"upload-list");
 
         var upload = await UploadAsync(client, ksId, "notes.txt", "hello world\n",
             folder: "/papers");
@@ -68,19 +68,19 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "dedup");
+        var ksId = await CreateKsAsync(client,"dedup");
 
         var bytes = "the same bytes again\n"u8.ToArray();
         var first = await UploadBytesAsync(client, ksId, "first.txt", bytes, folder: "/a");
         Assert.Equal(HttpStatusCode.OK, first.StatusCode);
         var firstDoc = await first.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var firstId = firstDoc.GetProperty("id").GetInt64();
+        var firstId = firstDoc.GetProperty("id").GetGuid();
 
         var second = await UploadBytesAsync(client, ksId, "second.txt", bytes, folder: "/b");
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
         var secondDoc = await second.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         // Same row (same sha + same ks), just moved to /b.
-        Assert.Equal(firstId, secondDoc.GetProperty("id").GetInt64());
+        Assert.Equal(firstId, secondDoc.GetProperty("id").GetGuid());
         Assert.Equal("/b", secondDoc.GetProperty("folder").GetString());
 
         var list = await client.GetAsync($"/api/knowledge/{ksId}/documents");
@@ -93,8 +93,8 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ks1, _) = await CreateKsAsync(app, client, "ks-a");
-        var (ks2, _) = await CreateKsAsync(app, client, "ks-b");
+        var ks1 = await CreateKsAsync(client,"ks-a");
+        var ks2 = await CreateKsAsync(client,"ks-b");
 
         var bytes = "shared content\n"u8.ToArray();
         var first = await UploadBytesAsync(client, ks1, "shared.txt", bytes, folder: "/");
@@ -106,8 +106,8 @@ public sealed class DocumentApiTests
         // Per-KS dedup is scoped to the KS, not global — same sha produces
         // two distinct document rows.
         Assert.NotEqual(
-            firstDoc.GetProperty("id").GetInt64(),
-            secondDoc.GetProperty("id").GetInt64());
+            firstDoc.GetProperty("id").GetGuid(),
+            secondDoc.GetProperty("id").GetGuid());
     }
 
     [Fact]
@@ -115,7 +115,7 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "bad-ext");
+        var ksId = await CreateKsAsync(client,"bad-ext");
 
         var response = await UploadBytesAsync(client, ksId, "slides.pptx",
             "fake content\n"u8.ToArray(), folder: "/");
@@ -127,7 +127,7 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "empty");
+        var ksId = await CreateKsAsync(client,"empty");
 
         var response = await UploadBytesAsync(client, ksId, "empty.txt",
             Array.Empty<byte>(), folder: "/");
@@ -139,15 +139,15 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "get");
+        var ksId = await CreateKsAsync(client,"get");
         var upload = await UploadAsync(client, ksId, "thing.md", "# hello\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         var get = await client.GetAsync($"/api/knowledge/{ksId}/documents/{docId}");
         Assert.Equal(HttpStatusCode.OK, get.StatusCode);
         var body = await get.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        Assert.Equal(docId, body.GetProperty("id").GetInt64());
+        Assert.Equal(docId, body.GetProperty("id").GetGuid());
         Assert.Equal("thing.md", body.GetProperty("original_filename").GetString());
     }
 
@@ -156,11 +156,11 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ks1, _) = await CreateKsAsync(app, client, "owner");
-        var (ks2, _) = await CreateKsAsync(app, client, "stranger");
+        var ks1 = await CreateKsAsync(client,"owner");
+        var ks2 = await CreateKsAsync(client,"stranger");
         var upload = await UploadAsync(client, ks1, "private.txt", "secret\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         // Cross-KS lookup: the doc exists but belongs to ks1 — the role
         // gate (Viewer on ks2) denies and the dispatcher returns the
@@ -169,7 +169,7 @@ public sealed class DocumentApiTests
         var cross = await client.GetAsync($"/api/knowledge/{ks2}/documents/{docId}");
         Assert.Equal(HttpStatusCode.OK, cross.StatusCode);
         var body = await cross.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        Assert.Equal(0L, body.GetProperty("id").GetInt64());
+        Assert.Equal(Guid.Empty, body.GetProperty("id").GetGuid());
     }
 
     [Fact]
@@ -177,7 +177,7 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "filters");
+        var ksId = await CreateKsAsync(client,"filters");
         await UploadAsync(client, ksId, "a.txt", "alpha\n", folder: "/x");
         await UploadAsync(client, ksId, "b.txt", "beta\n", folder: "/y");
         await UploadAsync(client, ksId, "c.txt", "gamma\n", folder: "/x");
@@ -203,12 +203,12 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "parse-ok");
+        var ksId = await CreateKsAsync(client,"parse-ok");
         var upload = await UploadAsync(client, ksId, "doc.txt",
             "line one\n\nline two with enough text to exceed floor\n\nline three\n",
             folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         var parse = await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
         Assert.Equal(HttpStatusCode.OK, parse.StatusCode);
@@ -229,11 +229,11 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "reparse");
+        var ksId = await CreateKsAsync(client,"reparse");
         var upload = await UploadAsync(client, ksId, "reparse.txt",
             "first parse content\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
         var first = await client.GetAsync($"/api/knowledge/{ksId}/documents/{docId}/chunks");
@@ -252,10 +252,10 @@ public sealed class DocumentApiTests
     {
         await using var app = new ThrowingParserFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "fail");
+        var ksId = await CreateKsAsync(client,"fail");
         var upload = await UploadAsync(client, ksId, "broken.txt", "any content\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         var parse = await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
         Assert.Equal(HttpStatusCode.OK, parse.StatusCode);
@@ -269,11 +269,11 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "batch-ids");
+        var ksId = await CreateKsAsync(client,"batch-ids");
         var up1 = await UploadAsync(client, ksId, "a.txt", "alpha\n", folder: "/");
         var up2 = await UploadAsync(client, ksId, "b.txt", "beta\n", folder: "/");
-        var id1 = (await up1.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetInt64();
-        var id2 = (await up2.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetInt64();
+        var id1 = (await up1.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetGuid();
+        var id2 = (await up2.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetGuid();
 
         var batch = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/documents/parse-batch",
@@ -290,7 +290,7 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "batch-folders");
+        var ksId = await CreateKsAsync(client,"batch-folders");
         await UploadAsync(client, ksId, "root.txt", "root\n", folder: "/manuals");
         await UploadAsync(client, ksId, "nested.txt", "nested\n", folder: "/manuals/pumps");
 
@@ -311,10 +311,10 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "no-chunks");
+        var ksId = await CreateKsAsync(client,"no-chunks");
         var upload = await UploadAsync(client, ksId, "u.txt", "u\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         var chunks = await client.GetAsync($"/api/knowledge/{ksId}/documents/{docId}/chunks");
         Assert.Equal(HttpStatusCode.OK, chunks.StatusCode);
@@ -327,10 +327,10 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "contrib-zero");
+        var ksId = await CreateKsAsync(client,"contrib-zero");
         var upload = await UploadAsync(client, ksId, "c.txt", "c\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         var contrib = await client.GetAsync(
             $"/api/knowledge/{ksId}/documents/{docId}/contribution");
@@ -345,22 +345,22 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "contrib");
+        var ksId = await CreateKsAsync(client,"contrib");
         var upload = await UploadAsync(client, ksId, "d.txt", "d\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
         var parse = await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
         Assert.Equal(HttpStatusCode.OK, parse.StatusCode);
 
         // Contribution joins provenance rows to this document's chunk
         // ids, so the seeded rows must point at a real chunk.
-        var chunkId = LookupFirstChunkId(app, ksGuid);
+        var chunkId = LookupFirstChunkId(app, ksId);
 
-        SeedAxiomProvenance(app, ksGuid, chunkId, "subClassOf|dog|animal");
-        SeedAxiomProvenance(app, ksGuid, chunkId, "subClassOf|cat|animal");
-        SeedEntityResolution(app, ksGuid, chunkId, "http://ex/Ind#1");
-        SeedEntityResolution(app, ksGuid, chunkId, "http://ex/Ind#1"); // duplicate
-        SeedEntityResolution(app, ksGuid, chunkId, "http://ex/Ind#2");
+        SeedAxiomProvenance(app, ksId, chunkId, "subClassOf|dog|animal");
+        SeedAxiomProvenance(app, ksId, chunkId, "subClassOf|cat|animal");
+        SeedEntityResolution(app, ksId, chunkId, "http://ex/Ind#1");
+        SeedEntityResolution(app, ksId, chunkId, "http://ex/Ind#1"); // duplicate
+        SeedEntityResolution(app, ksId, chunkId, "http://ex/Ind#2");
 
         var contrib = await client.GetAsync(
             $"/api/knowledge/{ksId}/documents/{docId}/contribution");
@@ -377,17 +377,17 @@ public sealed class DocumentApiTests
         // before Block 6 — empty systems array, document id echoed.
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "impact-empty");
+        var ksId = await CreateKsAsync(client,"impact-empty");
         var upload = await UploadAsync(client, ksId, "i.txt", "i\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
         await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
 
         var impact = await client.GetAsync(
             $"/api/knowledge/{ksId}/documents/{docId}/impact");
         Assert.Equal(HttpStatusCode.OK, impact.StatusCode);
         var body = await impact.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        Assert.Equal(docId, body.GetProperty("document_id").GetInt64());
+        Assert.Equal(docId, body.GetProperty("document_id").GetGuid());
 
         // Block 6 always reports the owning KS even when there is no
         // provenance to walk: the caller needs to see "this doc is in
@@ -395,7 +395,7 @@ public sealed class DocumentApiTests
         // envelope that could be mistaken for "KS missing".
         var systems = body.GetProperty("systems");
         Assert.Equal(1, systems.GetArrayLength());
-        Assert.Equal(ksId, systems[0].GetProperty("knowledge_system_id").GetInt64());
+        Assert.Equal(ksId, systems[0].GetProperty("knowledge_system_id").GetGuid());
         Assert.Equal(0, systems[0].GetProperty("axioms").GetArrayLength());
     }
 
@@ -410,29 +410,29 @@ public sealed class DocumentApiTests
         // chunks produced the same axiom".
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "impact");
+        var ksId = await CreateKsAsync(client,"impact");
         var upload = await UploadAsync(client, ksId, "i.txt", "i\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
         await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
 
-        var chunkId = LookupFirstChunkId(app, ksGuid);
+        var chunkId = LookupFirstChunkId(app, ksId);
         // Two distinct axioms, then a duplicate that must collapse.
-        SeedAxiomProvenance(app, ksGuid, chunkId, "subClassOf|dog|Animal");
-        SeedAxiomProvenance(app, ksGuid, chunkId, "class|Animal");
-        SeedAxiomProvenance(app, ksGuid, chunkId, "subClassOf|dog|Animal");
+        SeedAxiomProvenance(app, ksId, chunkId, "subClassOf|dog|Animal");
+        SeedAxiomProvenance(app, ksId, chunkId, "class|Animal");
+        SeedAxiomProvenance(app, ksId, chunkId, "subClassOf|dog|Animal");
 
         var impact = await client.GetAsync(
             $"/api/knowledge/{ksId}/documents/{docId}/impact");
         Assert.Equal(HttpStatusCode.OK, impact.StatusCode);
         var body = await impact.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        Assert.Equal(docId, body.GetProperty("document_id").GetInt64());
+        Assert.Equal(docId, body.GetProperty("document_id").GetGuid());
 
         var systems = body.GetProperty("systems");
         Assert.Equal(1, systems.GetArrayLength());
 
         var system = systems[0];
-        Assert.Equal(ksId, system.GetProperty("knowledge_system_id").GetInt64());
+        Assert.Equal(ksId, system.GetProperty("knowledge_system_id").GetGuid());
         Assert.Equal($"ks-impact", system.GetProperty("knowledge_system_name").GetString());
 
         var axioms = system.GetProperty("axioms");
@@ -459,10 +459,10 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "move");
+        var ksId = await CreateKsAsync(client,"move");
         var upload = await UploadAsync(client, ksId, "old.txt", "x\n", folder: "/a");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         var patch = await client.PatchAsJsonAsync(
             $"/api/knowledge/{ksId}/documents/{docId}",
@@ -478,10 +478,10 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "delete-orphan");
+        var ksId = await CreateKsAsync(client,"delete-orphan");
         var upload = await UploadAsync(client, ksId, "ephemeral.txt", "ephemeral\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
         await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
 
         var delete = await client.PostAsync(
@@ -504,13 +504,13 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ks1, _) = await CreateKsAsync(app, client, "ref-1");
-        var (ks2, _) = await CreateKsAsync(app, client, "ref-2");
+        var ks1 = await CreateKsAsync(client,"ref-1");
+        var ks2 = await CreateKsAsync(client,"ref-2");
         var bytes = "shared bytes\n"u8.ToArray();
         var up1 = await UploadBytesAsync(client, ks1, "shared.txt", bytes, folder: "/");
         var up2 = await UploadBytesAsync(client, ks2, "shared.txt", bytes, folder: "/");
-        var doc1 = (await up1.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetInt64();
-        var doc2 = (await up2.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetInt64();
+        var doc1 = (await up1.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetGuid();
+        var doc2 = (await up2.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetGuid();
 
         // Delete doc1; doc2 still references the same sha so the blob
         // store should NOT have orphaned it.
@@ -524,7 +524,7 @@ public sealed class DocumentApiTests
         var get2 = await client.GetAsync($"/api/knowledge/{ks2}/documents/{doc2}");
         Assert.Equal(HttpStatusCode.OK, get2.StatusCode);
         var body2 = await get2.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        Assert.Equal(doc2, body2.GetProperty("id").GetInt64());
+        Assert.Equal(doc2, body2.GetProperty("id").GetGuid());
     }
 
     [Fact]
@@ -532,26 +532,26 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "cascade");
+        var ksId = await CreateKsAsync(client,"cascade");
         var upload = await UploadAsync(client, ksId, "c.txt", "c\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
         await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
 
-        var chunkId = LookupFirstChunkId(app, ksGuid);
-        SeedAxiomProvenance(app, ksGuid, chunkId, "subClassOf|a|b");
-        SeedEntityResolution(app, ksGuid, chunkId, "http://ex/Ind#cascade");
+        var chunkId = LookupFirstChunkId(app, ksId);
+        SeedAxiomProvenance(app, ksId, chunkId, "subClassOf|a|b");
+        SeedEntityResolution(app, ksId, chunkId, "http://ex/Ind#cascade");
 
         var dbBefore = app.CreateDbContext();
-        Assert.True(dbBefore.AxiomProvenances.Any(p => p.KnowledgeSystemId == ksGuid));
+        Assert.True(dbBefore.AxiomProvenances.Any(p => p.KnowledgeSystemId == ksId));
 
         var delete = await client.PostAsync(
             $"/api/knowledge/{ksId}/documents/{docId}/delete", null);
         Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
 
         var dbAfter = app.CreateDbContext();
-        Assert.False(dbAfter.AxiomProvenances.Any(p => p.KnowledgeSystemId == ksGuid));
-        Assert.False(dbAfter.EntityResolutions.Any(r => r.KnowledgeSystemId == ksGuid));
+        Assert.False(dbAfter.AxiomProvenances.Any(p => p.KnowledgeSystemId == ksId));
+        Assert.False(dbAfter.EntityResolutions.Any(r => r.KnowledgeSystemId == ksId));
     }
 
     [Fact]
@@ -559,10 +559,10 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "missing");
+        var ksId = await CreateKsAsync(client,"missing");
 
         var delete = await client.PostAsync(
-            $"/api/knowledge/{ksId}/documents/99999/delete", null);
+            $"/api/knowledge/{ksId}/documents/{Guid.NewGuid()}/delete", null);
         Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
         var body = await delete.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.False(body.GetProperty("ok").GetBoolean());
@@ -573,12 +573,12 @@ public sealed class DocumentApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "no-role");
+        var ksId = await CreateKsAsync(client,"no-role");
 
         // Upload a doc as admin.
         var upload = await UploadAsync(client, ksId, "r.txt", "r\n", folder: "/");
         var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
 
         // Switch to a non-admin, non-grantee user (no role on this KS).
         var (aliceClient, _) = await LoginAliceAsync(app);
@@ -664,8 +664,8 @@ public sealed class DocumentApiTests
         return (client, userId);
     }
 
-    private static async Task<(long LegacyId, Guid Guid)> CreateKsAsync(
-        AuthTestWebApplicationFactory app, HttpClient client, string tag)
+    /// <summary>POST a KS and return its wire primary-key <see cref="Guid"/>.</summary>
+    private static async Task<Guid> CreateKsAsync(HttpClient client, string tag)
     {
         var response = await client.PostAsJsonAsync("/api/knowledge", new
         {
@@ -674,29 +674,20 @@ public sealed class DocumentApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
-        var legacy = body.GetProperty("id").GetInt64();
-        var guid = LookupKsGuid(app, legacy);
-        return (legacy, guid);
-    }
-
-    private static Guid LookupKsGuid(AuthTestWebApplicationFactory app, long legacyId)
-    {
-        var db = app.CreateDbContext();
-        return db.KnowledgeSystems
-            .Where(k => k.LegacyId == legacyId)
-            .Select(k => k.Id)
-            .Single();
+        // The wire `id` is the KS primary-key Guid (the migration removed
+        // the legacy integer from the DTO).
+        return body.GetProperty("id").GetGuid();
     }
 
     private static async Task<HttpResponseMessage> UploadAsync(
-        HttpClient client, long ksId, string fileName, string content, string folder)
+        HttpClient client, Guid ksId, string fileName, string content, string folder)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(content);
         return await UploadBytesAsync(client, ksId, fileName, bytes, folder);
     }
 
     private static async Task<HttpResponseMessage> UploadBytesAsync(
-        HttpClient client, long ksId, string fileName, byte[] bytes, string folder)
+        HttpClient client, Guid ksId, string fileName, byte[] bytes, string folder)
     {
         var content = new MultipartFormDataContent
         {
@@ -707,13 +698,13 @@ public sealed class DocumentApiTests
     }
 
     private static void SeedAxiomProvenance(
-        AuthTestWebApplicationFactory app, Guid ksGuid, Guid? chunkId, string axiomKey)
+        AuthTestWebApplicationFactory app, Guid ksId, Guid? chunkId, string axiomKey)
     {
         var db = app.CreateDbContext();
         db.AxiomProvenances.Add(new OnToPilot.Infrastructure.Persistence.Entities.AxiomProvenanceEntity
         {
             LegacyId = TestLegacyIds.Next("axiom_provenance"),
-            KnowledgeSystemId = ksGuid,
+            KnowledgeSystemId = ksId,
             ChunkId = chunkId,
             AxiomKey = axiomKey,
             Method = "seed",
@@ -724,13 +715,13 @@ public sealed class DocumentApiTests
     }
 
     private static void SeedEntityResolution(
-        AuthTestWebApplicationFactory app, Guid ksGuid, Guid? sourceChunkId, string iri)
+        AuthTestWebApplicationFactory app, Guid ksId, Guid? sourceChunkId, string iri)
     {
         var db = app.CreateDbContext();
         db.EntityResolutions.Add(new OnToPilot.Infrastructure.Persistence.Entities.EntityResolutionEntity
         {
             LegacyId = TestLegacyIds.Next("entity_resolution"),
-            KnowledgeSystemId = ksGuid,
+            KnowledgeSystemId = ksId,
             SourceChunkId = sourceChunkId,
             IndividualIri = iri,
             Status = "new",
@@ -745,13 +736,13 @@ public sealed class DocumentApiTests
     /// provenance rows that the service can join back to the doc's
     /// chunks.
     /// </summary>
-    private static Guid LookupFirstChunkId(AuthTestWebApplicationFactory app, Guid ksGuid)
+    private static Guid LookupFirstChunkId(AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         // SQLite refuses DateTimeOffset in ORDER BY; materialise + sort
         // client-side (same workaround as KnowledgeService.ListAsync).
         var docId = db.Documents
-            .Where(d => d.KnowledgeSystemId == ksGuid)
+            .Where(d => d.KnowledgeSystemId == ksId)
             .ToList()
             .OrderBy(d => d.UploadedAt)
             .Select(d => d.Id)
