@@ -67,7 +67,7 @@ pwsh migration/scripts/Invoke-ProductionRollback.ps1 \
 
 ## Expected post-rollback state
 
-After the script reports exit 0 or 5:
+After the script reports exit 5 (success) or exit 1 (failure):
 
 1. **.NET stopped.** `systemctl status ontopilot-dotnet-backend`
    should report `inactive (dead)`.

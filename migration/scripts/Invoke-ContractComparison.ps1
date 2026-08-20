@@ -43,6 +43,15 @@
     forwards the resulting session to the .NET backend. Both backends must share the
     same user fixture for the cookie to work cross-implementation.
 
+.PARAMETER PythonAdminUser
+    Username used to log into the Python backend when -SessionCookie is not
+    supplied. Mandatory in that path; the runner refuses to fall back to a
+    hard-coded "admin" literal so a sandbox fixture can't accidentally leak
+    into a production cutover.
+
+.PARAMETER PythonAdminPassword
+    Password paired with -PythonAdminUser. Mandatory alongside it; never logged.
+
 .PARAMETER DryRun
     When set, the runner writes a synthetic report (status 200 for every scenario,
     empty bodies) without issuing any HTTP request. Useful for CI smoke checks where
@@ -71,6 +80,8 @@ param(
     [string] $NormalizationPath,
     [string] $OutputPath,
     [string] $SessionCookie,
+    [Parameter(Mandatory = $true)] [string] $PythonAdminUser,
+    [Parameter(Mandatory = $true)] [string] $PythonAdminPassword,
     [switch] $DryRun,
     [switch] $FailOnUnapproved
 )
@@ -233,7 +244,7 @@ function Send-ScenarioRequest {
 if ([string]::IsNullOrWhiteSpace($SessionCookie) -and -not $DryRun) {
     try {
         $loginUri = [System.Uri]::new($PythonUrl.TrimEnd('/') + '/api/auth/login')
-        $loginBody = @{ username = 'admin'; password = 'admin' } | ConvertTo-Json -Compress
+        $loginBody = @{ username = $PythonAdminUser; password = $PythonAdminPassword } | ConvertTo-Json -Compress
         $loginResponse = Invoke-WebRequest -Method POST -Uri $loginUri -Body $loginBody `
             -ContentType 'application/json' -TimeoutSec 15 -SkipHttpErrorCheck -ErrorAction Stop
         if ($loginResponse.StatusCode -eq 200) {

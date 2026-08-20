@@ -55,7 +55,6 @@ public static class BlobMigrationEntryPoint
         var options = new BlobMigrationOptions(
             DryRun: parsed.DryRun,
             Force: parsed.Force,
-            SkipExisting: parsed.SkipExisting,
             ManifestOut: parsed.ManifestOut,
             StatePath: parsed.StatePath);
 
@@ -99,8 +98,7 @@ internal sealed record BlobMigrationCliArgs(
     string? ManifestOut,
     string? StatePath,
     bool DryRun,
-    bool Force,
-    bool SkipExisting)
+    bool Force)
 {
     public const string Usage = """
         Invoke-BlobMigration.ps1 -> BlobMigrationEntryPoint usage:
@@ -116,7 +114,6 @@ internal sealed record BlobMigrationCliArgs(
             --state-path <path>             (optional) resume log path
             --dry-run                       (flag) do not upload
             --force                         (flag) ignore resume log
-            --skip-existing                 (flag, default true) skip blobs already in MinIO
         """;
 
     /// <summary>
@@ -129,7 +126,7 @@ internal sealed record BlobMigrationCliArgs(
         ArgumentNullException.ThrowIfNull(argv);
         string? source = null, bucket = null, endpoint = null, accessKey = null, secretKey = null, region = null;
         string? pg = null, manifestOut = null, statePath = null;
-        bool dryRun = false, force = false, skipExisting = true;
+        bool dryRun = false, force = false;
 
         for (var i = 0; i < argv.Count; i++)
         {
@@ -155,8 +152,6 @@ internal sealed record BlobMigrationCliArgs(
                 case "--state-path": statePath = Next(); break;
                 case "--dry-run": dryRun = true; break;
                 case "--force": force = true; break;
-                case "--skip-existing": skipExisting = true; break;
-                case "--no-skip-existing": skipExisting = false; break;
                 default:
                     Console.Error.WriteLine($"[blob-migration] unknown argument: '{a}'");
                     return null;
@@ -176,6 +171,6 @@ internal sealed record BlobMigrationCliArgs(
 
         return new BlobMigrationCliArgs(
             source!, bucket!, endpoint!, accessKey!, secretKey!, region, pg!,
-            manifestOut, statePath, dryRun, force, skipExisting);
+            manifestOut, statePath, dryRun, force);
     }
 }

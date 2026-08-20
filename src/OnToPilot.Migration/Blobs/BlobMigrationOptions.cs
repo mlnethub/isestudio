@@ -18,14 +18,6 @@ namespace OnToPilot.Migration.Blobs;
 /// run already recorded it as complete. Mirrors the
 /// <c>--force</c> flag of <c>Invoke-BlobMigration.ps1</c>.
 /// </param>
-/// <param name="SkipExisting">
-/// When <see langword="true"/> the command does NOT upload a blob whose
-/// MinIO object key already exists (idempotent re-run). The default
-/// behaviour for a resumed migration. When <see langword="false"/> the
-/// command attempts the upload regardless; <see cref="MinioBlobStore"/>
-/// is itself idempotent so the resulting state is unchanged, but the
-/// extra round-trip is wasted.
-/// </param>
 /// <param name="ManifestOut">
 /// Absolute path of the manifest JSON to write. When
 /// <see langword="null"/> the manifest is NOT written to disk; the
@@ -42,6 +34,5 @@ namespace OnToPilot.Migration.Blobs;
 public sealed record BlobMigrationOptions(
     bool DryRun,
     bool Force,
-    bool SkipExisting,
     string? ManifestOut,
     string? StatePath = null);

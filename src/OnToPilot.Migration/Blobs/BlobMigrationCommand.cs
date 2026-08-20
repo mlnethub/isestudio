@@ -200,14 +200,12 @@ public sealed class BlobMigrationCommand
             // Step 4: upload (or record) + verify. Skipped entirely when
             // the state store already records this blob — the entry is
             // still added to the manifest below so its presence stays
-            // visible to the cutover orchestrator.
-            //
-            // SkipExisting is intentionally NOT consulted here:
-            // MinioBlobStore.PutAsync is already idempotent at the SDK
-            // layer (it short-circuits when an object with the same key
-            // already exists, see src/OnToPilot/Storage/MinioBlobStore.cs
-            // lines 110-122). The only resume path that matters is the
-            // state-store check above.
+            // visible to the cutover orchestrator. MinioBlobStore.PutAsync
+            // is itself idempotent at the SDK layer (it short-circuits when
+            // an object with the same key already exists, see
+            // src/OnToPilot/Storage/MinioBlobStore.cs lines 110-122), so
+            // the only resume path that matters is the state-store check
+            // above.
             if (!options.DryRun && !isResumeSkip)
             {
                 // PutAsync requires a seekable stream so it can hash

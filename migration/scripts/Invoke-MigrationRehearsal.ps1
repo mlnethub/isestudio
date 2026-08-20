@@ -69,6 +69,23 @@ if (-not (Test-Path -LiteralPath $BackupPath)) {
     throw "Invoke-MigrationRehearsal.ps1: -BackupPath '$BackupPath' does not exist."
 }
 
+# Env-first Postgres connection-string resolver. The historical code
+# defaulted to a sandbox `Password=postgres` literal at two call sites;
+# that pattern silently propagated the same credential shape into any
+# future cutover that copied this script as a starting point, which is
+# exactly what MIGRATION_REPORT §11 flagged. Fail loud instead: any
+# caller must either pass -PostgresConnectionString or set the env var
+# $env:POSTGRES_REHEARSAL_CONN_STRING before invoking the script.
+function Get-RehearsalPostgresConnectionString {
+    if ($PostgresConnectionString) {
+        return $PostgresConnectionString
+    }
+    if ($env:POSTGRES_REHEARSAL_CONN_STRING) {
+        return $env:POSTGRES_REHEARSAL_CONN_STRING
+    }
+    throw "No Postgres connection string provided. Pass -PostgresConnectionString or set `$env:POSTGRES_REHEARSAL_CONN_STRING."
+}
+
 # Rehearsal skips the production-only preflight gates
 # (Assert-PythonBackendStopped, Assert-DatabaseWriteFreeze) because
 # we explicitly run against copies. We DO require the backup to be
@@ -201,7 +218,7 @@ try {
             MinioEndpoint = ($MinioEndpoint  ?? 'http://127.0.0.1:9000')
             MinioAccessKey = ($MinioAccessKey ?? 'minioadmin')
             MinioSecretKey = ($MinioSecretKey ?? 'minioadmin')
-            PostgresConnectionString = ($PostgresConnectionString ?? 'Host=127.0.0.1;Username=postgres;Password=postgres;Database=ontopilot_rehearsal')
+            PostgresConnectionString = (Get-RehearsalPostgresConnectionString)
             ManifestOut = $manifestOut
             ProjectPath = $MigrationProject
         }
@@ -215,10 +232,7 @@ try {
     # Gate 4: SQL migration against the backup database.
     # -----------------------------------------------------------------
     Write-Host '[rehearsal] === Gate 4: SQL migration ==='
-    $sqlConn = $PostgresConnectionString
-    if (-not $sqlConn) {
-        $sqlConn = 'Host=127.0.0.1;Username=postgres;Password=postgres;Database=ontopilot_rehearsal'
-    }
+    $sqlConn = Get-RehearsalPostgresConnectionString
     Invoke-SqlMigration -ConnectionString $sqlConn -MigrationsDir $MigrationsDir -ProjectPath $MigrationProject
     $report.Gates['Invoke-SqlMigration'] = 'PASS'
     $report.Manifests['sql'] = @{ path = (Join-Path $MigrationsDir 'migration-log.json') }

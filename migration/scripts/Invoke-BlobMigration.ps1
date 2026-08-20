@@ -65,9 +65,6 @@ param(
     [switch]$Force,
 
     [Parameter(Mandatory = $false)]
-    [switch]$SkipExisting,
-
-    [Parameter(Mandatory = $false)]
     [string]$ProjectPath = "src/OnToPilot.Migration/OnToPilot.Migration.csproj"
 )
 
@@ -127,14 +124,6 @@ if ($DryRun) {
 if ($Force) {
     $cliArgs += @("--force")
 }
-# SkipExisting: the .NET host already defaults to true and the field is
-# unused inside BlobMigrationCommand (MinioBlobStore.PutAsync is
-# idempotent at the SDK layer, so the only resume path is the state-
-# store check). Don't forward anything here — the .NET default wins,
-# and we don't accidentally invert the user's intent with a misnamed
-# switch forwarder (the previous code's `-not $SkipExisting` branch
-# always fired on default and forced --no-skip-existing, contradicting
-# the inline comment).
 
 # F-4 fix: never echo secret values to stdout. In a production cutover
 # this would leak --minio-secret-key and --postgres-connection-string

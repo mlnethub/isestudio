@@ -520,37 +520,6 @@ function Test-MinioObjectExists {
     return $true
 }
 
-function Test-AllMigrationManifests {
-    <#
-    .SYNOPSIS
-        Return $true only when every migration manifest file exists
-        AND its content passes schema + business checks AND its
-        canonical SHA-256 matches the value recorded in the cutover
-        record.
-    .DESCRIPTION
-        Production implementation: heavy validation.
-        Unit tests mock the function and short-circuit to $true/$false.
-        Mocks that bypass schema/business/SHA validation should be
-        replaced with the real implementation in production.
-    #>
-    [CmdletBinding()]
-    [OutputType([bool])]
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Record,
-        [string]$SqlManifestPath = $script:DefaultSqlManifestPath,
-        [string]$RdfManifestPath = $script:DefaultRdfManifestPath,
-        [string]$BlobManifestPath = $script:DefaultBlobManifestPath,
-        [string]$MinioEndpoint,
-        [string]$MinioBucket,
-        [string]$ManifestsDir
-    )
-    if (-not (Test-Path -LiteralPath $Record)) { return $false }
-    return (Test-Path -LiteralPath $SqlManifestPath) `
-        -and (Test-Path -LiteralPath $RdfManifestPath) `
-        -and (Test-Path -LiteralPath $BlobManifestPath)
-}
-
 function Assert-AllMigrationManifests {
     <#
     .SYNOPSIS

@@ -156,7 +156,7 @@ public sealed class BlobMigrationTests : IAsyncLifetime
             sourceDir: _blobDir,
             blobStore: _store,
             dataSource: dataSource,
-            options: new BlobMigrationOptions(DryRun: false, Force: false, SkipExisting: true, ManifestOut: null),
+            options: new BlobMigrationOptions(DryRun: false, Force: false, ManifestOut: null),
             cancellationToken: CancellationToken.None);
 
         Assert.Single(report.Entries);
@@ -211,7 +211,7 @@ public sealed class BlobMigrationTests : IAsyncLifetime
             sourceDir: _blobDir,
             blobStore: _store,
             dataSource: dataSource,
-            options: new BlobMigrationOptions(DryRun: true, Force: false, SkipExisting: true, ManifestOut: manifestPath),
+            options: new BlobMigrationOptions(DryRun: true, Force: false, ManifestOut: manifestPath),
             cancellationToken: CancellationToken.None);
 
         Assert.Single(report.Entries);
@@ -261,7 +261,7 @@ public sealed class BlobMigrationTests : IAsyncLifetime
             sourceDir: _blobDir,
             blobStore: _store,
             dataSource: dataSource,
-            options: new BlobMigrationOptions(DryRun: false, Force: false, SkipExisting: true, ManifestOut: null, StatePath: statePath),
+            options: new BlobMigrationOptions(DryRun: false, Force: false, ManifestOut: null, StatePath: statePath),
             cancellationToken: CancellationToken.None);
         Assert.Equal(2, firstRun.Entries.Count);
         Assert.Equal(2, firstRun.UploadedCount);
@@ -278,7 +278,7 @@ public sealed class BlobMigrationTests : IAsyncLifetime
             sourceDir: _blobDir,
             blobStore: _store,
             dataSource: dataSource,
-            options: new BlobMigrationOptions(DryRun: false, Force: false, SkipExisting: true, ManifestOut: null, StatePath: statePath),
+            options: new BlobMigrationOptions(DryRun: false, Force: false, ManifestOut: null, StatePath: statePath),
             cancellationToken: CancellationToken.None);
 
         // The second run still finds all 3 blobs (Entries.Count == 3),
@@ -348,7 +348,7 @@ public sealed class BlobMigrationTests : IAsyncLifetime
                 sourceDir: _blobDir,
                 blobStore: _store,
                 dataSource: dataSource,
-                options: new BlobMigrationOptions(DryRun: false, Force: false, SkipExisting: true, ManifestOut: null),
+                options: new BlobMigrationOptions(DryRun: false, Force: false, ManifestOut: null),
                 cancellationToken: CancellationToken.None));
 
         Assert.Contains(claimedSha, ex.Message, StringComparison.OrdinalIgnoreCase);
@@ -388,7 +388,7 @@ public sealed class BlobMigrationTests : IAsyncLifetime
             sourceDir: _blobDir,
             blobStore: _store,
             dataSource: dataSource,
-            options: new BlobMigrationOptions(DryRun: true, Force: false, SkipExisting: true, ManifestOut: null),
+            options: new BlobMigrationOptions(DryRun: true, Force: false, ManifestOut: null),
             cancellationToken: CancellationToken.None);
 
         // Only the document-referenced blob should be in the manifest.
@@ -421,7 +421,7 @@ public sealed class BlobMigrationTests : IAsyncLifetime
             sourceDir: _blobDir,
             blobStore: _store,
             dataSource: dataSource,
-            options: new BlobMigrationOptions(DryRun: true, Force: false, SkipExisting: true, ManifestOut: manifestPath),
+            options: new BlobMigrationOptions(DryRun: true, Force: false, ManifestOut: manifestPath),
             cancellationToken: CancellationToken.None);
 
         Assert.Single(report.Entries);
