@@ -15,6 +15,7 @@ public static class OntologyServiceCollectionExtensions
     public static IServiceCollection AddOntologyServices(this IServiceCollection services)
     {
         services.AddScoped<OntologyService>();
+        services.AddSingleton<OntologyViewBuilder>();
         return services;
     }
 }
