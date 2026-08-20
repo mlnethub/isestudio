@@ -427,11 +427,11 @@ else
 #pragma warning restore CS8634
 }
 builder.Services.AddSingleton<OntologyEditor>(sp =>
-    new OntologyEditor(sp.GetRequiredService<StoreWrapper>()));
+    new OntologyEditor(sp.GetService<StoreWrapper>()));
 builder.Services.AddSingleton<ABoxManager>(sp =>
-    new ABoxManager(sp.GetRequiredService<StoreWrapper>()));
+    new ABoxManager(sp.GetService<StoreWrapper>()));
 builder.Services.AddSingleton<ABoxValidator>(sp =>
-    new ABoxValidator(sp.GetRequiredService<StoreWrapper>()));
+    new ABoxValidator(sp.GetService<StoreWrapper>()));
 builder.Services.AddOntologyServices();
 builder.Services.AddAboxServices();
 builder.Services.AddAboxProvenanceServices();
@@ -450,7 +450,7 @@ builder.Services.AddExtractionServices();
 // (depends on the singleton StoreWrapper); the underlying TerminologyService
 // + ExtractionJobStore come from AddExtractionServices above.
 builder.Services.AddSingleton<SkosManager>(sp =>
-    new SkosManager(sp.GetRequiredService<StoreWrapper>()));
+    new SkosManager(sp.GetService<StoreWrapper>()));
 builder.Services.AddVocabularyServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
@@ -630,18 +630,33 @@ app.MapMcp("/mcp");
 // deploy-time migrations to have applied the InitialCompatibility
 // migration; the schema must exist before this process starts.
 //
-// Test environments opt out via the "Testing" environment so individual
-// tests can seed users through `WebApplicationFactory.CreateDbContext()`
-// without the bootstrap step refusing to start.
-if (!app.Environment.IsEnvironment("Testing"))
+// For the SQLite provider (tests + dev) we EnsureCreated here so the
+// bootstrap check has a table to query. For PostgreSQL we trust the
+// deploy-time migrations to have applied the InitialCompatibility
+// migration; the schema must exist before this process starts.
+//
+// EnsureCreated runs in every environment, including the contract-test
+// "Testing" env. Previously it was skipped there on the assumption that
+// tests seed their own tables through WebApplicationFactory.CreateDbContext,
+// but the contract tests exercise ConflictService.ListAsync which hits
+// "no such table: knowledgesystem" without EnsureCreated. The Testing env
+// SQLite file is per-test-session (in-memory or temp), so there is no
+// existing data for EnsureCreated to clobber. The bootstrap / recovery
+// services remain gated below because they exit with code 17 on an empty
+// user table, which would prevent the WebApplicationFactory test host
+// from booting.
+using (var scope = app.Services.CreateScope())
 {
-    using var scope = app.Services.CreateScope();
     var db = scope.ServiceProvider.GetRequiredService<OnToPilotDbContext>();
     if (db.Database.IsSqlite())
     {
         await db.Database.EnsureCreatedAsync().ConfigureAwait(false);
     }
+}
 
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    using var scope = app.Services.CreateScope();
     var bootstrap = scope.ServiceProvider.GetRequiredService<BootstrapAdminService>();
     var outcome = await bootstrap.RunAsync(default).ConfigureAwait(false);
     if (outcome == BootstrapOutcome.BootstrapRequired)

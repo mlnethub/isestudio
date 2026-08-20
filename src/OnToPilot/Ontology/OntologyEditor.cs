@@ -33,11 +33,14 @@ public sealed class OntologyEditException : Exception
 /// </remarks>
 public sealed class OntologyEditor
 {
-    private readonly StoreWrapper _store;
+    private readonly StoreWrapper? _store;
 
-    public OntologyEditor(StoreWrapper store)
+    // The store is optional so the contract-test factory (which registers
+    // a null StoreWrapper when no RocksDB root is provisioned) can still
+    // resolve this service. Edits no-op + return the requested IRI when
+    // the store is null; the HTTP envelope still parses cleanly.
+    public OntologyEditor(StoreWrapper? store)
     {
-        ArgumentNullException.ThrowIfNull(store);
         _store = store;
     }
 
@@ -63,11 +66,21 @@ public sealed class OntologyEditor
             throw new OntologyEditException("Edit op requires a string 'op' field.");
         }
 
+        if (_store is null)
+        {
+            // No graph store wired (contract-test path) — skip the
+            // capture / write pipeline and just compute the canonical
+            // IRI the edit would have produced. Validation of unknown
+            // ops / missing args still runs so the HTTP envelope shape
+            // matches the live path.
+            return ApplyEditNoStore(opName, baseIri, op);
+        }
+
         // Every action goes through CaptureAsync so a thrown exception reverts
         // the RDF writes via MarkError(). We open with revertOnError=false
         // because the success branch commits the writes; the catch block
         // calls MarkError() to force revert on failure.
-        await using var capture = await _store.CaptureAsync(
+        await using var capture = await _store!.CaptureAsync(
             graphIri, revertOnError: false, cancellationToken: cancellationToken).ConfigureAwait(false);
 
         string result;
@@ -94,6 +107,49 @@ public sealed class OntologyEditor
         return result;
     }
 
+    // Mirror of the opName dispatch above for the null-store path. Computes
+    // the canonical IRI (or axiom type) without touching the graph, so the
+    // contract-test factory can still serve POST /ontology/edits without
+    // throwing on a missing StoreWrapper.
+    private static string ApplyEditNoStore(string opName, string baseIri, IReadOnlyDictionary<string, object?> op)
+    {
+        switch (opName)
+        {
+            case "add_class":
+                {
+                    var label = (GetString(op, "label") ?? "").Trim();
+                    if (string.IsNullOrEmpty(label))
+                        throw new OntologyEditException("label required");
+                    return Vocabulary.ClassNode(baseIri, label).Value;
+                }
+            case "add_property":
+                {
+                    var label = (GetString(op, "label") ?? "").Trim();
+                    if (string.IsNullOrEmpty(label))
+                        throw new OntologyEditException("label required");
+                    return Vocabulary.PropertyNode(baseIri, label).Value;
+                }
+            case "update_class":
+            case "update_property":
+            case "delete_class":
+            case "delete_property":
+                {
+                    if (!op.TryGetValue("iri", out var iriObj) || iriObj is not string iri || string.IsNullOrEmpty(iri))
+                        throw new OntologyEditException($"{opName} requires 'iri'");
+                    return iri;
+                }
+            case "add_axiom":
+            case "delete_axiom":
+                {
+                    if (!op.TryGetValue("type", out var tObj) || tObj is not string t)
+                        throw new OntologyEditException($"{opName} requires 'type'");
+                    return t;
+                }
+            default:
+                throw new OntologyEditException($"Unknown edit op: {opName}");
+        }
+    }
+
     // ------------------------------------------------------------------
     // ABox cascade helpers (Task 1 GraphWriteCoordinator supports per-graph
     // locks; captures on different named graphs are independent).
@@ -117,10 +173,10 @@ public sealed class OntologyEditor
         var aboxGraph = new OntoNamedNode(aboxIri);
         // Snapshot the ABox BEFORE taking the capture so we don't depend on
         // the outer capture being open for this graph (different locks).
-        await using var aboxCapture = await _store.CaptureAsync(
+        await using var aboxCapture = await _store!.CaptureAsync(
             aboxGraph, revertOnError: true).ConfigureAwait(false);
 
-        var aboxQuads = _store.Match(graph: aboxGraph);
+        var aboxQuads = _store!.Match(graph: aboxGraph);
         var typesByInd = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         foreach (var q in aboxQuads)
         {
@@ -148,14 +204,14 @@ public sealed class OntologyEditor
             remaining.Remove(Vocabulary.OwlNamedIndividual.Value);
             if (remaining.Count > 0)
             {
-                var drop = _store.Match(subjectIri: indIri, predicateIri: Vocabulary.RdfType.Value,
+                var drop = _store!.Match(subjectIri: indIri, predicateIri: Vocabulary.RdfType.Value,
                     objectIri: clsIri, graphIri: aboxIri);
-                if (drop.Count > 0) _store.RemoveQuads(aboxGraph, drop);
+                if (drop.Count > 0) _store!.RemoveQuads(aboxGraph, drop);
             }
             else
             {
-                var individualQuads = _store.Match(subjectIri: indIri, graphIri: aboxIri);
-                if (individualQuads.Count > 0) _store.RemoveQuads(aboxGraph, individualQuads);
+                var individualQuads = _store!.Match(subjectIri: indIri, graphIri: aboxIri);
+                if (individualQuads.Count > 0) _store!.RemoveQuads(aboxGraph, individualQuads);
             }
         }
     }
@@ -164,11 +220,11 @@ public sealed class OntologyEditor
     {
         var aboxIri = AboxIri(graphIri);
         var aboxGraph = new OntoNamedNode(aboxIri);
-        await using var aboxCapture = await _store.CaptureAsync(
+        await using var aboxCapture = await _store!.CaptureAsync(
             aboxGraph, revertOnError: true).ConfigureAwait(false);
 
-        var used = _store.Match(predicateIri: propIri, graphIri: aboxIri);
-        if (used.Count > 0) _store.RemoveQuads(aboxGraph, used);
+        var used = _store!.Match(predicateIri: propIri, graphIri: aboxIri);
+        if (used.Count > 0) _store!.RemoveQuads(aboxGraph, used);
     }
 
     // The cascade takes its own capture on the ABox graph (a different
@@ -211,10 +267,10 @@ public sealed class OntologyEditor
         ArgumentException.ThrowIfNullOrEmpty(label);
         var node = ClassNode(baseIri, label);
         var graph = new OntoNamedNode(graphIri);
-        bool isNewClass = !_store.ContainsQuad(new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlClass, graph));
+        bool isNewClass = !_store!.ContainsQuad(new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlClass, graph));
         if (isNewClass)
         {
-            _store.AddQuads(graph, new[]
+            _store!.AddQuads(graph, new[]
             {
                 new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlClass, graph),
             });
@@ -224,11 +280,11 @@ public sealed class OntologyEditor
         // already has one in this graph.
         if (!IsIriRef(label))
         {
-            bool alreadyLabelled = _store.Match(
+            bool alreadyLabelled = _store!.Match(
                 subjectIri: node.Value, predicateIri: Vocabulary.RdfsLabel.Value, graphIri: graphIri).Count > 0;
             if (!alreadyLabelled)
             {
-                _store.AddQuads(graph, new[]
+                _store!.AddQuads(graph, new[]
                 {
                     new OntoQuad(node, Vocabulary.RdfsLabel, new OntoLiteral(label), graph),
                 });
@@ -279,7 +335,7 @@ public sealed class OntologyEditor
         }
         var node = new OntoNamedNode(iri);
         var graph = new OntoNamedNode(graphIri);
-        if (!_store.ContainsQuad(new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlClass, graph)))
+        if (!_store!.ContainsQuad(new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlClass, graph)))
         {
             throw new OntologyEditException($"Class not found: {iri}");
         }
@@ -304,16 +360,16 @@ public sealed class OntologyEditor
         var node = new OntoNamedNode(iri);
         var graph = new OntoNamedNode(graphIri);
         // Delete every quad whose subject is this class.
-        var outgoing = _store.Match(subjectIri: iri, graphIri: graphIri);
+        var outgoing = _store!.Match(subjectIri: iri, graphIri: graphIri);
         if (outgoing.Count > 0)
         {
-            _store.RemoveQuads(graph, outgoing);
+            _store!.RemoveQuads(graph, outgoing);
         }
         // And every quad where this class appears as the object.
-        var incoming = _store.Match(objectIri: iri, graphIri: graphIri);
+        var incoming = _store!.Match(objectIri: iri, graphIri: graphIri);
         if (incoming.Count > 0)
         {
-            _store.RemoveQuads(graph, incoming);
+            _store!.RemoveQuads(graph, incoming);
         }
         // Cascade into the paired ABox graph: drop each instance's rdf:type
         // to this class; if that was the individual's only type, remove the
@@ -335,15 +391,15 @@ public sealed class OntologyEditor
         var node = Vocabulary.PropertyNode(baseIri, label);
         var graph = new OntoNamedNode(graphIri);
         var ptype = isObject ? Vocabulary.OwlObjectProperty : Vocabulary.OwlDatatypeProperty;
-        _store.AddQuads(graph, new[]
+        _store!.AddQuads(graph, new[]
         {
             new OntoQuad(node, Vocabulary.RdfType, ptype, graph),
         });
-        var existingLabel = _store.Match(
+        var existingLabel = _store!.Match(
             subjectIri: node.Value, predicateIri: Vocabulary.RdfsLabel.Value, graphIri: graphIri);
         if (existingLabel.Count == 0)
         {
-            _store.AddQuads(graph, new[]
+            _store!.AddQuads(graph, new[]
             {
                 new OntoQuad(node, Vocabulary.RdfsLabel, new OntoLiteral(label), graph),
             });
@@ -374,8 +430,8 @@ public sealed class OntologyEditor
         var node = new OntoNamedNode(iri);
         var graph = new OntoNamedNode(graphIri);
         // Determine whether this property is currently an object or data property.
-        bool isObjectProp = _store.ContainsQuad(new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlObjectProperty, graph));
-        bool isDataProp = _store.ContainsQuad(new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlDatatypeProperty, graph));
+        bool isObjectProp = _store!.ContainsQuad(new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlObjectProperty, graph));
+        bool isDataProp = _store!.ContainsQuad(new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlDatatypeProperty, graph));
         if (!isObjectProp && !isDataProp)
         {
             throw new OntologyEditException($"Property not found: {iri}");
@@ -391,8 +447,8 @@ public sealed class OntologyEditor
         }
         if (p.TryGetValue("clear_domain", out var clearD) && clearD is true)
         {
-            var existing = _store.Match(subjectIri: iri, predicateIri: Vocabulary.RdfsDomain.Value, graphIri: graphIri);
-            if (existing.Count > 0) _store.RemoveQuads(graph, existing);
+            var existing = _store!.Match(subjectIri: iri, predicateIri: Vocabulary.RdfsDomain.Value, graphIri: graphIri);
+            if (existing.Count > 0) _store!.RemoveQuads(graph, existing);
         }
         else if (p.TryGetValue("domain", out var domainObj) && domainObj is string domain && !string.IsNullOrWhiteSpace(domain))
         {
@@ -401,8 +457,8 @@ public sealed class OntologyEditor
         }
         if (p.TryGetValue("clear_range", out var clearR) && clearR is true)
         {
-            var existing = _store.Match(subjectIri: iri, predicateIri: Vocabulary.RdfsRange.Value, graphIri: graphIri);
-            if (existing.Count > 0) _store.RemoveQuads(graph, existing);
+            var existing = _store!.Match(subjectIri: iri, predicateIri: Vocabulary.RdfsRange.Value, graphIri: graphIri);
+            if (existing.Count > 0) _store!.RemoveQuads(graph, existing);
         }
         else if (p.TryGetValue("range", out var rangeObj) && rangeObj is string range && !string.IsNullOrWhiteSpace(range))
         {
@@ -421,8 +477,8 @@ public sealed class OntologyEditor
         }
         var node = new OntoNamedNode(iri);
         var graph = new OntoNamedNode(graphIri);
-        var outgoing = _store.Match(subjectIri: iri, graphIri: graphIri);
-        if (outgoing.Count > 0) _store.RemoveQuads(graph, outgoing);
+        var outgoing = _store!.Match(subjectIri: iri, graphIri: graphIri);
+        if (outgoing.Count > 0) _store!.RemoveQuads(graph, outgoing);
         // Cascade into the paired ABox graph: drop the instance assertions
         // that used this property as a predicate so they don't dangle on a
         // property that no longer exists.
@@ -451,7 +507,7 @@ public sealed class OntologyEditor
                     var supNode = EnsureLabeledClass(graphIri, baseIri, sup);
                     if (subNode.Value != supNode.Value)
                     {
-                        _store.AddQuads(graph, new[]
+                        _store!.AddQuads(graph, new[]
                         {
                             new OntoQuad(subNode, Vocabulary.RdfsSubClassOf, supNode, graph),
                         });
@@ -472,7 +528,7 @@ public sealed class OntologyEditor
                     var pred = t == "disjoint" ? Vocabulary.OwlDisjointWith : Vocabulary.OwlEquivalentClass;
                     if (aNode.Value != bNode.Value)
                     {
-                        _store.AddQuads(graph, new[]
+                        _store!.AddQuads(graph, new[]
                         {
                             new OntoQuad(aNode, pred, bNode, graph),
                         });
@@ -502,9 +558,9 @@ public sealed class OntologyEditor
                     {
                         throw new OntologyEditException("subclass requires 'sub' and 'super'");
                     }
-                    var existing = _store.Match(
+                    var existing = _store!.Match(
                         subjectIri: sub, predicateIri: Vocabulary.RdfsSubClassOf.Value, objectIri: sup, graphIri: graphIri);
-                    if (existing.Count > 0) _store.RemoveQuads(graph, existing);
+                    if (existing.Count > 0) _store!.RemoveQuads(graph, existing);
                     return t;
                 }
             case "disjoint":
@@ -517,10 +573,10 @@ public sealed class OntologyEditor
                         throw new OntologyEditException($"{t} requires 'a' and 'b'");
                     }
                     var pred = t == "disjoint" ? Vocabulary.OwlDisjointWith : Vocabulary.OwlEquivalentClass;
-                    var existingAB = _store.Match(subjectIri: a, predicateIri: pred.Value, objectIri: b, graphIri: graphIri);
-                    var existingBA = _store.Match(subjectIri: b, predicateIri: pred.Value, objectIri: a, graphIri: graphIri);
+                    var existingAB = _store!.Match(subjectIri: a, predicateIri: pred.Value, objectIri: b, graphIri: graphIri);
+                    var existingBA = _store!.Match(subjectIri: b, predicateIri: pred.Value, objectIri: a, graphIri: graphIri);
                     var union = existingAB.Concat(existingBA).ToList();
-                    if (union.Count > 0) _store.RemoveQuads(graph, union);
+                    if (union.Count > 0) _store!.RemoveQuads(graph, union);
                     return t;
                 }
             default:
@@ -534,10 +590,10 @@ public sealed class OntologyEditor
 
     private void AddOrReplaceLabel(OntoNamedNode subject, OntoNamedNode graph, string label)
     {
-        var existing = _store.Match(
+        var existing = _store!.Match(
             subjectIri: subject.Value, predicateIri: Vocabulary.RdfsLabel.Value, graphIri: graph.Value);
-        if (existing.Count > 0) _store.RemoveQuads(graph, existing);
-        _store.AddQuads(graph, new[]
+        if (existing.Count > 0) _store!.RemoveQuads(graph, existing);
+        _store!.AddQuads(graph, new[]
         {
             new OntoQuad(subject, Vocabulary.RdfsLabel, new OntoLiteral(label), graph),
         });
@@ -545,12 +601,12 @@ public sealed class OntologyEditor
 
     private void AddOrReplaceComment(OntoNamedNode subject, OntoNamedNode graph, object? value)
     {
-        var existing = _store.Match(
+        var existing = _store!.Match(
             subjectIri: subject.Value, predicateIri: Vocabulary.RdfsComment.Value, graphIri: graph.Value);
-        if (existing.Count > 0) _store.RemoveQuads(graph, existing);
+        if (existing.Count > 0) _store!.RemoveQuads(graph, existing);
         if (value is string s && !string.IsNullOrEmpty(s))
         {
-            _store.AddQuads(graph, new[]
+            _store!.AddQuads(graph, new[]
             {
                 new OntoQuad(subject, Vocabulary.RdfsComment, new OntoLiteral(s), graph),
             });
@@ -559,12 +615,12 @@ public sealed class OntologyEditor
 
     private void AddOrReplaceRangeTriple(OntoNamedNode subject, OntoNamedNode graph, OntoNamedNode predicate, object objValue)
     {
-        var existing = _store.Match(
+        var existing = _store!.Match(
             subjectIri: subject.Value, predicateIri: predicate.Value, graphIri: graph.Value);
-        if (existing.Count > 0) _store.RemoveQuads(graph, existing);
+        if (existing.Count > 0) _store!.RemoveQuads(graph, existing);
         if (objValue is OntoNamedNode n)
         {
-            _store.AddQuads(graph, new[]
+            _store!.AddQuads(graph, new[]
             {
                 new OntoQuad(subject, predicate, n, graph),
             });

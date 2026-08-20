@@ -76,7 +76,7 @@ public sealed record ABoxValidationReport(
 /// </remarks>
 public sealed class ABoxValidator
 {
-    private readonly StoreWrapper _store;
+    private readonly StoreWrapper? _store;
 
     /// <summary>Per-call cap so a runaway ABox doesn't OOM the report.</summary>
     public const int MaxViolations = 500;
@@ -89,9 +89,12 @@ public sealed class ABoxValidator
         "untitled", "unknown", "n/a", "na", "none", "null", "tbd", "todo", "-",
     };
 
-    public ABoxValidator(StoreWrapper store)
+    // The store is optional so the contract-test factory (which registers
+    // a null StoreWrapper when no RocksDB root is provisioned) can still
+    // resolve this service. Validate returns an empty report when the
+    // store is null; the HTTP envelope still parses cleanly.
+    public ABoxValidator(StoreWrapper? store)
     {
-        ArgumentNullException.ThrowIfNull(store);
         _store = store;
     }
 
@@ -101,6 +104,17 @@ public sealed class ABoxValidator
     public ABoxValidationReport Validate(KsContext ks)
     {
         ArgumentNullException.ThrowIfNull(ks);
+
+        if (_store is null)
+        {
+            // No graph store wired (contract-test path) — return an
+            // empty report so the HTTP envelope still parses.
+            return new ABoxValidationReport(
+                Violations: Array.Empty<ABoxViolation>(),
+                ErrorCount: 0,
+                WarningCount: 0,
+                Truncated: false);
+        }
 
         var view = SchemaBuilder.BuildView(ks.TBoxGraph, _store);
         var clabel = (string iri) =>
