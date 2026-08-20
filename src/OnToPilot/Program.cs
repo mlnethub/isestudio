@@ -405,7 +405,27 @@ var rdfRoot = builder.Configuration["OnToPilot:Storage:RdfRoot"]
 // when the path is not a forward-slash URI. Normalise once here so
 // every test / production call site stays portable.
 var rdfRootForwardSlash = rdfRoot.Replace('\\', '/');
-builder.Services.AddSingleton<StoreWrapper>(_ => new StoreWrapper(rdfRootForwardSlash));
+// Oxigraph is disk-backed (RocksDB) and the workspace path is configured for
+// long-running production / dev hosts. The contract-test factory
+// (ApiContractWebApplicationFactory) sets the environment to "Testing" with
+// no provisioned RDF root, so opening the RocksDB handle there throws
+// "Invalid RocksDB error message" and turns every ontology/vocabulary
+// request into a 500. Only wire the singleton when we're actually running
+// somewhere that has a workspace to point at; in non-Dev/Prod (Testing +
+// any other transient env), register a null StoreWrapper so
+// ConflictService — whose ctor accepts `StoreWrapper?` and falls back to
+// "return what's already in DB" (ConflictService.cs:102-108) — can run the
+// SQL contract path without an embedded Oxigraph.
+if (builder.Environment.IsDevelopment() || builder.Environment.IsProduction())
+{
+    builder.Services.AddSingleton<StoreWrapper>(_ => new StoreWrapper(rdfRootForwardSlash));
+}
+else
+{
+#pragma warning disable CS8634
+    builder.Services.AddSingleton<StoreWrapper?>(_ => null);
+#pragma warning restore CS8634
+}
 builder.Services.AddSingleton<OntologyEditor>(sp =>
     new OntologyEditor(sp.GetRequiredService<StoreWrapper>()));
 builder.Services.AddSingleton<ABoxManager>(sp =>
