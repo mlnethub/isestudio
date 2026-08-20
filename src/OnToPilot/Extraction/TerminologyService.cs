@@ -49,12 +49,17 @@ public sealed record TerminologyResult(
 /// </remarks>
 public sealed class TerminologyService : ITerminologySync
 {
-    private readonly StoreWrapper _store;
+    private readonly StoreWrapper? _store;
     private readonly TimeProvider _clock;
 
-    public TerminologyService(StoreWrapper store, TimeProvider? clock = null)
+    // The store is optional so the contract-test factory (which registers
+    // a null StoreWrapper when no RocksDB root is provisioned) can still
+    // resolve this service. When the store is null, sync returns the
+    // zero summary and the vocabulary layer sees an empty graph; the
+    // public contract shape is preserved so the HTTP envelope still
+    // parses cleanly.
+    public TerminologyService(StoreWrapper? store, TimeProvider? clock = null)
     {
-        ArgumentNullException.ThrowIfNull(store);
         _store = store;
         _clock = clock ?? TimeProvider.System;
     }
@@ -81,6 +86,13 @@ public sealed class TerminologyService : ITerminologySync
 
     private TerminologyResult SyncCore(KsContext ks, CancellationToken cancellationToken)
     {
+        if (_store is null)
+        {
+            // No graph store wired (contract-test path) — vocabulary
+            // layer has nothing to scan or write, so report the
+            // deterministic zero summary.
+            return TerminologyResult.Zero;
+        }
         var view = SchemaBuilder.BuildView(ks.TBoxGraph, _store);
         var classes = view.Classes;
         if (classes.Count == 0) return TerminologyResult.Zero;
@@ -149,6 +161,7 @@ public sealed class TerminologyService : ITerminologySync
 
     private bool PrefLabelExists(KsContext ks, string label)
     {
+        if (_store is null) return false;
         var existing = _store.Match(
             predicateIri: SkosVocab.PrefLabel.Value,
             graphIri: ks.VocabularyGraph);
