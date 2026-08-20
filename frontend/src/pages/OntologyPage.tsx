@@ -5,7 +5,7 @@ import { ChevronDown, Crown, Download, Eye, FileUp, Loader2, RefreshCw, Shield, 
 import { api } from "@/lib/api"
 import { useI18n } from "@/lib/i18n"
 import { useConfirm } from "@/lib/confirm"
-import type { Conflict, EditOp, EditResult, ExtractionJob, KnowledgeSystem, OntologyProperty, OntologyView, Role, SourceDoc } from "@/lib/types"
+import type { Conflict, EditOp, EditResult, ExtractionJob, KnowledgeSystem, OntologyClass, OntologyProperty, OntologyView, Role, SourceDoc } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
@@ -23,6 +23,53 @@ import VocabularyPanel from "@/components/VocabularyPanel"
 import PromptSettingsPanel from "@/components/PromptSettingsPanel"
 import ReleasePanel from "@/components/ReleasePanel"
 import { AxiomDialog, ClassDialog, PropertyDialog } from "@/components/EditDialogs"
+
+// Backend `GetOntologyAsync(Guid)` is a Stage 2 placeholder that emits
+// only `{ classes, properties }`; the real TBox read (axioms / labels /
+// stats / object_properties vs data_properties split) is deferred until
+// Stage 2 lands (see `InternalOperationDispatcher.GetOntologyAsync(Guid)`
+// "Stage 2 placeholder" comment). Until then the wire payload is missing
+// every required `OntologyView` field and the page crashes on the first
+// `view.axioms.subclass_of` / `view.stats.class_count` access. This
+// normaliser fills every missing field with a safe empty default so the
+// page renders with the empty-TBox message instead of white-screening.
+function normalizeOntologyView(raw: Partial<OntologyView> & { properties?: unknown }): OntologyView {
+  const classesRaw = Array.isArray(raw.classes) ? raw.classes : []
+  const fillClass = (c: Partial<OntologyClass>): OntologyClass => ({
+    iri: c.iri ?? "",
+    local: c.local ?? c.iri?.split(/[#/]/).pop() ?? "",
+    label: c.label ?? "",
+    comment: c.comment ?? "",
+    superclasses: c.superclasses ?? [],
+  })
+  const fillProp = (p: Partial<OntologyProperty>): OntologyProperty => ({
+    iri: p.iri ?? "",
+    local: p.local ?? p.iri?.split(/[#/]/).pop() ?? "",
+    label: p.label ?? "",
+    comment: p.comment ?? "",
+    domain: p.domain ?? null,
+    domain_label: p.domain_label ?? null,
+    range: p.range ?? null,
+    range_label: p.range_label ?? null,
+  })
+  return {
+    classes: classesRaw.map(fillClass),
+    object_properties: raw.object_properties?.map(fillProp) ?? [],
+    data_properties: raw.data_properties?.map(fillProp) ?? [],
+    axioms: raw.axioms ?? {
+      subclass_of: [],
+      disjoint_with: [],
+      equivalent_class: [],
+    },
+    labels: raw.labels ?? {},
+    stats: raw.stats ?? {
+      class_count: classesRaw.length,
+      property_count: 0,
+      axiom_count: 0,
+    },
+    knowledge_system: raw.knowledge_system,
+  }
+}
 
 function RoleTag({ role }: { role: Role }) {
   const { t } = useI18n()
@@ -69,7 +116,7 @@ export default function OntologyPage() {
       const [k, v, j, c, s] = await Promise.all([
         api.getKS(ksId), api.getOntology(ksId), api.listJobs(ksId), api.listConflicts(ksId), api.getSources(ksId),
       ])
-      setKs(k); setView(v); setJobs(j); setConflicts(c); setSources(s)
+      setKs(k); setView(normalizeOntologyView(v)); setJobs(j); setConflicts(c); setSources(s)
     } catch (e) {
       toast.error(t("common.failedLoad", { error: (e as Error).message }))
     } finally {
