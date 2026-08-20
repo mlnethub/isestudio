@@ -517,8 +517,9 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
     // ---- providers ----------------------------------------------------------
     // Provider CRUD lives behind ProviderService (scoped). The dispatcher
-    // is a Singleton; we resolve the service per-call so the scoped
-    // OnToPilotDbContext the controller already opened flows through.
+    // is registered Scoped, so `_services.GetService(typeof(ProviderService))`
+    // resolves the request's own DbContext per call — the same context the
+    // controller opened for this request, with the same session user / tx.
     //
     // Body shape: controllers bind [FromBody] to a typed record (or the
     // loose `object` body for handlers that need it). InternalControllerBase
@@ -676,9 +677,10 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
     // ---- conflicts ---------------------------------------------------------
     // Conflict queue + reconciliation memory CRUD lives behind
-    // ConflictService (scoped). The dispatcher is a Singleton; we resolve
-    // the service per-call so the scoped OnToPilotDbContext the controller
-    // already opened flows through.
+    // ConflictService (scoped). The dispatcher is registered Scoped, so
+    // `_services.GetService(typeof(ConflictService))` resolves the
+    // request's own DbContext per call — the same context the controller
+    // opened for this request, with the same session user / tx.
     //
     // Body shape: controllers bind [FromBody] to a typed record (or the
     // loose `object` body for handlers that need it). InternalControllerBase
@@ -1822,12 +1824,11 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     // ----- vocabulary (Block 8 Task 5) -------------------------------------
     // Wires the 28 vocabulary dispatcher arms to the scoped services built
     // in Tasks 2 (VocabularyService) / 3 (VocabularyProposalService) /
-    // 4 (TerminologyAgent). The dispatcher is a Singleton; we resolve each
-    // scoped service per-call via `_services.GetService` (B6b's
-    // ResolveExtractionOrchestrator pattern) and pull the bound knowledge
-    // system from the same root provider so the request DbContext flows
-    // through. Role gates, the extraction guard, and audit diffs all live
-    // inside the services — the dispatcher only forwards.
+    // 4 (TerminologyAgent). The dispatcher is registered Scoped, so each
+    // `_services.GetService` call resolves the request's own DbContext
+    // (B6b's ResolveExtractionOrchestrator pattern). Role gates, the
+    // extraction guard, and audit diffs all live inside the services —
+    // the dispatcher only forwards.
     //
     // Failure modes mirror the other slices:
     // * Service not registered (unit tests that hand-built the dispatcher)

@@ -258,7 +258,19 @@ builder.Services.AddControllers().AddJsonOptions(options =>
 // Single in-process dispatcher + facade. Controllers depend only on the
 // facade; the dispatcher is the implementation seam for swapping in
 // per-operation delegates as Stage 2/3 services stabilise.
-builder.Services.AddSingleton<IInternalOperationDispatcher, InternalOperationDispatcher>();
+//
+// IMPORTANT lifetime note: the dispatcher MUST be Scoped, not Singleton.
+// It captures an IServiceProvider in its ctor and resolves the scoped
+// services (KnowledgeService / ConflictService / DocumentService /
+// ABoxService / VocabularyService / ProviderService / OntologyService /
+// OnToPilotDbContext) per call via _services.GetService. Registering it
+// as a Singleton makes the captured provider the root one, which turns
+// every resolved scoped service into a captive dependency: every
+// concurrent HTTP request shares the same DbContext instance, and EF
+// Core throws "A second operation was started on this context instance"
+// the moment two requests overlap. Registering Scoped makes the captured
+// provider the request scope, so each request gets its own DbContext.
+builder.Services.AddScoped<IInternalOperationDispatcher, InternalOperationDispatcher>();
 builder.Services.AddScoped<IIntegrationApiFacade, IntegrationApiFacade>();
 
 builder.Services.Configure<OnToPilotOptions>(
