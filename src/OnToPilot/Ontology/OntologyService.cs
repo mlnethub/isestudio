@@ -70,7 +70,7 @@ public sealed class OntologyService
     /// <c>{"detail": "..."}</c> envelope.
     /// </summary>
     public async Task<OntologyEditResult?> EditAsync(
-        long ksId,
+        Guid ksId,
         IReadOnlyDictionary<string, object?> op,
         Actor actor,
         CancellationToken ct)
@@ -116,7 +116,7 @@ public sealed class OntologyService
     /// <c>backend/app/api/ontology.py::reset_ontology</c> flow that
     /// calls both <c>clear_graph</c> paths in one transaction.
     /// </summary>
-    public async Task<OntologyEditResult?> ResetAsync(long ksId, Actor actor, CancellationToken ct)
+    public async Task<OntologyEditResult?> ResetAsync(Guid ksId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -164,7 +164,7 @@ public sealed class OntologyService
     // ----------------------------------------------------------------------
 
     private async Task<(UserEntity? User, KnowledgeSystemEntity? Ks)> ResolveUserAndKsAsync(
-        long ksId, Actor actor, CancellationToken ct)
+        Guid ksId, Actor actor, CancellationToken ct)
     {
         if (!Guid.TryParse(actor.UserId, out var userGuid)) return (null, null);
         var user = await _db.Users.AsNoTracking()
@@ -172,7 +172,7 @@ public sealed class OntologyService
             .ConfigureAwait(false);
         if (user is null) return (null, null);
         var ks = await _db.KnowledgeSystems.AsNoTracking()
-            .FirstOrDefaultAsync(k => k.LegacyId == ksId, ct)
+            .FirstOrDefaultAsync(k => k.Id == ksId, ct)
             .ConfigureAwait(false);
         if (ks is null) return (null, null);
         return (user, ks);

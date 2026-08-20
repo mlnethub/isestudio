@@ -80,7 +80,7 @@ public sealed class ABoxService
     /// Classes with no instances are still listed (zero count) so the
     /// UI can show "Animal (0)".
     /// </summary>
-    public async Task<ClassesOut?> ListClassesAsync(long ksId, Actor actor, CancellationToken ct)
+    public async Task<ClassesOut?> ListClassesAsync(Guid ksId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -106,7 +106,7 @@ public sealed class ABoxService
 
     /// <summary>Paginated individual listing with optional class + q filter.</summary>
     public async Task<IndividualsOut?> ListIndividualsAsync(
-        long ksId,
+        Guid ksId,
         string? classIri,
         string? q,
         int limit,
@@ -133,7 +133,7 @@ public sealed class ABoxService
     /// quads so the dispatcher can map to 404.
     /// </summary>
     public async Task<IndividualOut?> GetIndividualAsync(
-        long ksId,
+        Guid ksId,
         string iri,
         Actor actor,
         CancellationToken ct)
@@ -160,7 +160,7 @@ public sealed class ABoxService
     /// is deferred to the B7b slice (provenance service wire-up).
     /// </summary>
     public async Task<IndividualOut?> CreateIndividualAsync(
-        long ksId,
+        Guid ksId,
         CreateIndividualRequest req,
         Actor actor,
         CancellationToken ct)
@@ -228,7 +228,7 @@ public sealed class ABoxService
     /// write to the same canonical-keyed provenance table.
     /// </summary>
     public async Task<IndividualOut?> AddAssertionAsync(
-        long ksId,
+        Guid ksId,
         AssertionRequest req,
         Actor actor,
         CancellationToken ct)
@@ -298,7 +298,7 @@ public sealed class ABoxService
     /// surface stays in lock-step with the RDF graph.
     /// </summary>
     public async Task<IndividualOut?> RemoveAssertionAsync(
-        long ksId,
+        Guid ksId,
         AssertionRequest req,
         Actor actor,
         CancellationToken ct)
@@ -358,7 +358,7 @@ public sealed class ABoxService
     /// row, and (B7b) tears down the matching provenance rows.
     /// </summary>
     public async Task<DeleteIndividualResponse?> DeleteIndividualAsync(
-        long ksId,
+        Guid ksId,
         string iri,
         Actor actor,
         CancellationToken ct)
@@ -409,7 +409,7 @@ public sealed class ABoxService
     // ----------------------------------------------------------------------
 
     private async Task<(UserEntity? User, KnowledgeSystemEntity? Ks)> RequireRoleAsync(
-        long ksId, Actor actor, KSRole minimum, CancellationToken ct)
+        Guid ksId, Actor actor, KSRole minimum, CancellationToken ct)
     {
         if (!Guid.TryParse(actor.UserId, out var userGuid)) return (null, null);
         var user = await _db.Users.AsNoTracking()
@@ -418,7 +418,7 @@ public sealed class ABoxService
         if (user is null) return (null, null);
 
         var ks = await _db.KnowledgeSystems.AsNoTracking()
-            .FirstOrDefaultAsync(k => k.LegacyId == ksId, ct)
+            .FirstOrDefaultAsync(k => k.Id == ksId, ct)
             .ConfigureAwait(false);
         if (ks is null) return (null, null);
 
@@ -660,7 +660,7 @@ public sealed class ABoxService
     /// replay can roll back the wipe.
     /// </summary>
     public async Task<ResetAboxResponse?> ResetAsync(
-        long ksId, ResetAboxRequest req, Actor actor, CancellationToken ct)
+        Guid ksId, ResetAboxRequest req, Actor actor, CancellationToken ct)
     {
         if (!req.Confirm)
         {
@@ -726,7 +726,7 @@ public sealed class ABoxService
     /// wire-shaped report. Read-side only &mdash; no extraction guard.
     /// </summary>
     public async Task<ValidationReportOut?> ValidateAsync(
-        long ksId, Actor actor, CancellationToken ct)
+        Guid ksId, Actor actor, CancellationToken ct)
     {
         var (_, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
         if (ks is null) return null;
@@ -754,7 +754,7 @@ public sealed class ABoxService
     /// violation list with the fix applied.
     /// </summary>
     public async Task<ValidationReportOut?> FixViolationAsync(
-        long ksId, FixViolationRequest req, Actor actor, CancellationToken ct)
+        Guid ksId, FixViolationRequest req, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -837,7 +837,7 @@ public sealed class ABoxService
 
     /// <summary>List persisted validation decisions for one KS.</summary>
     public async Task<ValidationDecisionListOut?> ListValidationDecisionsAsync(
-        long ksId, string? q, int limit, int offset, Actor actor, CancellationToken ct)
+        Guid ksId, string? q, int limit, int offset, Actor actor, CancellationToken ct)
     {
         var (_, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
         if (ks is null) return null;
@@ -851,7 +851,7 @@ public sealed class ABoxService
     /// when no row matched (the caller can map null → 404).
     /// </summary>
     public async Task<RevokeValidationDecisionResponse?> RevokeValidationDecisionAsync(
-        long ksId, Guid decisionId, Actor actor, CancellationToken ct)
+        Guid ksId, Guid decisionId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (ks is null) return null;

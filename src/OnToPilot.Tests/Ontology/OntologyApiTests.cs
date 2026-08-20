@@ -34,10 +34,10 @@ public sealed class OntologyApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "ontology-edit");
+        var ksId = await CreateKsAsync(client, "ontology-edit");
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var graphIri = LookupKsGraphIri(app, ksGuid);
+        var graphIri = LookupKsGraphIri(app, ksId);
 
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/ontology/edit",
@@ -61,7 +61,7 @@ public sealed class OntologyApiTests
 
         // Audit row captured the byte-exact N-Quads diff (the three
         // triples the editor added in this op).
-        var audits = LookupAuditEventsFor(app, ksGuid);
+        var audits = LookupAuditEventsFor(app, ksId);
         var editAudit = audits.Single(e => e.Action == "ontology.edit");
         Assert.NotNull(editAudit.Added);
         Assert.True(editAudit.Added!.Length > 0);
@@ -78,7 +78,7 @@ public sealed class OntologyApiTests
         // anything on the Added side beyond the existing comment).
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "ontology-idempotent");
+        var ksId = await CreateKsAsync(client, "ontology-idempotent");
 
         var first = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/ontology/edit",
@@ -98,7 +98,7 @@ public sealed class OntologyApiTests
         // editor's ensure-helper saw the existing class and wrote
         // nothing new, so Added is null (we don't materialise an empty
         // byte[] just to be able to say "zero bytes").
-        var audits = LookupAuditEventsFor(app, ksGuid)
+        var audits = LookupAuditEventsFor(app, ksId)
             .Where(e => e.Action == "ontology.edit").ToList();
         Assert.Equal(2, audits.Count);
         var secondAudit = audits[1];
@@ -110,10 +110,10 @@ public sealed class OntologyApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "ontology-subclass");
+        var ksId = await CreateKsAsync(client, "ontology-subclass");
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var graphIri = LookupKsGraphIri(app, ksGuid);
+        var graphIri = LookupKsGraphIri(app, ksId);
 
         // Seed Animal first so the subclass axiom has a super-class to
         // point at without relying on the ensure-helper side effect.
@@ -154,10 +154,10 @@ public sealed class OntologyApiTests
         // tested separately via the ontology.feature integration tests).
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "ontology-delete");
+        var ksId = await CreateKsAsync(client, "ontology-delete");
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var graphIri = LookupKsGraphIri(app, ksGuid);
+        var graphIri = LookupKsGraphIri(app, ksId);
 
         var add = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/ontology/edit",
@@ -177,7 +177,7 @@ public sealed class OntologyApiTests
             graphIri: graphIri));
 
         // The most recent audit row carries the Removed blob.
-        var audits = LookupAuditEventsFor(app, ksGuid)
+        var audits = LookupAuditEventsFor(app, ksId)
             .Where(e => e.Action == "ontology.edit").ToList();
         var deleteAudit = audits.Last();
         Assert.NotNull(deleteAudit.Removed);
@@ -197,7 +197,7 @@ public sealed class OntologyApiTests
         // controller surface thin.
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "ontology-bad-op");
+        var ksId = await CreateKsAsync(client, "ontology-bad-op");
 
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/ontology/edit",
@@ -220,7 +220,7 @@ public sealed class OntologyApiTests
         // any edit reaches the editor.
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "ontology-nonadmin");
+        var ksId = await CreateKsAsync(client, "ontology-nonadmin");
 
         var (aliceClient, _) = await SeedSecondUserAsync(app);
 
@@ -232,7 +232,7 @@ public sealed class OntologyApiTests
         // The store stayed untouched — the role gate refused the
         // mutation before it reached the editor.
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var graphIri = LookupKsGraphIri(app, LookupKsGuid(app, ksId));
+        var graphIri = LookupKsGraphIri(app, ksId);
         Assert.Empty(store.Match(graphIri: graphIri));
     }
 
@@ -245,10 +245,10 @@ public sealed class OntologyApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "ontology-reset");
+        var ksId = await CreateKsAsync(client, "ontology-reset");
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var graphIri = LookupKsGraphIri(app, ksGuid);
+        var graphIri = LookupKsGraphIri(app, ksId);
         var aboxIri = graphIri.TrimEnd('/') + "/abox";
 
         // Seed a couple of classes so reset has something to clear.
@@ -270,7 +270,7 @@ public sealed class OntologyApiTests
         Assert.Empty(store.Match(graphIri: aboxIri));
 
         // Audit row carries the Removed blob for the cleared triples.
-        var audits = LookupAuditEventsFor(app, ksGuid)
+        var audits = LookupAuditEventsFor(app, ksId)
             .Where(e => e.Action == "ontology.reset").ToList();
         var resetAudit = audits.Single();
         Assert.NotNull(resetAudit.Removed);
@@ -287,29 +287,29 @@ public sealed class OntologyApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "impact-walk");
+        var ksId = await CreateKsAsync(client, "impact-walk");
 
         // Upload + parse a tiny document so chunks exist.
         var upload = await UploadAsync(client, ksId, "i.txt", "hello world\n", folder: "/");
         Assert.Equal(HttpStatusCode.OK, upload.StatusCode);
         var created = await upload.Content.ReadFromJsonAsync<JsonElement>();
-        var docId = created.GetProperty("id").GetInt64();
+        var docId = created.GetProperty("id").GetGuid();
         await client.PostAsync($"/api/knowledge/{ksId}/documents/{docId}/parse", null);
 
         // Seed axiom provenance pointing at one of this doc's chunks.
-        var chunkId = LookupFirstChunkId(app, ksGuid);
-        SeedAxiomProvenance(app, ksGuid, chunkId, "subClassOf|dog|Animal");
-        SeedAxiomProvenance(app, ksGuid, chunkId, "class|Animal");
+        var chunkId = LookupFirstChunkId(app, ksId);
+        SeedAxiomProvenance(app, ksId, chunkId, "subClassOf|dog|Animal");
+        SeedAxiomProvenance(app, ksId, chunkId, "class|Animal");
 
         var impact = await client.GetAsync(
             $"/api/knowledge/{ksId}/documents/{docId}/impact");
         Assert.Equal(HttpStatusCode.OK, impact.StatusCode);
         var body = await impact.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(docId, body.GetProperty("document_id").GetInt64());
+        Assert.Equal(docId, body.GetProperty("document_id").GetGuid());
         var systems = body.GetProperty("systems");
         Assert.Equal(1, systems.GetArrayLength());
         var ksEntry = systems[0];
-        Assert.Equal(ksId, ksEntry.GetProperty("knowledge_system_id").GetInt64());
+        Assert.Equal(ksId, ksEntry.GetProperty("knowledge_system_id").GetGuid());
         var axioms = ksEntry.GetProperty("axioms");
         Assert.Equal(2, axioms.GetArrayLength());
         var keys = axioms.EnumerateArray()
@@ -391,8 +391,8 @@ public sealed class OntologyApiTests
         return (client, userId);
     }
 
-    private static async Task<(long LegacyId, Guid Guid)> CreateKsAsync(
-        AuthTestWebApplicationFactory app, HttpClient client, string tag)
+    private static async Task<Guid> CreateKsAsync(
+        HttpClient client, string tag)
     {
         var response = await client.PostAsJsonAsync("/api/knowledge", new
         {
@@ -401,45 +401,36 @@ public sealed class OntologyApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var legacy = body.GetProperty("id").GetInt64();
-        var guid = LookupKsGuid(app, legacy);
-        return (legacy, guid);
+        // The wire `id` is the KS primary-key Guid (the migration removed
+        // the legacy integer from the DTO).
+        return body.GetProperty("id").GetGuid();
     }
 
-    private static Guid LookupKsGuid(AuthTestWebApplicationFactory app, long legacyId)
+    private static string LookupKsGraphIri(AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.KnowledgeSystems
-            .Where(k => k.LegacyId == legacyId)
-            .Select(k => k.Id)
-            .Single();
-    }
-
-    private static string LookupKsGraphIri(AuthTestWebApplicationFactory app, Guid ksGuid)
-    {
-        var db = app.CreateDbContext();
-        return db.KnowledgeSystems
-            .Where(k => k.Id == ksGuid)
+            .Where(k => k.Id == ksId)
             .Select(k => k.GraphIri)
             .Single();
     }
 
     private static IReadOnlyList<AuditEventEntity> LookupAuditEventsFor(
-        AuthTestWebApplicationFactory app, Guid ksGuid)
+        AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.AuditEvents.AsNoTracking()
-            .Where(e => e.KnowledgeSystemId == ksGuid)
+            .Where(e => e.KnowledgeSystemId == ksId)
             .ToList();
     }
 
-    private static Guid LookupFirstChunkId(AuthTestWebApplicationFactory app, Guid ksGuid)
+    private static Guid LookupFirstChunkId(AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         // SQLite refuses DateTimeOffset in ORDER BY; materialise + sort
         // client-side (same workaround as KnowledgeService.ListAsync).
         var docId = db.Documents.AsNoTracking()
-            .Where(d => d.KnowledgeSystemId == ksGuid)
+            .Where(d => d.KnowledgeSystemId == ksId)
             .ToList()
             .OrderBy(d => d.UploadedAt)
             .Select(d => d.Id)
@@ -452,13 +443,13 @@ public sealed class OntologyApiTests
     }
 
     private static void SeedAxiomProvenance(
-        AuthTestWebApplicationFactory app, Guid ksGuid, Guid chunkId, string axiomKey)
+        AuthTestWebApplicationFactory app, Guid ksId, Guid chunkId, string axiomKey)
     {
         var db = app.CreateDbContext();
         db.AxiomProvenances.Add(new AxiomProvenanceEntity
         {
             LegacyId = TestLegacyIds.Next("axiom_provenance"),
-            KnowledgeSystemId = ksGuid,
+            KnowledgeSystemId = ksId,
             AxiomKey = axiomKey,
             ChunkId = chunkId,
             Method = "extraction",
@@ -469,7 +460,7 @@ public sealed class OntologyApiTests
     }
 
     private static async Task<HttpResponseMessage> UploadAsync(
-        HttpClient client, long ksId, string fileName, string content, string folder)
+        HttpClient client, Guid ksId, string fileName, string content, string folder)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(content);
         var multipart = new MultipartFormDataContent

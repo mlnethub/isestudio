@@ -32,7 +32,7 @@ public sealed class ABoxApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "abox-classes-empty");
+        var ksId = await CreateKsAsync(client, "abox-classes-empty");
 
         var response = await client.GetAsync($"/api/knowledge/{ksId}/abox/classes");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -49,7 +49,7 @@ public sealed class ABoxApiTests
         // semantics: the more-populated class sorts first.
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "abox-classes-counts");
+        var ksId = await CreateKsAsync(client, "abox-classes-counts");
 
         var dogClassIri = await AddTBoxClassAsync(client, ksId, "Dog");
         var catClassIri = await AddTBoxClassAsync(client, ksId, "Cat");
@@ -76,7 +76,7 @@ public sealed class ABoxApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "abox-list");
+        var ksId = await CreateKsAsync(client, "abox-list");
 
         var dogClassIri = await AddTBoxClassAsync(client, ksId, "Dog");
         var catClassIri = await AddTBoxClassAsync(client, ksId, "Cat");
@@ -106,7 +106,7 @@ public sealed class ABoxApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "abox-get");
+        var ksId = await CreateKsAsync(client, "abox-get");
 
         var dogClassIri = await AddTBoxClassAsync(client, ksId, "Dog");
         var iri = await CreateIndividualAsync(client, ksId, "Rex", dogClassIri);
@@ -132,7 +132,7 @@ public sealed class ABoxApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-create");
+        var ksId = await CreateKsAsync(client, "abox-create");
 
         var dogClassIri = await AddTBoxClassAsync(client, ksId, "Dog");
         var iri = await CreateIndividualAsync(client, ksId, "Rex", dogClassIri);
@@ -140,7 +140,7 @@ public sealed class ABoxApiTests
         // The ABox graph has the three triples (rdf:type named individual,
         // rdf:type Dog, rdfs:label Rex).
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         Assert.Single(store.Match(
             subjectIri: iri,
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
@@ -158,7 +158,7 @@ public sealed class ABoxApiTests
 
         // Audit row carries the action + the N-Quads diff so history
         // replay can roll back the write.
-        var audits = LookupAuditEventsFor(app, ksGuid);
+        var audits = LookupAuditEventsFor(app, ksId);
         var createAudit = audits.Single(e => e.Action == "abox.add_individual");
         Assert.Equal(aboxGraph, createAudit.Graph);
         Assert.NotNull(createAudit.Added);
@@ -170,10 +170,10 @@ public sealed class ABoxApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-bad-class");
+        var ksId = await CreateKsAsync(client, "abox-bad-class");
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         var before = store.Match(graphIri: aboxGraph).Count;
 
         // The service throws InvalidOperationException("Unknown class"),
@@ -194,13 +194,13 @@ public sealed class ABoxApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-delete");
+        var ksId = await CreateKsAsync(client, "abox-delete");
 
         var dogClassIri = await AddTBoxClassAsync(client, ksId, "Dog");
         var iri = await CreateIndividualAsync(client, ksId, "Rex", dogClassIri);
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         Assert.True(store.Match(subjectIri: iri, graphIri: aboxGraph).Count > 0);
 
         var response = await client.PostAsJsonAsync(
@@ -212,7 +212,7 @@ public sealed class ABoxApiTests
 
         Assert.Empty(store.Match(subjectIri: iri, graphIri: aboxGraph));
 
-        var audits = LookupAuditEventsFor(app, ksGuid)
+        var audits = LookupAuditEventsFor(app, ksId)
             .Where(e => e.Action == "abox.delete_individual").ToList();
         Assert.Single(audits);
         Assert.NotNull(audits[0].Removed);
@@ -228,7 +228,7 @@ public sealed class ABoxApiTests
         // 200s without leaking the role state. The graph stays empty.
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-norole");
+        var ksId = await CreateKsAsync(client, "abox-norole");
 
         var dogClassIri = await AddTBoxClassAsync(client, ksId, "Dog");
         var (aliceClient, _) = await SeedSecondUserAsync(app);
@@ -243,7 +243,7 @@ public sealed class ABoxApiTests
         Assert.Equal(0, body.GetProperty("type_iris").GetArrayLength());
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         Assert.Empty(store.Match(graphIri: aboxGraph));
     }
 
@@ -319,8 +319,8 @@ public sealed class ABoxApiTests
         return (client, userId);
     }
 
-    private static async Task<(long LegacyId, Guid Guid)> CreateKsAsync(
-        AuthTestWebApplicationFactory app, HttpClient client, string tag)
+    private static async Task<Guid> CreateKsAsync(
+        HttpClient client, string tag)
     {
         var response = await client.PostAsJsonAsync("/api/knowledge", new
         {
@@ -329,36 +329,27 @@ public sealed class ABoxApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var legacy = body.GetProperty("id").GetInt64();
-        var guid = LookupKsGuid(app, legacy);
-        return (legacy, guid);
+        // The wire `id` is the KS primary-key Guid (the migration removed
+        // the legacy integer from the DTO).
+        return body.GetProperty("id").GetGuid();
     }
 
-    private static Guid LookupKsGuid(AuthTestWebApplicationFactory app, long legacyId)
+    private static string LookupKsAbboxIri(AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.KnowledgeSystems
-            .Where(k => k.LegacyId == legacyId)
-            .Select(k => k.Id)
-            .Single();
-    }
-
-    private static string LookupKsAbboxIri(AuthTestWebApplicationFactory app, Guid ksGuid)
-    {
-        var db = app.CreateDbContext();
-        return db.KnowledgeSystems
-            .Where(k => k.Id == ksGuid)
+            .Where(k => k.Id == ksId)
             .Select(k => k.GraphIri)
             .Single()
             .TrimEnd('/') + "/abox";
     }
 
     private static IReadOnlyList<AuditEventEntity> LookupAuditEventsFor(
-        AuthTestWebApplicationFactory app, Guid ksGuid)
+        AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.AuditEvents.AsNoTracking()
-            .Where(e => e.KnowledgeSystemId == ksGuid)
+            .Where(e => e.KnowledgeSystemId == ksId)
             .ToList();
     }
 
@@ -367,7 +358,7 @@ public sealed class ABoxApiTests
     /// sidebar / types / filter logic has a class to look up. Returns
     /// the minted class IRI.
     /// </summary>
-    private static async Task<string> AddTBoxClassAsync(HttpClient client, long ksId, string label)
+    private static async Task<string> AddTBoxClassAsync(HttpClient client, Guid ksId, string label)
     {
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/ontology/edit",
@@ -383,7 +374,7 @@ public sealed class ABoxApiTests
     /// repeat the boilerplate.
     /// </summary>
     private static async Task<string> CreateIndividualAsync(
-        HttpClient client, long ksId, string label, string classIri)
+        HttpClient client, Guid ksId, string label, string classIri)
     {
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/abox/individuals",

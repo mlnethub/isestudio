@@ -36,7 +36,7 @@ public sealed class ABoxValidationApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, _) = await CreateKsAsync(app, client, "abox-val-empty");
+        var ksId = await CreateKsAsync(client, "abox-val-empty");
 
         var response = await client.GetAsync($"/api/knowledge/{ksId}/abox/validate");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -53,7 +53,7 @@ public sealed class ABoxValidationApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-val-place");
+        var ksId = await CreateKsAsync(client, "abox-val-place");
 
         var dogClass = await AddTBoxClassAsync(client, ksId, "Dog");
         var placeholderIri = await CreateIndividualAsync(client, ksId, "Untitled", dogClass);
@@ -62,7 +62,7 @@ public sealed class ABoxValidationApiTests
         // (The mint flow writes the label we pass; "Untitled" is in the
         // NonIdentifyingLabels set so the validator will flag it.)
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
 
         var response = await client.GetAsync($"/api/knowledge/{ksId}/abox/validate");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -93,13 +93,13 @@ public sealed class ABoxValidationApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-fix-delete");
+        var ksId = await CreateKsAsync(client, "abox-fix-delete");
 
         var dogClass = await AddTBoxClassAsync(client, ksId, "Dog");
         var placeholderIri = await CreateIndividualAsync(client, ksId, "Untitled", dogClass);
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         Assert.NotEmpty(store.Match(subjectIri: placeholderIri, graphIri: aboxGraph));
 
         var response = await PostFixAsync(client, ksId, new
@@ -118,7 +118,7 @@ public sealed class ABoxValidationApiTests
         Assert.Empty(store.Match(subjectIri: placeholderIri, graphIri: aboxGraph));
 
         // Audit row exists with the fix op captured in Detail.
-        var audits = LookupAuditEventsFor(app, ksGuid)
+        var audits = LookupAuditEventsFor(app, ksId)
             .Where(e => e.Action == "abox.fix_violation").ToList();
         Assert.Single(audits);
     }
@@ -128,7 +128,7 @@ public sealed class ABoxValidationApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-fix-relax");
+        var ksId = await CreateKsAsync(client, "abox-fix-relax");
 
         var dogClass = await AddTBoxClassAsync(client, ksId, "Dog");
         var ageProp = await AddTBoxDataPropertyAsync(client, ksId, "age", rangeXsd: "integer");
@@ -137,7 +137,7 @@ public sealed class ABoxValidationApiTests
         // Write a non-integer value to age so the validator flags a
         // datatype violation.
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         var ageNode = new OntoNamedNode(ageProp);
         store.AddQuads(new OntoNamedNode(aboxGraph), new[]
         {
@@ -162,7 +162,7 @@ public sealed class ABoxValidationApiTests
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         // The validation_decision table has the remembered preference.
-        var decisions = LookupValidationDecisions(app, ksGuid);
+        var decisions = LookupValidationDecisions(app, ksId);
         Assert.Single(decisions);
         Assert.Equal("relax", decisions[0].Action);
         Assert.Equal(ageProp, decisions[0].PropertyIri);
@@ -171,7 +171,7 @@ public sealed class ABoxValidationApiTests
         Assert.Equal(AuthTestWebApplicationFactory.AdminDisplayName, decisions[0].ResolvedBy);
 
         // The TBox graph carries the relaxed range (xsd:string) for age.
-        var tboxGraph = LookupKsTboxIri(app, ksGuid);
+        var tboxGraph = LookupKsTboxIri(app, ksId);
         Assert.NotEmpty(store.Match(
             subjectIri: ageProp,
             predicateIri: "http://www.w3.org/2000/01/rdf-schema#range",
@@ -184,7 +184,7 @@ public sealed class ABoxValidationApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-fix-bad");
+        var ksId = await CreateKsAsync(client, "abox-fix-bad");
 
         var response = await PostFixAsync(client, ksId, new
         {
@@ -198,7 +198,7 @@ public sealed class ABoxValidationApiTests
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
 
         // No decisions row written on a rejected op.
-        Assert.Empty(LookupValidationDecisions(app, ksGuid));
+        Assert.Empty(LookupValidationDecisions(app, ksId));
     }
 
     // -----------------------------------------------------------------
@@ -210,7 +210,7 @@ public sealed class ABoxValidationApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-reset");
+        var ksId = await CreateKsAsync(client, "abox-reset");
 
         var dogClass = await AddTBoxClassAsync(client, ksId, "Dog");
         var ownerClass = await AddTBoxClassAsync(client, ksId, "Owner");
@@ -226,9 +226,9 @@ public sealed class ABoxValidationApiTests
         });
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         Assert.NotEmpty(store.Match(graphIri: aboxGraph));
-        var provenanceBefore = LookupProvenanceRows(app, ksGuid);
+        var provenanceBefore = LookupProvenanceRows(app, ksId);
         Assert.NotEmpty(provenanceBefore);
 
         var response = await client.PostAsJsonAsync(
@@ -240,9 +240,9 @@ public sealed class ABoxValidationApiTests
         Assert.Equal(provenanceBefore.Count, body.GetProperty("provenance_rows").GetInt32());
 
         Assert.Empty(store.Match(graphIri: aboxGraph));
-        Assert.Empty(LookupProvenanceRows(app, ksGuid));
+        Assert.Empty(LookupProvenanceRows(app, ksId));
 
-        var audits = LookupAuditEventsFor(app, ksGuid)
+        var audits = LookupAuditEventsFor(app, ksId)
             .Where(e => e.Action == "abox.reset").ToList();
         Assert.Single(audits);
         Assert.NotNull(audits[0].Removed);
@@ -253,10 +253,10 @@ public sealed class ABoxValidationApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-reset-noconf");
+        var ksId = await CreateKsAsync(client, "abox-reset-noconf");
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         var before = store.Match(graphIri: aboxGraph).Count;
 
         var response = await client.PostAsJsonAsync(
@@ -277,14 +277,14 @@ public sealed class ABoxValidationApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-dec-list");
+        var ksId = await CreateKsAsync(client, "abox-dec-list");
 
         var dogClass = await AddTBoxClassAsync(client, ksId, "Dog");
         var ageProp = await AddTBoxDataPropertyAsync(client, ksId, "age", rangeXsd: "integer");
         var rexIri = await CreateIndividualAsync(client, ksId, "Rex", dogClass);
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         store.AddQuads(new OntoNamedNode(aboxGraph), new[]
         {
             new OntoQuad(
@@ -321,14 +321,14 @@ public sealed class ABoxValidationApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var (ksId, ksGuid) = await CreateKsAsync(app, client, "abox-dec-revoke");
+        var ksId = await CreateKsAsync(client, "abox-dec-revoke");
 
         var dogClass = await AddTBoxClassAsync(client, ksId, "Dog");
         var ageProp = await AddTBoxDataPropertyAsync(client, ksId, "age", rangeXsd: "integer");
         var rexIri = await CreateIndividualAsync(client, ksId, "Rex", dogClass);
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
-        var aboxGraph = LookupKsAbboxIri(app, ksGuid);
+        var aboxGraph = LookupKsAbboxIri(app, ksId);
         store.AddQuads(new OntoNamedNode(aboxGraph), new[]
         {
             new OntoQuad(
@@ -349,7 +349,7 @@ public sealed class ABoxValidationApiTests
             summary = "Relax age",
         });
 
-        var decisions = LookupValidationDecisions(app, ksGuid);
+        var decisions = LookupValidationDecisions(app, ksId);
         Assert.Single(decisions);
         var did = decisions[0].Id;
 
@@ -359,7 +359,7 @@ public sealed class ABoxValidationApiTests
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(did.ToString(), body.GetProperty("revoked").GetString());
 
-        Assert.Empty(LookupValidationDecisions(app, ksGuid));
+        Assert.Empty(LookupValidationDecisions(app, ksId));
     }
 
     // -----------------------------------------------------------------
@@ -400,8 +400,8 @@ public sealed class ABoxValidationApiTests
         return (client, adminId);
     }
 
-    private static async Task<(long LegacyId, Guid Guid)> CreateKsAsync(
-        AuthTestWebApplicationFactory app, HttpClient client, string tag)
+    private static async Task<Guid> CreateKsAsync(
+        HttpClient client, string tag)
     {
         var response = await client.PostAsJsonAsync("/api/knowledge", new
         {
@@ -410,69 +410,60 @@ public sealed class ABoxValidationApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var legacy = body.GetProperty("id").GetInt64();
-        var guid = LookupKsGuid(app, legacy);
-        return (legacy, guid);
+        // The wire `id` is the KS primary-key Guid (the migration removed
+        // the legacy integer from the DTO).
+        return body.GetProperty("id").GetGuid();
     }
 
-    private static Guid LookupKsGuid(AuthTestWebApplicationFactory app, long legacyId)
+    private static string LookupKsAbboxIri(AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.KnowledgeSystems
-            .Where(k => k.LegacyId == legacyId)
-            .Select(k => k.Id)
-            .Single();
-    }
-
-    private static string LookupKsAbboxIri(AuthTestWebApplicationFactory app, Guid ksGuid)
-    {
-        var db = app.CreateDbContext();
-        return db.KnowledgeSystems
-            .Where(k => k.Id == ksGuid)
+            .Where(k => k.Id == ksId)
             .Select(k => k.GraphIri)
             .Single()
             .TrimEnd('/') + "/abox";
     }
 
-    private static string LookupKsTboxIri(AuthTestWebApplicationFactory app, Guid ksGuid)
+    private static string LookupKsTboxIri(AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.KnowledgeSystems
-            .Where(k => k.Id == ksGuid)
+            .Where(k => k.Id == ksId)
             .Select(k => k.GraphIri)
             .Single()
             .TrimEnd('/');
     }
 
     private static IReadOnlyList<AuditEventEntity> LookupAuditEventsFor(
-        AuthTestWebApplicationFactory app, Guid ksGuid)
+        AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.AuditEvents.AsNoTracking()
-            .Where(e => e.KnowledgeSystemId == ksGuid)
+            .Where(e => e.KnowledgeSystemId == ksId)
             .ToList();
     }
 
     private static IReadOnlyList<AboxProvenanceEntity> LookupProvenanceRows(
-        AuthTestWebApplicationFactory app, Guid ksGuid)
+        AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.AboxProvenances.AsNoTracking()
-            .Where(p => p.KnowledgeSystemId == ksGuid)
+            .Where(p => p.KnowledgeSystemId == ksId)
             .ToList();
     }
 
     private static IReadOnlyList<ValidationDecisionEntity> LookupValidationDecisions(
-        AuthTestWebApplicationFactory app, Guid ksGuid)
+        AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.ValidationDecisions.AsNoTracking()
-            .Where(d => d.KnowledgeSystemId == ksGuid)
+            .Where(d => d.KnowledgeSystemId == ksId)
             .ToList();
     }
 
     private static async Task<string> AddTBoxClassAsync(
-        HttpClient client, long ksId, string label)
+        HttpClient client, Guid ksId, string label)
     {
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/ontology/edit",
@@ -483,7 +474,7 @@ public sealed class ABoxValidationApiTests
     }
 
     private static async Task<string> AddTBoxObjectPropertyAsync(
-        HttpClient client, long ksId, string label)
+        HttpClient client, Guid ksId, string label)
     {
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/ontology/edit",
@@ -494,7 +485,7 @@ public sealed class ABoxValidationApiTests
     }
 
     private static async Task<string> AddTBoxDataPropertyAsync(
-        HttpClient client, long ksId, string label, string rangeXsd)
+        HttpClient client, Guid ksId, string label, string rangeXsd)
     {
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/ontology/edit",
@@ -505,7 +496,7 @@ public sealed class ABoxValidationApiTests
     }
 
     private static async Task<string> CreateIndividualAsync(
-        HttpClient client, long ksId, string label, string classIri)
+        HttpClient client, Guid ksId, string label, string classIri)
     {
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/abox/individuals",
@@ -518,14 +509,14 @@ public sealed class ABoxValidationApiTests
     }
 
     private static async Task<HttpResponseMessage> PostAssertionAsync(
-        HttpClient client, long ksId, object body)
+        HttpClient client, Guid ksId, object body)
     {
         return await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/abox/assertions", body);
     }
 
     private static async Task<HttpResponseMessage> PostFixAsync(
-        HttpClient client, long ksId, object body)
+        HttpClient client, Guid ksId, object body)
     {
         return await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/abox/validate/fix", body);

@@ -415,7 +415,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveOntologyService();
         var op = DeserializeOntologyEditBody(request);
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             // Service not wired (unit test that hand-built the dispatcher)
             // OR no KS bound — surface an empty KS so the contract test
@@ -430,7 +430,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var result = await svc.EditAsync(
-                request.KnowledgeSystemId.Value, op, request.Actor, ct)
+                request.KnowledgeSystemGuid.Value, op, request.Actor, ct)
                 .ConfigureAwait(false);
             if (result is null) return (object?)EmptyKnowledgeSystem();
             return (object?)(new { iri = result.Iri });
@@ -440,14 +440,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeOntologyResetAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveOntologyService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(EmptyKnowledgeSystem());
         }
         return WrapAsync(async () =>
         {
             var result = await svc.ResetAsync(
-                request.KnowledgeSystemId.Value, request.Actor, ct)
+                request.KnowledgeSystemGuid.Value, request.Actor, ct)
                 .ConfigureAwait(false);
             if (result is null) return (object?)EmptyKnowledgeSystem();
             return (object?)(new { iri = result.Iri });
@@ -1451,7 +1451,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         InternalRequest request,
         CancellationToken cancellationToken)
     {
-        if (request.KnowledgeSystemId is null) return;
+        if (request.KnowledgeSystemId is null && request.KnowledgeSystemGuid is null) return;
         var store = _services.GetService(typeof(ExtractionJobStore)) as ExtractionJobStore;
         if (store is null) return; // dispatcher wired outside Program.cs (e.g. tests)
 
@@ -1534,13 +1534,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeAboxListClassesAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(new { classes = Array.Empty<object>(), total = 0 });
         }
         return WrapAsync(async () =>
         {
-            var out_ = await svc.ListClassesAsync(request.KnowledgeSystemId.Value, request.Actor, ct)
+            var out_ = await svc.ListClassesAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)out_ is null
                 ? new { classes = Array.Empty<object>(), total = 0 }
@@ -1551,7 +1551,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeAboxListIndividualsAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(new { items = Array.Empty<object>(), total = 0 });
         }
@@ -1565,7 +1565,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var out_ = await svc.ListIndividualsAsync(
-                request.KnowledgeSystemId.Value, classIri, q, limit, offset, request.Actor, ct)
+                request.KnowledgeSystemGuid.Value, classIri, q, limit, offset, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)out_ is null
                 ? new { items = Array.Empty<object>(), total = 0 }
@@ -1577,14 +1577,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveAboxService();
         var iri = request.Query is not null && request.Query.TryGetValue("iri", out var v) ? v : null;
-        if (svc is null || request.KnowledgeSystemId is null || string.IsNullOrEmpty(iri))
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(iri))
         {
             return Task.FromResult<object?>(EmptyIndividualRef());
         }
         return WrapAsync(async () =>
         {
             var ind = await svc.GetIndividualAsync(
-                request.KnowledgeSystemId.Value, iri!, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, iri!, request.Actor, ct).ConfigureAwait(false);
             return (object?)(ind ?? EmptyIndividualRef());
         });
     }
@@ -1592,7 +1592,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeAboxCreateIndividualAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
         {
             return Task.FromResult<object?>(EmptyIndividualRef());
         }
@@ -1604,7 +1604,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var ind = await svc.CreateIndividualAsync(
-                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
             return (object?)(ind ?? EmptyIndividualRef());
         });
     }
@@ -1613,14 +1613,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         var svc = ResolveAboxService();
         var iri = ExtractIriFromBody(request);
-        if (svc is null || request.KnowledgeSystemId is null || string.IsNullOrEmpty(iri))
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(iri))
         {
             return Task.FromResult<object?>(new { removed = 0 });
         }
         return WrapAsync(async () =>
         {
             var resp = await svc.DeleteIndividualAsync(
-                request.KnowledgeSystemId.Value, iri!, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, iri!, request.Actor, ct).ConfigureAwait(false);
             return (object?)resp is null
                 ? new { removed = 0 }
                 : resp;
@@ -1630,7 +1630,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeAboxAddAssertionAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
         {
             return Task.FromResult<object?>(EmptyIndividualRef());
         }
@@ -1642,7 +1642,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var ind = await svc.AddAssertionAsync(
-                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
             return (object?)(ind ?? EmptyIndividualRef());
         });
     }
@@ -1650,7 +1650,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeAboxRemoveAssertionAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
         {
             return Task.FromResult<object?>(EmptyIndividualRef());
         }
@@ -1662,7 +1662,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var ind = await svc.RemoveAssertionAsync(
-                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
             return (object?)(ind ?? EmptyIndividualRef());
         });
     }
@@ -1674,7 +1674,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeAboxResetAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
         {
             return Task.FromResult<object?>(EmptyResetAboxResponse());
         }
@@ -1686,7 +1686,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var resp = await svc.ResetAsync(
-                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
             return (object?)(resp ?? EmptyResetAboxResponse());
         });
     }
@@ -1694,14 +1694,14 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeAboxValidateAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(EmptyValidateReport());
         }
         return WrapAsync(async () =>
         {
             var resp = await svc.ValidateAsync(
-                request.KnowledgeSystemId.Value, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
             return (object?)(resp ?? EmptyValidateReport());
         });
     }
@@ -1709,7 +1709,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private Task<object?> InvokeAboxFixViolationAsync(InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null || request.Body is null)
+        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
         {
             return Task.FromResult<object?>(EmptyValidateReport());
         }
@@ -1721,7 +1721,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var resp = await svc.FixViolationAsync(
-                request.KnowledgeSystemId.Value, body, request.Actor, ct).ConfigureAwait(false);
+                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
             return (object?)(resp ?? EmptyValidateReport());
         });
     }
@@ -1730,7 +1730,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null)
+        if (svc is null || request.KnowledgeSystemGuid is null)
         {
             return Task.FromResult<object?>(EmptyListResponse());
         }
@@ -1744,7 +1744,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var resp = await svc.ListValidationDecisionsAsync(
-                request.KnowledgeSystemId.Value, q, limit, offset, request.Actor, ct)
+                request.KnowledgeSystemGuid.Value, q, limit, offset, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)(resp ?? EmptyListResponse());
         });
@@ -1754,7 +1754,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         InternalRequest request, CancellationToken ct)
     {
         var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemId is null
+        if (svc is null || request.KnowledgeSystemGuid is null
             || string.IsNullOrEmpty(request.ResourceId)
             || !Guid.TryParse(request.ResourceId, out var did))
         {
@@ -1763,7 +1763,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var resp = await svc.RevokeValidationDecisionAsync(
-                request.KnowledgeSystemId.Value, did, request.Actor, ct)
+                request.KnowledgeSystemGuid.Value, did, request.Actor, ct)
                 .ConfigureAwait(false);
             return resp is null
                 ? (object?)new { revoked = Guid.Empty }
