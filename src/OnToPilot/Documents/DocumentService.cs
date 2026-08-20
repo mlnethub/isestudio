@@ -208,10 +208,8 @@ public sealed class DocumentService
             return Project(existing);
         }
 
-        var nextLegacy = await NextDocumentLegacyIdAsync(ct).ConfigureAwait(false);
         var doc = new DocumentEntity
         {
-            LegacyId = nextLegacy,
             KnowledgeSystemId = ks.Id,
             Sha256 = blob.Sha256,
             OriginalFilename = fileName,
@@ -224,8 +222,10 @@ public sealed class DocumentService
             ParseStatus = "pending",
             ChunkCount = 0,
         };
-        _db.Documents.Add(doc);
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // Atomic alloc+save: holds the documents advisory lock until
+        // COMMIT so concurrent upload requests can't observe the same
+        // MAX+1 and race on the UNIQUE(legacy_id) constraint.
+        await _allocator.AllocateAndPersistAsync(doc, ct).ConfigureAwait(false);
 
         await WriteAuditAsync(ks.Id, user, "document.upload",
             $"Uploaded \"{doc.OriginalFilename}\"",
@@ -791,13 +791,12 @@ public sealed class DocumentService
             .ExecuteDeleteAsync(ct)
             .ConfigureAwait(false);
 
-        var nextLegacy = await NextChunkLegacyIdAsync(ct).ConfigureAwait(false);
         var now = _clock.GetUtcNow();
+        var chunks = new List<ChunkEntity>(spans.Count);
         foreach (var span in spans)
         {
-            _db.Chunks.Add(new ChunkEntity
+            chunks.Add(new ChunkEntity
             {
-                LegacyId = nextLegacy++,
                 DocumentId = docId,
                 Idx = span.Idx,
                 Text = span.Text,
@@ -807,6 +806,12 @@ public sealed class DocumentService
                 CreatedAt = now,
             });
         }
+        // Atomic batch alloc+save: reserves a contiguous LegacyId range
+        // under the chunks advisory lock, then commits the whole batch.
+        // A concurrent chunk insert waits on the lock and reads the new
+        // MAX after our COMMIT, so no two batches can interleave between
+        // individual allocations.
+        await _allocator.AllocateManyAndPersistAsync(chunks, ct).ConfigureAwait(false);
     }
 
     private static DocumentOut Project(DocumentEntity d) => new(
@@ -838,23 +843,12 @@ public sealed class DocumentService
         return cleaned.Length == 0 ? "/" : "/" + cleaned;
     }
 
-    private Task<long> NextDocumentLegacyIdAsync(CancellationToken ct)
-    {
-        return _allocator.NextAsync<DocumentEntity>(ct);
-    }
-
-    private Task<long> NextChunkLegacyIdAsync(CancellationToken ct)
-    {
-        return _allocator.NextAsync<ChunkEntity>(ct);
-    }
-
     private async Task WriteAuditAsync(
         Guid ksId, UserEntity actor, string action, string summary,
         JsonElement? detail, CancellationToken token)
     {
-        _db.AuditEvents.Add(new AuditEventEntity
+        await _allocator.AllocateAndPersistAsync(new AuditEventEntity
         {
-            LegacyId = await _allocator.NextAsync<AuditEventEntity>(token).ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
             ActorName = actor.DisplayName ?? actor.Username,
@@ -864,8 +858,7 @@ public sealed class DocumentService
                 ? null
                 : JsonDocument.Parse(detail.Value.GetRawText()),
             CreatedAt = _clock.GetUtcNow(),
-        });
-        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+        }, token).ConfigureAwait(false);
     }
 
     private static JsonElement? BuildDocumentDetail(long documentId, object payload, bool? dedup = null)

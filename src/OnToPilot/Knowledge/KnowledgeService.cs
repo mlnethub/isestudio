@@ -127,16 +127,12 @@ public sealed class KnowledgeService
         var user = await ResolveUserAsync(actor, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Authenticated user not found.");
 
-        var nextLegacy = await NextLegacyIdAsync(ct).ConfigureAwait(false);
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = nextLegacy,
             PublicId = Guid.NewGuid().ToString("N"),
             Name = req.Name.Trim(),
             Description = req.Description ?? string.Empty,
             OwnerId = user.Id,
-            GraphIri = $"http://ontopilot.local/ks/{nextLegacy}",
-            BaseIri = $"http://ontopilot.local/ks/{nextLegacy}/onto#",
             CreatedAt = _clock.GetUtcNow(),
             UpdatedAt = _clock.GetUtcNow(),
             LlmModel = NullIfBlank(req.LlmModel),
@@ -144,7 +140,14 @@ public sealed class KnowledgeService
             EmbeddingProviderId = req.EmbeddingProviderId,
             EmbeddingModel = NullIfBlank(req.EmbeddingModel),
         };
-        _db.KnowledgeSystems.Add(ks);
+        // Atomic alloc+save: holds the knowledge_systems advisory lock
+        // until COMMIT so concurrent CreateAsync calls can't observe the
+        // same MAX+1 and race on the UNIQUE(legacy_id) constraint. The
+        // GraphIri/BaseIri embed the assigned LegacyId, so they are
+        // patched in by a second SaveChanges below.
+        await _allocator.AllocateAndPersistAsync(ks, ct).ConfigureAwait(false);
+        ks.GraphIri = $"http://ontopilot.local/ks/{ks.LegacyId}";
+        ks.BaseIri = $"http://ontopilot.local/ks/{ks.LegacyId}/onto#";
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         var projection = await ProjectAsync(new[] { ks }, user, ct).ConfigureAwait(false);
@@ -603,11 +606,6 @@ public sealed class KnowledgeService
         return ids;
     }
 
-    private Task<long> NextLegacyIdAsync(CancellationToken ct)
-    {
-        return _allocator.NextAsync<KnowledgeSystemEntity>(ct);
-    }
-
     private async Task<IReadOnlyList<KnowledgeSystemOut>> ProjectAsync(
         IReadOnlyList<KnowledgeSystemEntity> rows, UserEntity requester, CancellationToken ct)
     {
@@ -678,13 +676,14 @@ public sealed class KnowledgeService
         Guid ksId, UserEntity actor, string action, string summary,
         JsonElement? detail, CancellationToken token)
     {
-        // auditevent.legacy_id has a UNIQUE index — every row needs a
-        // fresh integer. LegacyIdAllocator serializes concurrent writers
-        // via pg_advisory_xact_lock on the audit_events table; SQLite is
-        // single-writer and uses a plain MAX+1.
-        _db.AuditEvents.Add(new AuditEventEntity
+        // auditevent.legacy_id has a UNIQUE index — every row needs a fresh
+        // integer. AllocateAndPersistAsync wraps the alloc + INSERT in a
+        // single transaction under the audit_events advisory lock so
+        // concurrent WriteAuditAsync calls cannot observe the same
+        // MAX+1 and race on the UNIQUE constraint. SQLite is single-writer
+        // and falls back to the autocommit path inside the allocator.
+        await _allocator.AllocateAndPersistAsync(new AuditEventEntity
         {
-            LegacyId = await _allocator.NextAsync<AuditEventEntity>(token).ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
             ActorName = actor.DisplayName ?? actor.Username,
@@ -694,8 +693,7 @@ public sealed class KnowledgeService
                 ? null
                 : JsonDocument.Parse(detail.Value.GetRawText()),
             CreatedAt = _clock.GetUtcNow(),
-        });
-        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+        }, token).ConfigureAwait(false);
     }
 
     private static JsonElement? BuildDetail(long userLegacyId, string? role)

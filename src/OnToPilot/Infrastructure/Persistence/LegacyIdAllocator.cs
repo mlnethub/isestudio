@@ -92,6 +92,170 @@ public sealed class LegacyIdAllocator
     }
 
     /// <summary>
+    /// Atomic counterpart to <see cref="NextAsync{TEntity}"/> + <c>Add</c> +
+    /// <see cref="DbContext.SaveChangesAsync"/>: opens a transaction,
+    /// acquires the per-table advisory lock, reads <c>MAX(LegacyId)</c>,
+    /// assigns <paramref name="entity"/>.<see cref="LegacyAddressableEntity.LegacyId"/>,
+    /// adds the entity, persists it, and commits — releasing the lock only
+    /// AFTER the row is durably stored.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="NextAsync{TEntity}"/> deliberately separates the alloc
+    /// from the persist so a single caller can allocate many ids before a
+    /// batch <c>SaveChanges</c>. That decoupling leaves a window in which
+    /// two concurrent callers can both read the same <c>MAX</c> and try to
+    /// insert the same <c>LegacyId</c>; the second <c>SaveChanges</c>
+    /// throws on the UNIQUE index. SQLite is single-writer so the race is
+    /// unreachable in practice; PostgreSQL is not.
+    /// </para>
+    /// <para>
+    /// <see cref="AllocateAndPersistAsync{TEntity}"/> closes that window
+    /// by holding the per-table advisory lock until <c>COMMIT</c>. A
+    /// concurrent caller wanting the same lock blocks on the transaction;
+    /// once we commit (and the lock releases) the next caller sees the
+    /// newly-inserted row in its <c>MAX</c> read and walks on. SQLite
+    /// takes the autocommit path because SQLite's single-writer model
+    /// already serialises <c>INSERT</c> statements at the database layer.
+    /// </para>
+    /// <para>
+    /// The caller passes the entity un-keyed; the method assigns
+    /// <see cref="LegacyAddressableEntity.LegacyId"/> in place and returns
+    /// it for callers that need to log or reference the assigned value
+    /// after the fact.
+    /// </para>
+    /// </remarks>
+    public async Task<long> AllocateAndPersistAsync<TEntity>(
+        TEntity entity,
+        CancellationToken ct = default)
+        where TEntity : LegacyAddressableEntity
+    {
+        ArgumentNullException.ThrowIfNull(entity);
+
+        if (_db.Database.IsNpgsql())
+        {
+            // PG path: lock the per-table key, read MAX, mutate the
+            // change-tracker, SaveChanges, then COMMIT to release the
+            // advisory lock. SaveChanges inside the transaction is
+            // already idempotent at the EF Core layer; the COMMIT here
+            // is the boundary that lets the next contender observe the
+            // new row.
+            await using var tx = await _db.Database
+                .BeginTransactionAsync(ct)
+                .ConfigureAwait(false);
+            var lockKey = ComputeTableKey64(typeof(TEntity).Name);
+            await _db.Database
+                .ExecuteSqlRawAsync(
+                    "SELECT pg_advisory_xact_lock({0}::bigint)",
+                    new object[] { lockKey },
+                    ct)
+                .ConfigureAwait(false);
+            var max = await _db.Set<TEntity>().AsNoTracking()
+                .Select(e => (long?)e.LegacyId)
+                .MaxAsync(ct)
+                .ConfigureAwait(false);
+            entity.LegacyId = (max ?? 0L) + 1L;
+            _db.Set<TEntity>().Add(entity);
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+            await tx.CommitAsync(ct).ConfigureAwait(false);
+            return entity.LegacyId;
+        }
+
+        // SQLite path: single-writer, no advisory lock needed. The MAX
+        // read and the INSERT race against each other in theory, but
+        // SQLite serialises writers at the database level so the next
+        // contending write only runs after our SaveChanges returns.
+        var sqliteMax = await _db.Set<TEntity>().AsNoTracking()
+            .Select(e => (long?)e.LegacyId)
+            .MaxAsync(ct)
+            .ConfigureAwait(false);
+        entity.LegacyId = (sqliteMax ?? 0L) + 1L;
+        _db.Set<TEntity>().Add(entity);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return entity.LegacyId;
+    }
+
+    /// <summary>
+    /// Atomic batch counterpart to <see cref="NextNAsync{TEntity}(int, CancellationToken)"/>:
+    /// reserves a contiguous range of <see cref="LegacyAddressableEntity.LegacyId"/>
+    /// values under a single advisory lock, assigns them to
+    /// <paramref name="entities"/> in order, persists the whole batch, and
+    /// commits to release the lock.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The contiguous range is reserved before any row is inserted, so a
+    /// concurrent batch cannot interleave between two allocations: it
+    /// either waits on the lock and reads the new <c>MAX</c> after our
+    /// commit, or it commits first and we read its new <c>MAX</c> before
+    /// reserving ours. The returned ids are dense — <c>start, start+1, …,
+    /// start+entities.Count-1</c> — matching the pre-refactor
+    /// <c>NextNAsync</c> contract.
+    /// </para>
+    /// <para>
+    /// For an empty list, the method short-circuits and returns an empty
+    /// array without touching the database. This matches
+    /// <see cref="NextNAsync{TEntity}(int, CancellationToken)"/>'s
+    /// <c>count &lt;= 0</c> guard.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<long>> AllocateManyAndPersistAsync<TEntity>(
+        IReadOnlyList<TEntity> entities,
+        CancellationToken ct = default)
+        where TEntity : LegacyAddressableEntity
+    {
+        ArgumentNullException.ThrowIfNull(entities);
+        if (entities.Count == 0)
+        {
+            return Array.Empty<long>();
+        }
+
+        if (_db.Database.IsNpgsql())
+        {
+            await using var tx = await _db.Database
+                .BeginTransactionAsync(ct)
+                .ConfigureAwait(false);
+            var lockKey = ComputeTableKey64(typeof(TEntity).Name);
+            await _db.Database
+                .ExecuteSqlRawAsync(
+                    "SELECT pg_advisory_xact_lock({0}::bigint)",
+                    new object[] { lockKey },
+                    ct)
+                .ConfigureAwait(false);
+            var max = await _db.Set<TEntity>().AsNoTracking()
+                .Select(e => (long?)e.LegacyId)
+                .MaxAsync(ct)
+                .ConfigureAwait(false);
+            var ids = new long[entities.Count];
+            var start = (max ?? 0L) + 1L;
+            for (var i = 0; i < entities.Count; i++)
+            {
+                ids[i] = start + i;
+                entities[i].LegacyId = ids[i];
+                _db.Set<TEntity>().Add(entities[i]);
+            }
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+            await tx.CommitAsync(ct).ConfigureAwait(false);
+            return ids;
+        }
+
+        var sqliteMax = await _db.Set<TEntity>().AsNoTracking()
+            .Select(e => (long?)e.LegacyId)
+            .MaxAsync(ct)
+            .ConfigureAwait(false);
+        var ids2 = new long[entities.Count];
+        var startSqlite = (sqliteMax ?? 0L) + 1L;
+        for (var i = 0; i < entities.Count; i++)
+        {
+            ids2[i] = startSqlite + i;
+            entities[i].LegacyId = ids2[i];
+            _db.Set<TEntity>().Add(entities[i]);
+        }
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        return ids2;
+    }
+
+    /// <summary>
     /// Exposed for tests + diagnostics. Returns the deterministic 64-bit
     /// advisory-lock key the PostgreSQL path would use for
     /// <paramref name="tableName"/> &mdash; the FNV-1a hash of the UTF-8 bytes

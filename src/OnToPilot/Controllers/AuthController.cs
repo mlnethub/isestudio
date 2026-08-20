@@ -109,15 +109,16 @@ public sealed class AuthController : ControllerBase
 
         var token = CreateToken();
         var now = _clock.GetUtcNow();
-        _db.AuthSessions.Add(new AuthSessionEntity
+        // Atomic alloc+save: holds the auth_session advisory lock until
+        // COMMIT so a concurrent login request can't observe the same
+        // MAX+1 and race on the UNIQUE(legacy_id) constraint.
+        await _allocator.AllocateAndPersistAsync(new AuthSessionEntity
         {
-            LegacyId = await _allocator.NextAsync<AuthSessionEntity>(ct).ConfigureAwait(false),
             Token = token,
             UserId = user!.Id,
             CreatedAt = now,
             ExpiresAt = now.AddHours(_options.SessionTtlHours),
-        });
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }, ct).ConfigureAwait(false);
 
         SetSessionCookie(token);
         return Ok(UserOut.From(user));

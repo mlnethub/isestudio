@@ -64,21 +64,26 @@ public sealed class ABoxProvenanceService
             existing.Method = method;
             existing.ActorName = actorName;
             existing.CreatedAt = _clock.GetUtcNow();
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
         else
         {
-            _db.AboxProvenances.Add(new AboxProvenanceEntity
+            // Atomic alloc+save: holds the abox_provenance advisory lock
+            // until COMMIT so concurrent WriteAboxProvenanceAsync calls on
+            // distinct (ksId, factKey) pairs can't observe the same MAX+1
+            // and race on the UNIQUE(legacy_id) constraint. SQLite takes
+            // the autocommit path because single-writer mode already
+            // serialises INSERTs at the database layer.
+            await _allocator.AllocateAndPersistAsync(new AboxProvenanceEntity
             {
-                LegacyId = await _allocator.NextAsync<AboxProvenanceEntity>(ct).ConfigureAwait(false),
                 KnowledgeSystemId = ksId,
                 FactKey = factKey,
                 Method = method,
                 ActorName = actorName,
                 AuditEventId = auditEventId,
                 CreatedAt = _clock.GetUtcNow(),
-            });
+            }, ct).ConfigureAwait(false);
         }
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>

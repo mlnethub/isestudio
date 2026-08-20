@@ -676,9 +676,14 @@ public sealed class VocabularyService
         byte[] added, byte[] removed,
         CancellationToken token)
     {
-        _db.AuditEvents.Add(new AuditEventEntity
+        // Atomic alloc+save: holds the audit_events advisory lock until
+        // COMMIT so concurrent WriteAuditAsync callers (across ABox,
+        // Ontology, Vocabulary, VocabularyProposal) can't observe the
+        // same MAX+1 and race on the UNIQUE(legacy_id) constraint.
+        // AllocateAndPersistAsync handles Add + SaveChanges inside the
+        // single transaction so the trailing SaveChanges is unnecessary.
+        await _allocator.AllocateAndPersistAsync(new AuditEventEntity
         {
-            LegacyId = await _allocator.NextAsync<AuditEventEntity>(token).ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
             ActorName = actor.DisplayName ?? actor.Username,
@@ -689,8 +694,7 @@ public sealed class VocabularyService
             Added = added.Length == 0 ? null : added,
             Removed = removed.Length == 0 ? null : removed,
             CreatedAt = _clock.GetUtcNow(),
-        });
-        await _db.SaveChangesAsync(token).ConfigureAwait(false);
+        }, token).ConfigureAwait(false);
     }
 }
 

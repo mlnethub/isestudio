@@ -85,12 +85,18 @@ public sealed class ValidationDecisionService
             existing.Reason = reason;
             existing.ResolvedBy = resolvedBy;
             existing.CreatedAt = now;
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
         else
         {
-            _db.ValidationDecisions.Add(new ValidationDecisionEntity
+            // Atomic alloc+save: holds the validation_decision advisory
+            // lock until COMMIT so concurrent WriteValidationDecisionAsync
+            // calls on distinct propertyIris can't observe the same MAX+1
+            // and race on the UNIQUE(legacy_id) constraint. SQLite takes
+            // the autocommit path because single-writer mode already
+            // serialises INSERTs at the database layer.
+            await _allocator.AllocateAndPersistAsync(new ValidationDecisionEntity
             {
-                LegacyId = await _allocator.NextAsync<ValidationDecisionEntity>(ct).ConfigureAwait(false),
                 KnowledgeSystemId = ksId,
                 PropertyIri = propertyIri,
                 PropertyLabel = propertyLabel,
@@ -99,9 +105,8 @@ public sealed class ValidationDecisionService
                 Reason = reason,
                 ResolvedBy = resolvedBy,
                 CreatedAt = now,
-            });
+            }, ct).ConfigureAwait(false);
         }
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>

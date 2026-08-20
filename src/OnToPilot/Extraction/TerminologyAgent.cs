@@ -252,24 +252,22 @@ public sealed class TerminologyAgent
         var existingSignatures = await QueryExistingSignaturesAsync(ks, signatures, ct).ConfigureAwait(false);
 
         var rows = new List<TermProposalEntity>(pending.Count);
-        // Allocate the worst-case contiguous LegacyId range up front, then
-        // walk pending and skip duplicates. Per-row NextAsync would return
-        // the same id for every iteration because SELECT MAX runs in
-        // autocommit and doesn't see rows queued for SaveChanges — the
-        // original pre-refactor code worked by computing MAX once and
-        // incrementing in memory. NextNAsync preserves that semantic (one
-        // MAX read + contiguous range) while routing the MAX read through
-        // the same pg_advisory_xact_lock path the single-row allocator uses.
-        var batch = await _allocator.NextNAsync<TermProposalEntity>(pending.Count, ct).ConfigureAwait(false);
-        var batchIndex = 0;
+        // Filter duplicates FIRST so the allocator reserves exactly the
+        // range it will persist. Per-row NextAsync would return the same
+        // id for every iteration because SELECT MAX runs in autocommit
+        // and doesn't see rows queued for SaveChanges — the original
+        // pre-refactor code worked by computing MAX once and incrementing
+        // in memory. AllocateManyAndPersistAsync preserves that semantic
+        // (one MAX read + contiguous range reserved + persisted in one
+        // transaction under the per-table advisory lock) without the
+        // pre-refactor race where two concurrent batches could both read
+        // the same MAX and collide on UNIQUE(legacy_id).
         foreach (var row in pending)
         {
             if (existingSignatures.Contains(row.Signature))
             {
                 continue;
             }
-            row.LegacyId = batch[batchIndex++];
-            _db.TermProposals.Add(row);
             rows.Add(row);
         }
 
@@ -278,7 +276,7 @@ public sealed class TerminologyAgent
             return Array.Empty<TermProposalEntity>();
         }
 
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await _allocator.AllocateManyAndPersistAsync(rows, ct).ConfigureAwait(false);
         return rows;
     }
 

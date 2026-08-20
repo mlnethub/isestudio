@@ -328,4 +328,179 @@ public sealed class LegacyIdAllocatorAdvisoryLockTests : IAsyncLifetime
         });
         await db.SaveChangesAsync();
     }
+
+    /// <summary>
+    /// The atomic <see cref="LegacyIdAllocator.AllocateAndPersistAsync{TEntity}"/>
+    /// API holds the per-table <c>pg_advisory_xact_lock</c> until COMMIT,
+    /// so concurrent callers across separate DbContexts cannot both read
+    /// the same <c>MAX(LegacyId)</c> and then race to insert the same
+    /// <c>LegacyId</c>. This test exercises that guarantee end-to-end:
+    /// every contended allocation lands on a distinct, durably-persisted
+    /// row.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The pre-refactor allocator (<see cref="LegacyIdAllocator.NextAsync{TEntity}"/>
+    /// + caller-owned <c>SaveChangesAsync</c>) leaked the advisory lock
+    /// before the INSERT committed, so two concurrent tasks could both
+    /// observe <c>MAX=null</c>, both pick <c>LegacyId=1</c>, and the second
+    /// <c>SaveChanges</c> would throw on the UNIQUE constraint. That race
+    /// was the B7c hardening motivation for the atomic counterpart.
+    /// </para>
+    /// <para>
+    /// Each task uses its own <see cref="OnToPilotDbContext"/> (and therefore
+    /// its own pooled connection + transaction) so the contention surfaces
+    /// at the database layer — sharing one DbContext would either fail with
+    /// <c>InvalidOperationException</c> or only prove serialization at the
+    /// EF change-tracker level, neither of which validates the lock.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Pg_allocate_and_persist_serializes_concurrent_allocations_under_lock()
+    {
+        // Bring the schema up once via a short-lived context.
+        await using (var setup = OpenContext())
+        {
+            await setup.Database.MigrateAsync();
+        }
+
+        const int parallelism = 16;
+        var ids = new long[parallelism];
+        var tasks = new Task[parallelism];
+
+        for (var i = 0; i < parallelism; i++)
+        {
+            var captured = i;
+            tasks[i] = Task.Run(async () =>
+            {
+                await using var ctx = OpenContext();
+                var allocator = new LegacyIdAllocator(ctx);
+                var entity = new UserEntity
+                {
+                    Username = $"u-atomic-{captured}-{Guid.NewGuid():N}",
+                    DisplayName = "u",
+                    PasswordHash = "x",
+                    IsAdmin = false,
+                    Active = true,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                };
+                // AllocateAndPersistAsync does Add + SaveChanges + COMMIT
+                // inside the per-table advisory lock — the lock window
+                // now covers the INSERT, so the next contender reads
+                // MAX after our COMMIT and walks on.
+                ids[captured] = await allocator.AllocateAndPersistAsync(entity);
+            });
+        }
+
+        await Task.WhenAll(tasks);
+
+        // Pairwise distinct — the lock serialized all 16 alloc+save pairs.
+        Assert.Equal(parallelism, ids.Distinct().Count());
+        Assert.Equal(1L, ids.Min());
+        Assert.Equal(parallelism, ids.Max());
+
+        // All 16 rows are durably persisted (not just queued on the
+        // change-tracker). The lock window covered SaveChanges, so a
+        // fresh session sees every allocation.
+        await using var verify = OpenContext();
+        var persistedCount = await verify.Users.AsNoTracking().CountAsync();
+        Assert.Equal(parallelism, persistedCount);
+    }
+
+    /// <summary>
+    /// The atomic batch counterpart
+    /// <see cref="LegacyIdAllocator.AllocateManyAndPersistAsync{TEntity}"/>
+    /// reserves a contiguous range under a single advisory lock and
+    /// persists every row before COMMIT. Concurrent batch allocations on
+    /// the same table must therefore see no id reuse and no row
+    /// collisions, even when the batches overlap in time.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The pre-refactor <see cref="LegacyIdAllocator.NextNAsync{TEntity}"/>
+    /// only reserved the range (one MAX read) but the caller still ran
+    /// <c>SaveChangesAsync</c> in autocommit — leaving the same race the
+    /// single-row allocator had. The batch refactor reserves the range
+    /// AND persists in one transaction, so concurrent batches serialize
+    /// cleanly.
+    /// </para>
+    /// <para>
+    /// We spawn 8 parallel batches of 4 rows each (32 allocations total)
+    /// across separate DbContexts. The expected invariant: every batch's
+    /// reserved range is disjoint from every other batch's reserved
+    /// range, and every batch's rows land durably in the table.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public async Task Pg_allocate_many_and_persist_serializes_concurrent_batches_under_lock()
+    {
+        await using (var setup = OpenContext())
+        {
+            await setup.Database.MigrateAsync();
+        }
+
+        const int batches = 8;
+        const int batchRows = 4;
+        var batchIdArrays = new long[batches][];
+        var tasks = new Task[batches];
+
+        for (var b = 0; b < batches; b++)
+        {
+            var captured = b;
+            tasks[b] = Task.Run(async () =>
+            {
+                await using var ctx = OpenContext();
+                var allocator = new LegacyIdAllocator(ctx);
+
+                var rows = new List<UserEntity>(batchRows);
+                for (var i = 0; i < batchRows; i++)
+                {
+                    rows.Add(new UserEntity
+                    {
+                        Username = $"u-batch-{captured}-{i}-{Guid.NewGuid():N}",
+                        DisplayName = "u",
+                        PasswordHash = "x",
+                        IsAdmin = false,
+                        Active = true,
+                        CreatedAt = DateTimeOffset.UtcNow,
+                    });
+                }
+
+                // AllocateManyAndPersistAsync reserves the contiguous
+                // range, assigns it to the entities, persists them, and
+                // commits — all under one advisory lock window.
+                batchIdArrays[captured] = (await allocator
+                    .AllocateManyAndPersistAsync(rows))
+                    .ToArray();
+            });
+        }
+
+        await Task.WhenAll(tasks);
+
+        // No id reuse across the 32 allocations — the union of every
+        // batch's reserved range is pairwise distinct.
+        var allIds = batchIdArrays.SelectMany(a => a).ToList();
+        Assert.Equal(batches * batchRows, allIds.Distinct().Count());
+        Assert.Equal(1L, allIds.Min());
+        Assert.Equal(batches * batchRows, allIds.Max());
+
+        // Each batch's reserved range is contiguous (4 ids) and disjoint
+        // from the others. Two batches cannot interleave under the atomic
+        // path; the second batch sees the first batch's committed MAX
+        // and reserves the next range above it.
+        foreach (var arr in batchIdArrays)
+        {
+            Assert.Equal(batchRows, arr.Length);
+            for (var i = 1; i < arr.Length; i++)
+            {
+                Assert.Equal(arr[i - 1] + 1, arr[i]);
+            }
+        }
+
+        // Every batch's rows are durably persisted (the union equals the
+        // table row count).
+        await using var verify = OpenContext();
+        var persistedCount = await verify.Users.AsNoTracking().CountAsync();
+        Assert.Equal(batches * batchRows, persistedCount);
+    }
 }

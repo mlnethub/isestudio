@@ -162,4 +162,115 @@ public sealed class LegacyIdAllocatorTests
 
         Assert.Equal(first, second);
     }
+
+    [Fact]
+    public async Task Sqlite_path_allocate_and_persist_assigns_legacy_id_and_saves_atomically()
+    {
+        // AllocateAndPersistAsync must do BOTH jobs in one call:
+        // assign entity.LegacyId AND persist the row. A separate SaveChanges
+        // is unnecessary (and would fail: re-saving a row whose LegacyId
+        // is now committed would try to INSERT it a second time).
+        await using var db = DbContextFactory.CreateSqlite();
+        var allocator = new LegacyIdAllocator(db);
+
+        var entity = new UserEntity
+        {
+            Username = $"u-atomic-{Guid.NewGuid():N}",
+            DisplayName = "u",
+            PasswordHash = "x",
+            IsAdmin = false,
+            Active = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        var id = await allocator.AllocateAndPersistAsync(entity);
+
+        Assert.Equal(1L, id);
+        Assert.Equal(1L, entity.LegacyId);
+
+        // The row is persisted — a fresh query sees it, no SaveChanges
+        // call required from the caller. Round-tripping the id through
+        // the DB confirms the INSERT landed (vs. just queued on the
+        // change-tracker).
+        var fromDb = await db.Users.AsNoTracking().SingleAsync(u => u.Id == entity.Id);
+        Assert.Equal(1L, fromDb.LegacyId);
+
+        // Subsequent allocation walks up from the just-persisted MAX.
+        var second = await allocator.AllocateAndPersistAsync(new UserEntity
+        {
+            Username = $"u-atomic-{Guid.NewGuid():N}",
+            DisplayName = "u",
+            PasswordHash = "x",
+            IsAdmin = false,
+            Active = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        Assert.Equal(2L, second);
+    }
+
+    [Fact]
+    public async Task Sqlite_path_allocate_and_persist_null_entity_throws()
+    {
+        await using var db = DbContextFactory.CreateSqlite();
+        var allocator = new LegacyIdAllocator(db);
+
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => allocator.AllocateAndPersistAsync<UserEntity>(null!));
+    }
+
+    [Fact]
+    public async Task Sqlite_path_allocate_many_and_persist_assigns_contiguous_ids_and_saves()
+    {
+        // Batch counterpart: reserve a contiguous range, assign each id to
+        // the corresponding entity, persist the whole batch atomically.
+        // Caller does NOT need a follow-up SaveChanges.
+        await using var db = DbContextFactory.CreateSqlite();
+        var allocator = new LegacyIdAllocator(db);
+
+        var rows = new List<UserEntity>(3);
+        for (var i = 0; i < 3; i++)
+        {
+            rows.Add(new UserEntity
+            {
+                Username = $"u-batch-{i}-{Guid.NewGuid():N}",
+                DisplayName = "u",
+                PasswordHash = "x",
+                IsAdmin = false,
+                Active = true,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+        }
+
+        var ids = await allocator.AllocateManyAndPersistAsync(rows);
+
+        Assert.Equal(new long[] { 1L, 2L, 3L }, ids);
+        Assert.Equal(1L, rows[0].LegacyId);
+        Assert.Equal(2L, rows[1].LegacyId);
+        Assert.Equal(3L, rows[2].LegacyId);
+
+        // All three rows are persisted — fresh query sees all of them.
+        var count = await db.Users.AsNoTracking().CountAsync();
+        Assert.Equal(3, count);
+    }
+
+    [Fact]
+    public async Task Sqlite_path_allocate_many_and_persist_empty_list_returns_empty()
+    {
+        await using var db = DbContextFactory.CreateSqlite();
+        var allocator = new LegacyIdAllocator(db);
+
+        var ids = await allocator.AllocateManyAndPersistAsync(
+            Array.Empty<UserEntity>());
+
+        Assert.Empty(ids);
+    }
+
+    [Fact]
+    public async Task Sqlite_path_allocate_many_and_persist_null_list_throws()
+    {
+        await using var db = DbContextFactory.CreateSqlite();
+        var allocator = new LegacyIdAllocator(db);
+
+        await Assert.ThrowsAsync<ArgumentNullException>(
+            () => allocator.AllocateManyAndPersistAsync<UserEntity>(null!));
+    }
 }
