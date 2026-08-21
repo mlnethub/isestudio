@@ -1,4 +1,5 @@
 using OnToPilot.Llm;
+using OnToPilot.Parsing;
 
 namespace OnToPilot.Extraction;
 
@@ -35,7 +36,8 @@ public sealed record ExtractionRequest(
     string Model,
     string Endpoint,
     string? ApiKey,
-    int ConcurrencyLimit = 4)
+    int ConcurrencyLimit = 4,
+    IReadOnlyList<ChunkSpan>? SelectedChunks = null)
 {
     /// <summary>
     /// Capacity bucket this request draws chat permits from. Keyed by the

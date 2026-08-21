@@ -20,12 +20,17 @@ public sealed record ClassesOut(
 /// <summary>
 /// A single individual row for <c>GET /abox/individuals</c>. The
 /// <see cref="Label"/> falls back to the local IRI fragment when the
-/// ABox graph doesn't carry an <c>rdfs:label</c> yet.
+/// ABox graph doesn't carry an <c>rdfs:label</c> yet. The
+/// <see cref="Types"/> array carries the same <c>(iri, label)</c> shape
+/// as the detail endpoint's <see cref="IndividualOut.Types"/> and the
+/// Python baseline (<c>backend/app/ontology/abox.py::list_individuals</c>)
+/// so the InstancesPanel can render type chips without a second round-trip
+/// to <c>/abox/classes</c>.
 /// </summary>
 public sealed record IndividualListItem(
     string Iri,
     string Label,
-    IReadOnlyList<string> TypeIris);
+    IReadOnlyList<LabeledIri> Types);
 
 /// <summary>Wire envelope for <c>GET /abox/individuals</c>.</summary>
 public sealed record IndividualsOut(

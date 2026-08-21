@@ -49,16 +49,14 @@ public sealed class ResourceInUseException : Exception
 
 /// <summary>
 /// Per-graph reader/writer serialization for the Oxigraph store. Each named
-/// graph owns a <see cref="ReaderWriterLockSlim"/> that gives writers
+/// graph owns an async reader/writer gate that gives writers
 /// exclusive access and lets multiple readers proceed in parallel; writers
-/// on different graphs proceed concurrently. The lock is fair (FIFO) so a
-/// write that loses the race against a held reader waits until the reader
-/// exits — no read/write interleaving with an active writer.
+/// on different graphs proceed concurrently. There is no read/write
+/// interleaving with an active writer.
 /// </summary>
 public sealed class GraphWriteCoordinator : IDisposable
 {
-    private readonly ConcurrentDictionary<string, ReaderWriterLockSlim> _perGraph = new(StringComparer.Ordinal);
-    private readonly TimeSpan _pollInterval = TimeSpan.FromMilliseconds(10);
+    private readonly ConcurrentDictionary<string, AsyncGraphLock> _perGraph = new(StringComparer.Ordinal);
     private bool _disposed;
 
     /// <summary>
@@ -74,82 +72,30 @@ public sealed class GraphWriteCoordinator : IDisposable
         ArgumentException.ThrowIfNullOrEmpty(graphIri);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        var rwLock = _perGraph.GetOrAdd(graphIri, _ => new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion));
-
-        // ReaderWriterLockSlim.WaitToWriteAsync does not exist; poll on a
-        // short interval until the upgradeable-read slot is free, then take
-        // the write lock. Two phases so a writer never runs concurrently
-        // with a reader (or another writer) on the same graph.
+        var graphLock = _perGraph.GetOrAdd(graphIri, _ => new AsyncGraphLock());
         var deadline = DateTime.UtcNow + waitTimeout;
-        bool upgraded = false;
-        try
+        while (true)
         {
-            while (!upgraded)
+            cancellationToken.ThrowIfCancellationRequested();
+            if (graphLock.TryAcquireWrite(out var stateChanged))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (DateTime.UtcNow >= deadline)
-                {
-                    throw new GraphWriteConflictException(
-                        $"Could not acquire write lock for graph '{graphIri}' within {waitTimeout}.");
-                }
+                return new GraphLease(this, graphLock, isWriter: true);
+            }
 
-                // TryEnterUpgradeableReadLock blocks writers but lets readers
-                // through. Once we hold the upgradeable read, we can safely
-                // try to upgrade to a write lock. LockRecursionException
-                // means the current thread already holds a lock on this
-                // graph — surface as a conflict instead of deadlocking.
-                bool tookUpgradeable;
-                try
-                {
-                    tookUpgradeable = rwLock.TryEnterUpgradeableReadLock(TimeSpan.FromMilliseconds(50));
-                }
-                catch (LockRecursionException)
-                {
-                    throw new GraphWriteConflictException(
-                        $"Graph '{graphIri}' is already locked by the current thread (nested CaptureAsync).");
-                }
-
-                if (tookUpgradeable)
-                {
-                    try
-                    {
-                        if (rwLock.TryEnterWriteLock(remaining(deadline)))
-                        {
-                            upgraded = true;
-                            break;
-                        }
-                    }
-                    finally
-                    {
-                        if (!upgraded)
-                        {
-                            rwLock.ExitUpgradeableReadLock();
-                        }
-                    }
-                }
-
-                try
-                {
-                    await Task.Delay(_pollInterval, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-                {
-                    throw new GraphWriteConflictException(
-                        $"Could not acquire write lock for graph '{graphIri}' within {waitTimeout}.");
-                }
+            var wait = Remaining(deadline);
+            if (wait <= TimeSpan.Zero)
+            {
+                throw WriteTimeout(graphIri, waitTimeout);
+            }
+            try
+            {
+                await stateChanged.WaitAsync(wait, cancellationToken).ConfigureAwait(false);
+            }
+            catch (TimeoutException)
+            {
+                throw WriteTimeout(graphIri, waitTimeout);
             }
         }
-        catch
-        {
-            if (upgraded)
-            {
-                rwLock.ExitWriteLock();
-                rwLock.ExitUpgradeableReadLock();
-            }
-            throw;
-        }
-
-        return new GraphLease(this, rwLock, isWriter: true);
     }
 
     /// <summary>
@@ -160,7 +106,7 @@ public sealed class GraphWriteCoordinator : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // Acquire read locks on every per-graph RWL we know about. The first
+        // Acquire read locks on every per-graph gate we know about. The first
         // snapshot might miss a graph added in the middle of acquisition, but
         // the dictionary's GetOrAdd happens-before any read that would notice
         // it; in practice the only writers to add a new graph are callers
@@ -168,7 +114,7 @@ public sealed class GraphWriteCoordinator : IDisposable
         // new read lock. For safety we re-scan until no new entries appear.
         // LockRecursionException is treated as a no-op (same thread re-entry
         // is a no-op for readers — we already hold the read on that lock).
-        var held = new List<ReaderWriterLockSlim>(_perGraph.Count + 1);
+        var held = new List<AsyncGraphLock>(_perGraph.Count + 1);
         try
         {
             int lastCount;
@@ -179,15 +125,11 @@ public sealed class GraphWriteCoordinator : IDisposable
                 {
                     if (!held.Contains(kv.Value))
                     {
-                        try
+                        while (!kv.Value.TryAcquireRead(out var stateChanged))
                         {
-                            kv.Value.TryEnterReadLock(TimeSpan.FromMilliseconds(50));
-                            held.Add(kv.Value);
+                            await stateChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
                         }
-                        catch (LockRecursionException)
-                        {
-                            // Same thread re-entry — skip, but don't double-add.
-                        }
+                        held.Add(kv.Value);
                     }
                 }
                 cancellationToken.ThrowIfCancellationRequested();
@@ -199,7 +141,7 @@ public sealed class GraphWriteCoordinator : IDisposable
         {
             foreach (var l in held)
             {
-                l.ExitReadLock();
+                l.ReleaseRead();
             }
             throw;
         }
@@ -210,15 +152,82 @@ public sealed class GraphWriteCoordinator : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        foreach (var l in _perGraph.Values)
-        {
-            l.Dispose();
-        }
         _perGraph.Clear();
     }
 
-    private static TimeSpan remaining(DateTime deadline) =>
+    private static TimeSpan Remaining(DateTime deadline) =>
         deadline - DateTime.UtcNow > TimeSpan.Zero ? deadline - DateTime.UtcNow : TimeSpan.Zero;
+
+    private static GraphWriteConflictException WriteTimeout(string graphIri, TimeSpan waitTimeout) =>
+        new($"Could not acquire write lock for graph '{graphIri}' within {waitTimeout}.");
+}
+
+internal sealed class AsyncGraphLock
+{
+    private readonly object _sync = new();
+    private int _readers;
+    private bool _writer;
+    private TaskCompletionSource _stateChanged = NewSignal();
+
+    public bool TryAcquireWrite(out Task stateChanged)
+    {
+        lock (_sync)
+        {
+            if (!_writer && _readers == 0)
+            {
+                _writer = true;
+                stateChanged = Task.CompletedTask;
+                return true;
+            }
+            stateChanged = _stateChanged.Task;
+            return false;
+        }
+    }
+
+    public bool TryAcquireRead(out Task stateChanged)
+    {
+        lock (_sync)
+        {
+            if (!_writer)
+            {
+                _readers++;
+                stateChanged = Task.CompletedTask;
+                return true;
+            }
+            stateChanged = _stateChanged.Task;
+            return false;
+        }
+    }
+
+    public void ReleaseWrite()
+    {
+        lock (_sync)
+        {
+            if (!_writer) throw new SynchronizationLockException("The write lock is not held.");
+            _writer = false;
+            SignalStateChanged();
+        }
+    }
+
+    public void ReleaseRead()
+    {
+        lock (_sync)
+        {
+            if (_readers == 0) throw new SynchronizationLockException("The read lock is not held.");
+            _readers--;
+            if (_readers == 0) SignalStateChanged();
+        }
+    }
+
+    private void SignalStateChanged()
+    {
+        var signal = _stateChanged;
+        _stateChanged = NewSignal();
+        signal.TrySetResult();
+    }
+
+    private static TaskCompletionSource NewSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 }
 
 /// <summary>
@@ -228,16 +237,16 @@ public sealed class GraphWriteCoordinator : IDisposable
 public sealed class GraphLease : IAsyncDisposable
 {
     private readonly GraphWriteCoordinator _owner;
-    private readonly ReaderWriterLockSlim? _writeLock;
-    private readonly List<ReaderWriterLockSlim>? _heldReadLocks;
+    private readonly AsyncGraphLock? _writeLock;
+    private readonly List<AsyncGraphLock>? _heldReadLocks;
     private readonly bool _isWriter;
     private int _released;
 
     internal GraphLease(
         GraphWriteCoordinator owner,
-        ReaderWriterLockSlim? rwLock,
+        AsyncGraphLock? rwLock,
         bool isWriter,
-        List<ReaderWriterLockSlim>? heldReadLocks = null)
+        List<AsyncGraphLock>? heldReadLocks = null)
     {
         _owner = owner;
         _writeLock = rwLock;
@@ -253,15 +262,13 @@ public sealed class GraphLease : IAsyncDisposable
 
         if (_isWriter && _writeLock != null)
         {
-            // Reverse order of acquisition: write → upgradeable read.
-            _writeLock.ExitWriteLock();
-            _writeLock.ExitUpgradeableReadLock();
+            _writeLock.ReleaseWrite();
         }
         else if (_heldReadLocks != null)
         {
             foreach (var l in _heldReadLocks)
             {
-                l.ExitReadLock();
+                l.ReleaseRead();
             }
         }
 

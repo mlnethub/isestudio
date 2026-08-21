@@ -66,6 +66,21 @@ public sealed class VocabularyApiTests
     }
 
     [Fact]
+    public async Task List_schemes_returns_vocabulary_stats()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var (ksId, _) = await SeedKnowledgeSystemAsync(app, client, "b8-list-schemes");
+
+        var response = await client.GetAsync($"/api/knowledge/{ksId}/vocabulary/schemes");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(JsonValueKind.Object, json.GetProperty("stats").ValueKind);
+        Assert.Equal(0, json.GetProperty("stats").GetProperty("concept_count").GetInt32());
+    }
+
+    [Fact]
     public async Task List_concepts_with_filters_returns_paginated_page()
     {
         await using var app = new AuthTestWebApplicationFactory();

@@ -76,6 +76,61 @@ public sealed class ExtractionRunApiTests
     }
 
     [Fact]
+    public async Task Post_extract_uses_knowledge_system_id_from_route()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        FakeChatClientFactory.Default.Reset();
+        FakeChatClientFactory.Default.UseClient(new FakeChat().EnqueueValidDelta());
+
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var (ksId, _) = await SeedKnowledgeSystemAsync(app, client, "b6b-route-id");
+        var blobSha = SeedBlobSha(app);
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/knowledge/{ksId}/extract",
+            new
+            {
+                blob_sha = blobSha,
+                file_name = "test.txt",
+                provider = "openai",
+                model = "gpt-4",
+                endpoint = "https://api.example.com",
+                api_key = (string?)null,
+                concurrency_limit = 4,
+            });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Post_extract_all_accepts_frontend_chunk_request()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        FakeChatClientFactory.Default.Reset();
+        FakeChatClientFactory.Default.UseClient(new FakeChat().EnqueueValidDeltas(5));
+
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var (ksId, ksGuid) = await SeedKnowledgeSystemAsync(app, client, "b6b-frontend-request");
+        var chunkId = SeedProviderAndChunk(app, ksGuid);
+        SeedCompletedExtractionJob(app, ksGuid);
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/knowledge/{ksId}/extract-all",
+            new
+            {
+                chunk_ids = new[] { chunkId },
+                model = (string?)null,
+            });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, body.GetProperty("total_chunks").GetInt32());
+        var jobId = body.GetProperty("id").GetGuid();
+        var persistedJob = app.CreateDbContext().ExtractionJobs.Single(job => job.Id == jobId);
+        Assert.True(persistedJob.LegacyId > 0);
+    }
+
+    [Fact]
     public async Task Post_extract_instances_creates_job_and_writes_individuals()
     {
         await using var app = new AuthTestWebApplicationFactory();
@@ -441,6 +496,71 @@ public sealed class ExtractionRunApiTests
             Encoding.UTF8.GetBytes("the quick brown fox jumps over the lazy dog"));
         return blobs.PutAsync(stream, CancellationToken.None)
             .GetAwaiter().GetResult().Sha256;
+    }
+
+    private static Guid SeedProviderAndChunk(
+        AuthTestWebApplicationFactory app, Guid knowledgeSystemId)
+    {
+        var db = app.CreateDbContext();
+        var provider = new ProviderEntity
+        {
+            LegacyId = TestLegacyIds.Next("provider"),
+            Name = "test-openai",
+            BaseUrl = "https://api.example.com",
+            ApiKey = "test-key",
+            Model = "gpt-4",
+            Kind = "llm",
+            ConcurrencyLimit = 4,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        var document = new DocumentEntity
+        {
+            LegacyId = TestLegacyIds.Next("document"),
+            KnowledgeSystemId = knowledgeSystemId,
+            Sha256 = new string('a', 64),
+            OriginalFilename = "test.txt",
+            Ext = "txt",
+            SizeBytes = 12,
+            StoragePath = "aa/test",
+            UploadedAt = DateTimeOffset.UtcNow,
+            ParseStatus = "parsed",
+            ChunkCount = 1,
+        };
+        var chunk = new ChunkEntity
+        {
+            LegacyId = TestLegacyIds.Next("chunk"),
+            DocumentId = document.Id,
+            Idx = 0,
+            Text = "the quick brown fox",
+            CharStart = 0,
+            CharEnd = 19,
+            TokenEstimate = 4,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Providers.Add(provider);
+        db.Documents.Add(document);
+        db.Chunks.Add(chunk);
+        db.KnowledgeSystems.Single(k => k.Id == knowledgeSystemId).LlmProviderId = provider.Id;
+        db.SaveChanges();
+        return chunk.Id;
+    }
+
+    private static void SeedCompletedExtractionJob(
+        AuthTestWebApplicationFactory app, Guid knowledgeSystemId)
+    {
+        var db = app.CreateDbContext();
+        db.ExtractionJobs.Add(new ExtractionJobEntity
+        {
+            LegacyId = TestLegacyIds.Next("extraction_job"),
+            KnowledgeSystemId = knowledgeSystemId,
+            Kind = "both",
+            Status = "completed",
+            Model = "gpt-4",
+            ChunkIds = new List<int>(),
+            CreatedAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+            FinishedAt = DateTimeOffset.UtcNow,
+        });
+        db.SaveChanges();
     }
 
     private static async Task WaitForJobAsync(

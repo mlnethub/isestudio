@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Application.Integration;
@@ -95,5 +96,19 @@ public sealed class FacadeSmokeTests
                 "nonsense.operation",
                 new InternalRequest(null, null, null, null, null, null, new Actor("system")),
                 CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task List_models_returns_the_frontend_catalog_shape()
+    {
+        IIntegrationApiFacade facade = BuildFacade();
+        var response = await facade.InvokeAsync(
+            "settings.list_models",
+            new InternalRequest(null, null, null, null, null, null, new Actor("system")),
+            CancellationToken.None);
+        var json = JsonSerializer.SerializeToElement(response);
+
+        Assert.Equal(JsonValueKind.Array, json.GetProperty("models").ValueKind);
+        Assert.Equal(JsonValueKind.String, json.GetProperty("default").ValueKind);
     }
 }

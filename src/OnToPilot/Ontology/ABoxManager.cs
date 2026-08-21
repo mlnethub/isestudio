@@ -454,9 +454,15 @@ public sealed class ABoxManager
             var label = labelBySubject.TryGetValue(iri, out var l)
                 ? l
                 : LocalIri(iri);
+            // Mirror Python's `[{"iri": t, "label": class_labels.get(t, t)} for t in sorted(...)]`
+            // so the wire shape matches the detail endpoint's IndividualOut.Types
+            // and the frontend InstancesPanel can render the type chips without
+            // a second round-trip to /abox/classes.
             var types = classBySubject[iri]
                 .Where(t => t != Vocabulary.OwlNamedIndividual.Value)
-                .Select(t => t)
+                .OrderBy(t => t, StringComparer.Ordinal)
+                .Select(t => new LabeledIri(t,
+                    classLabels.TryGetValue(t, out var tl) ? tl : LocalIri(t)))
                 .ToList();
             items.Add(new IndividualListItem(iri, label, types));
         }

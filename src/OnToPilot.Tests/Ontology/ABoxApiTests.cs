@@ -92,6 +92,16 @@ public sealed class ABoxApiTests
         Assert.Equal(2, byClassBody.GetProperty("total").GetInt32());
         Assert.Equal(2, byClassBody.GetProperty("items").GetArrayLength());
 
+        // Each row must carry the type objects the InstancesPanel renders
+        // (matches IndividualOut.Types shape on the detail endpoint AND the
+        // Python baseline in backend/app/ontology/abox.py::list_individuals).
+        var buddy = byClassBody.GetProperty("items")[0];
+        var buddyTypes = buddy.GetProperty("types");
+        Assert.Equal(JsonValueKind.Array, buddyTypes.ValueKind);
+        Assert.Equal(1, buddyTypes.GetArrayLength());
+        Assert.Equal(dogClassIri, buddyTypes[0].GetProperty("iri").GetString());
+        Assert.Equal("Dog", buddyTypes[0].GetProperty("label").GetString());
+
         // Filter by q (label substring, case-insensitive)
         var byQ = await client.GetAsync($"/api/knowledge/{ksId}/abox/individuals?q=rex");
         Assert.Equal(HttpStatusCode.OK, byQ.StatusCode);
@@ -238,9 +248,9 @@ public sealed class ABoxApiTests
             new { label = "Sneaky", class_iri = dogClassIri });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        // Empty fallback: iri = "" and type_iris = [].
+        // Empty fallback: iri = "" and types = [].
         Assert.Equal(string.Empty, body.GetProperty("iri").GetString());
-        Assert.Equal(0, body.GetProperty("type_iris").GetArrayLength());
+        Assert.Equal(0, body.GetProperty("types").GetArrayLength());
 
         var store = app.Services.GetRequiredService<StoreWrapper>();
         var aboxGraph = LookupKsAbboxIri(app, ksId);

@@ -309,6 +309,14 @@ public class StoreWrapperTests : IClassFixture<StoreWrapperFixture>, IAsyncLifet
         Assert.Equal(new[] { existing }, _fx.Store.Match(graph: _g1));
     }
 
+    [Fact]
+    public async Task Capture_can_be_released_on_a_different_thread()
+    {
+        var capture = await _fx.Store.CaptureAsync(_g1, revertOnError: false);
+
+        await Task.Run(async () => await capture.DisposeAsync());
+    }
+
     // ------------------------------------------------------------------
     // Contention / concurrency
     // ------------------------------------------------------------------

@@ -9,6 +9,7 @@ using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Knowledge;
 using OnToPilot.Ontology;
+using OnToPilot.Parsing;
 using OnToPilot.Providers;
 
 namespace OnToPilot.Integration;
@@ -253,7 +254,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "providers.update" => InvokeProviderUpdateAsync(request, cancellationToken),
 
             // -- settings --
-            "settings.list_models" => Task.FromResult<object?>(EmptyListResponse()),
+            "settings.list_models" => Task.FromResult<object?>(EmptyModelCatalog()),
             "settings.get" => Task.FromResult<object?>(EmptySettings()),
             "settings.update" => Task.FromResult<object?>(EmptySettings()),
 
@@ -1460,12 +1461,20 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private async Task<object?> InvokeExtractionAsync(
         InternalRequest request, string runKind, CancellationToken cancellationToken)
     {
-        var body = DeserializeBody<ExtractionRequest>(request);
+        var frontendBody = DeserializeBody<FrontendExtractionRequest>(request);
+        var body = frontendBody?.ChunkIds is not null
+            ? await BuildFrontendExtractionRequestAsync(request, frontendBody, cancellationToken)
+                .ConfigureAwait(false)
+            : DeserializeBody<ExtractionRequest>(request);
         if (body is null)
         {
             throw new InvalidOperationException(
                 "extraction body is required (knowledge_system_id, blob_sha, " +
                 "file_name, provider, model, endpoint).");
+        }
+        if (request.KnowledgeSystemGuid is Guid knowledgeSystemId)
+        {
+            body = body with { KnowledgeSystemId = knowledgeSystemId };
         }
         var orchestrator = ResolveExtractionOrchestrator();
         if (orchestrator is null)
@@ -1484,6 +1493,80 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         };
 
         return ExtractionJobOut.From(job);
+    }
+
+    private sealed record FrontendExtractionRequest(List<Guid>? ChunkIds, string? Model);
+
+    private async Task<ExtractionRequest> BuildFrontendExtractionRequestAsync(
+        InternalRequest request,
+        FrontendExtractionRequest body,
+        CancellationToken cancellationToken)
+    {
+        if (request.KnowledgeSystemGuid is not Guid knowledgeSystemId)
+        {
+            throw new InvalidOperationException("Knowledge system id is required.");
+        }
+        if (body.ChunkIds is not { Count: > 0 })
+        {
+            throw new InvalidOperationException("No chunks selected.");
+        }
+
+        var db = _services.GetRequiredService<OnToPilotDbContext>();
+        var knowledgeSystem = await db.KnowledgeSystems.AsNoTracking()
+            .FirstOrDefaultAsync(k => k.Id == knowledgeSystemId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Knowledge system {knowledgeSystemId} not found.");
+        var systemConfig = await db.SystemConfigs.AsNoTracking()
+            .SingleOrDefaultAsync(cancellationToken)
+            .ConfigureAwait(false);
+        var providerId = knowledgeSystem.LlmProviderId ?? systemConfig?.LlmProviderId
+            ?? throw new InvalidOperationException(
+                "No LLM provider is configured for this knowledge system.");
+        var provider = await db.Providers.AsNoTracking()
+            .FirstOrDefaultAsync(p => p.Id == providerId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"LLM provider {providerId} not found.");
+
+        var requestedIds = body.ChunkIds.Distinct().ToList();
+        var chunkRows = await (
+                from chunk in db.Chunks.AsNoTracking()
+                join document in db.Documents.AsNoTracking() on chunk.DocumentId equals document.Id
+                where requestedIds.Contains(chunk.Id)
+                    && document.KnowledgeSystemId == knowledgeSystemId
+                select chunk)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (chunkRows.Count != requestedIds.Count)
+        {
+            throw new InvalidOperationException(
+                "One or more selected chunks were not found in this knowledge system.");
+        }
+
+        var chunksById = chunkRows.ToDictionary(chunk => chunk.Id);
+        var selectedChunks = requestedIds.Select(id =>
+        {
+            var chunk = chunksById[id];
+            return new ChunkSpan(
+                checked((int)chunk.LegacyId),
+                chunk.Text,
+                chunk.CharStart,
+                chunk.CharEnd,
+                chunk.TokenEstimate);
+        }).ToList();
+        var model = !string.IsNullOrWhiteSpace(body.Model)
+            ? body.Model
+            : knowledgeSystem.LlmModel ?? systemConfig?.ExtractModel ?? provider.Model;
+
+        return new ExtractionRequest(
+            knowledgeSystemId,
+            "<already-read>",
+            string.Empty,
+            "openai-compatible",
+            model,
+            provider.BaseUrl,
+            provider.ApiKey,
+            provider.ConcurrencyLimit,
+            selectedChunks);
     }
 
     // Shared empty / placeholder shapes for the document slice. These
@@ -2069,10 +2152,10 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return WrapAsync(async () =>
         {
             var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, ct).ConfigureAwait(false);
-            if (svc is null || ks is null) return (object?)EmptyListResponse();
-            var schemes = await svc.ListSchemesAsync(ks, request.Actor, ct).ConfigureAwait(false);
-            if (schemes is null) return (object?)EmptyListResponse();
-            return (object?)new { items = schemes, total = schemes.Count };
+            if (svc is null || ks is null) return (object?)EmptyVocabularySchemeList();
+            var view = await svc.GetVocabularyAsync(ks, request.Actor, ct).ConfigureAwait(false);
+            if (view is null) return (object?)EmptyVocabularySchemeList();
+            return (object?)new { items = view.Schemes, total = view.Schemes.Count, stats = view.Stats };
         });
     }
 
@@ -2550,7 +2633,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private static object EmptyIndividualRef() => new
     {
         iri = string.Empty,
-        type_iris = Array.Empty<string>(),
+        types = Array.Empty<object>(),
     };
 
     private static object EmptyResetAboxResponse() => new
@@ -2574,6 +2657,23 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         schemes = Array.Empty<object>(),
         concepts = Array.Empty<object>(),
+        stats = EmptyVocabularyStats(),
+    };
+
+    private static object EmptyVocabularySchemeList() => new
+    {
+        items = Array.Empty<object>(),
+        total = 0,
+        stats = EmptyVocabularyStats(),
+    };
+
+    private static object EmptyVocabularyStats() => new
+    {
+        scheme_count = 0,
+        concept_count = 0,
+        label_count = 0,
+        mapped_count = 0,
+        unmapped_count = 0,
     };
 
     private static object EmptyConcept() => new
@@ -2639,6 +2739,12 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     {
         graph_iri = string.Empty,
         triples_added = 0,
+    };
+
+    private static object EmptyModelCatalog() => new
+    {
+        models = Array.Empty<string>(),
+        @default = string.Empty,
     };
 
     private static object EmptySettings() => new

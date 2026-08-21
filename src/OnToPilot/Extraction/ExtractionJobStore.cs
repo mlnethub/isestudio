@@ -82,8 +82,8 @@ public sealed class ExtractionJobStore
             CreatedAt = _clock.GetUtcNow(),
             Log = string.Empty,
         };
-        db.ExtractionJobs.Add(job);
-        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        var allocator = new LegacyIdAllocator(db);
+        await allocator.AllocateAndPersistAsync(job, cancellationToken).ConfigureAwait(false);
         return job;
     }
 

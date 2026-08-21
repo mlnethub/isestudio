@@ -157,9 +157,23 @@ public sealed class ExtractionOrchestrator
         // total chunks progress counter must reflect that — otherwise the
         // progress bar never reaches 100% on a successful combined run.
         var totalChunks = kind == ExtractionWire.KindBoth ? chunkIds.Count * 2 : chunkIds.Count;
-        var job = await _jobs.CreateAsync(
-            request.KnowledgeSystemId, kind, request.Model, chunkIds, totalChunks, cancellationToken)
-            .ConfigureAwait(false);
+
+        // Validate provider configuration before inserting a pending job.
+        // Otherwise a synchronous client-construction failure leaves an
+        // orphan row that blocks every subsequent extraction as "active".
+        var chat = _chatFactory.Create(request.ToProviderConfig());
+        Infrastructure.Persistence.Entities.ExtractionJobEntity job;
+        try
+        {
+            job = await _jobs.CreateAsync(
+                request.KnowledgeSystemId, kind, request.Model, chunkIds, totalChunks, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            chat.Dispose();
+            throw;
+        }
 
         // Background work runs on a thread-pool worker with its own
         // ExecutionContext so the orchestrator's caller (an HTTP request)
@@ -169,11 +183,6 @@ public sealed class ExtractionOrchestrator
         // worker — sharing state across requests would let two independent
         // extractions oversubscribe the same endpoint.
         var ksContext = new KsContext(GraphIri: ksEntity.GraphIri, BaseIri: ksEntity.BaseIri);
-        // The chat client is created eagerly so the chat capacity coordinator
-        // sees a stable AsyncLocal scope for the whole extraction run, and so
-        // disposal is guaranteed even if the runner never gets a chance to
-        // observe a failure (e.g. parser exception before phase 1).
-        var chat = _chatFactory.Create(request.ToProviderConfig());
         var runContext = new JobRunContext(job.Id, request, ksContext, chunks, chat);
 
         // SuppressFlow keeps the chat capacity coordinator's AsyncLocal
@@ -467,6 +476,10 @@ public sealed class ExtractionOrchestrator
         ExtractionRequest request,
         CancellationToken cancellationToken)
     {
+        if (request.SelectedChunks is not null)
+        {
+            return (request.SelectedChunks, new ParseResult(Text: string.Empty, Backend: "selected-chunks"));
+        }
         if (!string.IsNullOrEmpty(request.BlobSha) && request.BlobSha != "<already-read>")
         {
             var stream = await _blobs.GetAsync(request.BlobSha, cancellationToken).ConfigureAwait(false)

@@ -363,7 +363,7 @@ public sealed class OnToPilotMcpTools
                 Query: null,
                 Actor: new Actor(principal.User.Id.ToString()));
             return await _facade.InvokeAsync("abox.get_individual", request, ct).ConfigureAwait(false)
-                ?? (object)new { iri = iri, type_iris = Array.Empty<string>() };
+                ?? (object)new { iri = iri, types = Array.Empty<object>() };
         }, cancellationToken);
     }
 
