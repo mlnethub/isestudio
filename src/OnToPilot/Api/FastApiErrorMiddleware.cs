@@ -121,6 +121,20 @@ public sealed class FastApiErrorMiddleware
                 .ConfigureAwait(false);
             return;
         }
+        catch (RdfImportException ex)
+        {
+            // RDF import failures (unsupported format, empty file,
+            // exceeded max bytes / triples, unsupported target /
+            // strategy value). Treat as 400 with the plain-string
+            // {"detail": "..."} envelope so the front-end toast shows
+            // the human-readable reason verbatim — matches the Python
+            // backend's rdf_import HTTPException → 400 mapping.
+            _logger.LogInformation(
+                "RDF import refused: {Reason}", ex.Message);
+            await WriteEnvelopeAsync(context, StatusCodes.Status400BadRequest, ex.Message)
+                .ConfigureAwait(false);
+            return;
+        }
         catch (ValidationException ex)
         {
             // Service-layer validation guards (required-field checks,

@@ -242,7 +242,17 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "releases.rollback" => Task.FromResult<object?>(EmptyRelease()),
 
             // -- rdf-import --
-            "rdf.import" => Task.FromResult<object?>(EmptyImportResponse()),
+            // Multipart-driven RDF import (replaces the Stage 1
+            // placeholder). Routes through RunWithExtractionGuardAsync so
+            // a live extraction blocks the write with a 409 envelope,
+            // then delegates to RdfImportService which normalises
+            // form fields, parses / partitions, writes the graph,
+            // captures the diff, audits, runs the post-mutation
+            // conflict detection + ABox validation + terminology sync,
+            // and refreshes the cached KS counts.
+            "rdf.import" => RunWithExtractionGuardAsync(
+                request, cancellationToken,
+                () => InvokeRdfImportAsync(request, cancellationToken)),
 
             // -- providers --
             // Real CRUD via ProviderService (scoped). The helpers below
@@ -571,6 +581,109 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             return (object?)(new { iri = result.Iri });
         });
     }
+
+    /// <summary>
+    /// Multipart RDF import. The <c>RdfImportController</c> packs the
+    /// uploaded file as <c>byte[]</c> alongside the form fields in
+    /// <see cref="InternalRequest.Body"/>; we project that into an
+    /// <see cref="RdfImportRequest"/> and delegate to
+    /// <see cref="RdfImportService.ImportAsync(RdfImportRequest, Actor, CancellationToken)"/>.
+    /// Returns the placeholder envelope when the workflow service is
+    /// not wired (hand-rolled dispatcher in a unit test).
+    /// </summary>
+    private Task<object?> InvokeRdfImportAsync(
+        InternalRequest request, CancellationToken cancellationToken)
+    {
+        if (request.KnowledgeSystemGuid is null)
+        {
+            throw new InvalidOperationException(
+                "Knowledge system id is required for rdf.import.");
+        }
+        var svc = _services.GetService(typeof(RdfImportService)) as RdfImportService;
+        if (svc is null || request.Body is null)
+        {
+            return Task.FromResult<object?>(EmptyImportResponse());
+        }
+
+        return WrapAsync(async () =>
+        {
+            var body = request.Body;
+            var file = body.TryGetValue("file", out var rawFile) ? rawFile as byte[] : null;
+            if (file is null)
+            {
+                throw new RdfImportException("file is required and must be non-empty");
+            }
+
+            var req = new RdfImportRequest(
+                KnowledgeSystemId: request.KnowledgeSystemGuid.Value,
+                File: file,
+                Filename: body.TryGetValue("filename", out var fn) && fn is string fns ? fns : "upload.ttl",
+                Target: body.TryGetValue("target", out var tg) && tg is string tgs ? tgs : "auto",
+                Strategy: body.TryGetValue("strategy", out var st) && st is string sts ? sts : "merge",
+                Format: body.TryGetValue("format", out var ft) && ft is string fts ? fts : "auto",
+                BaseIri: body.TryGetValue("base_iri", out var bi) && bi is string bis ? bis : null);
+
+            var result = await svc.ImportAsync(req, request.Actor, cancellationToken)
+                .ConfigureAwait(false);
+            return ProjectRdfImportResult(result);
+        });
+    }
+
+    private static object ProjectRdfImportResult(RdfImportResult result) => new
+    {
+        filename = result.Filename,
+        format = result.Format,
+        target = result.Target,
+        strategy = result.Strategy,
+        base_iri = result.BaseIri,
+        parsed_triples = result.ParsedTriples,
+        tbox_triples = result.TBoxTriples,
+        abox_triples = result.ABoxTriples,
+        tbox_added = result.TBoxAdded,
+        tbox_removed = result.TBoxRemoved,
+        abox_added = result.ABoxAdded,
+        abox_removed = result.ABoxRemoved,
+        graph_iri = result.GraphIri,
+        view = result.View,
+        open_conflicts = result.OpenConflicts.Select(ProjectConflictOut).ToArray(),
+        validation = new
+        {
+            error_count = result.Validation.ErrorCount,
+            warning_count = result.Validation.WarningCount,
+            truncated = result.Validation.Truncated,
+            violations = result.Validation.Violations.Select(v => new
+            {
+                id = v.Id,
+                type = v.Type,
+                severity = v.Severity,
+                individual = v.Individual,
+                summary = v.Summary,
+                fixes = v.Fixes,
+            }).ToArray(),
+        },
+        terminology = result.Terminology is null ? null : new
+        {
+            terms_added = result.Terminology.TermsAdded,
+            terms_mapped = result.Terminology.TermsMapped,
+            proposals_queued = result.Terminology.ProposalsQueued,
+            error = result.Terminology.Error,
+        },
+    };
+
+    private static object ProjectConflictOut(ConflictOut c) => new
+    {
+        id = c.Id,
+        knowledge_system_id = c.KnowledgeSystemId,
+        signature = c.Signature,
+        ctype = c.Ctype,
+        severity = c.Severity,
+        status = c.Status,
+        title = c.Title,
+        detail = c.Detail,
+        created_at = c.CreatedAt,
+        resolved_at = c.ResolvedAt,
+        resolution = c.Resolution,
+    };
 
     /// <summary>
     /// External / published SPARQL query dispatch. Forwards to the

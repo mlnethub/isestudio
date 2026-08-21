@@ -36,6 +36,12 @@ public static class OntologyServiceCollectionExtensions
                 sp.GetRequiredService<IConfiguration>()["OnToPilot:Storage:RdfRoot"]
                     ?? System.IO.Path.Combine(AppContext.BaseDirectory, "data", "rdf"),
                 "releases")));
+        // Stateless parser — same instance handles every concurrent
+        // request (RdfImportParser holds no state). Scoped service
+        // because it shares the request DbContext and the Oxigraph
+        // singleton through the workflow collaborators.
+        services.AddSingleton<RdfImportParser>();
+        services.AddScoped<RdfImportService>();
         return services;
     }
 }

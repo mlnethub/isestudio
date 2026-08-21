@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Ontology;
@@ -79,6 +80,106 @@ public sealed class OntologyApiTests
         Assert.True(body.TryGetProperty("terminology", out _));
         var conflicts = body.GetProperty("open_conflicts");
         Assert.Equal(JsonValueKind.Array, conflicts.ValueKind);
+
+        var store = app.Services.GetRequiredService<OnToPilot.Ontology.StoreWrapper>();
+        var graphIri = LookupKsGraphIri(app, ksId);
+        Assert.Single(store.Match(
+            subjectIri: "urn:Pump",
+            predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+            objectIri: "http://www.w3.org/2002/07/owl#Class",
+            graphIri: graphIri));
+        Assert.Equal(1, body.GetProperty("tbox_triples").GetInt32());
+        Assert.Equal(0, body.GetProperty("abox_triples").GetInt32());
+        Assert.Equal(1, body.GetProperty("tbox_added").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("target", "bogus-target")]
+    [InlineData("strategy", "bogus-strategy")]
+    [InlineData("format", "bogus-format")]
+    public async Task Rdf_import_rejects_invalid_form_fields(string field, string value)
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, $"rdf-import-invalid-{field}");
+        // Send exactly one value per field: the field under test gets the
+        // bogus value, the rest get valid defaults. (Sending a duplicate
+        // form part lets ASP.NET Core's [FromForm] string binder take the
+        // first occurrence and silently drop the override, so the test
+        // would see 200 instead of 400.)
+        var target = field == "target" ? value : "auto";
+        var strategy = field == "strategy" ? value : "merge";
+        var format = field == "format" ? value : "turtle";
+        var multipart = new MultipartFormDataContent
+        {
+            { new StringContent("@prefix owl: <http://www.w3.org/2002/07/owl#> .\n<urn:Pump> a owl:Class ."), "file", "pump.ttl" },
+            { new StringContent(target), "target" },
+            { new StringContent(strategy), "strategy" },
+            { new StringContent(format), "format" },
+        };
+
+        var response = await client.PostAsync($"/api/knowledge/{ksId}/rdf/import", multipart);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var detail = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(detail.TryGetProperty("detail", out _));
+    }
+
+    [Fact]
+    public async Task Rdf_import_replace_strategy_clears_previous_ontology_graph()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "rdf-import-replace");
+        var first = new MultipartFormDataContent
+        {
+            { new StringContent("@prefix owl: <http://www.w3.org/2002/07/owl#> .\n<urn:Pump> a owl:Class .\n<urn:Valve> a owl:Class ."), "file", "seed.ttl" },
+            { new StringContent("tbox"), "target" },
+            { new StringContent("merge"), "strategy" },
+            { new StringContent("turtle"), "format" },
+        };
+        Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"/api/knowledge/{ksId}/rdf/import", first)).StatusCode);
+
+        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var graphIri = LookupKsGraphIri(app, ksId);
+        Assert.NotEmpty(store.Match(graphIri: graphIri));
+
+        var second = new MultipartFormDataContent
+        {
+            { new StringContent("@prefix owl: <http://www.w3.org/2002/07/owl#> .\n<urn:OnlyOne> a owl:Class ."), "file", "replace.ttl" },
+            { new StringContent("tbox"), "target" },
+            { new StringContent("replace"), "strategy" },
+            { new StringContent("turtle"), "format" },
+        };
+        var replace = await client.PostAsync($"/api/knowledge/{ksId}/rdf/import", second);
+
+        Assert.Equal(HttpStatusCode.OK, replace.StatusCode);
+        var body = await replace.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("tbox_added").GetInt32());
+        Assert.True(body.GetProperty("tbox_removed").GetInt32() >= 1);
+        Assert.Empty(store.Match(subjectIri: "urn:Pump", graphIri: graphIri));
+        Assert.Empty(store.Match(subjectIri: "urn:Valve", graphIri: graphIri));
+        Assert.NotEmpty(store.Match(subjectIri: "urn:OnlyOne", graphIri: graphIri));
+    }
+
+    [Fact]
+    public async Task Rdf_import_active_extraction_returns_409()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "rdf-import-active");
+        await SeedActiveExtractionJobAsync(app, ksId);
+        var multipart = new MultipartFormDataContent
+        {
+            { new StringContent("@prefix owl: <http://www.w3.org/2002/07/owl#> .\n<urn:Pump> a owl:Class ."), "file", "pump.ttl" },
+            { new StringContent("auto"), "target" },
+            { new StringContent("merge"), "strategy" },
+            { new StringContent("turtle"), "format" },
+        };
+
+        var response = await client.PostAsync($"/api/knowledge/{ksId}/rdf/import", multipart);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
     }
 
     [Fact]
@@ -538,6 +639,32 @@ public sealed class OntologyApiTests
         var userId = db.Users
             .Single(u => u.Username == AuthTestWebApplicationFactory.OtherUsername).Id;
         return (client, userId);
+    }
+
+    private static async Task SeedActiveExtractionJobAsync(
+        AuthTestWebApplicationFactory app, Guid ksId)
+    {
+        // Mirror the VocabularyApiTests "extraction active" pattern: a single
+        // running extraction row is enough for the dispatcher's
+        // RejectIfExtractionActiveAsync to surface the 409 envelope.
+        var db = app.CreateDbContext();
+        var job = new ExtractionJobEntity
+        {
+            LegacyId = TestLegacyIds.Next("extraction_job"),
+            KnowledgeSystemId = ksId,
+            Kind = "tbox",
+            Status = JobStatus.Running.ToWire(),
+            Model = "gpt-4",
+            ChunkIds = new List<int>(),
+            TotalChunks = 0,
+            ProcessedChunks = 0,
+            AxiomsAdded = 0,
+            CreatedAt = DateTimeOffset.UtcNow,
+            Log = string.Empty,
+            Phase = string.Empty,
+        };
+        db.ExtractionJobs.Add(job);
+        await db.SaveChangesAsync();
     }
 
     private static async Task<Guid> CreateKsAsync(
