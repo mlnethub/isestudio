@@ -23,6 +23,8 @@ public static class Vocabulary
 
     public static readonly OntoNamedNode RdfsLabel = new(Rdfs + "label");
     public static readonly OntoNamedNode RdfsComment = new(Rdfs + "comment");
+    public static readonly OntoNamedNode RdfsClass = new(Rdfs + "Class");
+    public static readonly OntoNamedNode RdfsDatatype = new(Rdfs + "Datatype");
     public static readonly OntoNamedNode RdfsSubClassOf = new(Rdfs + "subClassOf");
     public static readonly OntoNamedNode RdfsSubPropertyOf = new(Rdfs + "subPropertyOf");
     public static readonly OntoNamedNode RdfsDomain = new(Rdfs + "domain");
