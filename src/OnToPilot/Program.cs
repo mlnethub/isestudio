@@ -363,6 +363,11 @@ builder.Services.AddScoped<HttpContext>(sp =>
 // Bearer-token primitives (scoped to the request DbContext).
 builder.Services.AddScoped<IKnowledgeApiTokenService, KnowledgeApiTokenService>();
 builder.Services.AddScoped<IMcpTokenService, McpTokenService>();
+// Token CRUD orchestrator — replaces the placeholder arms in the
+// dispatcher for tokens.* (list / create / revoke / reveal) and
+// mcp_tokens.* (list / create / revoke). Scoped because it shares the
+// request DbContext + audit + clock with the bearer-token primitives.
+builder.Services.AddScoped<TokenManagementService>();
 
 // Startup recovery hosted services (scoped to a single DbContext per run).
 builder.Services.AddScoped<BootstrapAdminService>();

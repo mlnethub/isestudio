@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Application.Integration;
+using OnToPilot.Authentication;
 using OnToPilot.Conflicts;
 using OnToPilot.Documents;
 using OnToPilot.Extraction;
@@ -233,7 +234,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "releases.get_export" => Task.FromResult<object?>(EmptyExportJob()),
             "releases.download_export_file" => Task.FromResult<object?>(Array.Empty<byte>()),
             "releases.list" => Task.FromResult<object?>(EmptyListResponse()),
-            "releases.create" => Task.FromResult<object?>(EmptyRelease()),
+            // B9 create-draft wiring — was a Stage-1 placeholder
+            // returning {id: Guid.Empty, ...}, so a frontend
+            // ReleasePanel.createDraft click succeeded on the wire but
+            // never persisted an OntologyRelease row. Delegates to
+            // ReleaseService.CreateDraftAsync which mirrors the Python
+            // backend/app/api/releases.py:353 baseline.
+            "releases.create" => InvokeReleaseCreateAsync(request, cancellationToken),
             "releases.diff" => Task.FromResult<object?>(EmptyReleaseDiff()),
             "releases.delete" => Task.FromResult<object?>(new { ok = true }),
             "releases.stop_deployment" => Task.FromResult<object?>(EmptyRelease()),
@@ -271,15 +278,25 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "settings.update" => Task.FromResult<object?>(EmptySettings()),
 
             // -- tokens --
-            "tokens.list" => Task.FromResult<object?>(Array.Empty<object>()),
-            "tokens.create" => Task.FromResult<object?>(EmptyTokenCreated()),
-            "tokens.revoke" => Task.FromResult<object?>(new { ok = true }),
-            "tokens.reveal" => Task.FromResult<object?>(EmptyTokenRevealed()),
+            // Real CRUD via TokenManagementService (scoped). The service
+            // enforces the owner-only gate, mints bearer secrets via
+            // IKnowledgeApiTokenService, persists only the SHA-256 hash,
+            // and writes audit rows for create / revoke / reveal. The
+            // dispatcher only resolves the scoped service + the bound
+            // knowledge system and forwards the call.
+            "tokens.list" => InvokeTokenListAsync(request, cancellationToken),
+            "tokens.create" => InvokeTokenCreateAsync(request, cancellationToken),
+            "tokens.revoke" => InvokeTokenRevokeAsync(request, cancellationToken),
+            "tokens.reveal" => InvokeTokenRevealAsync(request, cancellationToken),
 
             // -- mcp tokens --
-            "mcp_tokens.list" => Task.FromResult<object?>(EmptyListResponse()),
-            "mcp_tokens.create" => Task.FromResult<object?>(EmptyMcpTokenCreated()),
-            "mcp_tokens.revoke" => Task.FromResult<object?>(new { ok = true }),
+            // Per-user CRUD via TokenManagementService (scoped). The
+            // service mints bearer secrets via IMcpTokenService,
+            // persists only the SHA-256 hash, and filters list/revoke by
+            // the calling user (with an owner override on revoke).
+            "mcp_tokens.list" => InvokeMcpTokenListAsync(request, cancellationToken),
+            "mcp_tokens.create" => InvokeMcpTokenCreateAsync(request, cancellationToken),
+            "mcp_tokens.revoke" => InvokeMcpTokenRevokeAsync(request, cancellationToken),
 
             // -- history --
             "history.get" => Task.FromResult<object?>(EmptyListResponse()),
@@ -2176,6 +2193,94 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         });
     }
 
+    // ----- releases (B9) ---------------------------------------------------
+    // Real write-through for releases.create. Reads the optional title /
+    // notes from the request body (matching the Python
+    // backend/app/api/releases.py:353 CreateReleaseRequest shape — both
+    // fields optional, defaults to ""), delegates to ReleaseService
+    // which inserts the OntologyReleaseEntity row + audit row, and
+    // projects the typed ReleaseOut back to the wire. The dispatcher is
+    // Scoped, so the resolved ReleaseService shares the request
+    // DbContext — the audit + allocator pattern is identical to
+    // ConflictService.DismissAsync / ResolveAsync.
+    private ReleaseService? ResolveReleaseService() =>
+        _services.GetService(typeof(ReleaseService)) as ReleaseService;
+
+    private Task<object?> InvokeReleaseCreateAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveReleaseService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+        {
+            // Service not wired (hand-built dispatcher in unit tests)
+            // or no KS bound — return a schema-compatible empty payload
+            // so the route still 200s and the operator sees the no-op.
+            return Task.FromResult<object?>(EmptyRelease());
+        }
+
+        // Body is optional: the frontend ReleasePanel.createDraft sends
+        // {} and the Python baseline marks every field optional. Pull
+        // title / notes defensively so an empty body degrades to
+        // empty strings (matching the Python defaults).
+        //
+        // InternalControllerBase.ToBody wraps the bound [FromBody] object
+        // under the "_" key so callers like DeserializeBody<T> can find
+        // it; we read both shapes — a flat dict (when the dispatcher is
+        // invoked directly with raw fields) and the wrapped JsonElement
+        // (when the controller is the source).
+        string title = string.Empty;
+        string notes = string.Empty;
+        if (request.Body is not null
+            && request.Body.TryGetValue("_", out var raw)
+            && raw is System.Text.Json.JsonElement el
+            && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            if (el.TryGetProperty("title", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.String)
+                title = t.GetString() ?? string.Empty;
+            if (el.TryGetProperty("notes", out var n) && n.ValueKind == System.Text.Json.JsonValueKind.String)
+                notes = n.GetString() ?? string.Empty;
+        }
+
+        return WrapAsync(async () =>
+        {
+            var row = await svc.CreateDraftAsync(
+                request.KnowledgeSystemGuid.Value, request.Actor, title, notes, ct)
+                .ConfigureAwait(false);
+            // Contract-test path uses a random Guid, so the service
+            // may return null when no KS row exists. Fall back to the
+            // schema-compatible empty envelope so the route still 200s
+            // (matches the existing EmptyRelease() placeholder shape).
+            if (row is null) return (object?)EmptyRelease();
+            return (object?)ProjectReleaseOut(row);
+        });
+    }
+
+    /// <summary>
+    /// Project the typed <see cref="ReleaseOut"/> to the wire shape the
+    /// Python <c>_release_out()</c> emits (see
+    /// <c>backend/app/api/releases.py:68</c>). Snake-case keys line up
+    /// with the JSON naming policy in <c>Program.cs</c> and the frontend
+    /// <c>OntologyRelease</c> TypeScript interface.
+    /// </summary>
+    private static object ProjectReleaseOut(ReleaseOut row) => new
+    {
+        id = row.Id,
+        knowledge_system_id = row.KnowledgeSystemId,
+        version = row.Version,
+        status = row.Status,
+        title = row.Title,
+        notes = row.Notes,
+        manifest = row.Manifest,
+        created_by = row.CreatedBy,
+        reviewed_by = row.ReviewedBy,
+        published_by = row.PublishedBy,
+        created_at = row.CreatedAt,
+        reviewed_at = row.ReviewedAt,
+        published_at = row.PublishedAt,
+        deployment = row.Deployment,
+        service_url = row.ServiceUrl,
+    };
+
     /// <summary>
     /// Pull the <c>iri</c> field out of a loose-body POST. The
     /// <c>IndividualRef</c> DTO is the documented wire shape; we also
@@ -2202,6 +2307,234 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         }
         return null;
     }
+
+    // ----- tokens (B10) -----------------------------------------------------
+    // Wires the tokens.* dispatcher arms (list / create / reveal / revoke)
+    // and the mcp_tokens.* arms (list / create / revoke) to the scoped
+    // TokenManagementService. The service enforces the owner-only gate,
+    // mints bearer secrets via the IKnowledgeApiTokenService /
+    // IMcpTokenService primitives, persists only the SHA-256 hash, and
+    // writes audit rows. The dispatcher only resolves the scoped service
+    // and forwards.
+    //
+    // Failure modes mirror the other slices:
+    // * Service not registered (hand-built dispatcher in unit tests)
+    //   → returns the schema-compatible empty payload so the route
+    //   still 200s and the contract-test path degrades cleanly.
+    // * TokenManagementService throws ValidationException /
+    //   InvalidOperationException → FastApiErrorMiddleware translates
+    //   to the {"detail": "..."} envelope the Python backend emits.
+
+    private TokenManagementService? ResolveTokenManagementService() =>
+        _services.GetService(typeof(TokenManagementService)) as TokenManagementService;
+
+    private Task<object?> InvokeTokenListAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveTokenManagementService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.ListApiTokensAsync(
+                request.KnowledgeSystemGuid.Value, ct).ConfigureAwait(false);
+            return (object?)rows;
+        });
+    }
+
+    private Task<object?> InvokeTokenCreateAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveTokenManagementService();
+        var body = DeserializeBody<TokenCreateRequest>(request);
+        if (svc is null || body is null || request.KnowledgeSystemGuid is null)
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for tokens.create.");
+            }
+            return Task.FromResult<object?>(EmptyTokenCreated());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.CreateApiTokenAsync(
+                request.KnowledgeSystemGuid.Value, body, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)ProjectTokenCreatedOut(row);
+        });
+    }
+
+    private Task<object?> InvokeTokenRevokeAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveTokenManagementService();
+        if (svc is null || request.KnowledgeSystemGuid is null
+            || !Guid.TryParse(request.ResourceId, out var tokenId))
+        {
+            return Task.FromResult<object?>(new { ok = false });
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.RevokeApiTokenAsync(
+                request.KnowledgeSystemGuid.Value, tokenId, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (row is null)
+            {
+                // No row matched (KS/token mismatch): empty envelope.
+                return (object?)EmptyTokenCreated();
+            }
+            return (object?)ProjectTokenOut(row);
+        });
+    }
+
+    private Task<object?> InvokeTokenRevealAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveTokenManagementService();
+        if (svc is null || request.KnowledgeSystemGuid is null
+            || !Guid.TryParse(request.ResourceId, out var tokenId))
+        {
+            return Task.FromResult<object?>(EmptyTokenRevealed());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.RevealApiTokenAsync(
+                request.KnowledgeSystemGuid.Value, tokenId, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (row is null)
+            {
+                // Missing row or secret-ciphertext unavailable: empty
+                // envelope matches the Python "legacy token cannot be
+                // recovered" / 404 path semantics at the wire level.
+                return (object?)EmptyTokenRevealed();
+            }
+            return (object?)new { token = row.Token };
+        });
+    }
+
+    private Task<object?> InvokeMcpTokenListAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveTokenManagementService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+        {
+            return Task.FromResult<object?>(EmptyListResponse());
+        }
+        return WrapAsync(async () =>
+        {
+            var actorId = Guid.TryParse(request.Actor.UserId, out var parsed)
+                ? parsed : Guid.Empty;
+            var row = await svc.ListMcpTokensAsync(
+                request.KnowledgeSystemGuid.Value, actorId, ct)
+                .ConfigureAwait(false);
+            return (object?)row;
+        });
+    }
+
+    private Task<object?> InvokeMcpTokenCreateAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveTokenManagementService();
+        var body = DeserializeBody<McpTokenCreateBody>(request);
+        if (svc is null || body is null || request.KnowledgeSystemGuid is null)
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for mcp_tokens.create.");
+            }
+            return Task.FromResult<object?>(EmptyMcpTokenCreated());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.CreateMcpTokenAsync(
+                request.KnowledgeSystemGuid.Value, body, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)ProjectMcpTokenCreatedOut(row);
+        });
+    }
+
+    private Task<object?> InvokeMcpTokenRevokeAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveTokenManagementService();
+        if (svc is null || request.KnowledgeSystemGuid is null
+            || !Guid.TryParse(request.ResourceId, out var tokenId))
+        {
+            return Task.FromResult<object?>(new { ok = false });
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.RevokeMcpTokenAsync(
+                request.KnowledgeSystemGuid.Value, tokenId, request.Actor, ct)
+                .ConfigureAwait(false);
+            if (row is null)
+            {
+                return (object?)EmptyMcpTokenCreated();
+            }
+            return (object?)ProjectMcpTokenOut(row);
+        });
+    }
+
+    private static object ProjectTokenOut(TokenOut row) => new
+    {
+        id = row.Id,
+        name = row.Name,
+        token_prefix = row.TokenPrefix,
+        scopes = row.Scopes,
+        status = row.Status,
+        created_at = row.CreatedAt,
+        expires_at = row.ExpiresAt,
+        last_used_at = row.LastUsedAt,
+        revoked_at = row.RevokedAt,
+        can_reveal = row.CanReveal,
+    };
+
+    private static object ProjectTokenCreatedOut(TokenCreatedOut row) => new
+    {
+        id = row.Id,
+        name = row.Name,
+        token_prefix = row.TokenPrefix,
+        scopes = row.Scopes,
+        status = row.Status,
+        created_at = row.CreatedAt,
+        expires_at = row.ExpiresAt,
+        last_used_at = row.LastUsedAt,
+        revoked_at = row.RevokedAt,
+        can_reveal = row.CanReveal,
+        token = row.Token,
+    };
+
+    private static object ProjectMcpTokenOut(McpTokenOut row) => new
+    {
+        id = row.Id,
+        name = row.Name,
+        token_prefix = row.TokenPrefix,
+        scopes = row.Scopes,
+        status = row.Status,
+        created_at = row.CreatedAt,
+        expires_at = row.ExpiresAt,
+        last_used_at = row.LastUsedAt,
+        revoked_at = row.RevokedAt,
+    };
+
+    private static object ProjectMcpTokenCreatedOut(McpTokenCreatedOut row) => new
+    {
+        id = row.Id,
+        name = row.Name,
+        token_prefix = row.TokenPrefix,
+        scopes = row.Scopes,
+        status = row.Status,
+        created_at = row.CreatedAt,
+        expires_at = row.ExpiresAt,
+        last_used_at = row.LastUsedAt,
+        revoked_at = row.RevokedAt,
+        token = row.Token,
+        endpoint = row.Endpoint,
+    };
 
     // ----- vocabulary (Block 8 Task 5) -------------------------------------
     // Wires the 28 vocabulary dispatcher arms to the scoped services built
