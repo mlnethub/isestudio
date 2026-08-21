@@ -124,6 +124,50 @@ public sealed class ConflictApiTests
     }
 
     [Fact]
+    public async Task Resolve_returns_200_and_null_view_not_500()
+    {
+        // ResolveConflictResponse.View was typed as a non-nullable JsonElement
+        // and stubbed with `default` (an uninitialized struct). Serialising a
+        // default JsonElement throws InvalidOperationException ("Operation is
+        // not valid due to the current state of the object") inside
+        // JsonElementConverter.Write, surfacing as HTTP 500 on a successful
+        // resolve. The frontend ignores `view` (it refreshes separately), so
+        // the stub should serialise as JSON null. Seed a conflict with a
+        // no-op resolution so no ontology edit is required.
+        await using var app = new AuthTestWebApplicationFactory();
+        await SeedAdminAsync(app);
+        var client = await AuthenticatedClientAsync(app);
+        var ks = await SeedKnowledgeSystemAsync(app, "resolve-view");
+        var db = app.CreateDbContext();
+        var cid = Guid.NewGuid();
+        db.Conflicts.Add(new ConflictEntity
+        {
+            Id = cid,
+            LegacyId = TestLegacyIds.Next("conflict"),
+            KnowledgeSystemId = ks.Id,
+            Signature = "cycle|A|B|C",
+            Ctype = "cycle",
+            Severity = "error",
+            Status = "open",
+            Title = "cycle conflict (resolve)",
+            Detail = "Seeded for resolve test.",
+            Payload = System.Text.Json.JsonDocument.Parse(
+                """{"entities":[],"resolutions":[{"id":"keep-a","label":"Keep A","op":{"op":"noop"}}]}"""),
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        db.SaveChanges();
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/knowledge/{ks.Id}/conflicts/{cid}/resolve",
+            new { resolution_id = "keep-a" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        Assert.True(body.TryGetProperty("view", out var viewProp));
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, viewProp.ValueKind);
+    }
+
+    [Fact]
     public async Task Dismiss_then_reopen_flips_status()
     {
         await using var app = new AuthTestWebApplicationFactory();

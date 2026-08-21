@@ -445,11 +445,14 @@ public sealed class ConflictService
             ? await ListAsync(ksId, "open", ctype: null, ct).ConfigureAwait(false)
             : await DetectAndSyncWithoutSemanticAsync(ks, ct).ConfigureAwait(false);
 
-        // Build a minimal view stub so the wire shape matches Python; the
-        // full build_view needs ShapeBuilder + ABoxManager wiring that
-        // lands in Block 6. The frontend treats null `view` as
-        // "no incremental rebuild needed".
-        JsonElement view = default;
+        // The full build_view (OntologyViewBuilder over the post-resolve graph)
+        // lands with later ShapeBuilder wiring. The frontend ignores `view` —
+        // it refreshes the conflicts list separately — so send JSON null rather
+        // than a stub. A default(uninitialized) JsonElement throws during
+        // serialisation (JsonElementConverter.Write), surfacing as HTTP 500;
+        // null serialises cleanly and matches the "no incremental rebuild"
+        // contract the frontend already relies on.
+        JsonElement? view = null;
         return new ResolveConflictResponse(row.Id, openConflicts, view);
     }
 

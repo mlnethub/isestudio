@@ -42,7 +42,7 @@ public sealed record ResolveConflictRequest(string ResolutionId);
 public sealed record ResolveConflictResponse(
     Guid ResolvedCid,
     IReadOnlyList<ConflictOut> OpenConflicts,
-    JsonElement View);
+    JsonElement? View);
 
 /// <summary>
 /// One evidence snippet attached to a conflicting axiom. Carries the chunk
