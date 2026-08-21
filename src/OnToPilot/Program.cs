@@ -382,6 +382,10 @@ builder.Services.AddHttpClient();
 // providers.list / .create / .update / .delete / .test. Scoped so it
 // shares the request's OnToPilotDbContext.
 builder.Services.AddProviderServices();
+// Settings slice — singleton system-config CRUD (list_models / get /
+// update). Scoped because it shares the request DbContext with the
+// provider validation paths inside UpdateAsync.
+builder.Services.AddScoped<OnToPilot.Settings.SettingsService>();
 // Conflicts slice — detect / list / get_context / dismiss / reopen / resolve
 // / reconciliations CRUD. Service is Scoped (shares the request DbContext);
 // the optional StoreWrapper + ExtractionJobStore are resolved per-request

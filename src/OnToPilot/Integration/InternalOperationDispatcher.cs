@@ -12,6 +12,7 @@ using OnToPilot.Knowledge;
 using OnToPilot.Ontology;
 using OnToPilot.Parsing;
 using OnToPilot.Providers;
+using OnToPilot.Settings;
 using Oxigraph;
 
 namespace OnToPilot.Integration;
@@ -273,9 +274,15 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "providers.update" => InvokeProviderUpdateAsync(request, cancellationToken),
 
             // -- settings --
-            "settings.list_models" => Task.FromResult<object?>(EmptyModelCatalog()),
-            "settings.get" => Task.FromResult<object?>(EmptySettings()),
-            "settings.update" => Task.FromResult<object?>(EmptySettings()),
+            // Real CRUD via SettingsService (scoped). The service reads
+            // + writes the singleton SystemConfigEntity (LegacyId == 1)
+            // and returns the wire shape the Python baseline emits (see
+            // backend/app/api/settings_api.py:SettingsOut). settings.update
+            // validates each provider pointer against ProviderEntity.Kind
+            // so an LLM pointer can't silently flip to an embedding row.
+            "settings.list_models" => InvokeSettingsListModelsAsync(cancellationToken),
+            "settings.get" => InvokeSettingsGetAsync(request, cancellationToken),
+            "settings.update" => InvokeSettingsUpdateAsync(request, cancellationToken),
 
             // -- tokens --
             // Real CRUD via TokenManagementService (scoped). The service
@@ -2307,6 +2314,91 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         }
         return null;
     }
+
+    // ----- settings (B10) ---------------------------------------------------
+    // Wires the settings.* dispatcher arms (list_models / get / update)
+    // to the scoped SettingsService. The service reads + writes the
+    // singleton SystemConfigEntity (LegacyId == 1) and returns the wire
+    // shape the Python baseline emits. settings.update validates each
+    // provider pointer against ProviderEntity.Kind so an LLM pointer
+    // can't silently flip to an embedding row.
+    //
+    // Failure modes mirror the other slices:
+    // * Service not registered (hand-built dispatcher in unit tests)
+    //   → returns the schema-compatible empty payload so the route
+    //   still 200s.
+    // * SettingsService throws ValidationException / InvalidOperationException
+    //   → FastApiErrorMiddleware translates to the {"detail": "..."}
+    //   envelope the Python backend emits.
+
+    private SettingsService? ResolveSettingsService() =>
+        _services.GetService(typeof(SettingsService)) as SettingsService;
+
+    private Task<object?> InvokeSettingsListModelsAsync(CancellationToken ct)
+    {
+        var svc = ResolveSettingsService();
+        if (svc is null)
+        {
+            return Task.FromResult<object?>(EmptyModelCatalog());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await Task.FromResult(svc.ListModels()).ConfigureAwait(false);
+            return (object?)ProjectModelCatalog(row);
+        });
+    }
+
+    private Task<object?> InvokeSettingsGetAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveSettingsService();
+        if (svc is null)
+        {
+            return Task.FromResult<object?>(EmptySettings());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.GetAsync(ct).ConfigureAwait(false);
+            return (object?)ProjectSettings(row);
+        });
+    }
+
+    private Task<object?> InvokeSettingsUpdateAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveSettingsService();
+        var body = DeserializeBody<UpdateSettingsRequest>(request);
+        if (svc is null || body is null)
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for settings.update.");
+            }
+            return Task.FromResult<object?>(EmptySettings());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.UpdateAsync(body, ct).ConfigureAwait(false);
+            return (object?)ProjectSettings(row);
+        });
+    }
+
+    private static object ProjectSettings(SettingsOut row) => new
+    {
+        llm_provider_id = row.LlmProviderId,
+        embedding_provider_id = row.EmbeddingProviderId,
+        available_models = row.AvailableModels,
+        temperature = row.Temperature,
+        system_language = row.SystemLanguage,
+        extract_model = row.ExtractModel,
+    };
+
+    private static object ProjectModelCatalog(ModelCatalogOut row) => new
+    {
+        models = row.Models,
+        @default = row.Default,
+    };
 
     // ----- tokens (B10) -----------------------------------------------------
     // Wires the tokens.* dispatcher arms (list / create / reveal / revoke)
