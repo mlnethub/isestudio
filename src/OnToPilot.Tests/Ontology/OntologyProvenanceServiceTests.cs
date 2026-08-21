@@ -148,6 +148,51 @@ public sealed class OntologyProvenanceServiceTests
         Assert.Contains("Viewer access", ex.Message);
     }
 
+    [Fact]
+    public async Task GetProvenanceAsync_groups_by_axiom_key_and_enriches_sources()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        await SeedAdminAsync(app);
+        var db = app.CreateDbContext();
+        var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
+        var ks = await CreateKsAsync(db, "prov-group");
+        var doc = await CreateDocumentAsync(db, ks.Id, "m.pdf", "/");
+        var chunk = await CreateChunkAsync(db, doc.Id);
+        var job = new ExtractionJobEntity
+        {
+            LegacyId = TestLegacyIds.Next("extractionjob"), Id = Guid.NewGuid(),
+            KnowledgeSystemId = ks.Id, Kind = "tbox", Status = "completed",
+            Model = "deepseek/deepseek-chat", PromptSnapshot = null,
+            ChunkIds = new List<int>(), CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.ExtractionJobs.Add(job); await db.SaveChangesAsync();
+        // 同一 axiom 两个来源(同一 chunk+job),另一 axiom 单来源
+        AddAxiom(db, ks.Id, "subClassOf|Pump|Device", chunk.Id, job.Id);
+        AddAxiom(db, ks.Id, "subClassOf|Pump|Device", chunk.Id, job.Id);
+        AddAxiom(db, ks.Id, "domain|hasFlow|Pump", chunk.Id, job.Id);
+        await db.SaveChangesAsync();
+
+        var actor = new Actor(admin.Id.ToString());
+        using var scope = app.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<OntologyProvenanceService>();
+
+        var groups = await svc.GetProvenanceAsync(ks.Id, actor, CancellationToken.None);
+
+        Assert.NotNull(groups);
+        Assert.Equal(2, groups!.Count);
+        var pumpGroup = groups.Single(g => g.AxiomKey == "subClassOf|Pump|Device");
+        Assert.Equal(2, pumpGroup.Sources.Count);
+        var src = pumpGroup.Sources[0];
+        Assert.Equal(chunk.Id, src.ChunkId);
+        Assert.Equal(doc.Id, src.DocumentId);
+        Assert.Equal(job.Id, src.JobId);
+        Assert.Equal("deepseek/deepseek-chat", src.Model);
+        Assert.Equal("extraction", src.Method);
+        Assert.Equal("admin", src.Actor);
+        Assert.Null(src.PromptSnapshot);
+        Assert.Null(src.Review);
+    }
+
     // 后续 Task 复用的 seed 辅助方法定义在本文件底部(Task 2/3 补充更多用例时共用)
     private static async Task SeedAdminAsync(AuthTestWebApplicationFactory app)
     {

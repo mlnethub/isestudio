@@ -60,6 +60,44 @@ public sealed class OntologyProvenanceService
         }).OrderByDescending(x => x.AxiomCount).ToList();
     }
 
+    public async Task<IReadOnlyList<ProvenanceGroupOut>?> GetProvenanceAsync(Guid ksId, Actor actor, CancellationToken ct)
+    {
+        var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
+        if (user is null || ks is null) return null;
+        var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
+        if (role < KSRole.Viewer) throw new InvalidOperationException("Viewer access required for provenance.");
+
+        var rows = await _db.AxiomProvenances.AsNoTracking()
+            .Where(p => p.KnowledgeSystemId == ksId).ToListAsync(ct).ConfigureAwait(false);
+
+        var chunkIds = rows.Where(r => r.ChunkId is not null).Select(r => r.ChunkId!.Value).Distinct().ToList();
+        var docByChunk = new Dictionary<Guid, Guid>();
+        if (chunkIds.Count > 0)
+            foreach (var c in await _db.Chunks.AsNoTracking().Where(c => chunkIds.Contains(c.Id)).ToListAsync(ct).ConfigureAwait(false))
+                docByChunk[c.Id] = c.DocumentId;
+
+        var jobIds = rows.Where(r => r.JobId is not null).Select(r => r.JobId!.Value).Distinct().ToList();
+        var jobs = jobIds.Count > 0
+            ? (await _db.ExtractionJobs.AsNoTracking().Where(j => jobIds.Contains(j.Id)).ToListAsync(ct).ConfigureAwait(false)).ToDictionary(j => j.Id)
+            : new Dictionary<Guid, ExtractionJobEntity>();
+
+        var grouped = new Dictionary<string, List<ProvenanceSourceOut>>();
+        foreach (var r in rows)
+        {
+            if (!grouped.TryGetValue(r.AxiomKey, out var list)) { list = new List<ProvenanceSourceOut>(); grouped[r.AxiomKey] = list; }
+            jobs.TryGetValue(r.JobId ?? Guid.Empty, out var job);
+            Guid? documentId = null;
+            if (r.ChunkId is not null && docByChunk.TryGetValue(r.ChunkId.Value, out var d)) documentId = d;
+            list.Add(new ProvenanceSourceOut(
+                ChunkId: r.ChunkId, DocumentId: documentId, JobId: r.JobId,
+                Model: job?.Model, PromptSnapshot: job?.PromptSnapshot,
+                Method: r.Method,
+                Actor: string.IsNullOrEmpty(r.ActorName) ? null : r.ActorName,
+                Review: r.ReviewRecord));
+        }
+        return grouped.Select(kv => new ProvenanceGroupOut(kv.Key, kv.Value)).ToList();
+    }
+
     private async Task<(UserEntity? User, KnowledgeSystemEntity? Ks)> ResolveUserAndKsAsync(
         Guid ksId, Actor actor, CancellationToken ct)
     {
