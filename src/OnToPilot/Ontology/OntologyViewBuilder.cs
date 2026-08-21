@@ -65,6 +65,8 @@ public sealed class OntologyViewBuilder
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
         var comments = new Dictionary<string, string>(StringComparer.Ordinal);
         var subclassOf = new List<SubclassAxiom>();
+        var disjointWith = new List<PairAxiom>();
+        var equivalentClass = new List<PairAxiom>();
 
         const string OwlClass = "http://www.w3.org/2002/07/owl#Class";
         const string OwlObjectProperty = "http://www.w3.org/2002/07/owl#ObjectProperty";
@@ -111,6 +113,14 @@ public sealed class OntologyViewBuilder
             else if (piri == RdfsSubClassOf && q.Object is Oxigraph.NamedNode sup)
             {
                 subclassOf.Add(new SubclassAxiom(siri, sup.Value));
+            }
+            else if (piri == "http://www.w3.org/2002/07/owl#disjointWith" && q.Object is Oxigraph.NamedNode dj)
+            {
+                disjointWith.Add(new PairAxiom(siri, dj.Value));
+            }
+            else if (piri == "http://www.w3.org/2002/07/owl#equivalentClass" && q.Object is Oxigraph.NamedNode ec)
+            {
+                equivalentClass.Add(new PairAxiom(siri, ec.Value));
             }
         }
 
@@ -164,10 +174,13 @@ public sealed class OntologyViewBuilder
             DataProperties: datList,
             Axioms: new OntologyAxioms(
                 SubclassOf: subclassOf,
-                DisjointWith: Array.Empty<PairAxiom>(),
-                EquivalentClass: Array.Empty<PairAxiom>()),
+                DisjointWith: disjointWith,
+                EquivalentClass: equivalentClass),
             Labels: labels,
-            Stats: new OntologyStats(classList.Count, objList.Count + datList.Count, subclassOf.Count),
+            Stats: new OntologyStats(
+                ClassCount: classList.Count,
+                PropertyCount: objList.Count + datList.Count,
+                AxiomCount: subclassOf.Count + disjointWith.Count + equivalentClass.Count),
             KnowledgeSystem: null);
     }
 
@@ -185,6 +198,131 @@ public sealed class OntologyViewBuilder
 
     private static IEnumerable<Oxigraph.Quad> ParseNQuads(byte[] shard)
     {
-        return Array.Empty<Oxigraph.Quad>();
+        if (shard.Length == 0) yield break;
+        var text = System.Text.Encoding.UTF8.GetString(shard);
+        foreach (var rawLine in text.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (line.Length == 0 || line.StartsWith('#')) continue;
+            var q = TryParseLine(line);
+            if (q is not null) yield return q;
+        }
+    }
+
+    private static Oxigraph.Quad? TryParseLine(string line)
+    {
+        var tokens = Tokenize(line);
+        if (tokens.Count < 4) return null;
+        if (tokens[^1] != ".") return null;
+        var subject = ParseTerm(tokens[0]);
+        var predicate = ParseTerm(tokens[1]);
+        var obj = ParseTerm(tokens[2]);
+        if (subject is not Oxigraph.INamedOrBlankNode sn
+            || predicate is not Oxigraph.NamedNode pn
+            || obj is null) return null;
+
+        Oxigraph.IGraphName? graph = null;
+        if (tokens.Count >= 5 && tokens[3] != ".")
+        {
+            var g = ParseTerm(tokens[3]);
+            if (g is Oxigraph.NamedNode gn) graph = gn;
+            else if (g is Oxigraph.DefaultGraph) graph = new Oxigraph.DefaultGraph();
+            else return null;
+        }
+
+        if (obj is Oxigraph.NamedNode on) return new Oxigraph.Quad(sn, pn, on, graph);
+        if (obj is Oxigraph.BlankNode ob) return new Oxigraph.Quad(sn, pn, ob, graph);
+        if (obj is Oxigraph.Literal ol) return new Oxigraph.Quad(sn, pn, ol, graph);
+        return null;
+    }
+
+    private static Oxigraph.ITerm? ParseTerm(string token)
+    {
+        if (token.StartsWith("<") && token.EndsWith(">"))
+            return new Oxigraph.NamedNode(token[1..^1]);
+        if (token.StartsWith("_:"))
+            return new Oxigraph.BlankNode(token[2..]);
+        if (token.StartsWith("\""))
+        {
+            var endQuote = token.IndexOf('"', 1);
+            if (endQuote < 0) return null;
+            var value = token[1..endQuote];
+            var rest = token[(endQuote + 1)..];
+            if (rest.StartsWith("@"))
+                return new Oxigraph.Literal(value, Language: rest[1..]);
+            if (rest.StartsWith("^^<") && rest.EndsWith(">"))
+                return new Oxigraph.Literal(value, Datatype: new Oxigraph.NamedNode(rest[3..^1]));
+            return new Oxigraph.Literal(value);
+        }
+        return null;
+    }
+
+    private static List<string> Tokenize(string line)
+    {
+        var tokens = new List<string>();
+        var i = 0;
+        while (i < line.Length)
+        {
+            while (i < line.Length && char.IsWhiteSpace(line[i])) i++;
+            if (i >= line.Length) break;
+            if (line[i] == '<')
+            {
+                var end = line.IndexOf('>', i + 1);
+                if (end < 0) break;
+                tokens.Add(line[i..(end + 1)]);
+                i = end + 1;
+            }
+            else if (line[i] == '_')
+            {
+                var j = i;
+                while (j < line.Length && !char.IsWhiteSpace(line[j])) j++;
+                tokens.Add(line[i..j]);
+                i = j;
+            }
+            else if (line[i] == '"')
+            {
+                var j = i + 1;
+                while (j < line.Length && line[j] != '"')
+                {
+                    if (line[j] == '\\' && j + 1 < line.Length) j += 2;
+                    else j++;
+                }
+                if (j >= line.Length) break;
+                j++;
+                if (j < line.Length && line[j] == '@')
+                {
+                    var k = j;
+                    while (k < line.Length && !char.IsWhiteSpace(line[k])) k++;
+                    tokens.Add(line[i..k]);
+                    i = k;
+                }
+                else if (j + 1 < line.Length && line[j] == '^' && line[j + 1] == '^')
+                {
+                    var open = line.IndexOf('<', j);
+                    var close = line.IndexOf('>', open + 1);
+                    if (open < 0 || close < 0) break;
+                    tokens.Add(line[i..(close + 1)]);
+                    i = close + 1;
+                }
+                else
+                {
+                    tokens.Add(line[i..j]);
+                    i = j;
+                }
+            }
+            else if (line[i] == '.')
+            {
+                tokens.Add(".");
+                i++;
+            }
+            else
+            {
+                var j = i;
+                while (j < line.Length && !char.IsWhiteSpace(line[j]) && line[j] != '.') j++;
+                tokens.Add(line[i..j]);
+                i = j;
+            }
+        }
+        return tokens;
     }
 }

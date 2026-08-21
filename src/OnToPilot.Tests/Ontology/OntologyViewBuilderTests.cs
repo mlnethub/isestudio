@@ -130,6 +130,65 @@ public sealed class OntologyViewBuilderTests
         Assert.Equal(2, view.Stats.PropertyCount);
     }
 
+    [Fact]
+    public async Task BuildFromStoreAsync_extracts_disjointWith_and_equivalentClass_axioms()
+    {
+        using var dir = new TempDir();
+        using var store = new StoreWrapper(dir.Path);
+        store.LoadTurtle(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            <urn:Cat> a owl:Class .
+            <urn:Dog> a owl:Class .
+            <urn:Mammal> a owl:Class .
+            <urn:Cat> owl:disjointWith <urn:Dog> .
+            <urn:Mammal> owl:equivalentClass <urn:Cat> .
+            """u8.ToArray(),
+            new Oxigraph.NamedNode("http://example.com/graph"));
+
+        var builder = new OntologyViewBuilder();
+        var view = await builder.BuildFromStoreAsync(
+            store, "http://example.com/graph", CancellationToken.None);
+
+        Assert.Single(view.Axioms.DisjointWith);
+        Assert.Equal("urn:Cat", view.Axioms.DisjointWith[0].A);
+        Assert.Equal("urn:Dog", view.Axioms.DisjointWith[0].B);
+
+        Assert.Single(view.Axioms.EquivalentClass);
+        Assert.Equal("urn:Mammal", view.Axioms.EquivalentClass[0].A);
+        Assert.Equal("urn:Cat", view.Axioms.EquivalentClass[0].B);
+
+        Assert.Equal(2, view.Stats.AxiomCount);  // 0 subClassOf + 1 disjoint + 1 equiv
+    }
+
+    [Fact]
+    public async Task BuildFromNQuadsAsync_matches_BuildFromStoreAsync_for_same_graph()
+    {
+        using var dir = new TempDir();
+        using var store = new StoreWrapper(dir.Path);
+        const string graphIri = "http://example.com/graph";
+        store.LoadTurtle(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            <urn:Animal> a owl:Class ; rdfs:label "Animal" .
+            <urn:Dog> a owl:Class ; rdfs:label "Dog" ; rdfs:subClassOf <urn:Animal> .
+            """u8.ToArray(),
+            new Oxigraph.NamedNode(graphIri));
+
+        var shard = store.DumpNQuads(new Oxigraph.NamedNode(graphIri));
+
+        var builder = new OntologyViewBuilder();
+        var fromStore = await builder.BuildFromStoreAsync(store, graphIri, CancellationToken.None);
+        var fromShard = await builder.BuildFromNQuadsAsync(shard, CancellationToken.None);
+
+        Assert.Equal(fromStore.Classes.Count, fromShard.Classes.Count);
+        Assert.Equal(fromStore.Stats, fromShard.Stats);
+        Assert.Equal(
+            fromStore.Axioms.SubclassOf.Select(a => (a.Sub, a.Super)),
+            fromShard.Axioms.SubclassOf.Select(a => (a.Sub, a.Super)));
+    }
+
     private sealed class TempDir : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(
