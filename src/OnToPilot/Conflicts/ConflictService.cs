@@ -180,6 +180,29 @@ public sealed class ConflictService
     }
 
     // ----------------------------------------------------------------------
+    // Sync (post-mutation)
+    // ----------------------------------------------------------------------
+
+    /// <summary>
+    /// Re-sync the conflict queue following an ontology-level mutation.
+    /// When <paramref name="semantic"/> is true the detector runs the
+    /// full LLM / embedding pass; when false the lighter structural sync
+    /// path runs so a TBox change doesn't force a re-embedding round.
+    /// Mirrors Python <c>sync_conflicts(session, ks, semantic=...)</c>.
+    /// </summary>
+    public async Task<IReadOnlyList<ConflictOut>> SyncAfterOntologyMutationAsync(
+        Guid ksId,
+        bool semantic,
+        CancellationToken ct)
+    {
+        var ks = await ResolveKnowledgeSystemAsync(ksId, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Knowledge system {ksId} not found.");
+        return semantic
+            ? await DetectAsync(ksId, ct).ConfigureAwait(false)
+            : await DetectAndSyncWithoutSemanticAsync(ks, ct).ConfigureAwait(false);
+    }
+
+    // ----------------------------------------------------------------------
     // Get context
     // ----------------------------------------------------------------------
 

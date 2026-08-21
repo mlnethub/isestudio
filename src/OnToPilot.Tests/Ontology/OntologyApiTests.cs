@@ -77,6 +77,8 @@ public sealed class OntologyApiTests
         Assert.True(body.TryGetProperty("open_conflicts", out _));
         Assert.True(body.TryGetProperty("validation", out _));
         Assert.True(body.TryGetProperty("terminology", out _));
+        var conflicts = body.GetProperty("open_conflicts");
+        Assert.Equal(JsonValueKind.Array, conflicts.ValueKind);
     }
 
     [Fact]
