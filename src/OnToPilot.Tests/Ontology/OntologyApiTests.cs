@@ -293,6 +293,44 @@ public sealed class OntologyApiTests
     }
 
     [Fact]
+    public async Task Ontology_export_returns_serialized_tbox_as_raw_text()
+    {
+        // The ontology.export arm was a Stage-1 placeholder returning "" —
+        // the frontend's Export menu downloaded an empty file. Wire it to
+        // RdfExportService and return raw text/turtle (not a JSON-quoted
+        // string) so the downloaded .ttl is valid RDF.
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "ontology-export");
+        var add = await client.PostAsJsonAsync(
+            $"/api/knowledge/{ksId}/ontology/edit",
+            new { op = "add_class", label = "Pump" });
+        Assert.Equal(HttpStatusCode.OK, add.StatusCode);
+
+        var response = await client.GetAsync($"/api/knowledge/{ksId}/ontology/export?fmt=turtle");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("text/turtle", response.Content.Headers.ContentType?.MediaType);
+        var rdf = await response.Content.ReadAsStringAsync();
+        Assert.NotEmpty(rdf);
+        Assert.Contains("Pump", rdf);
+        // Raw text, not a JSON-quoted string.
+        Assert.False(rdf.StartsWith('"'));
+    }
+
+    [Fact]
+    public async Task Ontology_export_rejects_unsupported_format_with_400()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "ontology-export-fmt");
+
+        var response = await client.GetAsync($"/api/knowledge/{ksId}/ontology/export?fmt=jsonld");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Edit_add_subclass_writes_two_classes_and_one_axiom()
     {
         await using var app = new AuthTestWebApplicationFactory();
