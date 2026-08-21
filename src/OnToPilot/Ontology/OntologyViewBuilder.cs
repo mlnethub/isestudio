@@ -54,16 +54,25 @@ public sealed class OntologyViewBuilder
         IEnumerable<Oxigraph.Quad> quads)
     {
         // Mirrors Python backend/app/ontology/schema.py::build_view (lines 241-371).
-        // V1: classes + superclasses. Tasks 4-5 add properties / axioms / labels / stats.
+        // V1: classes + superclasses + properties. Task 5 adds disjoint /
+        // equivalent-class axioms and the final Stats alignment.
 
         var classes = new Dictionary<string, OntologyClass>(StringComparer.Ordinal);
+        var objectProps = new Dictionary<string, OntologyProperty>(StringComparer.Ordinal);
+        var dataProps = new Dictionary<string, OntologyProperty>(StringComparer.Ordinal);
+        var domains = new Dictionary<string, string>(StringComparer.Ordinal);
+        var ranges = new Dictionary<string, string>(StringComparer.Ordinal);
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
         var comments = new Dictionary<string, string>(StringComparer.Ordinal);
         var subclassOf = new List<SubclassAxiom>();
 
         const string OwlClass = "http://www.w3.org/2002/07/owl#Class";
+        const string OwlObjectProperty = "http://www.w3.org/2002/07/owl#ObjectProperty";
+        const string OwlDatatypeProperty = "http://www.w3.org/2002/07/owl#DatatypeProperty";
         const string RdfsLabel = "http://www.w3.org/2000/01/rdf-schema#label";
         const string RdfsComment = "http://www.w3.org/2000/01/rdf-schema#comment";
+        const string RdfsDomain = "http://www.w3.org/2000/01/rdf-schema#domain";
+        const string RdfsRange = "http://www.w3.org/2000/01/rdf-schema#range";
         const string RdfsSubClassOf = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
         const string RdfType = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 
@@ -74,11 +83,22 @@ public sealed class OntologyViewBuilder
             var siri = s.Value;
             var piri = p.Value;
 
-            if (piri == RdfType
-                && q.Object is Oxigraph.NamedNode o
-                && o.Value == OwlClass)
+            if (piri == RdfType && q.Object is Oxigraph.NamedNode oType)
             {
-                classes.TryAdd(siri, new OntologyClass(siri, Label: null));
+                if (oType.Value == OwlObjectProperty)
+                    objectProps.TryAdd(siri, new OntologyProperty(siri, Label: null));
+                else if (oType.Value == OwlDatatypeProperty)
+                    dataProps.TryAdd(siri, new OntologyProperty(siri, Label: null));
+                else if (oType.Value == OwlClass)
+                    classes.TryAdd(siri, new OntologyClass(siri, Label: null));
+            }
+            else if (piri == RdfsDomain && q.Object is Oxigraph.NamedNode d)
+            {
+                domains[siri] = d.Value;
+            }
+            else if (piri == RdfsRange && q.Object is Oxigraph.NamedNode rn)
+            {
+                ranges[siri] = rn.Value;
             }
             else if (piri == RdfsLabel && q.Object is Oxigraph.Literal lit)
             {
@@ -99,6 +119,17 @@ public sealed class OntologyViewBuilder
             .ToDictionary(g => g.Key, g => (IReadOnlyList<string>)g.Select(a => a.Super).ToList(),
                 StringComparer.Ordinal);
 
+        OntologyProperty Prop(string iri, OntologyProperty seed) => seed with
+        {
+            Local = Local(iri),
+            Label = labels.TryGetValue(iri, out var l) ? l : null,
+            Comment = comments.TryGetValue(iri, out var c) ? c : "",
+            Domain = domains.TryGetValue(iri, out var d) ? d : null,
+            DomainLabel = domains.TryGetValue(iri, out var dn) && labels.TryGetValue(dn, out var dl) ? dl : null,
+            Range = ranges.TryGetValue(iri, out var rng) ? rng : null,
+            RangeLabel = ranges.TryGetValue(iri, out var rng2) && labels.TryGetValue(rng2, out var rl) ? rl : null,
+        };
+
         var classList = classes.Keys
             .OrderBy(iri => labels.TryGetValue(iri, out var l) ? l : Local(iri),
                 StringComparer.Ordinal)
@@ -115,16 +146,28 @@ public sealed class OntologyViewBuilder
             })
             .ToList();
 
+        var objList = objectProps.Keys
+            .OrderBy(iri => labels.TryGetValue(iri, out var l) ? l : Local(iri),
+                StringComparer.Ordinal)
+            .Select(iri => Prop(iri, objectProps[iri]))
+            .ToList();
+
+        var datList = dataProps.Keys
+            .OrderBy(iri => labels.TryGetValue(iri, out var l) ? l : Local(iri),
+                StringComparer.Ordinal)
+            .Select(iri => Prop(iri, dataProps[iri]))
+            .ToList();
+
         return new OntologyResponse(
             Classes: classList,
-            ObjectProperties: Array.Empty<OntologyProperty>(),
-            DataProperties: Array.Empty<OntologyProperty>(),
+            ObjectProperties: objList,
+            DataProperties: datList,
             Axioms: new OntologyAxioms(
                 SubclassOf: subclassOf,
                 DisjointWith: Array.Empty<PairAxiom>(),
                 EquivalentClass: Array.Empty<PairAxiom>()),
             Labels: labels,
-            Stats: new OntologyStats(classList.Count, 0, subclassOf.Count),
+            Stats: new OntologyStats(classList.Count, objList.Count + datList.Count, subclassOf.Count),
             KnowledgeSystem: null);
     }
 

@@ -88,6 +88,48 @@ public sealed class OntologyViewBuilderTests
         Assert.Equal(new[] { "urn:Animal" }, dog.Superclasses);
     }
 
+    [Fact]
+    public async Task BuildFromStoreAsync_splits_object_vs_data_properties()
+    {
+        using var dir = new TempDir();
+        using var store = new StoreWrapper(dir.Path);
+        store.LoadTurtle(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            @prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+            <urn:Pet> a owl:Class ; rdfs:label "Pet" .
+            <urn:hasOwner> a owl:ObjectProperty ; rdfs:label "has owner" ;
+                           rdfs:domain <urn:Pet> ; rdfs:range <urn:Pet> .
+            <urn:age> a owl:DatatypeProperty ; rdfs:label "age" ;
+                       rdfs:domain <urn:Pet> ; rdfs:range xsd:integer .
+            """u8.ToArray(),
+            new Oxigraph.NamedNode("http://example.com/graph"));
+
+        var builder = new OntologyViewBuilder();
+        var view = await builder.BuildFromStoreAsync(
+            store, "http://example.com/graph", CancellationToken.None);
+
+        Assert.Single(view.ObjectProperties);
+        Assert.Single(view.DataProperties);
+
+        var obj = view.ObjectProperties[0];
+        Assert.Equal("hasOwner", obj.Local);
+        Assert.Equal("urn:Pet", obj.Domain);
+        Assert.Equal("Pet", obj.DomainLabel);
+        Assert.Equal("urn:Pet", obj.Range);
+        Assert.Equal("Pet", obj.RangeLabel);
+
+        var dat = view.DataProperties[0];
+        Assert.Equal("age", dat.Local);
+        Assert.Equal("urn:Pet", dat.Domain);
+        // Oxigraph resolves the `xsd:integer` CURIE to the full IRI; the verbatim
+        // Prop(...) stores that resolved value as-is (mirrors Python schema.py:346).
+        Assert.Equal("http://www.w3.org/2001/XMLSchema#integer", dat.Range);
+        Assert.Null(dat.RangeLabel);
+        Assert.Equal(2, view.Stats.PropertyCount);
+    }
+
     private sealed class TempDir : IDisposable
     {
         public string Path { get; } = System.IO.Path.Combine(
