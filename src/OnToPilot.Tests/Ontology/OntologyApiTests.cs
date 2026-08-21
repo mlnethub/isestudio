@@ -14,7 +14,8 @@ namespace OnToPilot.Tests.Ontology;
 
 /// <summary>
 /// HTTP-level contract tests for <c>/api/knowledge/{ks_id}/ontology/edit</c>,
-/// <c>/api/knowledge/{ks_id}/ontology/reset</c>, and the supporting
+/// <c>/api/knowledge/{ks_id}/ontology/reset</c>, the read-only
+/// <c>/api/knowledge/{ks_id}/ontology</c> view (Stage 2), and the supporting
 /// <c>documents.impact</c> endpoint. Mirrors the established
 /// <see cref="Knowledge.KnowledgeApiTests"/> pattern: real Kestrel,
 /// SQLite + per-test temp roots, Oxigraph wired via the per-test
@@ -317,6 +318,69 @@ public sealed class OntologyApiTests
             .ToList();
         Assert.Contains("subClassOf|dog|Animal", keys);
         Assert.Contains("class|Animal", keys);
+    }
+
+    // -----------------------------------------------------------------
+    // View (Stage 2 — read-only envelope for the frontend OntologyView)
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public async Task Get_ontology_returns_full_envelope_with_all_top_level_keys()
+    {
+        // The Stage 2 read endpoint returns the curated
+        // OntologyResponse envelope (classes / object_properties /
+        // data_properties / axioms / labels / stats / knowledge_system)
+        // produced by OntologyService.GetViewAsync and serialised via
+        // the global SnakeCaseLower naming policy. Asserting every
+        // top-level key is on the wire catches accidental shape
+        // regressions that would otherwise only surface as silent
+        // frontend blank screens.
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "ontology-view");
+
+        var res = await client.GetAsync($"/api/knowledge/{ksId}/ontology");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+
+        var body = await res.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.TryGetProperty("classes", out _));
+        Assert.True(body.TryGetProperty("object_properties", out _));
+        Assert.True(body.TryGetProperty("data_properties", out _));
+        Assert.True(body.TryGetProperty("axioms", out _));
+        Assert.True(body.TryGetProperty("labels", out _));
+        Assert.True(body.TryGetProperty("stats", out _));
+        Assert.True(body.TryGetProperty("knowledge_system", out _));
+
+        var axioms = body.GetProperty("axioms");
+        Assert.True(axioms.TryGetProperty("subclass_of", out _));
+        Assert.True(axioms.TryGetProperty("disjoint_with", out _));
+        Assert.True(axioms.TryGetProperty("equivalent_class", out _));
+
+        // The freshly-created KS has no classes / properties / axioms,
+        // so the stats counters should all be zero.
+        var stats = body.GetProperty("stats");
+        Assert.Equal(0, stats.GetProperty("class_count").GetInt32());
+        Assert.Equal(0, stats.GetProperty("property_count").GetInt32());
+        Assert.Equal(0, stats.GetProperty("axiom_count").GetInt32());
+    }
+
+    [Fact]
+    public async Task Get_ontology_returns_404_for_unknown_KS()
+    {
+        // An unknown KS Guid must surface as HTTP 404 via the global
+        // FastApiErrorMiddleware KeyNotFoundException branch (proves
+        // the Stage 2 dispatcher's "ontology.get" arm propagates the
+        // service's KeyNotFoundException correctly through the
+        // facade). Known caveat (R12 — pre-existing
+        // InternalOperationDispatcher.cs:389 ContinueWith(.Result)
+        // wrapper wraps the exception in AggregateException which
+        // the middleware does not currently unwrap; deferred to
+        // Task 11). When that wrapper is replaced with `await`, this
+        // test should turn green.
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var res = await client.GetAsync($"/api/knowledge/{Guid.NewGuid()}/ontology");
+        Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
     }
 
     // -----------------------------------------------------------------
