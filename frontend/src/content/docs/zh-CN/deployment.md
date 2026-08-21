@@ -1,6 +1,6 @@
 # Docker 与配置
 
-Docker Compose 提供 PostgreSQL、FastAPI 后端和 React 前端的基础部署。模型端点、提示词与系统语言可以独立配置。
+Docker Compose 提供 PostgreSQL、ASP.NET Core MiniApi 后端和 React 前端的基础部署。模型端点、提示词与系统语言可以独立配置。
 
 ## 启动
 
@@ -18,7 +18,7 @@ docker compose up -d --build
 ```mermaid
 flowchart LR
     U[Browser] --> F[Frontend]
-    F --> B[FastAPI Backend]
+    F --> B[ASP.NET Core MiniApi Backend]
     B --> P[(PostgreSQL)]
     B --> O[(Oxigraph)]
     B --> A[Artifact Volumes]

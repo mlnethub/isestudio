@@ -11,7 +11,7 @@
 
 ```mermaid
 flowchart LR
-    API[FastAPI] --> PG[(PostgreSQL<br/>治理状态)]
+    API[ASP.NET Core MiniApi] --> PG[(PostgreSQL<br/>治理状态)]
     API --> W[(Workspace Oxigraph<br/>可变 RDF)]
     API --> A[Artifact Storage<br/>不可变文件]
     A --> S[(Serving Oxigraph<br/>发布投影)]

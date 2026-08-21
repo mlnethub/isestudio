@@ -11,7 +11,7 @@ Storage responsibilities do not overlap: RDF stores serve semantic queries, Post
 
 ```mermaid
 flowchart LR
-    API[FastAPI] --> PG[(PostgreSQL<br/>governance state)]
+    API[ASP.NET Core MiniApi] --> PG[(PostgreSQL<br/>governance state)]
     API --> W[(Workspace Oxigraph<br/>mutable RDF)]
     API --> A[Artifact storage<br/>immutable files]
     A --> S[(Serving Oxigraph<br/>release projections)]

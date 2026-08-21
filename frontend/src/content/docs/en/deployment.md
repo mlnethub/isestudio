@@ -1,6 +1,6 @@
 # Docker and configuration
 
-Docker Compose provides PostgreSQL, FastAPI, and React services. Model endpoints, prompts, and system language are configured independently.
+Docker Compose provides PostgreSQL, ASP.NET Core MiniApi, and React services. Model endpoints, prompts, and system language are configured independently.
 
 ```bash
 cp backend/.env.example backend/.env
@@ -15,7 +15,7 @@ credentials intentionally stop initialization instead of creating a weak adminis
 ```mermaid
 flowchart LR
     U[Browser] --> F[Frontend]
-    F --> B[FastAPI backend]
+    F --> B[ASP.NET Core MiniApi backend]
     B --> P[(PostgreSQL)]
     B --> O[(Oxigraph)]
     B --> A[Artifact volumes]

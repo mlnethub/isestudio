@@ -11,7 +11,7 @@ PDF, Word, Excel, Markdown, CSV, text, and RDF sources are supported. Raw bytes 
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant API as FastAPI
+    participant API as ASP.NET Core MiniApi
     participant J as Extraction job
     participant M as Model endpoint
     participant G as Oxigraph

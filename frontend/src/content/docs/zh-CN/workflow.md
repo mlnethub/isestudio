@@ -134,7 +134,7 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     participant U as Editor
-    participant API as FastAPI
+    participant API as ASP.NET Core MiniApi
     participant J as 后台任务
     participant M as 模型端点
     participant G as 工作区图

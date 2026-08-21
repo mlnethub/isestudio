@@ -89,7 +89,7 @@ The phase output is a selected, quality-checked batch with explicit source autho
 ```mermaid
 sequenceDiagram
     participant U as Editor
-    participant API as FastAPI
+    participant API as ASP.NET Core MiniApi
     participant J as Background job
     participant M as Model endpoint
     participant G as Workspace graphs

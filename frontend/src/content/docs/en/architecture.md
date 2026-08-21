@@ -1,12 +1,12 @@
 # System architecture
 
-The React workbench owns interaction and FastAPI owns governance and service boundaries. Relational metadata, RDF graphs, and immutable artifacts use purpose-built storage.
+The React workbench owns interaction and ASP.NET Core MiniApi owns governance and service boundaries. Relational metadata, RDF graphs, and immutable artifacts use purpose-built storage.
 
 ```mermaid
 flowchart TB
     H[Ontology engineer / reviewer] --> UI[React workbench]
     C[Downstream application] --> EXT[Scoped read API]
-    UI --> API[FastAPI governance API]
+    UI --> API[ASP.NET Core MiniApi governance API]
     EXT --> API
     API --> PG[(PostgreSQL)]
     API --> OXI[(Workspace Oxigraph)]

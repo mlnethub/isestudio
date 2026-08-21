@@ -1,12 +1,12 @@
 # 系统架构
 
-React 工作台负责交互，FastAPI 负责治理和服务边界；关系元数据、RDF 图和不可变制品各自进入适合的存储。
+React 工作台负责交互，ASP.NET Core MiniApi 负责治理和服务边界；关系元数据、RDF 图和不可变制品各自进入适合的存储。
 
 ```mermaid
 flowchart TB
     H[本体工程师 / 领域审核人] --> UI[React 治理工作台]
     C[下游业务应用] --> EXT[带 Scope 的只读 API]
-    UI --> API[FastAPI 治理 API]
+    UI --> API[ASP.NET Core MiniApi 治理 API]
     EXT --> API
     API --> PG[(PostgreSQL)]
     API --> OXI[(工作区 Oxigraph)]
@@ -23,7 +23,7 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     participant UI as React
-    participant API as FastAPI
+    participant API as ASP.NET Core MiniApi
     participant PG as PostgreSQL
     participant RDF as Oxigraph
     UI->>API: 治理操作

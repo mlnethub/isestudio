@@ -16,7 +16,7 @@
 ```mermaid
 sequenceDiagram
     participant U as 用户
-    participant API as FastAPI
+    participant API as ASP.NET Core MiniApi
     participant J as 抽取任务
     participant M as 模型端点
     participant G as Oxigraph
