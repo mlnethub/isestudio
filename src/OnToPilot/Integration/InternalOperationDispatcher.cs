@@ -85,6 +85,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "knowledge.remove_member" => InvokeKnowledgeRemoveMemberAsync(request, cancellationToken),
             "knowledge.member_detail" => InvokeKnowledgeMemberDetailAsync(request, cancellationToken),
             "knowledge.review_counts" => InvokeKnowledgeReviewCountsAsync(request, cancellationToken),
+            "knowledge.refresh_stats" => InvokeKnowledgeRefreshStatsAsync(request, cancellationToken),
 
             // -- ontology --
             // Real mutations via OntologyService (scoped). The service
@@ -1036,6 +1037,26 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             var row = await svc.GetAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)(row ?? EmptyKnowledgeSystem());
+        });
+    }
+
+    private Task<object?> InvokeKnowledgeRefreshStatsAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveKnowledgeService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+        {
+            // Service not wired (unit-test path) or no KS id in URL
+            // (bad request). Surface a schema-compatible empty payload
+            // so the route still 200s and the operator can detect the
+            // no-op from the response.
+            return Task.FromResult<object?>(new { refreshed = false });
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.RefreshStatsAsync(
+                request.KnowledgeSystemGuid.Value, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)new { refreshed = true, item = row };
         });
     }
 

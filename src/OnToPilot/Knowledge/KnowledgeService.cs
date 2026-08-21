@@ -37,17 +37,20 @@ public sealed class KnowledgeService
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
     private readonly LegacyIdAllocator _allocator;
+    private readonly KnowledgeStatsService _stats;
 
     public KnowledgeService(
         OnToPilotDbContext db,
         TimeProvider clock,
         KnowledgeSystemAccessService access,
-        LegacyIdAllocator allocator)
+        LegacyIdAllocator allocator,
+        KnowledgeStatsService stats)
     {
         _db = db;
         _clock = clock;
         _access = access;
         _allocator = allocator;
+        _stats = stats;
     }
 
     // ----------------------------------------------------------------------
@@ -105,6 +108,37 @@ public sealed class KnowledgeService
         if (user is null || ks is null) return null;
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role == KSRole.None) return null;
+        var projection = await ProjectAsync(new[] { ks }, user, ct).ConfigureAwait(false);
+        return projection[0];
+    }
+
+    /// <summary>
+    /// Recompute the cached <c>ClassCount / PropertyCount / AxiomCount</c>
+    /// columns from the live TBox graph and return the refreshed DTO.
+    /// Mirrors Python's <c>POST /api/knowledge/{id}/refresh_stats</c>
+    /// operator-repair path. Editor+ only &mdash; the call mutates
+    /// derived stats and bumps <c>UpdatedAt</c>, so it has the same
+    /// privilege bar as a content edit.
+    /// </summary>
+    public async Task<KnowledgeSystemOut?> RefreshStatsAsync(
+        Guid ksId, Actor actor, CancellationToken ct)
+    {
+        var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
+        if (user is null || ks is null) return null;
+        var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
+        if (role < KSRole.Editor)
+        {
+            throw new ValidationException(
+                "Editor access is required to refresh knowledge-system stats.");
+        }
+
+        await _stats.RefreshAsync(ksId, ct).ConfigureAwait(false);
+
+        // ProjectAsync reads from the change-tracked entity, so the
+        // refreshed counts flow straight into the DTO without an extra
+        // round-trip. Reload via AsNoTracking so the post-SaveChanges
+        // values surface even if the EF tracker is stale.
+        await _db.Entry(ks).ReloadAsync(ct).ConfigureAwait(false);
         var projection = await ProjectAsync(new[] { ks }, user, ct).ConfigureAwait(false);
         return projection[0];
     }

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using OnToPilot.Knowledge;
 
 namespace OnToPilot.Ontology;
 
@@ -19,6 +20,12 @@ public static class OntologyServiceCollectionExtensions
         services.AddScoped<PublishedOntologyService>();
         services.AddScoped<ExternalOntologyService>();
         services.AddSingleton<OntologyViewBuilder>();
+        // Refreshes the cached class/property/axiom count columns on
+        // KnowledgeSystemEntity after TBox / ABox mutations. Scoped
+        // because it shares the request DbContext with OntologyService
+        // and ABoxService — the orchestrator path uses the scope
+        // factory to materialize it on demand.
+        services.AddScoped<KnowledgeStatsService>();
         // The release-typed ontology view reads the curated TBox shard
         // directly from disk, so it needs the artifact store. The store
         // lives under the same Storage:RdfRoot as the Oxigraph handle but

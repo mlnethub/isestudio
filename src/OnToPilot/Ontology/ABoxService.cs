@@ -5,6 +5,7 @@ using OnToPilot.Authorization;
 using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
+using OnToPilot.Knowledge;
 using Oxigraph;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoQuad = Oxigraph.Quad;
@@ -46,6 +47,7 @@ public sealed class ABoxService
     private readonly ValidationDecisionService _decisions;
     private readonly OntologyEditor _editor;
     private readonly LegacyIdAllocator _allocator;
+    private readonly KnowledgeStatsService _stats;
 
     public ABoxService(
         OnToPilotDbContext db,
@@ -57,7 +59,8 @@ public sealed class ABoxService
         ABoxValidator validator,
         ValidationDecisionService decisions,
         OntologyEditor editor,
-        LegacyIdAllocator allocator)
+        LegacyIdAllocator allocator,
+        KnowledgeStatsService stats)
     {
         _db = db;
         _clock = clock;
@@ -69,6 +72,7 @@ public sealed class ABoxService
         _decisions = decisions;
         _editor = editor;
         _allocator = allocator;
+        _stats = stats;
     }
 
     // ----------------------------------------------------------------------
@@ -717,6 +721,11 @@ public sealed class ABoxService
                     ["resolution_rows"] = resolutionRows,
             },
             aboxGraph.Value, added, removed, ct).ConfigureAwait(false);
+
+        // ABox reset itself doesn't change TBox class/property/axiom
+        // counts, but Python still calls refresh_ks_stats here for
+        // parity — a stale row must not survive a destructive operation.
+        await _stats.RefreshAsync(ks.Id, ct).ConfigureAwait(false);
 
         return new ResetAboxResponse(removed.Length, provenanceRows, resolutionRows);
     }

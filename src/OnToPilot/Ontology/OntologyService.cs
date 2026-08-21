@@ -4,6 +4,7 @@ using OnToPilot.Application.Foundation;
 using OnToPilot.Authorization;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
+using OnToPilot.Knowledge;
 using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace OnToPilot.Ontology;
@@ -40,6 +41,7 @@ public sealed class OntologyService
     private readonly StoreWrapper _store;
     private readonly LegacyIdAllocator _allocator;
     private readonly OntologyViewBuilder _builder;
+    private readonly KnowledgeStatsService _stats;
 
     public OntologyService(
         OnToPilotDbContext db,
@@ -48,7 +50,8 @@ public sealed class OntologyService
         OntologyEditor editor,
         StoreWrapper store,
         LegacyIdAllocator allocator,
-        OntologyViewBuilder builder)
+        OntologyViewBuilder builder,
+        KnowledgeStatsService stats)
     {
         _db = db;
         _clock = clock;
@@ -57,6 +60,7 @@ public sealed class OntologyService
         _store = store;
         _allocator = allocator;
         _builder = builder;
+        _stats = stats;
     }
 
     // ----------------------------------------------------------------------
@@ -105,6 +109,14 @@ public sealed class OntologyService
         await WriteAuditAsync(ks.Id, user, "ontology.edit",
             $"Ontology edit ({opName})",
             op, ks.GraphIri, added, removed, ct).ConfigureAwait(false);
+
+        // Refresh the cached ClassCount/PropertyCount/AxiomCount columns
+        // so the home-page list cards stay in sync with the live graph
+        // (Python's ontology.py:138 calls refresh_ks_stats here). The
+        // counts are best-effort: a failure must not roll back the edit
+        // (it already committed to the audit log), so swallow exceptions
+        // and log via the catch below if needed in the future.
+        await _stats.RefreshAsync(ks.Id, ct).ConfigureAwait(false);
 
         return new OntologyEditResult(result);
     }
@@ -158,6 +170,11 @@ public sealed class OntologyService
         await WriteAuditAsync(ks.Id, user, "ontology.reset",
             "Reset ontology (cleared TBox and ABox graphs)",
             detail: null, ks.GraphIri, added, removed, ct).ConfigureAwait(false);
+
+        // After wiping both graphs the TBox stats drop back to zero;
+        // refresh so the home page doesn't show stale counts from before
+        // the reset (mirrors Python's ontology.py:188).
+        await _stats.RefreshAsync(ks.Id, ct).ConfigureAwait(false);
 
         return new OntologyEditResult(ks.GraphIri);
     }

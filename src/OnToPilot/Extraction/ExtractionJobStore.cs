@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
 
@@ -48,15 +49,23 @@ public sealed class ExtractionJobStore
 
     private readonly IDbContextFactory<OnToPilotDbContext> _contexts;
     private readonly TimeProvider _clock;
+    private readonly IServiceScopeFactory? _scopes;
 
     public ExtractionJobStore(
         IDbContextFactory<OnToPilotDbContext> contexts,
-        TimeProvider clock)
+        TimeProvider clock,
+        IServiceScopeFactory? scopes = null)
     {
         ArgumentNullException.ThrowIfNull(contexts);
         ArgumentNullException.ThrowIfNull(clock);
         _contexts = contexts;
         _clock = clock;
+        // Optional: production wires the DI scope factory so
+        // MarkCompletedAsync can refresh the cached TBox stats; unit
+        // tests that build ExtractionJobStore by hand pass null and
+        // skip the refresh (the test path verifies the job-row
+        // transitions, not the KS-count caching).
+        _scopes = scopes;
     }
 
     /// <summary>Create a fresh pending job row and return it.</summary>
@@ -301,13 +310,42 @@ public sealed class ExtractionJobStore
     /// <summary>Terminal success: status=completed, finished_at=now.</summary>
     public async Task MarkCompletedAsync(Guid id, CancellationToken cancellationToken)
     {
-        await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var job = await db.ExtractionJobs.FirstAsync(j => j.Id == id, cancellationToken).ConfigureAwait(false);
-        job.Status = JobStatus.Completed.ToWire();
-        job.Phase = ExtractionPhase.Finalizing.ToWire();
-        job.Log = ExtractionJobLog.Append(job.Log, ExtractionPhase.Finalizing.ToWire());
-        job.FinishedAt = _clock.GetUtcNow();
-        await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        Guid ksId;
+        await using (var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false))
+        {
+            var job = await db.ExtractionJobs.FirstAsync(j => j.Id == id, cancellationToken).ConfigureAwait(false);
+            job.Status = JobStatus.Completed.ToWire();
+            job.Phase = ExtractionPhase.Finalizing.ToWire();
+            job.Log = ExtractionJobLog.Append(job.Log, ExtractionPhase.Finalizing.ToWire());
+            job.FinishedAt = _clock.GetUtcNow();
+            await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+            ksId = job.KnowledgeSystemId;
+        }
+
+        // Refresh the cached class/property/axiom counts so the home
+        // page list card reflects the just-completed extraction.
+        // Mirrors Python's extraction.py:323/344/541/558 which call
+        // refresh_ks_stats after every terminal success.
+        //
+        // The stats service is scoped (shares the request DbContext),
+        // so we open a fresh scope here — this method may run long
+        // after the originating HTTP request has completed. Skipped
+        // when no scope factory is wired (unit-test path).
+        if (_scopes is null) return;
+
+        try
+        {
+            using var scope = _scopes.CreateScope();
+            var stats = scope.ServiceProvider.GetRequiredService<Knowledge.KnowledgeStatsService>();
+            await stats.RefreshAsync(ksId, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Best-effort: a failed stats refresh must not undo a
+            // successfully completed extraction. The next mutation
+            // (or explicit POST /api/knowledge/{id}/refresh_stats)
+            // will reconcile the cached counts.
+        }
     }
 
     /// <summary>

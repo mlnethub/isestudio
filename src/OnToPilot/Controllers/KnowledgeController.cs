@@ -58,4 +58,16 @@ public sealed class KnowledgeController : InternalControllerBase
     [HttpGet("{id:guid}/review/counts")]
     public Task<IActionResult> ReviewCountsAsync(Guid id, CancellationToken ct)
         => InvokeAsync("knowledge.review_counts", ReqGuid(id), ct);
+
+    /// <summary>
+    /// One-shot repair endpoint that recomputes the cached
+    /// <c>ClassCount / PropertyCount / AxiomCount</c> columns from the
+    /// live TBox graph. Mirrors Python's
+    /// <c>backend/app/mcp_server.py:634</c> call to
+    /// <c>refresh_ks_stats</c>. Useful for backfilling KSes that were
+    /// created before the mutation-time stats refresh was wired in.
+    /// </summary>
+    [HttpPost("{id:guid}/refresh_stats")]
+    public Task<IActionResult> RefreshStatsAsync(Guid id, CancellationToken ct)
+        => InvokeAsync("knowledge.refresh_stats", ReqGuid(id), ct);
 }
