@@ -39,6 +39,7 @@ public sealed class OntologyService
     private readonly OntologyEditor _editor;
     private readonly StoreWrapper _store;
     private readonly LegacyIdAllocator _allocator;
+    private readonly OntologyViewBuilder _builder;
 
     public OntologyService(
         OnToPilotDbContext db,
@@ -46,7 +47,8 @@ public sealed class OntologyService
         KnowledgeSystemAccessService access,
         OntologyEditor editor,
         StoreWrapper store,
-        LegacyIdAllocator allocator)
+        LegacyIdAllocator allocator,
+        OntologyViewBuilder builder)
     {
         _db = db;
         _clock = clock;
@@ -54,6 +56,7 @@ public sealed class OntologyService
         _editor = editor;
         _store = store;
         _allocator = allocator;
+        _builder = builder;
     }
 
     // ----------------------------------------------------------------------
@@ -157,6 +160,39 @@ public sealed class OntologyService
             detail: null, ks.GraphIri, added, removed, ct).ConfigureAwait(false);
 
         return new OntologyEditResult(ks.GraphIri);
+    }
+
+    // ----------------------------------------------------------------------
+    // View
+    // ----------------------------------------------------------------------
+
+    /// <summary>
+    /// Read the curated TBox view for the given knowledge system. Returns
+    /// <c>null</c> when the caller is not resolvable (no actor id) or when
+    /// the KS row no longer exists (deleted between resolve + access).
+    /// Throws <see cref="InvalidOperationException"/> when the caller's
+    /// effective role is below <see cref="KSRole.Viewer"/>.
+    /// </summary>
+    public async Task<OntologyResponse?> GetViewAsync(
+        Guid ksId, Actor actor, CancellationToken ct)
+    {
+        var (user, ks) = await ResolveUserAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
+        if (user is null || ks is null) return null;
+
+        var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
+        if (role < KSRole.Viewer)
+            throw new InvalidOperationException(
+                "Viewer access is required to read the ontology view.");
+
+        var view = await _builder.BuildFromStoreAsync(_store, ks.GraphIri, ct).ConfigureAwait(false);
+        return view with
+        {
+            KnowledgeSystem = new KnowledgeSystemMeta(
+                Id: ks.Id,
+                Name: ks.Name,
+                BaseIri: ks.BaseIri,
+                Release: null),
+        };
     }
 
     // ----------------------------------------------------------------------
