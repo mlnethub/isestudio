@@ -11,6 +11,14 @@ using OnToPilot.Configuration;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
 
+// Local alias keeps the login / me endpoints calling
+// <c>UserOut.From(user)</c> without the fully-qualified path; the
+// canonical DTO lives in OnToPilot.Authentication so the dispatcher
+// can share it without taking a dependency on the Controllers
+// namespace (which would otherwise be a layering inversion:
+// Integration → Controllers).
+using UserOut = OnToPilot.Authentication.UserOut;
+
 namespace OnToPilot.Controllers;
 
 /// <summary>
@@ -256,9 +264,16 @@ public sealed class AuthController : ControllerBase
             .Replace('/', '_');
     }
 
+    // The dispatcher hands request.Actor.UserId down to services that
+    // perform identity checks (e.g. AuthService.UpdateUserAsync rejects
+    // "you can't deactivate yourself" by comparing the user being
+    // mutated against the caller's id). AuthServices downstream parse
+    // UserId back to Guid, so the controller MUST surface the real
+    // UserEntity.Id — not a literal "system" — otherwise the guard
+    // never fires and admins can lock themselves out.
     private Actor Actor =>
-        HttpContext.Items.TryGetValue(Authentication.SessionAuthenticationHandler.UserItemKey, out var v) && v is not null
-            ? new Actor("system")
+        HttpContext.Items.TryGetValue(Authentication.SessionAuthenticationHandler.UserItemKey, out var v) && v is UserEntity user
+            ? new Actor(user.Id.ToString(), user.DisplayName ?? user.Username)
             : new Actor("anonymous");
 
     private static IReadOnlyDictionary<string, object?>? ToBody(object? body)
@@ -283,27 +298,4 @@ public sealed class LoginRequest
 {
     public string Username { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
-}
-
-/// <summary>
-/// Public user view. Mirrors the Python backend's <c>UserOut</c> shape
-/// (id, username, displayName, isAdmin, active) so existing tooling keeps
-/// working during the .NET migration.
-/// </summary>
-public sealed class UserOut
-{
-    public Guid Id { get; set; }
-    public string Username { get; set; } = string.Empty;
-    public string? DisplayName { get; set; }
-    public bool IsAdmin { get; set; }
-    public bool Active { get; set; }
-
-    public static UserOut From(UserEntity u) => new()
-    {
-        Id = u.Id,
-        Username = u.Username,
-        DisplayName = u.DisplayName,
-        IsAdmin = u.IsAdmin,
-        Active = u.Active,
-    };
 }
