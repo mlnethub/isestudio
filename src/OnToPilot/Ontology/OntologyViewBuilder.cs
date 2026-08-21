@@ -225,14 +225,19 @@ public sealed class OntologyViewBuilder
         if (tokens.Count >= 5 && tokens[3] != ".")
         {
             var g = ParseTerm(tokens[3]);
+            // ParseTerm only ever yields NamedNode / BlankNode / Literal, so a
+            // `g is DefaultGraph` branch would be unreachable (CS0184). A null
+            // `graph` already carries the "default graph" meaning below.
             if (g is Oxigraph.NamedNode gn) graph = gn;
-            else if (g is Oxigraph.DefaultGraph) graph = new Oxigraph.DefaultGraph();
             else return null;
         }
 
-        if (obj is Oxigraph.NamedNode on) return new Oxigraph.Quad(sn, pn, on, graph);
-        if (obj is Oxigraph.BlankNode ob) return new Oxigraph.Quad(sn, pn, ob, graph);
-        if (obj is Oxigraph.Literal ol) return new Oxigraph.Quad(sn, pn, ol, graph);
+        // Oxigraph 0.5.8 declares `Quad.Graph` as non-nullable `IGraphName` but
+        // accepts null at runtime to denote the default graph, so the null-forgiving
+        // operator documents the intentional null rather than suppressing a defect.
+        if (obj is Oxigraph.NamedNode on) return new Oxigraph.Quad(sn, pn, on, graph!);
+        if (obj is Oxigraph.BlankNode ob) return new Oxigraph.Quad(sn, pn, ob, graph!);
+        if (obj is Oxigraph.Literal ol) return new Oxigraph.Quad(sn, pn, ol, graph!);
         return null;
     }
 
