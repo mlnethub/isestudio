@@ -53,13 +53,91 @@ public sealed class OntologyViewBuilder
     private static OntologyResponse BuildCore(
         IEnumerable<Oxigraph.Quad> quads)
     {
-        // Empty-graph path: no triples → empty envelope. Tasks 3-5
-        // extend this with the full Python build_view algorithm.
-        using var iter = quads.GetEnumerator();
-        if (!iter.MoveNext()) return EmptyResponse();
-        // Single triple or more: defer to Task 5 which fully populates.
-        _ = iter;
-        return EmptyResponse();
+        // Mirrors Python backend/app/ontology/schema.py::build_view (lines 241-371).
+        // V1: classes + superclasses. Tasks 4-5 add properties / axioms / labels / stats.
+
+        var classes = new Dictionary<string, OntologyClass>(StringComparer.Ordinal);
+        var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+        var comments = new Dictionary<string, string>(StringComparer.Ordinal);
+        var subclassOf = new List<SubclassAxiom>();
+
+        const string OwlClass = "http://www.w3.org/2002/07/owl#Class";
+        const string RdfsLabel = "http://www.w3.org/2000/01/rdf-schema#label";
+        const string RdfsComment = "http://www.w3.org/2000/01/rdf-schema#comment";
+        const string RdfsSubClassOf = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
+        const string RdfType = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
+
+        foreach (var q in quads)
+        {
+            if (q.Subject is not Oxigraph.NamedNode s) continue;
+            if (q.Predicate is not Oxigraph.NamedNode p) continue;
+            var siri = s.Value;
+            var piri = p.Value;
+
+            if (piri == RdfType
+                && q.Object is Oxigraph.NamedNode o
+                && o.Value == OwlClass)
+            {
+                classes.TryAdd(siri, new OntologyClass(siri, Label: null));
+            }
+            else if (piri == RdfsLabel && q.Object is Oxigraph.Literal lit)
+            {
+                labels[siri] = lit.Value;
+            }
+            else if (piri == RdfsComment && q.Object is Oxigraph.Literal lit2)
+            {
+                comments[siri] = lit2.Value;
+            }
+            else if (piri == RdfsSubClassOf && q.Object is Oxigraph.NamedNode sup)
+            {
+                subclassOf.Add(new SubclassAxiom(siri, sup.Value));
+            }
+        }
+
+        var superBySub = subclassOf
+            .GroupBy(a => a.Sub, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<string>)g.Select(a => a.Super).ToList(),
+                StringComparer.Ordinal);
+
+        var classList = classes.Keys
+            .OrderBy(iri => labels.TryGetValue(iri, out var l) ? l : Local(iri),
+                StringComparer.Ordinal)
+            .Select(iri =>
+            {
+                var c = classes[iri];
+                return c with
+                {
+                    Local = Local(iri),
+                    Label = labels.TryGetValue(iri, out var l) ? l : null,
+                    Comment = comments.TryGetValue(iri, out var cm) ? cm : "",
+                    Superclasses = superBySub.TryGetValue(iri, out var s) ? s : Array.Empty<string>(),
+                };
+            })
+            .ToList();
+
+        return new OntologyResponse(
+            Classes: classList,
+            ObjectProperties: Array.Empty<OntologyProperty>(),
+            DataProperties: Array.Empty<OntologyProperty>(),
+            Axioms: new OntologyAxioms(
+                SubclassOf: subclassOf,
+                DisjointWith: Array.Empty<PairAxiom>(),
+                EquivalentClass: Array.Empty<PairAxiom>()),
+            Labels: labels,
+            Stats: new OntologyStats(classList.Count, 0, subclassOf.Count),
+            KnowledgeSystem: null);
+    }
+
+    private static string Local(string iri)
+    {
+        // Strip namespace using the last occurrence of the standard
+        // separators: '#', '/', or ':' (the latter covers URN and
+        // CURIE-style IRIs such as `urn:Animal`).
+        var hashIdx = iri.LastIndexOf('#');
+        var slashIdx = iri.LastIndexOf('/');
+        var colonIdx = iri.LastIndexOf(':');
+        var idx = Math.Max(hashIdx, Math.Max(slashIdx, colonIdx));
+        return idx >= 0 ? iri[(idx + 1)..] : iri;
     }
 
     private static IEnumerable<Oxigraph.Quad> ParseNQuads(byte[] shard)

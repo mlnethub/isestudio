@@ -38,4 +38,62 @@ public sealed class OntologyViewBuilderTests
         Assert.Empty(view.Classes);
         Assert.Equal(0, view.Stats.ClassCount);
     }
+
+    [Fact]
+    public async Task BuildFromStoreAsync_extracts_single_class_with_label_and_comment()
+    {
+        using var dir = new TempDir();
+        using var store = new StoreWrapper(dir.Path);
+        store.LoadTurtle(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            <urn:Animal> a owl:Class ; rdfs:label "Animal" ; rdfs:comment "A living thing." .
+            """u8.ToArray(),
+            new Oxigraph.NamedNode("http://example.com/graph"));
+
+        var builder = new OntologyViewBuilder();
+        var view = await builder.BuildFromStoreAsync(
+            store, "http://example.com/graph", CancellationToken.None);
+
+        Assert.Single(view.Classes);
+        var c = view.Classes[0];
+        Assert.Equal("urn:Animal", c.Iri);
+        Assert.Equal("Animal", c.Label);
+        Assert.Equal("Animal", c.Local);
+        Assert.Equal("A living thing.", c.Comment);
+        Assert.Empty(c.Superclasses);
+    }
+
+    [Fact]
+    public async Task BuildFromStoreAsync_extracts_superclasses_via_subClassOf()
+    {
+        using var dir = new TempDir();
+        using var store = new StoreWrapper(dir.Path);
+        store.LoadTurtle(
+            """
+            @prefix owl: <http://www.w3.org/2002/07/owl#> .
+            @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+            <urn:Animal> a owl:Class ; rdfs:label "Animal" .
+            <urn:Dog> a owl:Class ; rdfs:label "Dog" ; rdfs:subClassOf <urn:Animal> .
+            """u8.ToArray(),
+            new Oxigraph.NamedNode("http://example.com/graph"));
+
+        var builder = new OntologyViewBuilder();
+        var view = await builder.BuildFromStoreAsync(
+            store, "http://example.com/graph", CancellationToken.None);
+
+        Assert.Equal(2, view.Classes.Count);
+        var dog = view.Classes.Single(c => c.Local == "Dog");
+        Assert.Equal(new[] { "urn:Animal" }, dog.Superclasses);
+    }
+
+    private sealed class TempDir : IDisposable
+    {
+        public string Path { get; } = System.IO.Path.Combine(
+            System.IO.Path.GetTempPath(),
+            "ontopilot-test-" + Guid.NewGuid().ToString("N"));
+        public TempDir() => System.IO.Directory.CreateDirectory(Path);
+        public void Dispose() => System.IO.Directory.Delete(Path, recursive: true);
+    }
 }
