@@ -157,7 +157,10 @@ public sealed class AuthenticationContractTests
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(body.TryGetProperty("username", out var username), $"Body was: {raw}");
         Assert.Equal(AuthTestWebApplicationFactory.AdminUsername, username.GetString());
-        Assert.True(body.GetProperty("isAdmin").GetBoolean());
+        // Wire shape is snake_case (global JsonNamingPolicy.SnakeCaseLower
+        // in Program.cs); the prior PascalCase assertion was a leftover
+        // from before that policy went in.
+        Assert.True(body.GetProperty("is_admin").GetBoolean());
         Assert.True(body.GetProperty("active").GetBoolean());
     }
 

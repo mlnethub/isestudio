@@ -46,13 +46,13 @@ public sealed class AuthAdminApiTests
         // admin + alice = 2 users
         Assert.Equal(2, body.GetArrayLength());
         // Wire-shape: snake_case display_name + is_admin
-        Assert.True(body.EnumerateArray().Any(u =>
+        Assert.Contains(body.EnumerateArray(), u =>
             u.GetProperty("username").GetString() == "alice"
-            && u.GetProperty("is_admin").GetBoolean() == false));
-        Assert.True(body.EnumerateArray().Any(u =>
+            && u.GetProperty("is_admin").GetBoolean() == false);
+        Assert.Contains(body.EnumerateArray(), u =>
             u.GetProperty("username").GetString()
                 == AuthTestWebApplicationFactory.AdminUsername
-            && u.GetProperty("is_admin").GetBoolean() == true));
+            && u.GetProperty("is_admin").GetBoolean() == true);
 
         // Non-admin: 403
         var aliceClient = await AuthenticatedClientAsync(app, "alice");
