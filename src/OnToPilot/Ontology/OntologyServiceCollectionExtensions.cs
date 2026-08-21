@@ -17,6 +17,7 @@ public static class OntologyServiceCollectionExtensions
     {
         services.AddScoped<OntologyService>();
         services.AddScoped<PublishedOntologyService>();
+        services.AddScoped<ExternalOntologyService>();
         services.AddSingleton<OntologyViewBuilder>();
         // The release-typed ontology view reads the curated TBox shard
         // directly from disk, so it needs the artifact store. The store

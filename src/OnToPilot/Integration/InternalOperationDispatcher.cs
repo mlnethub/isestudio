@@ -284,7 +284,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // already enforced by the controller — the dispatcher
             // just has to NOT throw NotSupportedException.
             "external.metadata" => Task.FromResult<object?>(EmptyKnowledgeSystem()),
-            "external.ontology" => Task.FromResult<object?>(EmptyOntologyResponse()),
+            "external.ontology" => InvokeExternalOntologyAsync(request, cancellationToken),
             "external.classes" => Task.FromResult<object?>(EmptyListResponse()),
             "external.export" => Task.FromResult<object?>(""),
             "external.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
@@ -451,6 +451,31 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
     private PublishedOntologyService? ResolvePublishedOntologyService() =>
         _services.GetService(typeof(PublishedOntologyService)) as PublishedOntologyService;
+
+    private ExternalOntologyService? ResolveExternalOntologyService() =>
+        _services.GetService(typeof(ExternalOntologyService)) as ExternalOntologyService;
+
+    /// <summary>
+    /// Shared body for the <c>external.ontology</c> arm. Resolves the KS
+    /// by <paramref name="request.PublicId"/> (NOT internal Guid — external
+    /// callers never see the internal id), builds the live TBox view via
+    /// <see cref="ExternalOntologyService"/>, and attaches
+    /// <see cref="ExternalKnowledgeSystemMeta"/> (public_id string, no
+    /// release) so the wire shape matches the Python <c>build_view()</c>
+    /// contract. Throws <see cref="InvalidOperationException"/> when the
+    /// caller didn't bind a public_id; returns the empty envelope when
+    /// the service is unresolvable or the KS row no longer exists.
+    /// </summary>
+    private async Task<object?> InvokeExternalOntologyAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var service = ResolveExternalOntologyService();
+        if (service is null) return EmptyOntologyResponse();
+        var publicId = request.PublicId
+            ?? throw new InvalidOperationException("publicId required for external.ontology");
+        var view = await service.GetViewAsync(publicId, request.Actor, ct).ConfigureAwait(false);
+        return view ?? EmptyOntologyResponse();
+    }
 
     /// <summary>
     /// Pull the edit body as a loose dictionary so the JSON the
