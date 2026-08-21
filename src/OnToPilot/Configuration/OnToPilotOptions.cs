@@ -46,4 +46,13 @@ public sealed class OnToPilotOptions
     /// development works out of the box.
     /// </summary>
     public bool CookieSecure { get; set; }
+
+    /// <summary>Maximum RDF import upload size in bytes. Mirrors Python <c>rdf_import_max_bytes</c>.</summary>
+    public int RdfImportMaxBytes { get; set; } = 25 * 1024 * 1024;
+
+    /// <summary>Maximum parsed RDF statements accepted by a single import.</summary>
+    public int RdfImportMaxTriples { get; set; } = 250_000;
+
+    /// <summary>Whether TBox RDF imports trigger controlled terminology synchronization.</summary>
+    public bool AutomaticTerminology { get; set; } = true;
 }

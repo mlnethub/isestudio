@@ -26,6 +26,59 @@ public sealed class OntologyApiTests
 {
     private const string CookieHeader = "ontopilot_session";
 
+    [Fact]
+    public async Task Rdf_import_accepts_multipart_form_data()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "rdf-import-multipart");
+        var multipart = new MultipartFormDataContent
+        {
+            { new StringContent("<urn:Pump> a <http://www.w3.org/2002/07/owl#Class> ."), "file", "pump.ttl" },
+            { new StringContent("auto"), "target" },
+            { new StringContent("merge"), "strategy" },
+            { new StringContent("turtle"), "format" },
+            { new StringContent("urn:base:"), "base_iri" },
+        };
+
+        var response = await client.PostAsync($"/api/knowledge/{ksId}/rdf/import", multipart);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Rdf_import_returns_python_compatible_response_shape()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "rdf-import-shape");
+        var multipart = new MultipartFormDataContent
+        {
+            { new StringContent("@prefix owl: <http://www.w3.org/2002/07/owl#> .\n<urn:Pump> a owl:Class ."), "file", "pump.ttl" },
+            { new StringContent("auto"), "target" },
+            { new StringContent("merge"), "strategy" },
+            { new StringContent("turtle"), "format" },
+            { new StringContent("urn:base:"), "base_iri" },
+        };
+
+        var response = await client.PostAsync($"/api/knowledge/{ksId}/rdf/import", multipart);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("pump.ttl", body.GetProperty("filename").GetString());
+        Assert.Equal("turtle", body.GetProperty("format").GetString());
+        Assert.Equal("auto", body.GetProperty("target").GetString());
+        Assert.Equal("merge", body.GetProperty("strategy").GetString());
+        Assert.Equal("urn:base:", body.GetProperty("base_iri").GetString());
+        Assert.Equal(1, body.GetProperty("parsed_triples").GetInt32());
+        Assert.True(body.TryGetProperty("tbox_added", out _));
+        Assert.True(body.TryGetProperty("abox_added", out _));
+        Assert.True(body.TryGetProperty("view", out _));
+        Assert.True(body.TryGetProperty("open_conflicts", out _));
+        Assert.True(body.TryGetProperty("validation", out _));
+        Assert.True(body.TryGetProperty("terminology", out _));
+    }
+
     // -----------------------------------------------------------------
     // Edit
     // -----------------------------------------------------------------
