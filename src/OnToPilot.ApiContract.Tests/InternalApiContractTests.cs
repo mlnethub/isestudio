@@ -33,6 +33,16 @@ public sealed class InternalApiContractTests
     {
         var response = await ApiContractScenario.SendAsync(operation);
         Assert.Equal(operation.ExpectedStatus, (int)response.StatusCode);
-        JsonSchemaAssert.Compatible(operation.ResponseSchema, await response.Content.ReadAsStringAsync());
+        // The ontology / vocabulary export endpoints return raw RDF
+        // (text/turtle, application/n-quads, …) for the frontend's Blob
+        // download — NOT JSON — so the JSON-schema check only runs when
+        // the body is actually JSON. An empty body (empty-graph export)
+        // is already accepted by JsonSchemaAssert; a non-empty RDF body
+        // isn't valid JSON and is legitimately skipped here.
+        var mediaType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
+        if (mediaType.Contains("json", StringComparison.OrdinalIgnoreCase))
+        {
+            JsonSchemaAssert.Compatible(operation.ResponseSchema, await response.Content.ReadAsStringAsync());
+        }
     }
 }
