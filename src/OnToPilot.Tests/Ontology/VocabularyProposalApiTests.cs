@@ -75,6 +75,27 @@ public sealed class VocabularyProposalApiTests
         Assert.NotNull(proposal.ResolvedAt);
     }
 
+    [Fact]
+    public async Task List_proposals_status_all_returns_200_not_500()
+    {
+        // Python baseline: status="all" is the DEFAULT for list_proposals
+        // and means "no filter" (backend/app/api/vocabulary.py:379,387 —
+        // `if status != "all":`). The C# port previously threw
+        // InvalidOperationException on `all`, surfacing as HTTP 500. The
+        // frontend always sends status=all on the proposals list call.
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var (ksId, _) = await SeedKnowledgeSystemAsync(app, client, "b8-all");
+
+        var response = await client.GetAsync(
+            $"/api/knowledge/{ksId}/vocabulary/proposals?status=all&limit=1000&offset=0");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.True(body.TryGetProperty("items", out _));
+        Assert.True(body.TryGetProperty("total", out _));
+    }
+
     // -----------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------

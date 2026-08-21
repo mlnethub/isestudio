@@ -104,6 +104,26 @@ public sealed class ConflictApiTests
     }
 
     [Fact]
+    public async Task Detect_accepts_post_with_no_body()
+    {
+        // Python baseline: POST /conflicts/detect takes no body
+        // (backend/app/api/conflicts.py:137 — signature is just the path
+        // param + deps). The C# port previously declared [FromBody] object
+        // body, which made ASP.NET Core return 415 when the frontend POSTed
+        // with no body / no content-type (the natural shape for a body-less
+        // mutation). Mirrors the no-body dismiss/reopen pattern.
+        await using var app = new AuthTestWebApplicationFactory();
+        await SeedAdminAsync(app);
+        var client = await AuthenticatedClientAsync(app);
+        var ks = await SeedKnowledgeSystemAsync(app, "detect-nobody");
+
+        var response = await client.PostAsync(
+            $"/api/knowledge/{ks.Id}/conflicts/detect", content: null);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Dismiss_then_reopen_flips_status()
     {
         await using var app = new AuthTestWebApplicationFactory();

@@ -19,8 +19,8 @@ public sealed class ConflictsController : InternalControllerBase
         => InvokeAsync("conflicts.list", ReqGuid(id), ct);
 
     [HttpPost("api/knowledge/{id:guid}/conflicts/detect")]
-    public Task<IActionResult> DetectAsync(Guid id, [FromBody] object body, CancellationToken ct)
-        => InvokeAsync("conflicts.detect", ReqGuidWithBody(body, id), ct);
+    public Task<IActionResult> DetectAsync(Guid id, CancellationToken ct)
+        => InvokeAsync("conflicts.detect", ReqGuid(id), ct);
 
     [HttpGet("api/knowledge/{id:guid}/conflicts/{cid}")]
     public Task<IActionResult> GetContextAsync(Guid id, string cid, CancellationToken ct)

@@ -92,13 +92,19 @@ public sealed class VocabularyProposalService
             .Where(t => t.KnowledgeSystemId == ks.Id);
 
         var normalizedStatus = string.IsNullOrWhiteSpace(status) ? null : status.Trim().ToLowerInvariant();
+        // Python baseline: status="all" (the default for list_proposals)
+        // means "no filter" — only pending/accepted/rejected actually
+        // filter (backend/app/api/vocabulary.py:379,387). Normalise it to
+        // null so the count/query skip the status predicate, matching the
+        // frontend's "show me everything" intent.
+        if (normalizedStatus == "all") normalizedStatus = null;
         if (normalizedStatus is not null
             && normalizedStatus != "pending"
             && normalizedStatus != "accepted"
             && normalizedStatus != "rejected")
         {
             throw new InvalidOperationException(
-                $"Unknown proposal status '{status}'. Use 'pending', 'accepted', or 'rejected'.");
+                $"Unknown proposal status '{status}'. Use 'all', 'pending', 'accepted', or 'rejected'.");
         }
         if (normalizedStatus is not null)
         {
