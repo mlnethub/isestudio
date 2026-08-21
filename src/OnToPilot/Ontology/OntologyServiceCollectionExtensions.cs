@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace OnToPilot.Ontology;
@@ -15,7 +16,18 @@ public static class OntologyServiceCollectionExtensions
     public static IServiceCollection AddOntologyServices(this IServiceCollection services)
     {
         services.AddScoped<OntologyService>();
+        services.AddScoped<PublishedOntologyService>();
         services.AddSingleton<OntologyViewBuilder>();
+        // The release-typed ontology view reads the curated TBox shard
+        // directly from disk, so it needs the artifact store. The store
+        // lives under the same Storage:RdfRoot as the Oxigraph handle but
+        // in a "releases" sibling directory so published shards and live
+        // workspace data never collide.
+        services.AddSingleton<ReleaseArtifactStore>(sp => new ReleaseArtifactStore(
+            System.IO.Path.Combine(
+                sp.GetRequiredService<IConfiguration>()["OnToPilot:Storage:RdfRoot"]
+                    ?? System.IO.Path.Combine(AppContext.BaseDirectory, "data", "rdf"),
+                "releases")));
         return services;
     }
 }

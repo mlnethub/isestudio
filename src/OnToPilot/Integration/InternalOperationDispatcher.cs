@@ -298,7 +298,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // -- published (stage 4 task 3) --
             "published.metadata" => Task.FromResult<object?>(EmptyRelease()),
             "published.manifest" => Task.FromResult<object?>(EmptyReleaseManifest()),
-            "published.ontology" => Task.FromResult<object?>(EmptyOntologyResponse()),
+            "published.ontology" => InvokePublishedOntologyAsync(request, version: null, cancellationToken),
             "published.classes" => Task.FromResult<object?>(EmptyListResponse()),
             "published.export" => Task.FromResult<object?>(""),
             "published.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
@@ -310,7 +310,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "published.vocabulary.schemes" => InvokePublishedVocabularyListSchemesAsync(request, cancellationToken),
             "published.release" => Task.FromResult<object?>(EmptyRelease()),
             "published.release.manifest" => Task.FromResult<object?>(EmptyReleaseManifest()),
-            "published.release.ontology" => Task.FromResult<object?>(EmptyOntologyResponse()),
+            "published.release.ontology" => InvokePublishedOntologyAsync(request, version: request.ResourceId, cancellationToken),
             "published.release.classes" => Task.FromResult<object?>(EmptyListResponse()),
             "published.release.export" => Task.FromResult<object?>(""),
             "published.release.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
@@ -389,8 +389,68 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             ct).ContinueWith(t => (object?)t.Result, ct);
     }
 
+    /// <summary>
+    /// Shared body for the <c>published.ontology</c> and
+    /// <c>published.release.ontology</c> arms. When <paramref name="version"/>
+    /// is null (the current-deployment arm), pick the latest deployment
+    /// row by <c>CreatedAt</c>, take its <c>ReleaseId</c>, fetch the
+    /// release row, and forward its version string into the service. When
+    /// a pinned version is supplied, forward it as-is. Empty envelope is
+    /// returned whenever the service or its DB lookup can't resolve a
+    /// KS / deployment / release — that keeps the contract-test path on
+    /// the 200 branch.
+    /// </summary>
+    private async Task<object?> InvokePublishedOntologyAsync(
+        InternalRequest request, string? version, CancellationToken ct)
+    {
+        var service = ResolvePublishedOntologyService();
+        if (service is null || string.IsNullOrEmpty(request.PublicId))
+        {
+            return EmptyOntologyResponse();
+        }
+
+        var effectiveVersion = version;
+        if (string.IsNullOrEmpty(effectiveVersion))
+        {
+            var db = _services.GetService(typeof(OnToPilotDbContext)) as OnToPilotDbContext;
+            if (db is null) return EmptyOntologyResponse();
+
+            var ks = await db.KnowledgeSystems.AsNoTracking()
+                .FirstOrDefaultAsync(k => k.PublicId == request.PublicId, ct)
+                .ConfigureAwait(false);
+            if (ks is null) return EmptyOntologyResponse();
+
+            // SQLite does not support DateTimeOffset in ORDER BY — pull
+            // the rows client-side and sort in memory, mirroring the
+            // controller-side ResolveReleaseAsync pattern.
+            var deployment = (await db.ReleaseDeployments.AsNoTracking()
+                .Where(d => d.KnowledgeSystemId == ks.Id)
+                .ToListAsync(ct)
+                .ConfigureAwait(false))
+                .OrderByDescending(d => d.CreatedAt)
+                .FirstOrDefault();
+            if (deployment is null) return EmptyOntologyResponse();
+
+            var release = await db.OntologyReleases.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.Id == deployment.ReleaseId, ct)
+                .ConfigureAwait(false);
+            if (release is null) return EmptyOntologyResponse();
+
+            effectiveVersion = release.Version;
+        }
+
+        var view = await service.GetViewAsync(
+            request.PublicId, effectiveVersion, request.Actor, ct)
+            .ConfigureAwait(false);
+        if (view is null) return EmptyOntologyResponse();
+        return view;
+    }
+
     private OntologyService? ResolveOntologyService() =>
         _services.GetService(typeof(OntologyService)) as OntologyService;
+
+    private PublishedOntologyService? ResolvePublishedOntologyService() =>
+        _services.GetService(typeof(PublishedOntologyService)) as PublishedOntologyService;
 
     /// <summary>
     /// Pull the edit body as a loose dictionary so the JSON the
