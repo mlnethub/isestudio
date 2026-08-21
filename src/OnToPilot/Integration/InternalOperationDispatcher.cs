@@ -64,14 +64,20 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return operation switch
         {
             // -- auth --
+            // login / logout / me stay inline in AuthController because
+            // they own the AuthSessionEntity + opaque-cookie plumbing
+            // (the existing AuthenticationContractTests rely on that
+            // shape). The admin-side CRUD (update_me / list_users /
+            // create_user / update_user / delete_user) routes through
+            // AuthService via the dispatcher.
             "auth.login" => Task.FromResult<object?>(EmptyUser()),
             "auth.logout" => Task.FromResult<object?>(new { ok = true }),
             "auth.me" => Task.FromResult<object?>(EmptyUser()),
-            "auth.update_me" => Task.FromResult<object?>(EmptyUser()),
-            "auth.list_users" => Task.FromResult<object?>(Array.Empty<object>()),
-            "auth.create_user" => Task.FromResult<object?>(EmptyUser()),
-            "auth.delete_user" => Task.FromResult<object?>(new { ok = true }),
-            "auth.update_user" => Task.FromResult<object?>(EmptyUser()),
+            "auth.update_me" => InvokeAuthUpdateMeAsync(request, cancellationToken),
+            "auth.list_users" => InvokeAuthListUsersAsync(request, cancellationToken),
+            "auth.create_user" => InvokeAuthCreateUserAsync(request, cancellationToken),
+            "auth.update_user" => InvokeAuthUpdateUserAsync(request, cancellationToken),
+            "auth.delete_user" => InvokeAuthDeleteUserAsync(request, cancellationToken),
 
             // -- knowledge --
             // Real CRUD via KnowledgeService (scoped). Role gates
@@ -2314,6 +2320,140 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         }
         return null;
     }
+
+    // ----- auth admin (B10) -------------------------------------------------
+    // Wires the auth.update_me / auth.list_users / auth.create_user /
+    // auth.update_user / auth.delete_user dispatcher arms to the scoped
+    // AuthService. auth.login / auth.logout / auth.me stay inline in
+    // AuthController (they own the AuthSessionEntity + opaque-cookie
+    // plumbing; the existing AuthenticationContractTests rely on that
+    // shape). The admin-side CRUD mirrors the Python
+    // backend/app/api/auth.py guards:
+    //   * "Can't remove the last admin" — would lock the operator out.
+    //   * "You can't deactivate yourself" / "You can't delete yourself".
+    //   * "owns N knowledge system(s); transfer or delete them first" —
+    //     a KS must not be orphaned by deleting its owner.
+    //
+    // Failure modes mirror the other slices:
+    // * Service not registered (hand-built dispatcher in unit tests)
+    //   → returns the schema-compatible empty payload so the route
+    //   still 200s.
+    // * AuthService throws ValidationException → 400 envelope.
+    // * AuthService throws KeyNotFoundException → 404 envelope.
+    // * AuthService throws ResourceInUseException → 409 envelope.
+    private AuthService? ResolveAuthService() =>
+        _services.GetService(typeof(AuthService)) as AuthService;
+
+    private Task<object?> InvokeAuthUpdateMeAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAuthService();
+        var body = DeserializeBody<UpdateMeRequest>(request);
+        if (svc is null || body is null)
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for auth.update_me.");
+            }
+            return Task.FromResult<object?>(EmptyUser());
+        }
+        var userId = Guid.TryParse(request.Actor.UserId, out var parsed)
+            ? parsed : Guid.Empty;
+        if (userId == Guid.Empty)
+        {
+            return Task.FromResult<object?>(EmptyUser());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.UpdateMeAsync(userId, body, ct).ConfigureAwait(false);
+            return (object?)ProjectUserOut(row);
+        });
+    }
+
+    private Task<object?> InvokeAuthListUsersAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAuthService();
+        if (svc is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.ListUsersAsync(ct).ConfigureAwait(false);
+            return (object?)rows.Select(ProjectUserOut).ToArray();
+        });
+    }
+
+    private Task<object?> InvokeAuthCreateUserAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAuthService();
+        var body = DeserializeBody<CreateUserRequest>(request);
+        if (svc is null || body is null)
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for auth.create_user.");
+            }
+            return Task.FromResult<object?>(EmptyUser());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.CreateUserAsync(body, ct).ConfigureAwait(false);
+            return (object?)ProjectUserOut(row);
+        });
+    }
+
+    private Task<object?> InvokeAuthUpdateUserAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAuthService();
+        var body = DeserializeBody<UpdateUserRequest>(request);
+        if (svc is null || body is null
+            || !Guid.TryParse(request.ResourceId, out var userId))
+        {
+            if (body is null)
+            {
+                throw new InvalidOperationException(
+                    "Request body is required for auth.update_user.");
+            }
+            return Task.FromResult<object?>(EmptyUser());
+        }
+        return WrapAsync(async () =>
+        {
+            var row = await svc.UpdateUserAsync(userId, body, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)ProjectUserOut(row);
+        });
+    }
+
+    private Task<object?> InvokeAuthDeleteUserAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveAuthService();
+        if (svc is null || !Guid.TryParse(request.ResourceId, out var userId))
+        {
+            return Task.FromResult<object?>(new { ok = false });
+        }
+        return WrapAsync(async () =>
+        {
+            var deleted = await svc.DeleteUserAsync(userId, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)new { deleted = deleted };
+        });
+    }
+
+    private static object ProjectUserOut(UserOut row) => new
+    {
+        id = row.Id,
+        username = row.Username,
+        display_name = row.DisplayName,
+        is_admin = row.IsAdmin,
+        active = row.Active,
+    };
 
     // ----- settings (B10) ---------------------------------------------------
     // Wires the settings.* dispatcher arms (list_models / get / update)

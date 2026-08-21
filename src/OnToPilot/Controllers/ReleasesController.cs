@@ -40,6 +40,14 @@ public sealed class ReleasesController : InternalControllerBase
 
     [HttpPost("api/knowledge/{id:guid}/releases")]
     public Task<IActionResult> CreateAsync(Guid id, [FromBody] object body, CancellationToken ct)
+        // The frontend ReleasePanel.createDraft (frontend/src/lib/api.ts:134)
+        // always sends `{}` (an empty object) with Content-Type
+        // application/json — matches the working vocabulary.create_scheme
+        // surface, so [FromBody] object body is the right binding. The
+        // dispatcher tolerates an empty body via its title/notes
+        // defensive-read fallback so a future caller that omits the body
+        // still degrades to a schema-compatible empty-payload wire
+        // shape rather than 415-ing.
         => InvokeAsync("releases.create", ReqGuidWithBody(body, id), ct);
 
     [HttpGet("api/knowledge/{id:guid}/releases/diff")]

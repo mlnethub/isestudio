@@ -46,6 +46,12 @@ public static class OntologyServiceCollectionExtensions
         // StoreWrapper and holds no state. Resolved by the dispatcher
         // for ontology.export (and re-used by future export arms).
         services.AddSingleton<RdfExportService>();
+        // ReleaseService writes OntologyReleaseEntity rows (B9 create
+        // draft); the dispatcher arm previously returned a Stage-1
+        // placeholder so a "create draft" click persisted nothing.
+        // Scoped because it shares the request DbContext with the audit
+        // and allocator.
+        services.AddScoped<ReleaseService>();
         return services;
     }
 }
