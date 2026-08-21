@@ -79,6 +79,36 @@ public sealed class OntologyApiTests
         Assert.True(body.TryGetProperty("terminology", out _));
     }
 
+    [Fact]
+    public async Task Rdf_import_writes_grouped_audit_rows_for_changed_graphs()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "rdf-import-audit");
+        var multipart = new MultipartFormDataContent
+        {
+            { new StringContent("""
+                @prefix owl: <http://www.w3.org/2002/07/owl#> .
+                @prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+                <urn:Pump> a owl:Class .
+                <urn:p101> rdf:type <urn:Pump> .
+                """), "file", "mixed.ttl" },
+            { new StringContent("auto"), "target" },
+            { new StringContent("merge"), "strategy" },
+            { new StringContent("turtle"), "format" },
+        };
+
+        var response = await client.PostAsync($"/api/knowledge/{ksId}/rdf/import", multipart);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var audits = LookupAuditEventsFor(app, ksId).Where(a => a.Action == "rdf.import").ToList();
+        Assert.Equal(2, audits.Count);
+        Assert.All(audits, a => Assert.False(string.IsNullOrWhiteSpace(a.GroupId)));
+        Assert.Single(audits.Select(a => a.GroupId).Distinct());
+        Assert.Contains(audits, a => a.Summary.Contains("ontology", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains(audits, a => a.Summary.Contains("instances", StringComparison.OrdinalIgnoreCase));
+    }
+
     // -----------------------------------------------------------------
     // Edit
     // -----------------------------------------------------------------

@@ -333,6 +333,7 @@ builder.Services.AddSingleton<ExtractionJobStore>();
 // so concurrent writers on the same table serialize; SQLite path falls back
 // to plain MAX+1 (single-writer DB). See LegacyIdAllocator.cs for rationale.
 builder.Services.AddScoped<LegacyIdAllocator>();
+builder.Services.AddScoped<OnToPilot.Audit.AuditLogService>();
 
 // ---- Auth services ----
 builder.Services.AddSingleton(TimeProvider.System);
