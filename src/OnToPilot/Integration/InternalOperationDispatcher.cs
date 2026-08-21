@@ -525,8 +525,10 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "ntriples" or "nt" or "n-triples" => RdfFormat.NTriples,
             "nquads" or "n-quads" or "nq" => RdfFormat.NQuads,
             "trig" => RdfFormat.TriG,
+            "rdfxml" or "rdf/xml" or "xml" or "rdf" => RdfFormat.RdfXml,
+            "jsonld" or "json-ld" or "json" => RdfFormat.JsonLd,
             _ => throw new OnToPilot.Api.ValidationException(
-                $"Unsupported export format: {fmt}. Use turtle, ntriples, nquads, or trig."),
+                $"Unsupported export format: {fmt}. Use turtle, ntriples, nquads, trig, rdfxml, or jsonld."),
         };
     }
 

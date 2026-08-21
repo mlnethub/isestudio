@@ -1,5 +1,7 @@
 using System.Text;
 using Oxigraph;
+using VDS.RDF;
+using VDS.RDF.Writing;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoBlankNode = Oxigraph.BlankNode;
 using OntoLiteral = Oxigraph.Literal;
@@ -47,10 +49,74 @@ public sealed class RdfExportService
             RdfFormat.TriG => DumpTriG(quads, graphIri),
             RdfFormat.Turtle => DumpTurtle(quads),
             RdfFormat.NTriples => DumpNTriples(quads),
+            RdfFormat.RdfXml => WriteGraphWithDotNetRdf(quads, new RdfXmlWriter()),
+            RdfFormat.JsonLd => WriteStoreWithDotNetRdf(quads, new JsonLdWriter()),
             _ => throw new ArgumentOutOfRangeException(nameof(format),
                 $"Format {format} is not a single-layer export format."),
         };
         return Task.FromResult(bytes);
+    }
+
+    // ------------------------------------------------------------------
+    // dotNetRDF-backed formats (RDF/XML, JSON-LD). Oxigraph's 0.5.8 bindings
+    // round-trip N-Quads / Turtle / N-Triples / TriG via the hand-rolled
+    // dumpers above (which preserve blank-node labels, language tags, and
+    // explicit datatypes). RDF/XML and JSON-LD have no in-house serializer,
+    // so we project the Oxigraph quads onto a dotNetRDF graph and hand it
+    // to dotNetRDF's writers — they handle the full grammars and preserve
+    // typed literals. RDF/XML is graph-based (IRdfWriter); JSON-LD is a
+    // dataset format (IStoreWriter), so the graph is wrapped in a
+    // TripleStore for the JSON-LD writer.
+    // ------------------------------------------------------------------
+    private static byte[] WriteGraphWithDotNetRdf(IReadOnlyList<OntoQuad> quads, IRdfWriter writer)
+    {
+        if (quads.Count == 0) return Array.Empty<byte>();
+        var graph = BuildDotNetRdfGraph(quads);
+        using var sw = new System.IO.StringWriter();
+        writer.Save(graph, sw);
+        return Encoding.UTF8.GetBytes(sw.ToString());
+    }
+
+    private static byte[] WriteStoreWithDotNetRdf(IReadOnlyList<OntoQuad> quads, IStoreWriter writer)
+    {
+        if (quads.Count == 0) return Array.Empty<byte>();
+        var graph = BuildDotNetRdfGraph(quads);
+        var store = new TripleStore();
+        store.Add(graph);
+        using var sw = new System.IO.StringWriter();
+        writer.Save(store, sw);
+        return Encoding.UTF8.GetBytes(sw.ToString());
+    }
+
+    private static Graph BuildDotNetRdfGraph(IReadOnlyList<OntoQuad> quads)
+    {
+        var graph = new Graph();
+        foreach (var q in quads)
+        {
+            var s = ToDotNetRdfNode(graph, q.Subject);
+            var p = ToDotNetRdfNode(graph, q.Predicate);
+            var o = ToDotNetRdfNode(graph, q.Object);
+            graph.Assert(s, p, o);
+        }
+        return graph;
+    }
+
+    private static INode ToDotNetRdfNode(IGraph g, object term) => term switch
+    {
+        OntoNamedNode n => g.CreateUriNode(new Uri(n.Value, UriKind.RelativeOrAbsolute)),
+        OntoBlankNode b => g.CreateBlankNode(b.Value),
+        OntoLiteral lit => ToDotNetRdfLiteral(g, lit),
+        _ => throw new InvalidOperationException(
+            $"Unsupported Oxigraph term for dotNetRDF conversion: {term?.GetType().Name ?? "null"}"),
+    };
+
+    private static ILiteralNode ToDotNetRdfLiteral(IGraph g, OntoLiteral lit)
+    {
+        if (!string.IsNullOrEmpty(lit.Language))
+            return g.CreateLiteralNode(lit.Value, lit.Language);
+        if (lit.Datatype is not null)
+            return g.CreateLiteralNode(lit.Value, new Uri(lit.Datatype.Value, UriKind.RelativeOrAbsolute));
+        return g.CreateLiteralNode(lit.Value);
     }
 
     // ------------------------------------------------------------------

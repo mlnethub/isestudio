@@ -318,14 +318,41 @@ public sealed class OntologyApiTests
         Assert.False(rdf.StartsWith('"'));
     }
 
+    [Theory]
+    [InlineData("jsonld", "application/ld+json")]
+    [InlineData("rdfxml", "application/rdf+xml")]
+    public async Task Ontology_export_serializes_non_turtle_formats(string fmt, string mediaType)
+    {
+        // RDF/XML and JSON-LD round-trip through dotNetRDF's writers
+        // (RdfXmlWriter / JsonLdWriter) after projecting the Oxigraph quads
+        // onto a dotNetRDF graph. The frontend's Export menu offers these
+        // alongside turtle / ntriples, so they must return non-empty raw
+        // content with the matching media type.
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, $"ontology-export-{fmt}");
+        var add = await client.PostAsJsonAsync(
+            $"/api/knowledge/{ksId}/ontology/edit",
+            new { op = "add_class", label = "Valve" });
+        Assert.Equal(HttpStatusCode.OK, add.StatusCode);
+
+        var response = await client.GetAsync($"/api/knowledge/{ksId}/ontology/export?fmt={fmt}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(mediaType, response.Content.Headers.ContentType?.MediaType);
+        var rdf = await response.Content.ReadAsStringAsync();
+        Assert.NotEmpty(rdf);
+        Assert.Contains("Valve", rdf);
+    }
+
     [Fact]
     public async Task Ontology_export_rejects_unsupported_format_with_400()
     {
         await using var app = new AuthTestWebApplicationFactory();
         var (client, _) = await SeedAdminAndClientAsync(app);
-        var ksId = await CreateKsAsync(client, "ontology-export-fmt");
+        var ksId = await CreateKsAsync(client, "ontology-export-badfmt");
 
-        var response = await client.GetAsync($"/api/knowledge/{ksId}/ontology/export?fmt=jsonld");
+        var response = await client.GetAsync($"/api/knowledge/{ksId}/ontology/export?fmt=yaml");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }

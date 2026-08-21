@@ -42,6 +42,8 @@ public sealed class OntologyController : InternalControllerBase
         "ntriples" or "nt" or "n-triples" => "application/n-triples",
         "nquads" or "n-quads" or "nq" => "application/n-quads",
         "trig" => "application/trig",
+        "rdfxml" or "rdf/xml" or "xml" or "rdf" => "application/rdf+xml",
+        "jsonld" or "json-ld" or "json" => "application/ld+json",
         _ => "text/plain",
     };
 
