@@ -339,16 +339,17 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     }
 
     /// <inheritdoc />
-    public Task<OntologyResponse> GetOntologyAsync(
+    public async Task<OntologyResponse> GetOntologyAsync(
         Guid knowledgeSystemId,
         Actor actor,
         CancellationToken cancellationToken)
     {
-        // Same Stage 2 placeholder as the long overload. The Guid overload
-        // is the one the migrated ontology.get arm uses; the long overload
-        // is retained only for the out-of-scope MCP caller (1L singleton id)
-        // and will be dropped once the placeholder is filled in Stage 2.
-        return EmptyOntologyResponseAsync();
+        var service = ResolveOntologyService();
+        if (service is null) return await EmptyOntologyResponseAsync().ConfigureAwait(false);
+        var view = await service.GetViewAsync(knowledgeSystemId, actor, cancellationToken).ConfigureAwait(false);
+        if (view is null)
+            throw new KeyNotFoundException($"Knowledge system {knowledgeSystemId} not found.");
+        return view;
     }
 
     private static Task<OntologyResponse> EmptyOntologyResponseAsync() =>

@@ -100,6 +100,12 @@ public sealed class FastApiErrorMiddleware
                 .ConfigureAwait(false);
             return;
         }
+        catch (KeyNotFoundException ex)
+        {
+            await WriteEnvelopeAsync(context, StatusCodes.Status404NotFound,
+                new FastApiError(ex.Message)).ConfigureAwait(false);
+            return;
+        }
         catch (SkosValidationException ex)
         {
             // SKOS vocabulary validation failures (missing scheme_iri on a
