@@ -377,16 +377,20 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             RemovedTriples: Array.Empty<string>()));
     }
 
-    private Task<object?> InvokeOntologyGetAsync(InternalRequest request, CancellationToken ct)
+    private async Task<object?> InvokeOntologyGetAsync(InternalRequest request, CancellationToken ct)
     {
         // Reuse the typed helper so the dispatcher and the typed facade
         // surface stay in lock-step. The route binds only the Guid field
         // (ReqGuid), so read KnowledgeSystemGuid and leave the legacy long
-        // field alone.
-        return GetOntologyAsync(
+        // field alone. Awaiting directly (no ContinueWith wrapper) lets the
+        // typed exception surface to FastApiErrorMiddleware without being
+        // wrapped in AggregateException — a faulted KeyNotFoundException
+        // would otherwise reach the generic 500 branch instead of the 404
+        // envelope.
+        return (object?)await GetOntologyAsync(
             request.KnowledgeSystemGuid ?? Guid.Empty,
             request.Actor,
-            ct).ContinueWith(t => (object?)t.Result, ct);
+            ct).ConfigureAwait(false);
     }
 
     /// <summary>
