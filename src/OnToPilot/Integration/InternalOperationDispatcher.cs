@@ -6,6 +6,7 @@ using OnToPilot.Authentication;
 using OnToPilot.Conflicts;
 using OnToPilot.Documents;
 using OnToPilot.EntityResolution;
+using OnToPilot.Exports;
 using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
@@ -249,12 +250,19 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // -- releases --
             // 7a: list/create/review/publish/deploy/stop_deployment/delete/
             // rollback/diff wired to ReleaseService + ReleaseManager (the
-            // serving-store spine). Exports (list_exports/create_export/
-            // get_export/download_export_file) land in 7b.
-            "releases.list_exports" => Task.FromResult<object?>(EmptyListResponse()),
-            "releases.create_export" => Task.FromResult<object?>(EmptyExportJob()),
-            "releases.get_export" => Task.FromResult<object?>(EmptyExportJob()),
-            "releases.download_export_file" => Task.FromResult<object?>(Array.Empty<byte>()),
+            // serving-store spine). 7b (this slice) wires the four export
+            // ops to ExportService: list_exports / get_export land on
+            // reads (WrapAsync); create_export is wrapped in
+            // RunWithExtractionGuardAsync so a live extraction blocks the
+            // new job with 409; download_export_file throws
+            // ExportFilePayloadException which FastApiErrorMiddleware
+            // catches to write a raw-bytes response with Content-Type +
+            // Content-Disposition.
+            "releases.list_exports" => InvokeReleaseListExportsAsync(request, cancellationToken),
+            "releases.create_export" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeReleaseCreateExportAsync(request, cancellationToken)),
+            "releases.get_export" => InvokeReleaseGetExportAsync(request, cancellationToken),
+            "releases.download_export_file" => InvokeReleaseDownloadExportAsync(request, cancellationToken),
             "releases.list" => InvokeReleaseListAsync(request, cancellationToken),
             // B9 create-draft wiring — ReleaseService.CreateDraftAsync now
             // also kicks off the background capture (Task.Run +
@@ -2819,6 +2827,127 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         if (request.Body.TryGetValue(name, out var direct))
             return direct?.ToString();
         return null;
+    }
+
+    /// <summary>
+    /// Pull an optional int field from the loose body dict. Mirrors
+    /// <see cref="ReadStringField"/> — handles either the
+    /// [FromBody]-wrapped <c>"_"</c> envelope or a top-level key.
+    /// Used by <c>releases.create_export</c> to parse
+    /// <c>shard_size</c>.
+    /// </summary>
+    private static int? ReadIntField(InternalRequest request, string name)
+    {
+        if (request.Body is null) return null;
+        if (request.Body.TryGetValue("_", out var raw) && raw is System.Text.Json.JsonElement el
+            && el.ValueKind == System.Text.Json.JsonValueKind.Object
+            && el.TryGetProperty(name, out var v)
+            && v.ValueKind == System.Text.Json.JsonValueKind.Number
+            && v.TryGetInt32(out var n))
+        {
+            return n;
+        }
+        return null;
+    }
+
+    // ----- release exports helpers (slice 7b) -----
+    // Four operations under releases.* that map to ExportService:
+    //   - list_exports  (read,  WrapAsync)
+    //   - create_export (write, wrapped in RunWithExtractionGuardAsync at
+    //                    the switch so a live extraction blocks the new
+    //                    job with 409 — same policy as the rest of the
+    //                    release mutation surface)
+    //   - get_export    (read,  WrapAsync; resolves by Guid or int LegacyId)
+    //   - download_export_file
+    //                  (read; DownloadFileAsync raises
+    //                   ExportFilePayloadException which the
+    //                   FastApiErrorMiddleware catches to write a raw-bytes
+    //                   response with Content-Type + Content-Disposition —
+    //                   mirrors the Python FileResponse on
+    //                   backend/app/api/releases.py:759)
+
+    private ExportService? ResolveExportService() =>
+        _services.GetService(typeof(ExportService)) as ExportService;
+
+    private Task<object?> InvokeReleaseListExportsAsync(
+        InternalRequest request, CancellationToken cancellationToken)
+    {
+        var svc = ResolveExportService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+            return Task.FromResult<object?>(EmptyListResponse());
+        return WrapAsync(async () =>
+        {
+            var out_ = await svc.ListAsync(
+                request.KnowledgeSystemGuid.Value, cancellationToken)
+                .ConfigureAwait(false);
+            return (object?)(out_ ?? (object)EmptyListResponse());
+        });
+    }
+
+    private Task<object?> InvokeReleaseCreateExportAsync(
+        InternalRequest request, CancellationToken cancellationToken)
+    {
+        var svc = ResolveExportService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+            return Task.FromResult<object?>(EmptyExportJob());
+        return WrapAsync(async () =>
+        {
+            // Body shape (ExportRequest): { layer, release_id?, shard_size? }
+            // layer default "bundle"; release_id optional; shard_size
+            // default 100_000. ReadIntField mirrors ReadStringField for
+            // the int-typed fields.
+            var layer = ReadStringField(request, "layer") ?? ExportLayer.Bundle;
+            var releaseIdStr = ReadStringField(request, "release_id");
+            Guid? releaseId = Guid.TryParse(releaseIdStr, out var rid) ? rid : null;
+            var shardSize = ReadIntField(request, "shard_size") ?? 100_000;
+            var body = new ExportRequest(layer, releaseId, shardSize);
+            var out_ = await svc.CreateAsync(
+                request.KnowledgeSystemGuid.Value, body, request.Actor, cancellationToken)
+                .ConfigureAwait(false);
+            return (object?)(out_ ?? (object)EmptyExportJob());
+        });
+    }
+
+    private Task<object?> InvokeReleaseGetExportAsync(
+        InternalRequest request, CancellationToken cancellationToken)
+    {
+        var svc = ResolveExportService();
+        if (svc is null || request.KnowledgeSystemGuid is null
+            || string.IsNullOrEmpty(request.ResourceId))
+            return Task.FromResult<object?>(EmptyExportJob());
+        return WrapAsync(async () =>
+        {
+            var out_ = await svc.GetAsync(
+                request.KnowledgeSystemGuid.Value, request.ResourceId, cancellationToken)
+                .ConfigureAwait(false);
+            return (object?)(out_ ?? (object)EmptyExportJob());
+        });
+    }
+
+    private Task<object?> InvokeReleaseDownloadExportAsync(
+        InternalRequest request, CancellationToken cancellationToken)
+    {
+        var svc = ResolveExportService();
+        if (svc is null || request.KnowledgeSystemGuid is null
+            || string.IsNullOrEmpty(request.ResourceId)
+            || string.IsNullOrEmpty(request.SecondResourceId))
+        {
+            return Task.FromResult<object?>(Array.Empty<byte>());
+        }
+        return WrapAsync(async () =>
+        {
+            // DownloadFileAsync throws ExportFilePayloadException — the
+            // FastApiErrorMiddleware catches it and writes the raw-bytes
+            // response. The placeholder returned below is unreachable in
+            // practice but the dispatcher arm needs a non-null Task
+            // return type for WrapAsync.
+            await svc.DownloadFileAsync(
+                request.KnowledgeSystemGuid.Value,
+                request.ResourceId,
+                request.SecondResourceId,
+                cancellationToken).ConfigureAwait(false);
+            return (object?)Array.Empty<byte>();
+        });
     }
 
     /// <summary>
