@@ -25,6 +25,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OnToPilot\OnToPilot.csproj" />
+    <ProjectReference Include="..\OnToPilot.Migration\OnToPilot.Migration.csproj" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,4 +1,5 @@
 using OnToPilot.Migration.Blobs;
+using OnToPilot.Migration.Iri;
 
 namespace OnToPilot.Migration;
 
@@ -9,6 +10,8 @@ namespace OnToPilot.Migration;
 /// <list type="bullet">
 ///   <item><c>dotnet OnToPilot.Migration.dll blobs ...</c> — blob migration
 ///   (this task's primary deliverable).</item>
+///   <item><c>dotnet OnToPilot.Migration.dll iri ...</c> — IRI prefix
+///   migration (sql | rdf | shards | all subcommands).</item>
 ///   <item><c>--help</c> / <c>-h</c> — usage.</item>
 /// </list>
 ///
@@ -32,6 +35,7 @@ public static class Program
         return subcommand switch
         {
             "blobs" => await BlobMigrationEntryPoint.RunAsync(rest).ConfigureAwait(false),
+            "iri" => await IriMigrationCommand.RunAsync(rest).ConfigureAwait(false),
             _ => Fail($"unknown subcommand '{subcommand}'"),
         };
     }
@@ -46,5 +50,7 @@ public static class Program
     private const string Help = """
         OnToPilot.Migration CLI:
           blobs ...   Run the blob migration (Task 3). Pass --help to see its arguments.
+          iri ...     Run the IRI prefix migration (sql | rdf | shards | all).
+                      Pass --help to see its arguments.
         """;
 }
