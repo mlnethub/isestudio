@@ -39,6 +39,22 @@
   - tbox-only = <64-char lowercase hex>
   - abox-only = <64-char lowercase hex>
   - count-by-graph = <64-char lowercase hex>
+- expected-iri-from-prefix: http://ontopilot.local/
+- expected-iri-to-prefix:   http://goodcrew.local/
+- expected-iri-sql-row-counts:
+  - knowledge_systems.graph_iri = <int>
+  - knowledge_systems.base_iri = <int>
+  - release_deployment.tbox_graph_iri = <int>
+  - release_deployment.vocabulary_graph_iri = <int>
+  - release_deployment.abox_graph_iri = <int>
+  - entity_resolution.class_iri = <int>
+  - entity_resolution.individual_iri = <int>
+  - tbox_reconciliation.property_iri = <int>
+  - validation_decision.property_iri = <int>
+  - abox_provenance.fact_key = <int>
+- expected-iri-rdf-quad-count: <int>
+- expected-iri-rdf-manifest-sha256: <64-char lowercase hex>
+- expected-iri-shard-count: <int>
 ```
 
 > ⚠️ Every line above is parsed by the cutover script. Do not change

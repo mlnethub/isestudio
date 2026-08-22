@@ -12,9 +12,12 @@
 #   5. Invoke-RdfCopyVerification     (RDF copy read)
 #   6. Invoke-BlobMigration           (blobs into MinIO)
 #   7. Invoke-SqlMigration            (SQL GUID/LegacyId)
-#   8. Assert-AllMigrationManifests   (every manifest checksum matches record)
-#   9. Start-DotNetBackend            (boot the .NET host)
-#  10. Invoke-PostCutoverSmoke        (MCP / RDF / contract smoke)
+#   8. Invoke-IriSqlMigration         (IRI prefix SQL REPLACE)
+#   9. Invoke-IriRdfRelocation        (Oxigraph RocksDB IRI rewrite)
+#  10. Invoke-IriShardRewrite         (N-Quads shard + manifest IRI rewrite)
+#  11. Assert-AllMigrationManifests   (every manifest checksum matches record)
+#  12. Start-DotNetBackend            (boot the .NET host)
+#  13. Invoke-PostCutoverSmoke        (MCP / RDF / contract smoke)
 #
 # Any gate that throws a terminating error stops the sequence. No
 # auto-proceed to the next data layer. Exit codes follow the global
@@ -58,6 +61,14 @@ param(
 
     [string]$MigrationsDir = 'migrations/SqlAlchemyToEfCore',
 
+    [string]$IriFromPrefix = 'http://ontopilot.local/',
+    [string]$IriToPrefix = 'http://goodcrew.local/',
+    [string]$IriRdfSource,
+    [string]$IriRdfTarget,
+    [string]$IriReleasesRoot,
+    [string]$IriExportsRoot,
+    [switch]$IriDryRun,
+
     [string]$DotNetProject = 'src/OnToPilot.WebHost/OnToPilot.WebHost.csproj',
     [string]$DotNetBindAddress = 'http://127.0.0.1:5000'
 )
@@ -92,6 +103,14 @@ function Invoke-ProductionCutover {
         [string]$BlobManifestOut = '.artifacts/blob-manifest.json',
 
         [string]$MigrationsDir = 'migrations/SqlAlchemyToEfCore',
+
+        [string]$IriFromPrefix = 'http://ontopilot.local/',
+        [string]$IriToPrefix = 'http://goodcrew.local/',
+        [string]$IriRdfSource,
+        [string]$IriRdfTarget,
+        [string]$IriReleasesRoot,
+        [string]$IriExportsRoot,
+        [switch]$IriDryRun,
 
         [string]$DotNetProject = 'src/OnToPilot.WebHost/OnToPilot.WebHost.csproj',
         [string]$DotNetBindAddress = 'http://127.0.0.1:5000',
@@ -144,6 +163,33 @@ function Invoke-ProductionCutover {
             -ConnectionString $PostgresConnectionString `
             -MigrationsDir $MigrationsDir
 
+        # Gates 8-10: IRI prefix migration across SQL / RDF / shards.
+        # The IRI gates are inserted after SQL so the cutover record's
+        # expected-* fields can refer to the IRI-derived hashes (the
+        # underlying SQL rows are already rewired; the IRI rewrite is
+        # a column-level REPLACE on top of that). Each gate is
+        # independently Mockable; the rehearsal path forwards
+        # -IriDryRun for first-pass rehearsal, then drops it for the
+        # apply-mode cutover.
+        Invoke-IriSqlMigration `
+            -PostgresConnectionString $PostgresConnectionString `
+            -FromPrefix $IriFromPrefix `
+            -ToPrefix   $IriToPrefix `
+            -DryRun:([bool]$IriDryRun)
+
+        Invoke-IriRdfRelocation `
+            -Source $IriRdfSource `
+            -Target $IriRdfTarget `
+            -FromPrefix $IriFromPrefix `
+            -ToPrefix   $IriToPrefix
+
+        Invoke-IriShardRewrite `
+            -ReleasesRoot $IriReleasesRoot `
+            -ExportsRoot  $IriExportsRoot `
+            -FromPrefix   $IriFromPrefix `
+            -ToPrefix     $IriToPrefix `
+            -DryRun:([bool]$IriDryRun)
+
         # Gate 7: every manifest must exist and its checksum must match
         # the value recorded in the cutover record. The content-
         # validating gate runs schema + business + MinIO HEAD + SHA
@@ -180,7 +226,7 @@ function Invoke-ProductionCutover {
             '^Backup referenced'                   { $code = 1 }
             '^Cutover record'                      { $code = 1 }
             '^One or more migration manifests'     { $code = 3 }
-            'rdf|migration|minio|verify.sql|sql'   { $code = 2 }
+            'rdf|migration|minio|verify.sql|sql|iri' { $code = 2 }
             'smoke|MCP|mcp'                        { $code = 4 }
             default                                { $code = 1 }
         }
@@ -201,7 +247,10 @@ if ($MyInvocation.InvocationName -ne '.') {
         'Record', 'RdfSource', 'RdfCopy', 'RdfWork', 'RdfQueries',
         'BlobSource', 'BlobBucket', 'MinioEndpoint', 'MinioAccessKey',
         'MinioSecretKey', 'PostgresConnectionString', 'BlobManifestOut',
-        'MigrationsDir', 'DotNetProject', 'DotNetBindAddress'
+        'MigrationsDir',
+        'IriFromPrefix', 'IriToPrefix', 'IriRdfSource', 'IriRdfTarget',
+        'IriReleasesRoot', 'IriExportsRoot', 'IriDryRun',
+        'DotNetProject', 'DotNetBindAddress'
     )) {
         $val = Get-Variable -Name $key -Scope Script -ErrorAction SilentlyContinue
         if ($null -ne $val -and -not [string]::IsNullOrEmpty($val.Value)) {

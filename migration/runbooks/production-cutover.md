@@ -57,20 +57,35 @@ The script `Invoke-ProductionCutover.ps1` walks the following gates
 in order. Each gate is a hard preflight — a failure stops the
 sequence with a non-zero exit code and a descriptive message.
 
-| # | Gate                        | Exit on failure |
-|---|-----------------------------|-----------------|
-| 0 | Assert-CutoverRecord        | 1               |
-| 1 | Assert-PythonBackendStopped | 1               |
-| 2 | Assert-DatabaseWriteFreeze  | 1               |
-| 3 | Assert-VerifiedBackup       | 1               |
-| 4 | Invoke-RdfCopyVerification  | 2               |
-| 5 | Invoke-BlobMigration        | 2               |
-| 6 | Invoke-SqlMigration         | 2               |
-| 7 | Assert-AllMigrationManifests| 3               |
-| 8 | Start-DotNetBackend         | 1               |
-| 9 | Invoke-PostCutoverSmoke     | 4               |
+| #  | Gate                        | Exit on failure |
+|----|-----------------------------|-----------------|
+| 0  | Assert-CutoverRecord        | 1               |
+| 1  | Assert-PythonBackendStopped | 1               |
+| 2  | Assert-DatabaseWriteFreeze  | 1               |
+| 3  | Assert-VerifiedBackup       | 1               |
+| 4  | Invoke-RdfCopyVerification  | 2               |
+| 5  | Invoke-BlobMigration        | 2               |
+| 6  | Invoke-SqlMigration         | 2               |
+| 7  | Invoke-IriSqlMigration      | 2               |
+| 8  | Invoke-IriRdfRelocation     | 2               |
+| 9  | Invoke-IriShardRewrite      | 2               |
+| 10 | Assert-AllMigrationManifests | 3               |
+| 11 | Start-DotNetBackend          | 1               |
+| 12 | Invoke-PostCutoverSmoke      | 4               |
 
-**Gate 7 (`Assert-AllMigrationManifests`) is a content gate, not just
+**Gates 7-9 are the IRI prefix migration trio.** They run
+sequentially after the SQL GUID/LegacyId migration and before the
+manifest content gate. Each gate corresponds to a thin PowerShell
+wrapper that drives a single `dotnet run --project
+src/OnToPilot.Migration -- iri ...` subcommand. The IRI gates are
+independently mockable and rehearsed against the most recent
+production backup; the rehearsal artefacts are copied into the
+cutover record's `expected-iri-...` blocks. See
+[iri-migration-runbook.md](iri-migration-runbook.md) for the
+detailed per-gate procedure, the rollback boundary (one-way by
+design), and the 24-hour observation additions.
+
+**Gate 10 (`Assert-AllMigrationManifests`) is a content gate, not just
 a file-existence gate.** The cutover script runs six checks per
 manifest:
 

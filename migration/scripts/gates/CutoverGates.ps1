@@ -240,6 +240,66 @@ function Invoke-SqlMigration {
     Write-Host "[cutover] SQL migration: conn=<redacted> dir=$MigrationsDir"
 }
 
+function Invoke-IriSqlMigration {
+    <#
+    .SYNOPSIS
+        Cutover gate 6.5: rewrite legacy IRI prefixes in the production
+        SQL columns (knowledge_systems.graph_iri/base_iri + release +
+        entity-resolution + reconciliation + validation + provenance
+        fact_key). Mocked in tests. In rehearsal / production this
+        delegates to Invoke-IriSqlMigration.ps1 (Phase 2).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$PostgresConnectionString,
+        [string]$FromPrefix = 'http://ontopilot.local/',
+        [string]$ToPrefix = 'http://goodcrew.local/',
+        [switch]$DryRun,
+        [string]$ProjectPath = 'src/OnToPilot.Migration/OnToPilot.Migration.csproj'
+    )
+    # F-4 redaction: connection string never reaches the operator log.
+    Write-Host "[cutover] IRI SQL migration (redacted): from=$FromPrefix to=$ToPrefix dryRun=$DryRun"
+}
+
+function Invoke-IriRdfRelocation {
+    <#
+    .SYNOPSIS
+        Cutover gate 6.6: relocate the Oxigraph RocksDB workspace
+        (named-graph enumeration -> IRI rewrite -> bulk-load to fresh
+        dir). Mocked in tests. In rehearsal / production this
+        delegates to Invoke-IriRdfRelocation.ps1 (Phase 2).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Source,
+        [string]$Target,
+        [string]$FromPrefix = 'http://ontopilot.local/',
+        [string]$ToPrefix = 'http://goodcrew.local/',
+        [string]$ProjectPath = 'src/OnToPilot.Migration/OnToPilot.Migration.csproj'
+    )
+    Write-Host "[cutover] IRI RDF relocation: source=$Source target=$Target from=$FromPrefix to=$ToPrefix"
+}
+
+function Invoke-IriShardRewrite {
+    <#
+    .SYNOPSIS
+        Cutover gate 6.7: rewrite IRI prefixes in on-disk N-Quads
+        shards + ks.json + refresh every manifest SHA-256 entry.
+        Mocked in tests. In rehearsal / production this delegates to
+        Invoke-IriShardRewrite.ps1 (Phase 2).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$ReleasesRoot,
+        [string]$ExportsRoot,
+        [string]$FromPrefix = 'http://ontopilot.local/',
+        [string]$ToPrefix = 'http://goodcrew.local/',
+        [switch]$DryRun,
+        [string]$ProjectPath = 'src/OnToPilot.Migration/OnToPilot.Migration.csproj'
+    )
+    Write-Host "[cutover] IRI shard rewrite: releases=$ReleasesRoot exports=$ExportsRoot from=$FromPrefix to=$ToPrefix dryRun=$DryRun"
+}
+
 # ---------------------------------------------------------------------
 # Manifest validation (Assert-AllMigrationManifests)
 # ---------------------------------------------------------------------
