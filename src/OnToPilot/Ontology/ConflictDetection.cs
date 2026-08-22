@@ -680,17 +680,18 @@ public static class ConflictDetection
                                 [slot] = sSuper,
                             }));
                     }
-                    // The union fix would require set_property_union which
-                    // OntologyEditor doesn't ship yet — surface as a hint
-                    // resolution that's flagged not-yet-supported rather
-                    // than silently failing. UI shows it greyed out.
+                    // Union fix: set the property's domain/range to an
+                    // owl:unionOf of the conflicting values (slice 9 — now
+                    // wired in OntologyEditor).
                     resolutions.Add(new Resolution(
                         Id: "union",
                         Label: $"Use union {slotLabel} ({string.Join(" ∪ ", concrete.Select(c => LabelOf(m, c)))})",
                         Op: new Dictionary<string, object?>
                         {
-                            ["op"] = "noop",
-                            ["reason"] = "set_property_union not yet implemented in .NET editor",
+                            ["op"] = "set_property_union",
+                            ["iri"] = iri,
+                            ["slot"] = slot,
+                            ["members"] = concrete.ToList(),
                         }));
                 }
 
@@ -776,24 +777,36 @@ public static class ConflictDetection
                     new(
                         Id: "merge",
                         Label: $"Merge into \"{stem}\"",
-                        // merge_properties not yet wired in OntologyEditor —
-                        // surface as a noop so the UI can show the option
-                        // greyed out instead of a 500.
-                        Op: new Dictionary<string, object?>
-                        {
-                            ["op"] = "noop",
-                            ["reason"] = "merge_properties not yet implemented in .NET editor",
-                        }),
+                        Op: MergeOrSubordinateOp("merge_properties", members, targetIri, stem)),
                     new(
                         Id: "subprop",
                         Label: $"Sub-properties of \"{stem}\"",
-                        Op: new Dictionary<string, object?>
-                        {
-                            ["op"] = "noop",
-                            ["reason"] = "subordinate_properties not yet implemented in .NET editor",
-                        }),
+                        Op: MergeOrSubordinateOp("subordinate_properties", members, targetIri, stem)),
                 }));
         }
+    }
+
+    /// <summary>
+    /// Build the op dict for a <c>merge_properties</c> or
+    /// <c>subordinate_properties</c> resolution. When an existing property
+    /// whose label matches the stem is found, target it by IRI; otherwise
+    /// let the editor mint a new one from the stem label. Mirrors
+    /// <c>tgt = {"target": target_iri} if target_iri else {"target_label": stem}</c>
+    /// in <c>backend/app/ontology/conflicts.py</c>.
+    /// </summary>
+    private static Dictionary<string, object?> MergeOrSubordinateOp(
+        string opName, IReadOnlyList<string> members, string? targetIri, string stem)
+    {
+        var dict = new Dictionary<string, object?>
+        {
+            ["op"] = opName,
+            ["sources"] = members.ToList(),
+        };
+        if (targetIri is not null)
+            dict["target"] = targetIri;
+        else
+            dict["target_label"] = stem;
+        return dict;
     }
 
     /// <summary>

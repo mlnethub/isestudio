@@ -409,10 +409,10 @@ public sealed class ConflictService
             ?? throw new InvalidOperationException("Unknown resolution id.");
 
         // The Python backend also cascades merges into the ABox graph
-        // (merge_classes / merge_properties). Those ops aren't implemented
-        // in OntologyEditor yet; the detector surfaces them as no-op
-        // resolutions so the UI can render the option greyed out. A
-        // delete_axiom resolution runs end-to-end here.
+        // (merge_classes / merge_properties). Slice 9 wired these into
+        // OntologyEditor; the detector now emits real ops instead of noop
+        // hints. An explicit noop resolution (op=="noop") still skips the
+        // editor and just marks the conflict resolved.
         if (_store is not null && !IsNoOpResolution(chosen.Op))
         {
             var editor = new OntologyEditor(_store);
