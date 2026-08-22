@@ -140,7 +140,7 @@ internal static class ApiContractScenario
             .Replace("{rid}", Guid.NewGuid().ToString("N"))
             .Replace("{token_id}", Guid.NewGuid().ToString("N"))
             .Replace("{pid}", seed.ProviderId.ToString("N"))
-            .Replace("{prompt_key}", "default")
+            .Replace("{prompt_key}", "extraction.system")
             .Replace("{proposal_id}", Guid.NewGuid().ToString("N"))
             .Replace("{user_id}", Guid.NewGuid().ToString("N"))
             .Replace("{filename}", "export.nq")
@@ -370,6 +370,15 @@ internal static class ApiContractScenario
         if (path.EndsWith("/documents/parse-batch", StringComparison.OrdinalIgnoreCase))
         {
             return """{"document_ids":["11111111-1111-1111-1111-111111111111"]}""";
+        }
+        // prompts.update: PromptService.UpdateAsync refuses empty content
+        // with ValidationException → 400. Ship a non-empty body so the
+        // dispatcher returns the wire PromptOut envelope → 200.
+        if (method == "PUT"
+            && path.Contains("/prompts/", StringComparison.OrdinalIgnoreCase)
+            && path.Contains("/knowledge/", StringComparison.OrdinalIgnoreCase))
+        {
+            return """{"content":"demo"}""";
         }
         // members: add the seeded admin as a viewer. The seeded KS has a
         // null OwnerId so the "this user is the owner" guard is skipped.
