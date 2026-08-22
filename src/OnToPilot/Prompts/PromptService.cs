@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using OnToPilot.Api;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Audit;
 using OnToPilot.Authorization;
@@ -41,8 +42,8 @@ public sealed class PromptService
     /// Merge the static <see cref="PromptCatalog"/> with this KS's override
     /// rows into the wire-shape list. Returns <c>null</c> when the KS is
     /// missing or invisible to the actor (mapped to 404 by the dispatcher);
-    /// throws <see cref="InvalidOperationException"/> when the actor lacks
-    /// <see cref="KSRole.Viewer"/> (mapped to 403).
+    /// throws <see cref="ValidationException"/> when the actor lacks
+    /// <see cref="KSRole.Viewer"/> (mapped to 403 by the dispatcher).
     /// </summary>
     public async Task<PromptListOut?> ListAsync(Guid ksId, Actor actor, CancellationToken ct)
     {
@@ -50,7 +51,7 @@ public sealed class PromptService
         if (user is null || ks is null) return null;
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Viewer)
-            throw new InvalidOperationException("Viewer access required to list prompts.");
+            throw new ValidationException("Viewer access required to list prompts.");
 
         var overrides = await _db.KnowledgePromptOverrides.AsNoTracking()
             .Where(o => o.KnowledgeSystemId == ksId)
@@ -79,7 +80,7 @@ public sealed class PromptService
     /// <summary>
     /// Upsert an override row for <paramref name="promptKey"/>. Throws
     /// <see cref="KeyNotFoundException"/> when the key isn't in
-    /// <see cref="PromptCatalog"/>, <see cref="InvalidOperationException"/>
+    /// <see cref="PromptCatalog"/>, <see cref="ValidationException"/>
     /// for empty content or insufficient role.
     /// </summary>
     public async Task<PromptOut?> UpdateAsync(
@@ -90,7 +91,7 @@ public sealed class PromptService
         CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(content))
-            throw new InvalidOperationException("content must not be empty");
+            throw new ValidationException("content must not be empty");
         var def = PromptCatalog.Find(promptKey)
             ?? throw new KeyNotFoundException($"Unknown prompt '{promptKey}'.");
 
@@ -98,7 +99,7 @@ public sealed class PromptService
         if (user is null || ks is null) return null;
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Editor)
-            throw new InvalidOperationException("Editor access required to update prompt.");
+            throw new ValidationException("Editor access required to update prompt.");
 
         var now = _clock.GetUtcNow();
         var existing = await _db.KnowledgePromptOverrides
@@ -175,7 +176,7 @@ public sealed class PromptService
         if (user is null || ks is null) return null;
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Editor)
-            throw new InvalidOperationException("Editor access required to restore prompt.");
+            throw new ValidationException("Editor access required to restore prompt.");
 
         var existing = await _db.KnowledgePromptOverrides
             .FirstOrDefaultAsync(o => o.KnowledgeSystemId == ksId && o.PromptKey == promptKey, ct)
@@ -222,7 +223,7 @@ public sealed class PromptService
         if (user is null || ks is null) return 0;
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Editor)
-            throw new InvalidOperationException("Editor access required to restore all prompts.");
+            throw new ValidationException("Editor access required to restore all prompts.");
 
         var rows = await _db.KnowledgePromptOverrides
             .Where(o => o.KnowledgeSystemId == ksId)

@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using OnToPilot.Api;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
@@ -121,7 +122,7 @@ public sealed class PromptServiceTests
         using var scope = app.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<PromptService>();
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsAsync<ValidationException>(() =>
             svc.UpdateAsync(ks.Id, "extraction.system", "   ", actor, CancellationToken.None));
         await Assert.ThrowsAsync<KeyNotFoundException>(() =>
             svc.UpdateAsync(ks.Id, "no.such.key", "x", actor, CancellationToken.None));

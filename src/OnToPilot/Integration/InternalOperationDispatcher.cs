@@ -601,7 +601,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         var body = DeserializeBody<PromptUpdateIn>(request);
         if (body is null || string.IsNullOrWhiteSpace(body.Content))
         {
-            throw new InvalidOperationException("content must not be empty");
+            throw new OnToPilot.Api.ValidationException("content must not be empty");
         }
         return WrapAsync(async () =>
         {
