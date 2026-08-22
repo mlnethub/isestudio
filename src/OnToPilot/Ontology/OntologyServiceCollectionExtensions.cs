@@ -20,6 +20,7 @@ public static class OntologyServiceCollectionExtensions
         services.AddScoped<OntologyProvenanceService>();
         services.AddScoped<HistoryService>();
         services.AddScoped<PublishedOntologyService>();
+        services.AddScoped<PublishedDataService>();
         services.AddScoped<ExternalOntologyService>();
         // Public read-only API surface for external token holders
         // (/api/v1/knowledge-systems/{public_id}/* read endpoints minus
