@@ -21,6 +21,11 @@ public static class OntologyServiceCollectionExtensions
         services.AddScoped<HistoryService>();
         services.AddScoped<PublishedOntologyService>();
         services.AddScoped<ExternalOntologyService>();
+        // Public read-only API surface for external token holders
+        // (/api/v1/knowledge-systems/{public_id}/* read endpoints minus
+        // ontology/query). Scoped — shares the request DbContext and the
+        // singleton StoreWrapper / ABoxManager / SkosManager / RdfExportService.
+        services.AddScoped<ExternalApiService>();
         services.AddSingleton<OntologyViewBuilder>();
         // Refreshes the cached class/property/axiom count columns on
         // KnowledgeSystemEntity after TBox / ABox mutations. Scoped
