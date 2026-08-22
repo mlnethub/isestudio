@@ -339,12 +339,12 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // provisioning/stopped, and cache-header concerns are
             // already enforced by the controller — the dispatcher
             // just has to NOT throw NotSupportedException.
-            "external.metadata" => Task.FromResult<object?>(EmptyKnowledgeSystem()),
+            "external.metadata" => InvokeExternalMetadataAsync(request, cancellationToken),
             "external.ontology" => InvokeExternalOntologyAsync(request, cancellationToken),
-            "external.classes" => Task.FromResult<object?>(EmptyListResponse()),
-            "external.export" => Task.FromResult<object?>(""),
-            "external.individual" => Task.FromResult<object?>(EmptyIndividualRef()),
-            "external.individuals" => Task.FromResult<object?>(EmptyListResponse()),
+            "external.classes" => InvokeExternalClassesAsync(request, cancellationToken),
+            "external.export" => InvokeExternalExportAsync(request, cancellationToken),
+            "external.individual" => InvokeExternalIndividualAsync(request, cancellationToken),
+            "external.individuals" => InvokeExternalIndividualsAsync(request, cancellationToken),
             "external.query" => InvokeExternalQueryAsync(request, cancellationToken),
             "external.vocabulary.concepts" => InvokeExternalVocabularyListConceptsAsync(request, cancellationToken),
             "external.vocabulary.export" => InvokeExternalVocabularyExportAsync(request, cancellationToken),
@@ -872,6 +872,108 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             ?? throw new InvalidOperationException("publicId required for external.ontology");
         var view = await service.GetViewAsync(publicId, request.Actor, ct).ConfigureAwait(false);
         return view ?? EmptyOntologyResponse();
+    }
+
+    // ------------------------------------------------------------------
+    // external read endpoints (metadata / classes / export / individual /
+    // individuals). All resolve the KS by public_id (NOT internal Guid)
+    // and delegate to ExternalApiService, which reads directly from the
+    // low-level managers — bypassing ABoxService's KSRole gate because a
+    // token actor's id is the token Guid, not a user id. Token scope +
+    // KS-binding are already enforced by ExternalApiController before the
+    // dispatcher is reached. Read arms go through WrapAsync (no
+    // extraction-guard 409 — these are all reads).
+    // ------------------------------------------------------------------
+
+    private ExternalApiService? ResolveExternalApiService() =>
+        _services.GetService(typeof(ExternalApiService)) as ExternalApiService;
+
+    private Task<object?> InvokeExternalMetadataAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveExternalApiService();
+        if (svc is null) return Task.FromResult<object?>(EmptyKnowledgeSystem());
+        var publicId = request.PublicId
+            ?? throw new InvalidOperationException("publicId required for external.metadata");
+        return WrapAsync(async () =>
+        {
+            var meta = await svc.GetMetadataAsync(publicId, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(meta ?? EmptyKnowledgeSystem());
+        });
+    }
+
+    private Task<object?> InvokeExternalClassesAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveExternalApiService();
+        if (svc is null)
+            return Task.FromResult<object?>(new { classes = Array.Empty<object>(), total = 0 });
+        var publicId = request.PublicId
+            ?? throw new InvalidOperationException("publicId required for external.classes");
+        return WrapAsync(async () =>
+        {
+            var out_ = await svc.ListClassesAsync(publicId, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(out_ ?? (object)new { classes = Array.Empty<object>(), total = 0 });
+        });
+    }
+
+    private Task<object?> InvokeExternalExportAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveExternalApiService();
+        if (svc is null) return Task.FromResult<object?>("");
+        var publicId = request.PublicId
+            ?? throw new InvalidOperationException("publicId required for external.export");
+        var fmt = QueryString(request, "fmt") ?? "turtle";
+        return WrapAsync(async () =>
+        {
+            // ParseExportFormat is invoked inside the body so an
+            // unsupported fmt throws ValidationException from the async
+            // path (→ 400), matching InvokeOntologyExportAsync.
+            var format = ParseExportFormat(fmt);
+            var rdf = await svc.ExportAsync(publicId, format, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(rdf ?? "");
+        });
+    }
+
+    private Task<object?> InvokeExternalIndividualAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveExternalApiService();
+        var iri = QueryString(request, "iri");
+        if (svc is null || string.IsNullOrEmpty(iri))
+            return Task.FromResult<object?>(EmptyIndividualRef());
+        var publicId = request.PublicId
+            ?? throw new InvalidOperationException("publicId required for external.individual");
+        return WrapAsync(async () =>
+        {
+            var ind = await svc.GetIndividualAsync(publicId, iri!, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(ind ?? EmptyIndividualRef());
+        });
+    }
+
+    private Task<object?> InvokeExternalIndividualsAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveExternalApiService();
+        if (svc is null) return Task.FromResult<object?>(EmptyListResponse());
+        var publicId = request.PublicId
+            ?? throw new InvalidOperationException("publicId required for external.individuals");
+        var classIri = QueryString(request, "class_iri");
+        var q = QueryString(request, "q");
+        var limit = QueryInt(request, "limit", 20);
+        var offset = QueryInt(request, "offset", 0);
+        return WrapAsync(async () =>
+        {
+            var out_ = await svc.ListIndividualsAsync(
+                publicId, classIri, q, limit, offset, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(out_ ?? (object)EmptyListResponse());
+        });
     }
 
     /// <summary>
