@@ -61,11 +61,17 @@ public sealed class ReleaseApiTests
         Assert.NotNull(version);
         Assert.StartsWith("draft-", version);
 
-        // manifest.capture_status="pending" — the Python baseline marks
-        // a draft as pending until the background _capture_release task
-        // populates the manifest with shard counts.
+        // manifest.capture_status="ready" — capture runs synchronously in
+        // the request scope (MVP simplification; the Task.Run +
+        // IDbContextFactory background path was deferred to a hardening
+        // pass because it silently swallowed exceptions). By the time the
+        // wire response returns, the three RDF layers are sharded under
+        // the artifact root and the row manifest is final. Python's
+        // background capture marks "pending" until the job completes;
+        // .NET surfaces the same finality on the response so the
+        // frontend's load() after createDraft always sees ready.
         var manifest = body.GetProperty("manifest");
-        Assert.Equal("pending", manifest.GetProperty("capture_status").GetString());
+        Assert.Equal("ready", manifest.GetProperty("capture_status").GetString());
 
         // DB-side: the row must actually exist so a subsequent GET
         // /releases (the load() the frontend fires after createDraft)

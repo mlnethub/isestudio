@@ -279,15 +279,20 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     }
 
     // ------------------------------------------------------------------
-    // I-3 regression: concurrent CaptureAsync for the same KS must yield
-    // distinct version strings. Without the manager lock around
-    // AllocateVersion two captures can both observe the same existing
-    // versions and both allocate "v1". With the lock, version allocation
-    // is serialized so the N captures each get a unique version.
+    // I-3 regression: concurrent CaptureAsync for the same KS must NOT
+    // corrupt each other's artifact shards. The 7a refactor moved
+    // version allocation out of CaptureAsync (the service hands in an
+    // explicit {releaseId, version}), so the manager no longer mints
+    // versions — instead it serialises the per-release artifact writes
+    // behind _versionLock so two concurrent captures cannot overlap on
+    // the same release key. Each concurrent call here uses a distinct
+    // release id and the same draft version; the lock around the
+    // workspace CaptureAsync + Write should let all N finish and every
+    // release key on disk should be readable.
     // ------------------------------------------------------------------
     [Fact]
     [Trait("Category", "RdfCore")]
-    public async Task Concurrent_captures_yield_distinct_versions()
+    public async Task Concurrent_captures_write_distinct_release_artifacts()
     {
         const int n = 8;
         _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
@@ -295,18 +300,34 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
 
         using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
 
-        var tasks = Enumerable.Range(0, n)
-            .Select(_ => Task.Run(() => releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None)))
+        var releaseKeys = Enumerable.Range(0, n)
+            .Select(_ => Guid.NewGuid().ToString("N"))
+            .ToArray();
+
+        var tasks = releaseKeys
+            .Select(key => Task.Run(() => releases.CaptureAsync(
+                _ks, key, "draft-v1", ActorInstance, CancellationToken.None)))
             .ToArray();
 
         var captured = await Task.WhenAll(tasks);
 
         Assert.Equal(n, captured.Length);
-        var versions = captured.Select(r => r.Version).ToList();
-        Assert.Equal(n, versions.Distinct(StringComparer.Ordinal).Count());
-        // Version numbers must be a contiguous range starting at v1
-        // (no gaps when capturing into an empty artifact store).
-        var numbers = versions.Select(v => int.Parse(v.AsSpan(1))).OrderBy(x => x).ToList();
-        Assert.Equal(Enumerable.Range(1, n).ToList(), numbers);
+        // Every concurrent call returned its own Release record whose
+        // releaseId / path matches the key we passed in — i.e., the
+        // per-release artifacts are isolated by key, not by minting.
+        Assert.Equal(releaseKeys.OrderBy(k => k, StringComparer.Ordinal),
+            captured.Select(r => r.Id).OrderBy(k => k, StringComparer.Ordinal));
+        // All versions are the same explicit "draft-v1" (the service
+        // supplies the draft version; publish will mint v1 via
+        // ReleaseService.NextVersionAsync).
+        Assert.All(captured, r => Assert.Equal("draft-v1", r.Version));
+        // Each artifact dir exists and is readable after the concurrent
+        // burst — i.e., no truncation / partial-write from interleaved
+        // writes.
+        foreach (var r in captured)
+        {
+            var tbox = _fx.Artifacts.Read(r.Id, RdfLayer.TBox);
+            Assert.NotEmpty(tbox);
+        }
     }
 }
