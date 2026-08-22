@@ -97,7 +97,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
 
         // Use a per-fixture manager so the lifecycle is explicit.
         using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
-        var release = await releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None);
+        var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
 
         var laterQuad = MakeQuad("urn:s2", "urn:p", "v2", _ks.TBoxGraph);
@@ -111,21 +111,21 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     // ------------------------------------------------------------------
     [Fact]
     [Trait("Category", "RdfCore")]
-    public async Task CaptureAsync_assigns_v1_then_v2_then_reuses_v1_after_delete()
+    public async Task AllocateVersion_assigns_v1_then_v2_then_reuses_v1_after_delete()
     {
         using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
 
-        var v1 = await releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None);
-        Assert.Equal("v1", v1.Version);
+        var v1 = releases.AllocateVersion();
+        Assert.Equal("v1", v1);
+        var rel1 = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), v1, ActorInstance, CancellationToken.None);
 
-        var v2 = await releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None);
-        Assert.Equal("v2", v2.Version);
+        var v2 = releases.AllocateVersion();
+        Assert.Equal("v2", v2);
+        await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), v2, ActorInstance, CancellationToken.None);
 
-        // Delete v1 → version slot must be freed.
-        await releases.DeleteAsync(v1.Id, ActorInstance, CancellationToken.None);
-
-        var v1Redux = await releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None);
-        Assert.Equal("v1", v1Redux.Version);
+        // Delete rel1 → its v1 artifact slot is freed for reuse.
+        await releases.DeleteAsync(rel1.Id, ActorInstance, CancellationToken.None);
+        Assert.Equal("v1", releases.AllocateVersion());
     }
 
     // ------------------------------------------------------------------
@@ -143,7 +143,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
             [MakeQuad("urn:v-s", "urn:p", "v-v", _ks.VocabularyGraph)]);
 
         using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
-        var release = await releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None);
+        var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
 
         Assert.Contains(releases.ReadPublished(release.Id, RdfLayer.TBox),
@@ -165,7 +165,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
             [MakeQuad("urn:s1", "urn:p", "v1", _ks.TBoxGraph)]);
 
         using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
-        var release = await releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None);
+        var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
 
         // Race: many concurrent workspace writes — none should leak.
@@ -191,7 +191,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     public async Task DeleteAsync_closes_serving_store()
     {
         using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
-        var release = await releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None);
+        var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
         Assert.True(releases.IsPublished(release.Id));
 
@@ -223,7 +223,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
             [MakeQuad("urn:s1", "urn:p", "v1", _ks.TBoxGraph)]);
 
         using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
-        var release = await releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None);
+        var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
 
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
@@ -243,7 +243,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
             [MakeQuad("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
 
         using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
-        var release = await releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None);
+        var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
 
         var manifest = _fx.Artifacts.LoadManifest(release.Id);
         Assert.Equal(3, manifest.Files.Count);
@@ -296,7 +296,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
         using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
 
         var tasks = Enumerable.Range(0, n)
-            .Select(_ => Task.Run(() => releases.CaptureAsync(_ks, ActorInstance, CancellationToken.None)))
+            .Select(_ => Task.Run(() => releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None)))
             .ToArray();
 
         var captured = await Task.WhenAll(tasks);
