@@ -55,4 +55,27 @@ public sealed class OnToPilotOptions
 
     /// <summary>Whether TBox RDF imports trigger controlled terminology synchronization.</summary>
     public bool AutomaticTerminology { get; set; } = true;
+
+    /// <summary>
+    /// Root prefix used when stamping a fresh knowledge system's
+    /// <see cref="Infrastructure.Persistence.Entities.KnowledgeSystemEntity.GraphIri"/>
+    /// / <see cref="Infrastructure.Persistence.Entities.KnowledgeSystemEntity.BaseIri"/>.
+    /// Mirrors the Python backend's <c>GRAPH_ROOT</c> setting so .NET and
+    /// Python stamp byte-identical IRIs for the same KS id. Configurable
+    /// so a future IRI migration is a config change rather than a code
+    /// change.
+    /// </summary>
+    public string IriRoot { get; set; } = "http://goodcrew.local/ks";
+
+    /// <summary>
+    /// Prefix used by the OnToPilot vocabulary namespace (the <c>op:</c>
+    /// shorthand in Turtle). Must end with <c>#</c> — the runtime
+    /// concatenates predicate local names (e.g. <c>defaultLanguage</c>,
+    /// <c>status</c>, <c>mapsTo</c>, <c>origin</c>) onto this prefix to
+    /// form full predicate IRIs, and the SHACL shapes loader
+    /// string-replaces its hard-coded <c>op:</c> prefix with this value
+    /// at load time. Mirrors the Python backend's
+    /// <c>ONTOPILOT</c> / <c>settings.vocab_namespace</c>.
+    /// </summary>
+    public string VocabNamespace { get; set; } = "http://goodcrew.local/vocab#";
 }
