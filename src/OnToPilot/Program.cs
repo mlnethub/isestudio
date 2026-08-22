@@ -400,6 +400,11 @@ builder.Services.AddScoped<OnToPilot.Settings.SettingsService>();
 // through IServiceProvider so the SQLite contract-test path runs without
 // an embedded Oxigraph.
 builder.Services.AddConflictServices();
+// Entity-resolution slice — queue / decisions / resolve (match|new) / revoke /
+// edit_reason. Scoped; ABoxManager + StoreWrapper are resolved per-request via
+// the singleton registrations above so the SQLite contract-test path runs
+// without an embedded Oxigraph.
+builder.Services.AddResolutionServices();
 // Knowledge slice — KS CRUD + membership + review stats. Scoped service
 // shares the request DbContext and depends on KnowledgeSystemAccessService
 // (singleton, registered above) for the Viewer / Editor / Owner gates.
