@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Application.Integration;
+using OnToPilot.Application.Sparql;
 using OnToPilot.Integration;
 
 namespace OnToPilot.ApiContract.Tests.Baseline;
@@ -24,10 +25,31 @@ public sealed class FacadeSmokeTests
         // Build a minimal dispatcher with no backing services. The smoke
         // tests never exercise the dispatcher (they assert the typed
         // surface returns its stub values), so the empty implementation
-        // is sufficient.
+        // is sufficient. The SPARQL executor is stubbed with a null-returning
+        // double so we don't need a real Oxigraph store to instantiate the
+        // facade.
         var services = new ServiceCollection().BuildServiceProvider();
         var dispatcher = new InternalOperationDispatcher(services);
-        return new IntegrationApiFacade(dispatcher);
+        return new IntegrationApiFacade(dispatcher, new NullSparqlQueryExecutor());
+    }
+
+    /// <summary>
+    /// Trivial <see cref="ISparqlQueryExecutor"/> that returns an empty row
+    /// set for any query. The smoke tests never actually exercise the
+    /// SPARQL path — they only assert the facade surface compiles and is
+    /// instantiable.
+    /// </summary>
+    private sealed class NullSparqlQueryExecutor : ISparqlQueryExecutor
+    {
+        public Task<QueryResponse> ExecuteAsync(
+            string publicId,
+            string sparql,
+            int maxRows,
+            TokenPrincipal token,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(new QueryResponse(Array.Empty<IReadOnlyDictionary<string, object?>>()));
+        }
     }
 
     /// <summary>

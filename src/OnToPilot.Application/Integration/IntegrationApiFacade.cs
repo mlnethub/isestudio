@@ -1,4 +1,5 @@
 using OnToPilot.Application.Foundation;
+using OnToPilot.Application.Sparql;
 
 namespace OnToPilot.Application.Integration;
 
@@ -21,17 +22,22 @@ namespace OnToPilot.Application.Integration;
 public sealed class IntegrationApiFacade : IIntegrationApiFacade
 {
     private readonly IInternalOperationDispatcher _dispatcher;
+    private readonly ISparqlQueryExecutor _executor;
 
     /// <summary>
-    /// Compose the facade around an <see cref="IInternalOperationDispatcher"/>.
-    /// The dispatcher is the per-operation routing table; in production it
-    /// is wired by <c>Program.cs</c> against the live services
-    /// (<c>OntologyEditor</c>, <c>ABoxManager</c>, <c>ReleaseManager</c>, …).
+    /// Compose the facade around an <see cref="IInternalOperationDispatcher"/>
+    /// and a read-only <see cref="ISparqlQueryExecutor"/>. The dispatcher is
+    /// the per-operation routing table; the executor is the SPARQL backend
+    /// that backs <c>external.query</c>, <c>published.query</c>,
+    /// <c>published.release.query</c>, and the MCP <c>query_knowledge</c>
+    /// tool. Both are wired by <c>Program.cs</c> against the live services.
     /// </summary>
-    public IntegrationApiFacade(IInternalOperationDispatcher dispatcher)
+    public IntegrationApiFacade(IInternalOperationDispatcher dispatcher, ISparqlQueryExecutor executor)
     {
         ArgumentNullException.ThrowIfNull(dispatcher);
+        ArgumentNullException.ThrowIfNull(executor);
         _dispatcher = dispatcher;
+        _executor = executor;
     }
 
     /// <inheritdoc />
@@ -60,10 +66,14 @@ public sealed class IntegrationApiFacade : IIntegrationApiFacade
         TokenPrincipal token,
         CancellationToken cancellationToken)
     {
-        // Task 3 will wire the read-only SPARQL executor. For now return an
-        // empty row set so the facade surface compiles; controllers will
-        // never reach this path until task 3.
-        return Task.FromResult(new QueryResponse(Array.Empty<IReadOnlyDictionary<string, object?>>()));
+        // Read-only SPARQL policy enforcement happens inside the executor
+        // so the HTTP path (PublishedController pre-validates and the
+        // executor re-validates as a safety net) and the MCP path
+        // (OnToPilotMcpTools skips the controller) get identical
+        // treatment without coupling OnToPilot.Application to the API
+        // project.
+        var capped = Math.Clamp(maxRows, 1, 10_000);
+        return _executor.ExecuteAsync(publicId, sparql, capped, token, cancellationToken);
     }
 
     /// <inheritdoc />
