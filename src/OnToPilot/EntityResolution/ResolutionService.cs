@@ -70,8 +70,11 @@ public sealed class ResolutionService
             q = q.Where(r => EF.Functions.Like(r.SurfaceForm, $"%{query}%"));
 
         var total = await q.CountAsync(ct).ConfigureAwait(false);
+        // SQLite does not support DateTimeOffset in ORDER BY (slice 2 history
+        // pattern); LegacyId(long) is monotonically increasing per insert
+        // and is provider-portable.
         var rows = await q
-            .OrderBy(r => r.CreatedAt).ThenBy(r => r.Id)
+            .OrderBy(r => r.LegacyId).ThenBy(r => r.Id)
             .Skip(Math.Max(offset, 0)).Take(Math.Clamp(limit, 1, 200))
             .ToListAsync(ct).ConfigureAwait(false);
 
@@ -101,8 +104,11 @@ public sealed class ResolutionService
             q = q.Where(r => EF.Functions.Like(r.SurfaceForm, $"%{query}%"));
 
         var total = await q.CountAsync(ct).ConfigureAwait(false);
+        // Resolved rows are scoped to status ∈ {matched, new, distinct}, so
+        // every row has ResolvedAt != null. LegacyId desc is monotonic across
+        // the whole insert order and is portable across SQLite / Postgres.
         var rows = await q
-            .OrderByDescending(r => r.ResolvedAt ?? r.CreatedAt).ThenBy(r => r.Id)
+            .OrderByDescending(r => r.LegacyId).ThenBy(r => r.Id)
             .Skip(Math.Max(offset, 0)).Take(Math.Clamp(limit, 1, 200))
             .ToListAsync(ct).ConfigureAwait(false);
 
