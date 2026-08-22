@@ -43,6 +43,21 @@ public static class OntologyServiceCollectionExtensions
                 sp.GetRequiredService<IConfiguration>()["OnToPilot:Storage:RdfRoot"]
                     ?? System.IO.Path.Combine(AppContext.BaseDirectory, "data", "rdf"),
                 "releases")));
+        // ReleaseManager owns the immutable lifecycle: capture freezes the
+        // workspace layers into the artifact store, publish materialises a
+        // per-release read-only RocksDB serving store, ReadPublished
+        // queries it. Singleton — holds an in-memory _published registry
+        // of open serving stores (IDisposable), matching OntologyEditor /
+        // StoreWrapper. servingRoot sits under the same Storage:RdfRoot in
+        // a "serving" sibling so published read-only stores never collide
+        // with the workspace handle.
+        services.AddSingleton<ReleaseManager>(sp => new ReleaseManager(
+            sp.GetRequiredService<StoreWrapper>(),
+            sp.GetRequiredService<ReleaseArtifactStore>(),
+            System.IO.Path.Combine(
+                sp.GetRequiredService<IConfiguration>()["OnToPilot:Storage:RdfRoot"]
+                    ?? System.IO.Path.Combine(AppContext.BaseDirectory, "data", "rdf"),
+                "serving")));
         // Stateless parser — same instance handles every concurrent
         // request (RdfImportParser holds no state). Scoped service
         // because it shares the request DbContext and the Oxigraph

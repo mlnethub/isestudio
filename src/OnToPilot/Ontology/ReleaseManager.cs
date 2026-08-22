@@ -59,17 +59,26 @@ public sealed class ReleaseManager : IDisposable
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Freeze the three workspace layers into the artifact store. Returns
-    /// the draft release (status: capture-only, not yet published). All
-    /// three layers are snapshotted inside their own <c>CaptureAsync</c>
-    /// windows so a failure in one layer reverts just that layer.
+    /// Freeze the three workspace layers into the artifact store under the
+    /// given <paramref name="releaseId"/> (the DB row's
+    /// <c>Id.ToString("N")</c>) and <paramref name="version"/> (the draft
+    /// version string). All three layers are snapshotted inside their own
+    /// <see cref="StoreWrapper.CaptureAsync(string, bool, TimeSpan?, CancellationToken)"/>
+    /// windows so a failure in one layer reverts just that layer. The
+    /// releaseId connects the artifact/serving-store side to the EF
+    /// <see cref="ReleaseEntities.OntologyReleaseEntity"/> row so publish,
+    /// rollback, and delete can address the same immutable snapshot.
     /// </summary>
     public async Task<Release> CaptureAsync(
         KsContext ks,
+        string releaseId,
+        string version,
         Actor actor,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(ks);
+        ArgumentException.ThrowIfNullOrEmpty(releaseId);
+        ArgumentException.ThrowIfNullOrEmpty(version);
         ArgumentNullException.ThrowIfNull(actor);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -83,9 +92,6 @@ public sealed class ReleaseManager : IDisposable
         await _versionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var version = AllocateVersion();
-            var id = Guid.NewGuid().ToString("N");
-
             var files = new List<ReleaseFileManifest>(3);
             long provenanceCount = 0;
 
@@ -100,21 +106,38 @@ public sealed class ReleaseManager : IDisposable
                     .ConfigureAwait(false);
 
                 var nQuads = _workspace.DumpNQuads(graph);
-                _artifacts.Write(id, layer, nQuads);
-                files.Add(_artifacts.BuildFileManifest(id, layer, nQuads));
+                _artifacts.Write(releaseId, layer, nQuads);
+                files.Add(_artifacts.BuildFileManifest(releaseId, layer, nQuads));
                 provenanceCount += ReleaseArtifactStore.StatementCount(nQuads);
             }
 
             var manifest = new ReleaseManifest(version, files, provenanceCount);
-            _artifacts.SaveManifest(id, manifest);
-            WriteKsHeader(_artifacts.ReleasePath(id), ks);
+            _artifacts.SaveManifest(releaseId, manifest);
+            WriteKsHeader(_artifacts.ReleasePath(releaseId), ks);
 
-            return new Release(id, version, ks, _artifacts.ReleasePath(id));
+            return new Release(releaseId, version, ks, _artifacts.ReleasePath(releaseId));
         }
         finally
         {
             _versionLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Re-save the artifact manifest with the published version string.
+    /// Capture writes the draft version (<c>draft-{id}</c>); publish
+    /// assigns the public <c>v{N}</c> and must re-stamp the manifest so
+    /// <see cref="PublishAsync"/> materialises the serving store under the
+    /// public version and <see cref="ReadPublished"/> returns the right
+    /// version. Called before <see cref="PublishAsync"/>.
+    /// </summary>
+    public void FinalizeVersion(string releaseId, string publishedVersion)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(releaseId);
+        ArgumentException.ThrowIfNullOrEmpty(publishedVersion);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var manifest = _artifacts.LoadManifest(releaseId);
+        _artifacts.SaveManifest(releaseId, manifest with { Version = publishedVersion });
     }
 
     // ------------------------------------------------------------------
