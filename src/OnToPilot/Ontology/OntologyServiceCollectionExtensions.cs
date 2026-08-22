@@ -18,6 +18,7 @@ public static class OntologyServiceCollectionExtensions
     {
         services.AddScoped<OntologyService>();
         services.AddScoped<OntologyProvenanceService>();
+        services.AddScoped<HistoryService>();
         services.AddScoped<PublishedOntologyService>();
         services.AddScoped<ExternalOntologyService>();
         services.AddSingleton<OntologyViewBuilder>();
