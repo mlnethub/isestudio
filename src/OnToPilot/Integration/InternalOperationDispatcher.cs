@@ -112,8 +112,8 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "ontology.reset" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
                 () => InvokeOntologyResetAsync(request, cancellationToken)),
-            "ontology.provenance" => Task.FromResult<object?>(Array.Empty<object>()),
-            "ontology.sources" => Task.FromResult<object?>(Array.Empty<object>()),
+            "ontology.provenance" => InvokeOntologyProvenanceAsync(request, cancellationToken),
+            "ontology.sources" => InvokeOntologySourcesAsync(request, cancellationToken),
 
             // -- extraction --
             // Real reads (list_jobs / get_job) are wired into
@@ -495,6 +495,39 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
     private OntologyService? ResolveOntologyService() =>
         _services.GetService(typeof(OntologyService)) as OntologyService;
+
+    private OntologyProvenanceService? ResolveOntologyProvenanceService() =>
+        _services.GetService(typeof(OntologyProvenanceService)) as OntologyProvenanceService;
+
+    private Task<object?> InvokeOntologySourcesAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveOntologyProvenanceService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.ListSourcesAsync(
+                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(rows ?? (object)Array.Empty<object>());
+        });
+    }
+
+    private Task<object?> InvokeOntologyProvenanceAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveOntologyProvenanceService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+        {
+            return Task.FromResult<object?>(Array.Empty<object>());
+        }
+        return WrapAsync(async () =>
+        {
+            var rows = await svc.GetProvenanceAsync(
+                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(rows ?? (object)Array.Empty<object>());
+        });
+    }
 
     private RdfExportService? ResolveRdfExportService()
     {

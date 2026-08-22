@@ -635,6 +635,103 @@ public sealed class OntologyApiTests
     }
 
     // -----------------------------------------------------------------
+    // Provenance: sources + provenance (wire ontology.sources / ontology.provenance)
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public async Task Ontology_sources_returns_aggregated_documents()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "ontology-sources-http");
+        var db = app.CreateDbContext();
+        var doc = new DocumentEntity
+        {
+            LegacyId = TestLegacyIds.Next("document"), Id = Guid.NewGuid(),
+            KnowledgeSystemId = ksId, OriginalFilename = "manual.pdf",
+            Folder = "/", Sha256 = Guid.NewGuid().ToString("N"), Ext = "pdf",
+            SizeBytes = 1, StoragePath = "aa/bb/x", UploadedAt = DateTimeOffset.UtcNow, ParseStatus = "parsed",
+        };
+        db.Documents.Add(doc); await db.SaveChangesAsync();
+        var chunk = new ChunkEntity
+        {
+            LegacyId = TestLegacyIds.Next("chunk"), Id = Guid.NewGuid(),
+            DocumentId = doc.Id, Idx = 0, Text = "t", CharStart = 0, CharEnd = 1,
+            TokenEstimate = 1, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Chunks.Add(chunk);
+        db.AxiomProvenances.Add(new AxiomProvenanceEntity
+        {
+            LegacyId = TestLegacyIds.Next("axiomprov"), Id = Guid.NewGuid(),
+            KnowledgeSystemId = ksId, AxiomKey = "subClassOf|Pump|Device",
+            ChunkId = chunk.Id, Method = "extraction", ActorName = "admin",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        var response = await client.GetAsync($"/api/knowledge/{ksId}/sources");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(JsonValueKind.Array, body.ValueKind);
+        Assert.Single(body.EnumerateArray());
+        var row = body.EnumerateArray().First();
+        Assert.Equal(doc.Id.ToString(), row.GetProperty("document_id").GetString());
+        Assert.Equal("manual.pdf", row.GetProperty("filename").GetString());
+        Assert.True(row.GetProperty("exists").GetBoolean());
+        Assert.Equal(1, row.GetProperty("chunk_count").GetInt32());
+        Assert.Equal(1, row.GetProperty("axiom_count").GetInt32());
+    }
+
+    [Fact]
+    public async Task Ontology_provenance_returns_grouped_sources()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "ontology-provenance-http");
+        var db = app.CreateDbContext();
+        var doc = new DocumentEntity
+        {
+            LegacyId = TestLegacyIds.Next("document"), Id = Guid.NewGuid(),
+            KnowledgeSystemId = ksId, OriginalFilename = "m.pdf",
+            Folder = "/", Sha256 = Guid.NewGuid().ToString("N"), Ext = "pdf",
+            SizeBytes = 1, StoragePath = "aa/bb/x", UploadedAt = DateTimeOffset.UtcNow, ParseStatus = "parsed",
+        };
+        db.Documents.Add(doc); await db.SaveChangesAsync();
+        var chunk = new ChunkEntity
+        {
+            LegacyId = TestLegacyIds.Next("chunk"), Id = Guid.NewGuid(),
+            DocumentId = doc.Id, Idx = 0, Text = "t", CharStart = 0, CharEnd = 1,
+            TokenEstimate = 1, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Chunks.Add(chunk);
+        db.AxiomProvenances.Add(new AxiomProvenanceEntity
+        {
+            LegacyId = TestLegacyIds.Next("axiomprov"), Id = Guid.NewGuid(),
+            KnowledgeSystemId = ksId, AxiomKey = "domain|hasFlow|Pump",
+            ChunkId = chunk.Id, Method = "extraction", ActorName = "admin",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        var response = await client.GetAsync($"/api/knowledge/{ksId}/provenance");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(JsonValueKind.Array, body.ValueKind);
+        Assert.Single(body.EnumerateArray());
+        var group = body.EnumerateArray().First();
+        Assert.Equal("domain|hasFlow|Pump", group.GetProperty("axiom_key").GetString());
+        var sources = group.GetProperty("sources");
+        Assert.Single(sources.EnumerateArray());
+        var s = sources.EnumerateArray().First();
+        Assert.Equal(chunk.Id.ToString(), s.GetProperty("chunk_id").GetString());
+        Assert.Equal(doc.Id.ToString(), s.GetProperty("document_id").GetString());
+        Assert.Equal("extraction", s.GetProperty("method").GetString());
+        Assert.Equal("admin", s.GetProperty("actor").GetString());
+    }
+
+    // -----------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------
 
