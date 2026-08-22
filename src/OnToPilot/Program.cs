@@ -25,6 +25,7 @@ using OnToPilot.Observability;
 using OnToPilot.Ontology;
 using OnToPilot.Parsing;
 using OnToPilot.Prompts;
+using OnToPilot.Sparql;
 using OnToPilot.Providers;
 using OnToPilot.Serialization;
 using OnToPilot.Storage;
@@ -406,6 +407,7 @@ builder.Services.AddConflictServices();
 // the singleton registrations above so the SQLite contract-test path runs
 // without an embedded Oxigraph.
 builder.Services.AddResolutionServices();
+builder.Services.AddSparqlServices();
 // Knowledge slice — KS CRUD + membership + review stats. Scoped service
 // shares the request DbContext and depends on KnowledgeSystemAccessService
 // (singleton, registered above) for the Viewer / Editor / Owner gates.
