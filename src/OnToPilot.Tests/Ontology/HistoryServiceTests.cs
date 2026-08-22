@@ -44,6 +44,75 @@ public sealed class HistoryServiceTests
         Assert.Equal(admin.DisplayName, item.ActorName);
     }
 
+    [Fact]
+    public async Task RollbackAsync_inverts_single_graph_event_and_records_audit()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        await SeedAdminAsync(app);
+        var db = app.CreateDbContext();
+        var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
+        var ks = await CreateKsAsync(db, "history-rollback");
+        // 在 live store 建一条 TBox 三元,再记一条 added-only 的 audit(回滚应移除它)
+        var gName = new Oxigraph.NamedNode(ks.GraphIri);
+        var store = app.Services.GetRequiredService<StoreWrapper>();
+        store.AddQuads(gName, new[] { new Oxigraph.Quad(
+            new Oxigraph.NamedNode("urn:Pump"), new Oxigraph.NamedNode("urn:type"),
+            new Oxigraph.NamedNode("urn:Class"), gName) });
+        var addedBlob = store.DumpNQuads(gName);  // raw N-Quads(含该三元)
+        AddAudit(db, ks.Id, admin.Id, "ontology.edit", "added Pump", graph: ks.GraphIri, added: addedBlob, actorName: admin.DisplayName);
+        await db.SaveChangesAsync();
+
+        var actor = new Actor(admin.Id.ToString());
+        using var scope = app.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<HistoryService>();
+        var eventId = db.AuditEvents.AsNoTracking().First(e => e.KnowledgeSystemId == ks.Id).Id;
+
+        var res = await svc.RollbackAsync(ks.Id, eventId, actor, CancellationToken.None);
+
+        Assert.NotNull(res);
+        Assert.Equal(1, res!.Undone);
+        // 回滚后该三元已移除
+        Assert.Empty(store.Match(subjectIri: "urn:Pump", predicateIri: "urn:type", objectIri: "urn:Class", graphIri: ks.GraphIri));
+        // 记了一条 system.rollback audit
+        Assert.True(db.AuditEvents.AsNoTracking().Any(e => e.Action == "system.rollback" && e.KnowledgeSystemId == ks.Id));
+    }
+
+    [Fact]
+    public async Task RollbackAsync_throws_400_when_event_has_no_diff()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        await SeedAdminAsync(app);
+        var db = app.CreateDbContext();
+        var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
+        var ks = await CreateKsAsync(db, "history-nodiff");
+        AddAudit(db, ks.Id, admin.Id, "system.note", "a no-op note", graph: ks.GraphIri); // added/removed = null
+        await db.SaveChangesAsync();
+        var actor = new Actor(admin.Id.ToString());
+        using var scope = app.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<HistoryService>();
+        var eventId = db.AuditEvents.AsNoTracking().First(e => e.KnowledgeSystemId == ks.Id).Id;
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => svc.RollbackAsync(ks.Id, eventId, actor, CancellationToken.None));
+        Assert.Contains("nothing to roll back", ex.Message);
+    }
+
+    [Fact]
+    public async Task RollbackAsync_throws_404_when_event_not_found()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        await SeedAdminAsync(app);
+        var db = app.CreateDbContext();
+        var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
+        var ks = await CreateKsAsync(db, "history-404");
+        var actor = new Actor(admin.Id.ToString());
+        using var scope = app.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<HistoryService>();
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(
+            () => svc.RollbackAsync(ks.Id, Guid.NewGuid(), actor, CancellationToken.None));
+    }
+
     private static async Task SeedAdminAsync(AuthTestWebApplicationFactory app)
     {
         var db = app.CreateDbContext();
