@@ -24,10 +24,10 @@ public sealed class KnowledgeSystemEntity : LegacyAddressableEntity
     /// <summary>FK to the owning user. Owners have full control implicitly.</summary>
     public Guid? OwnerId { get; set; }
 
-    /// <summary>Named graph IRI in Oxigraph (e.g. <c>http://ontopilot.local/ks/3</c>).</summary>
+    /// <summary>Named graph IRI in Oxigraph (e.g. <c>http://goodcrew.local/ks/3</c>).</summary>
     public string GraphIri { get; set; } = string.Empty;
 
-    /// <summary>Entity namespace IRI (e.g. <c>http://ontopilot.local/ks/3/onto#</c>).</summary>
+    /// <summary>Entity namespace IRI (e.g. <c>http://goodcrew.local/ks/3/onto#</c>).</summary>
     public string BaseIri { get; set; } = string.Empty;
 
     /// <summary>UTC creation timestamp.</summary>

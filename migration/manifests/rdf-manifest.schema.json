@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ontopilot.local/migration/rdf-manifest.schema.json",
+  "$id": "https://goodcrew.local/migration/rdf-manifest.schema.json",
   "title": "OnToPilot RDF migration manifest",
   "description": "Output of RdfMigrationCommand.VerifyCopyAsync: the 5-field RdfMigrationReport record (Strategy, QuadCount, NamedGraphs, QueryResultHashes, WriteRevertPassed). Task 4's Assert-AllMigrationManifests gate loads this file and validates its shape and content before allowing the cutover to proceed.",
   "type": "object",

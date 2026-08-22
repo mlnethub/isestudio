@@ -145,7 +145,7 @@ public sealed class ExtractionOrchestrator
         // Resolve the knowledge system row up-front so the graph IRI we
         // write into matches the row the rest of the system has agreed on
         // (the production backend stamps it as
-        // `http://ontopilot.local/ks/{publicId}`). Falling back to a
+        // `http://goodcrew.local/ks/{publicId}`). Falling back to a
         // derived IRI here would let a stale `GraphIri` column slip past
         // every extraction, so the row is the source of truth.
         var ksEntity = await _jobs.GetKnowledgeSystemAsync(request.KnowledgeSystemId, cancellationToken)

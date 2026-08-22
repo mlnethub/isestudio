@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ontopilot.local/migration/blob-manifest.schema.json",
+  "$id": "https://goodcrew.local/migration/blob-manifest.schema.json",
   "title": "OnToPilot blob migration manifest",
   "description": "Output of BlobMigrationCommand.RunAsync: one record per blob uploaded (or planned for upload in dry-run) from the Python filesystem layout blobs/<aa>/<bb>/<sha256> into the MinIO bucket. Task 4's Assert-AllMigrationManifests gate loads this file and validates every entry against this schema before allowing the cutover to proceed.",
   "type": "object",

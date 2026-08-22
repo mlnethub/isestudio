@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ontopilot.local/migration/sql-migration-log.schema.json",
+  "$id": "https://goodcrew.local/migration/sql-migration-log.schema.json",
   "title": "OnToPilot SQL migration log",
   "description": "Output of SqlMigrationCommand.ApplyAsync / RollbackAsync: timestamps for the run, the list of SQL steps applied with their SHA-256 checksums, and the per-table verify summary produced by verify.sql (row counts, FK orphan counts, business checksums). Task 4's Assert-AllMigrationManifests gate loads this file and validates its shape and content before allowing the cutover to proceed.",
   "type": "object",
