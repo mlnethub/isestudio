@@ -1,3 +1,6 @@
+using System.Collections;
+using System.Text.Json;
+using System.Threading;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -96,6 +99,9 @@ public sealed class OntologyEditor
                 "delete_property" => DeleteProperty(graphIri, baseIri, op),
                 "add_axiom" => AddAxiom(graphIri, baseIri, op),
                 "delete_axiom" => DeleteAxiom(graphIri, baseIri, op),
+                "set_property_union" => SetPropertyUnion(graphIri, baseIri, op),
+                "merge_properties" => await MergePropertiesAsync(graphIri, baseIri, op).ConfigureAwait(false),
+                "subordinate_properties" => await SubordinatePropertiesAsync(graphIri, baseIri, op).ConfigureAwait(false),
                 _ => throw new OntologyEditException($"Unknown edit op: {opName}"),
             };
         }
@@ -144,6 +150,24 @@ public sealed class OntologyEditor
                     if (!op.TryGetValue("type", out var tObj) || tObj is not string t)
                         throw new OntologyEditException($"{opName} requires 'type'");
                     return t;
+                }
+            case "set_property_union":
+                {
+                    var iri = GetString(op, "iri");
+                    if (string.IsNullOrEmpty(iri))
+                        throw new OntologyEditException("set_property_union requires 'iri'");
+                    return iri;
+                }
+            case "merge_properties":
+            case "subordinate_properties":
+                {
+                    // Validate sources present; return the target IRI (or
+                    // a synthesized one from target_label) so the contract-
+                    // test path returns a non-empty string envelope.
+                    if (!op.TryGetValue("sources", out var srcs) || srcs is not string[] arr || arr.Length == 0)
+                        throw new OntologyEditException($"{opName} requires 'sources'");
+                    var tgt = GetString(op, "target") ?? GetString(op, "target_label") ?? arr[0];
+                    return tgt;
                 }
             default:
                 throw new OntologyEditException($"Unknown edit op: {opName}");
@@ -585,7 +609,386 @@ public sealed class OntologyEditor
     }
 
     // ------------------------------------------------------------------
-    // Triple write helpers
+    // Property merge / union / subordinate ops (slice 9)
+    // Mirrors backend/app/ontology/editor.py:_set_property_union /
+    // _merge_properties / _subordinate_properties (lines 242-394).
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Set a property's domain or range to an anonymous
+    /// <c>owl:Class ; owl:unionOf ( C1 C2 … )</c> expression. Drops the
+    /// old slot value first (GC-ing any previous union blank-node subgraph)
+    /// so replacing a union range leaves no orphans. Mirrors Python
+    /// <c>_set_property_union</c>.
+    /// </summary>
+    private string SetPropertyUnion(string graphIri, string baseIri, IReadOnlyDictionary<string, object?> p)
+    {
+        _ = baseIri;
+        var iri = GetString(p, "iri");
+        if (string.IsNullOrEmpty(iri))
+            throw new OntologyEditException("set_property_union requires 'iri'");
+        var slot = GetString(p, "slot") ?? "range";
+        var pred = slot == "domain" ? Vocabulary.RdfsDomain : Vocabulary.RdfsRange;
+
+        // Harvest member IRIs (may arrive as string[] from the JSON body or
+        // as a JsonElement when deserialised by the dispatcher).
+        var members = ReadStringArray(p, "members");
+        if (members.Count < 2)
+            throw new OntologyEditException("union needs at least two members");
+
+        var node = new OntoNamedNode(iri);
+        var graph = new OntoNamedNode(graphIri);
+
+        // Drop the old slot values, GC-ing any previous union expression.
+        var oldSlot = _store!.Match(
+            subjectIri: iri, predicateIri: pred.Value, graphIri: graphIri);
+        foreach (var q in oldSlot)
+        {
+            if (q.Object is OntoBlankNode bn) GcBlankNode(graph, bn.Value);
+        }
+        if (oldSlot.Count > 0) _store!.RemoveQuads(graph, oldSlot);
+
+        // Build:  _:u a owl:Class ; owl:unionOf ( C1 C2 … ) .   node pred _:u .
+        var union = FreshBlank("union");
+        var cells = members.Select(_ => FreshBlank("cell")).ToList();
+        var build = new List<OntoQuad>
+        {
+            new(union, Vocabulary.RdfType, Vocabulary.OwlClass, graph),
+        };
+        for (var k = 0; k < cells.Count; k++)
+        {
+            build.Add(new OntoQuad(cells[k], Vocabulary.RdfFirst,
+                new OntoNamedNode(members[k]), graph));
+            Oxigraph.ITerm rest = k + 1 < cells.Count ? cells[k + 1] : Vocabulary.RdfNil;
+            build.Add(new OntoQuad(cells[k], Vocabulary.RdfRest, rest, graph));
+        }
+        build.Add(new OntoQuad(union, Vocabulary.OwlUnionOf, cells[0], graph));
+        build.Add(new OntoQuad(node, pred, union, graph));
+        _store!.AddQuads(graph, build);
+        return iri;
+    }
+
+    /// <summary>
+    /// Collapse over-specialized object properties (e.g. 拥有井 / 拥有计量站)
+    /// into one general property (拥有): repoint every triple that uses a
+    /// source AS ITS PREDICATE to the target, union the sources' domains /
+    /// ranges onto the target, then drop the sources. The ABox graph is
+    /// cascaded so instance assertions repoint to the surviving property.
+    /// Mirrors Python <c>_merge_properties</c>.
+    /// </summary>
+    private async Task<string> MergePropertiesAsync(string graphIri, string baseIri, IReadOnlyDictionary<string, object?> p)
+    {
+        var srcVals = ReadStringArray(p, "sources");
+        if (srcVals.Count == 0)
+            throw new OntologyEditException("merge_properties needs sources");
+        var srcSet = srcVals.ToHashSet(StringComparer.Ordinal);
+        var target = ResolvePropertyTarget(graphIri, baseIri, p, srcSet);
+        var graph = new OntoNamedNode(graphIri);
+
+        var toAdd = new List<OntoQuad>();
+        var toRemove = new List<OntoQuad>();
+        var domains = new HashSet<string>(StringComparer.Ordinal);
+        var ranges = new HashSet<string>(StringComparer.Ordinal);
+
+        // Sweep the TBox graph: repoint usage triples, harvest the sources'
+        // domain/range, and drop the sources' own definition triples.
+        foreach (var q in _store!.Match(graph: graph))
+        {
+            if (q.Predicate is not OntoNamedNode pr) continue;
+            // A USAGE triple (source used as predicate) → repoint to target.
+            if (srcSet.Contains(pr.Value))
+            {
+                toRemove.Add(q);
+                toAdd.Add(new OntoQuad(q.Subject, target, q.Object, graph));
+                continue;
+            }
+            if (q.Subject is OntoNamedNode s && srcSet.Contains(s.Value))
+            {
+                // A source property's own definition triple → drop, harvest d/r.
+                toRemove.Add(q);
+                if (pr.Value == Vocabulary.RdfsDomain.Value && q.Object is OntoNamedNode d)
+                    domains.Add(d.Value);
+                else if (pr.Value == Vocabulary.RdfsRange.Value && q.Object is OntoNamedNode r)
+                    ranges.Add(r.Value);
+            }
+            else if (q.Object is OntoNamedNode o && srcSet.Contains(o.Value))
+            {
+                // Rare: a source referenced as an object — drop.
+                toRemove.Add(q);
+            }
+        }
+        if (toRemove.Count > 0) _store!.RemoveQuads(graph, toRemove);
+        if (toAdd.Count > 0) _store!.AddQuads(graph, toAdd);
+
+        // Repoint ABox assertions (object properties are used as predicates
+        // in the paired ABox graph). Wrapped in its own capture.
+        await CascadePropertyRepointAsync(graphIri, srcSet, target.Value).ConfigureAwait(false);
+
+        UnionSlot(graphIri, baseIri, target, Vocabulary.RdfsDomain, "domain", domains);
+        UnionSlot(graphIri, baseIri, target, Vocabulary.RdfsRange, "range", ranges);
+        return target.Value;
+    }
+
+    /// <summary>
+    /// Keep the specialized object properties but declare each
+    /// <c>rdfs:subPropertyOf</c> a general one (created if needed), whose
+    /// domain/range is the union of the sources'. Mirrors Python
+    /// <c>_subordinate_properties</c>.
+    /// </summary>
+    private async Task<string> SubordinatePropertiesAsync(string graphIri, string baseIri, IReadOnlyDictionary<string, object?> p)
+    {
+        var sources = ReadStringArray(p, "sources");
+        if (sources.Count == 0)
+            throw new OntologyEditException("subordinate_properties needs sources");
+        var srcSet = sources.ToHashSet(StringComparer.Ordinal);
+        var target = ResolvePropertyTarget(graphIri, baseIri, p, srcSet);
+        var graph = new OntoNamedNode(graphIri);
+
+        var domains = new HashSet<string>(StringComparer.Ordinal);
+        var ranges = new HashSet<string>(StringComparer.Ordinal);
+
+        // Add rdfs:subPropertyOf target for each source, harvesting their
+        // current domain/range into the union.
+        foreach (var src in sources)
+        {
+            var node = new OntoNamedNode(src);
+            foreach (var d in _store!.Match(
+                subjectIri: src, predicateIri: Vocabulary.RdfsDomain.Value, graphIri: graphIri))
+            {
+                if (d.Object is OntoNamedNode dn) domains.Add(dn.Value);
+            }
+            foreach (var r in _store!.Match(
+                subjectIri: src, predicateIri: Vocabulary.RdfsRange.Value, graphIri: graphIri))
+            {
+                if (r.Object is OntoNamedNode rn) ranges.Add(rn.Value);
+            }
+            _store!.AddQuads(graph, new[]
+            {
+                new OntoQuad(node, Vocabulary.RdfsSubPropertyOf, target, graph),
+            });
+        }
+        // Subordinate does not repoint ABox assertions — the specialized
+        // properties are kept. No cascade needed, but keep the async
+        // signature for API symmetry with MergePropertiesAsync.
+        await Task.CompletedTask.ConfigureAwait(false);
+
+        UnionSlot(graphIri, baseIri, target, Vocabulary.RdfsDomain, "domain", domains);
+        UnionSlot(graphIri, baseIri, target, Vocabulary.RdfsRange, "range", ranges);
+        return target.Value;
+    }
+
+    /// <summary>
+    /// Resolve / create the general target object property (by IRI or
+    /// label). <paramref name="forbidden"/> (the source IRIs) is checked
+    /// BEFORE any write, so a rejected merge / subordinate (target == a
+    /// source) never mutates the graph. Mirrors Python <c>_prop_target</c>.
+    /// </summary>
+    private OntoNamedNode ResolvePropertyTarget(
+        string graphIri, string baseIri, IReadOnlyDictionary<string, object?> p, HashSet<string> forbidden)
+    {
+        var label = (GetString(p, "target_label") ?? string.Empty).Trim();
+        OntoNamedNode target;
+        if (p.TryGetValue("target", out var tgtObj) && tgtObj is string tgt && !string.IsNullOrEmpty(tgt))
+        {
+            target = new OntoNamedNode(tgt);
+        }
+        else if (!string.IsNullOrEmpty(label))
+        {
+            target = Vocabulary.PropertyNode(baseIri, label);
+        }
+        else
+        {
+            throw new OntologyEditException("needs target or target_label");
+        }
+        if (forbidden.Contains(target.Value))
+            throw new OntologyEditException("target cannot be one of the sources");
+
+        var graph = new OntoNamedNode(graphIri);
+        // Ensure the target is typed as an owl:ObjectProperty.
+        _store!.AddQuads(graph, new[]
+        {
+            new OntoQuad(target, Vocabulary.RdfType, Vocabulary.OwlObjectProperty, graph),
+        });
+        if (!string.IsNullOrEmpty(label))
+        {
+            bool hasLabel = _store!.Match(
+                subjectIri: target.Value, predicateIri: Vocabulary.RdfsLabel.Value,
+                graphIri: graphIri).Count > 0;
+            if (!hasLabel)
+            {
+                _store!.AddQuads(graph, new[]
+                {
+                    new OntoQuad(target, Vocabulary.RdfsLabel, new OntoLiteral(label), graph),
+                });
+            }
+        }
+        return target;
+    }
+
+    /// <summary>
+    /// Set target's domain/range to its current values ∪
+    /// <paramref name="collected"/> (union if 2+ members, single value
+    /// otherwise). Mirrors Python <c>_union_slot</c>.
+    /// </summary>
+    private void UnionSlot(
+        string graphIri, string baseIri, OntoNamedNode target, OntoNamedNode pred,
+        string slot, HashSet<string> collected)
+    {
+        var cur = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var q in _store!.Match(
+            subjectIri: target.Value, predicateIri: pred.Value, graphIri: graphIri))
+        {
+            if (q.Object is OntoNamedNode n) cur.Add(n.Value);
+        }
+        var members = new SortedSet<string>(cur, StringComparer.Ordinal);
+        members.UnionWith(collected);
+        if (members.Count == 0) return;
+        if (members.Count == 1)
+        {
+            SetSingle(target, pred, new OntoNamedNode(members.First()), graphIri);
+        }
+        else
+        {
+            var unionOp = new Dictionary<string, object?>
+            {
+                ["op"] = "set_property_union",
+                ["iri"] = target.Value,
+                ["slot"] = slot,
+                ["members"] = members.ToList(),
+            };
+            SetPropertyUnion(graphIri, baseIri, unionOp);
+        }
+    }
+
+    /// <summary>
+    /// Replace all values of a single-valued predicate on
+    /// <paramref name="subject"/>. GCs any previous blank-node expression.
+    /// Mirrors Python <c>_set_single</c>.
+    /// </summary>
+    private void SetSingle(OntoNamedNode subject, OntoNamedNode pred, OntoNamedNode? obj, string graphIri)
+    {
+        var graph = new OntoNamedNode(graphIri);
+        var existing = _store!.Match(
+            subjectIri: subject.Value, predicateIri: pred.Value, graphIri: graphIri);
+        foreach (var q in existing)
+        {
+            if (q.Object is OntoBlankNode bn) GcBlankNode(graph, bn.Value);
+        }
+        if (existing.Count > 0) _store!.RemoveQuads(graph, existing);
+        if (obj is not null)
+        {
+            _store!.AddQuads(graph, new[] { new OntoQuad(subject, pred, obj, graph) });
+        }
+    }
+
+    /// <summary>
+    /// Garbage-collect a blank-node expression and every blank node
+    /// reachable from it (e.g. an <c>owl:unionOf</c> class and its RDF
+    /// list), so replacing a union range leaves no orphans. Mirrors
+    /// Python <c>_gc_blank</c>.
+    /// </summary>
+    private void GcBlankNode(OntoNamedNode graph, string bnodeId)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var stack = new Stack<string>();
+        stack.Push(bnodeId);
+        var toRemove = new List<OntoQuad>();
+        while (stack.Count > 0)
+        {
+            var cur = stack.Pop();
+            if (!seen.Add(cur)) continue;
+            foreach (var q in _store!.Match(graph: graph))
+            {
+                if (q.Subject is OntoBlankNode s && s.Value == cur)
+                {
+                    toRemove.Add(q);
+                    if (q.Object is OntoBlankNode ob) stack.Push(ob.Value);
+                }
+            }
+        }
+        if (toRemove.Count > 0) _store!.RemoveQuads(graph, toRemove);
+    }
+
+    /// <summary>
+    /// Walk the paired ABox graph and repoint every assertion whose
+    /// predicate is one of <paramref name="sourceIris"/> to
+    /// <paramref name="targetIri"/>. Wrapped in its own capture so a
+    /// thrown exception reverts the ABox writes; the outer capture
+    /// reverts the TBox writes via MarkError.
+    /// </summary>
+    private async ValueTask CascadePropertyRepointAsync(
+        string graphIri, HashSet<string> sourceIris, string targetIri)
+    {
+        var aboxIri = AboxIri(graphIri);
+        var aboxGraph = new OntoNamedNode(aboxIri);
+        // revertOnError:false so the repoint persists on success; the
+        // catch calls MarkError() to force revert on failure. Mirrors
+        // the outer ApplyEditAsync capture pattern.
+        await using var aboxCapture = await _store!.CaptureAsync(
+            aboxGraph, revertOnError: false).ConfigureAwait(false);
+
+        try
+        {
+            var toAdd = new List<OntoQuad>();
+            var toRemove = new List<OntoQuad>();
+            var target = new OntoNamedNode(targetIri);
+            foreach (var q in _store!.Match(graph: aboxGraph))
+            {
+                if (q.Predicate is OntoNamedNode pr && sourceIris.Contains(pr.Value))
+                {
+                    toRemove.Add(q);
+                    toAdd.Add(new OntoQuad(q.Subject, target, q.Object, aboxGraph));
+                }
+            }
+            if (toRemove.Count > 0) _store!.RemoveQuads(aboxGraph, toRemove);
+            if (toAdd.Count > 0) _store!.AddQuads(aboxGraph, toAdd);
+        }
+        catch
+        {
+            aboxCapture.MarkError();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Read a string array field from the op dict. Handles both
+    /// <c>string[]</c> (dispatcher body) and <c>JsonElement</c>
+    /// (JSON-deserialised) representations.
+    /// </summary>
+    private static List<string> ReadStringArray(IReadOnlyDictionary<string, object?> p, string key)
+    {
+        if (!p.TryGetValue(key, out var v) || v is null) return new();
+        if (v is string[] arr) return arr.Where(s => !string.IsNullOrEmpty(s)).ToList();
+        if (v is JsonElement je && je.ValueKind == JsonValueKind.Array)
+        {
+            var list = new List<string>();
+            foreach (var e in je.EnumerateArray())
+            {
+                if (e.ValueKind == JsonValueKind.String)
+                {
+                    var s = e.GetString();
+                    if (!string.IsNullOrEmpty(s)) list.Add(s);
+                }
+            }
+            return list;
+        }
+        if (v is IEnumerable<object?> objs)
+        {
+            return objs
+                .Select(o => o as string)
+                .Where(s => !string.IsNullOrEmpty(s))
+                .ToList()!;
+        }
+        return new();
+    }
+
+    /// <summary>Generate a fresh blank node with a unique ID.</summary>
+    private OntoBlankNode FreshBlank(string prefix) =>
+        new($"{prefix}_{Interlocked.Increment(ref _blankSeq)}");
+
+    private int _blankSeq;
+
+
     // ------------------------------------------------------------------
 
     private void AddOrReplaceLabel(OntoNamedNode subject, OntoNamedNode graph, string label)
