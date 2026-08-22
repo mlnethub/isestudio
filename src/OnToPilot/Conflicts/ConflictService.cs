@@ -772,6 +772,11 @@ public sealed class ConflictService
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null => null,
+        // Arrays (e.g. set_property_union "members", merge_properties
+        // "sources") must stay structured so OntologyEditor.ReadStringArray
+        // can iterate them — GetRawText() would return a JSON string that
+        // no downstream consumer can use.
+        JsonValueKind.Array => el.EnumerateArray().Select(e => JsonElementToObject(e)).ToList(),
         _ => el.GetRawText(),
     };
 

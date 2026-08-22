@@ -168,6 +168,44 @@ public sealed class ConflictApiTests
     }
 
     [Fact]
+    public async Task Resolve_set_property_union_with_array_members_does_not_500()
+    {
+        // Regression: ConflictService.ReadResolutions → JsonElementToObject
+        // converted JSON arrays to raw text (GetRawText), so the members
+        // array arrived as a string like "["iri1","iri2"]" instead of a
+        // List<object?>. OntologyEditor.ReadStringArray couldn't parse it,
+        // SetPropertyUnion threw "union needs at least two members" → 500.
+        await using var app = new AuthTestWebApplicationFactory();
+        await SeedAdminAsync(app);
+        var client = await AuthenticatedClientAsync(app);
+        var ks = await SeedKnowledgeSystemAsync(app, "resolve-union");
+        var db = app.CreateDbContext();
+        var cid = Guid.NewGuid();
+        db.Conflicts.Add(new ConflictEntity
+        {
+            Id = cid,
+            LegacyId = TestLegacyIds.Next("conflict"),
+            KnowledgeSystemId = ks.Id,
+            Signature = "range_multi|http://test/prop",
+            Ctype = "range_multi",
+            Severity = "warning",
+            Status = "open",
+            Title = "Range conflict (resolve-union)",
+            Detail = "Seeded for union resolve test.",
+            Payload = System.Text.Json.JsonDocument.Parse(
+                """{"entities":[],"resolutions":[{"id":"union","label":"Use union range","op":{"op":"set_property_union","iri":"http://test/prop","slot":"range","members":["http://test/A","http://test/B"]}}]}"""),
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        db.SaveChanges();
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/knowledge/{ks.Id}/conflicts/{cid}/resolve",
+            new { resolution_id = "union" });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Dismiss_then_reopen_flips_status()
     {
         await using var app = new AuthTestWebApplicationFactory();

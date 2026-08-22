@@ -164,9 +164,10 @@ public sealed class OntologyEditor
                     // Validate sources present; return the target IRI (or
                     // a synthesized one from target_label) so the contract-
                     // test path returns a non-empty string envelope.
-                    if (!op.TryGetValue("sources", out var srcs) || srcs is not string[] arr || arr.Length == 0)
+                    var srcList = ReadStringArray(op, "sources");
+                    if (srcList.Count == 0)
                         throw new OntologyEditException($"{opName} requires 'sources'");
-                    var tgt = GetString(op, "target") ?? GetString(op, "target_label") ?? arr[0];
+                    var tgt = GetString(op, "target") ?? GetString(op, "target_label") ?? srcList[0];
                     return tgt;
                 }
             default:
@@ -972,12 +973,42 @@ public sealed class OntologyEditor
             }
             return list;
         }
+        // JsonElementToObject converts arrays to List<object?> — iterate
+        // and keep the string elements. Also covers List<string> via
+        // covariance (IEnumerable<string> is IEnumerable<object?>).
         if (v is IEnumerable<object?> objs)
         {
-            return objs
-                .Select(o => o as string)
-                .Where(s => !string.IsNullOrEmpty(s))
-                .ToList()!;
+            var result = new List<string>();
+            foreach (var o in objs)
+            {
+                if (o is string s && !string.IsNullOrEmpty(s))
+                    result.Add(s);
+            }
+            return result;
+        }
+        // Fallback: older conflict rows may have stored the array as raw
+        // JSON text (pre-JsonValueKind.Array fix in JsonElementToObject).
+        // Parse it back into a string list.
+        if (v is string json && json.StartsWith("[", StringComparison.Ordinal))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                var result = new List<string>();
+                if (doc.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var e in doc.RootElement.EnumerateArray())
+                    {
+                        if (e.ValueKind == JsonValueKind.String)
+                        {
+                            var s = e.GetString();
+                            if (!string.IsNullOrEmpty(s)) result.Add(s);
+                        }
+                    }
+                }
+                return result;
+            }
+            catch { /* not valid JSON — fall through to empty */ }
         }
         return new();
     }
