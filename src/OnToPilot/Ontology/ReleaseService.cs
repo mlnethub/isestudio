@@ -32,7 +32,6 @@ public sealed class ReleaseService
     private readonly AuditLogService _audit;
     private readonly TimeProvider _clock;
     private readonly ReleaseManager _releases;
-    private readonly IDbContextFactory<OnToPilotDbContext> _contextFactory;
     private readonly ABoxValidator _aboxValidator;
     private readonly KnowledgeStatsService _stats;
     private readonly ConflictService _conflicts;
@@ -44,7 +43,6 @@ public sealed class ReleaseService
         AuditLogService audit,
         TimeProvider clock,
         ReleaseManager releases,
-        IDbContextFactory<OnToPilotDbContext> contextFactory,
         ABoxValidator aboxValidator,
         KnowledgeStatsService stats,
         ConflictService conflicts,
@@ -55,7 +53,6 @@ public sealed class ReleaseService
         _audit = audit;
         _clock = clock;
         _releases = releases;
-        _contextFactory = contextFactory;
         _aboxValidator = aboxValidator;
         _stats = stats;
         _conflicts = conflicts;
@@ -82,6 +79,7 @@ public sealed class ReleaseService
             Status = "draft",
             Title = (title ?? string.Empty).Trim(),
             Notes = (notes ?? string.Empty).Trim(),
+            Manifest = JsonDocument.Parse("""{"capture_status":"pending"}"""),
             CreatedById = ResolveActorUserId(actor),
             CreatedByName = string.IsNullOrEmpty(actor.DisplayName) ? "system" : actor.DisplayName!,
             CreatedAt = now,
@@ -93,52 +91,29 @@ public sealed class ReleaseService
             $"Created immutable release draft #{row.Id}",
             new Dictionary<string, object?> { ["release_id"] = row.Id }, ct).ConfigureAwait(false);
 
-        // Kick off the background capture (mirrors ExtractionOrchestrator's
-        // Task.Run + ExecutionContext.SuppressFlow pattern). The worker
-        // opens a fresh DbContext so it never shares an entity tracker with
-        // the request. Failure marks the row manifest capture_status=failed.
-        var releaseId = row.Id.ToString("N");
-        var draftVersion = row.Version;
-        var ksCtx = KsContext.FromEntity(ks);
-        using (ExecutionContext.SuppressFlow())
-        {
-            _ = Task.Run(() => CaptureInBackgroundAsync(ksCtx, releaseId, draftVersion, actor));
-        }
-
-        return ProjectToOut(row, ks, deployment: null, publicId: ks.PublicId);
-    }
-
-    private async Task CaptureInBackgroundAsync(
-        KsContext ks, string releaseId, string version, Actor actor)
-    {
+        // Capture the immutable snapshot synchronously (MVP — Python kicks
+        // this off in the background; the .NET background Task.Run +
+        // IDbContextFactory path is deferred to a hardening pass). Blocks
+        // the response until the three layers are sharded; small graphs
+        // finish in milliseconds. Failure marks capture_status=failed so
+        // review surfaces "snapshot is not ready".
+        var releaseKey = row.Id.ToString("N");
         try
         {
-            await _releases.CaptureAsync(ks, releaseId, version, actor, CancellationToken.None)
+            await _releases.CaptureAsync(KsContext.FromEntity(ks), releaseKey, row.Version, actor, ct)
                 .ConfigureAwait(false);
-            await using var db = await _contextFactory.CreateDbContextAsync().ConfigureAwait(false);
-            var row = await db.OntologyReleases
-                .FirstAsync(r => r.Id.ToString("N") == releaseId).ConfigureAwait(false);
-            row.SnapshotDir = _releases.Artifacts.ReleasePath(releaseId);
+            row.SnapshotDir = _releases.Artifacts.ReleasePath(releaseKey);
             row.Manifest = JsonDocument.Parse(
-                $$"""{"capture_status":"ready","version":"{{version}}"}""");
-            await db.SaveChangesAsync().ConfigureAwait(false);
+                $$"""{"capture_status":"ready","version":"{{row.Version}}"}""");
         }
         catch (Exception ex)
         {
-            try { await MarkCaptureFailedAsync(releaseId, ex.Message).ConfigureAwait(false); }
-            catch { /* background — no caller to surface to */ }
+            row.Manifest = JsonDocument.Parse(
+                $$"""{"capture_status":"failed","error":{{JsonSerializer.Serialize(ex.Message)}}}""");
         }
-    }
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
-    private async Task MarkCaptureFailedAsync(string releaseId, string error)
-    {
-        await using var db = await _contextFactory.CreateDbContextAsync().ConfigureAwait(false);
-        var row = await db.OntologyReleases
-            .FirstOrDefaultAsync(r => r.Id.ToString("N") == releaseId).ConfigureAwait(false);
-        if (row is null) return;
-        row.Manifest = JsonDocument.Parse(
-            $$"""{"capture_status":"failed","error":{{JsonSerializer.Serialize(error)}}}""");
-        await db.SaveChangesAsync().ConfigureAwait(false);
+        return ProjectToOut(row, ks, deployment: null, publicId: ks.PublicId);
     }
 
     // ----------------------------------------------------------------------
@@ -153,7 +128,7 @@ public sealed class ReleaseService
 
         var rows = await _db.OntologyReleases.AsNoTracking()
             .Where(r => r.KnowledgeSystemId == ks.Id)
-            .OrderByDescending(r => r.CreatedAt)
+            .OrderByDescending(r => r.LegacyId)
             .ToListAsync(ct).ConfigureAwait(false);
         var deployments = await _db.ReleaseDeployments.AsNoTracking()
             .Where(d => d.KnowledgeSystemId == ks.Id)

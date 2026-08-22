@@ -80,6 +80,13 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
                 // Use the explicit "Data Source=" form so the SQLite
                 // connection-string parser doesn't choke on the raw path.
                 ["OnToPilot:Persistence:SqliteConnection"] = $"Data Source={_sqlitePath}",
+                // ReleaseArtifactStore + ReleaseManager read this key to
+                // root the artifact shards ({RdfRoot}/releases) + serving
+                // read-only stores ({RdfRoot}/serving). StoreWrapper is
+                // overridden directly below with _rdfRoot, so setting the
+                // same root here colocates all three under the per-test
+                // temp dir so release-lifecycle tests don't collide.
+                ["OnToPilot:Storage:RdfRoot"] = _rdfRoot,
             });
         });
 
