@@ -133,6 +133,30 @@ public sealed class SparqlQueryExecutorTests
                 100, MakeToken("u"), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task ExecuteAsync_select_returns_string_literal_binding()
+    {
+        // Regression guard: ProjectTerm previously NRE'd on a plain
+        // literal (null Datatype) → HTTP 500. A SELECT that binds an
+        // object literal exercises the same projection path the
+        // contract-test demo graph (rdfs:label "...") hits, pinning the
+        // fix in place at the service level.
+        await using var app = new AuthTestWebApplicationFactory();
+        var ks = await SeedKsAsync(app, "sparql-literal");
+        await SeedTurtleAsync(app, ks,
+            "<http://ex/s> <http://ex/label> \"Rex\" .");
+
+        using var scope = app.Services.CreateScope();
+        var executor = scope.ServiceProvider.GetRequiredService<ISparqlQueryExecutor>();
+        var res = await executor.ExecuteAsync(
+            ks.PublicId,
+            "SELECT ?l WHERE { <http://ex/s> <http://ex/label> ?l } LIMIT 5",
+            100, MakeToken("u"), CancellationToken.None);
+
+        Assert.Single(res.Rows);
+        Assert.Equal("Rex", res.Rows[0]["l"]);
+    }
+
     // --- helpers ---
 
     private static TokenPrincipal MakeToken(string userId) =>

@@ -8,6 +8,8 @@ using OnToPilot.ApiContract.Tests.Baseline;
 using OnToPilot.Authentication;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
+using OnToPilot.Ontology;
+using Oxigraph;
 
 namespace OnToPilot.ApiContract.Tests;
 
@@ -157,6 +159,129 @@ public sealed class ExternalApiContractTests
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    // ---- read endpoints (metadata / classes / export / individual /
+    // individuals) happy-path. Each seeds a token with the scope the
+    // controller requires for that route, hits the endpoint, and asserts
+    // 200 + the wire shape carries the Python-baseline field names.
+    // SeedDemoGraphAsync writes a TBox owl:Class + one ABox individual
+    // into the shared factory's Oxigraph store so classes/export/
+    // individual/individuals return real data (not just empty envelopes).
+    // --------------------------------------------------------------------
+
+    [Fact]
+    public async Task Metadata_succeeds_with_token()
+    {
+        var plaintext = await SeedTokenWithScopeAsync("ontology:read");
+        await SeedDemoGraphAsync();
+
+        using var client = SharedFactory.Instance.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, $"/api/v1/knowledge-systems/{PublicId}");
+        request.Headers.Add("Authorization", $"Bearer {plaintext}");
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = doc.RootElement;
+        Assert.Equal(PublicId, root.GetProperty("id").GetString());
+        Assert.True(root.TryGetProperty("name", out _));
+        Assert.True(root.TryGetProperty("base_iri", out _));
+        Assert.True(root.TryGetProperty("stats", out var stats));
+        Assert.True(stats.TryGetProperty("classes", out _));
+        Assert.True(stats.TryGetProperty("controlled_terms", out _));
+    }
+
+    [Fact]
+    public async Task Classes_succeeds_with_ontology_read()
+    {
+        var plaintext = await SeedTokenWithScopeAsync("ontology:read");
+        await SeedDemoGraphAsync();
+
+        using var client = SharedFactory.Instance.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, $"/api/v1/knowledge-systems/{PublicId}/classes");
+        request.Headers.Add("Authorization", $"Bearer {plaintext}");
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("classes", out var classes));
+        Assert.Equal(JsonValueKind.Array, classes.ValueKind);
+        Assert.True(doc.RootElement.TryGetProperty("total", out var total));
+        Assert.Equal(JsonValueKind.Number, total.ValueKind);
+    }
+
+    [Fact]
+    public async Task Export_succeeds_with_ontology_read()
+    {
+        var plaintext = await SeedTokenWithScopeAsync("ontology:read");
+        await SeedDemoGraphAsync();
+
+        using var client = SharedFactory.Instance.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, $"/api/v1/knowledge-systems/{PublicId}/export?fmt=turtle");
+        request.Headers.Add("Authorization", $"Bearer {plaintext}");
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Animal", body);
+    }
+
+    [Fact]
+    public async Task Export_returns_400_for_unsupported_format()
+    {
+        var plaintext = await SeedTokenWithScopeAsync("ontology:read");
+
+        using var client = SharedFactory.Instance.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, $"/api/v1/knowledge-systems/{PublicId}/export?fmt=bogus");
+        request.Headers.Add("Authorization", $"Bearer {plaintext}");
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Individuals_succeeds_with_instances_read()
+    {
+        var plaintext = await SeedTokenWithScopeAsync("instances:read");
+        await SeedDemoGraphAsync();
+
+        using var client = SharedFactory.Instance.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get, $"/api/v1/knowledge-systems/{PublicId}/individuals");
+        request.Headers.Add("Authorization", $"Bearer {plaintext}");
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.True(doc.RootElement.TryGetProperty("items", out var items));
+        Assert.Equal(JsonValueKind.Array, items.ValueKind);
+        Assert.True(doc.RootElement.TryGetProperty("total", out var total));
+        Assert.Equal(JsonValueKind.Number, total.ValueKind);
+    }
+
+    [Fact]
+    public async Task Individual_succeeds_with_instances_read()
+    {
+        const string individualIri = "http://test/test-ks/abox/ind-1";
+        var plaintext = await SeedTokenWithScopeAsync("instances:read");
+        await SeedDemoGraphAsync();
+
+        using var client = SharedFactory.Instance.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"/api/v1/knowledge-systems/{PublicId}/individual?iri={Uri.EscapeDataString(individualIri)}");
+        request.Headers.Add("Authorization", $"Bearer {plaintext}");
+
+        var response = await client.SendAsync(request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(individualIri, doc.RootElement.GetProperty("iri").GetString());
+        Assert.Equal("Rex", doc.RootElement.GetProperty("label").GetString());
+    }
+
     // ---- helpers ----
 
     /// <summary>
@@ -242,5 +367,37 @@ public sealed class ExternalApiContractTests
         cmd.CommandText = $"SELECT COALESCE(MAX(legacy_id), 0) + 1 FROM {table}";
         var raw = await cmd.ExecuteScalarAsync();
         return raw is long l ? l : Convert.ToInt64(raw ?? 1L);
+    }
+
+    /// <summary>
+    /// Write a minimal TBox (one <c>owl:Class</c>) + ABox (one
+    /// <c>owl:NamedIndividual</c> with an <c>rdfs:label</c>) into the
+    /// shared factory's Oxigraph store so the classes/export/individual/
+    /// individuals read endpoints return real data. Idempotent —
+    /// Oxigraph's set semantics dedupes quads on re-load, so calling this
+    /// from multiple tests is safe. The graph IRIs mirror
+    /// <see cref="KsContext"/>'s derivation from the seeded KS's
+    /// <c>GraphIri</c> (<c>http://test/{public_id}</c> → TBox,
+    /// <c>/abox</c> → ABox). Assumes the calling test has already seeded
+    /// the KS via <see cref="SeedTokenWithScopeAsync"/>.
+    /// </summary>
+    private static async Task SeedDemoGraphAsync(string publicId = PublicId)
+    {
+        using var scope = SharedFactory.Instance._factory.Services.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<StoreWrapper>();
+        var tboxGraph = new NamedNode($"http://test/{publicId}");
+        var aboxGraph = new NamedNode($"http://test/{publicId}/abox");
+        store.LoadTurtle(Encoding.UTF8.GetBytes(
+            "@prefix ex: <http://test/" + publicId + "#> .\n" +
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n" +
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n" +
+            "ex:Animal a owl:Class ; rdfs:label \"Animal\" .\n"), tboxGraph);
+        store.LoadTurtle(Encoding.UTF8.GetBytes(
+            "@prefix ex: <http://test/" + publicId + "/abox/> .\n" +
+            "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n" +
+            "@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .\n" +
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n" +
+            "ex:ind-1 a owl:NamedIndividual ; rdfs:label \"Rex\" .\n"), aboxGraph);
+        await Task.CompletedTask;
     }
 }

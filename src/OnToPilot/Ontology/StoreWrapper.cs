@@ -304,11 +304,16 @@ public sealed class StoreWrapper : IDisposable
                 // store emits via DumpNQuads.
                 return "_:" + blank.Value;
             case OntoLiteral literal:
-                // Datatype is non-nullable in 0.5.8; xsd:string is the
-                // implicit type for plain literals. We strip the datatype
-                // marker for plain strings and round-trip the lexical
-                // form otherwise so the caller can re-parse if needed.
-                if (literal.Datatype.Value != "http://www.w3.org/2001/XMLSchema#string")
+                // Datatype is nullable at runtime — plain literals (e.g.
+                // rdfs:label "Rex" with no explicit ^^xsd:string) carry a
+                // null Datatype. Both plain and typed literals project as
+                // the lexical value; the .NET SPARQL wire is simpler than
+                // Python's {type,value,datatype} binding (a known fidelity
+                // gap, accepted in slice 5). The null-check below avoids a
+                // NullReferenceException that previously surfaced as HTTP
+                // 500 whenever a SELECT returned a string literal.
+                if (literal.Datatype is not null
+                    && literal.Datatype.Value != "http://www.w3.org/2001/XMLSchema#string")
                 {
                     return literal.Value;
                 }
