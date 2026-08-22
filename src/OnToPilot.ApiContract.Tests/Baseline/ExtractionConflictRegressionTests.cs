@@ -37,6 +37,7 @@ public sealed class ExtractionConflictRegressionTests
         // pending branch specifically (running is also covered by the
         // shared FindAnyActiveJobAsync query — both wire to 409 here).
         Guid jobId;
+        Guid ksGuid;
         await using (var scope = factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<OnToPilotDbContext>();
@@ -60,6 +61,7 @@ public sealed class ExtractionConflictRegressionTests
             };
             db.KnowledgeSystems.Add(ks);
             await db.SaveChangesAsync();
+            ksGuid = ks.Id;
             var entity = new ExtractionJobEntity
             {
                 KnowledgeSystemId = ks.Id,
@@ -77,7 +79,12 @@ public sealed class ExtractionConflictRegressionTests
             jobId = entity.Id;
         }
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, "/api/knowledge/1/ontology/edit")
+        // The controller route is {id:guid}; using "/1" would never reach
+        // the dispatcher and we'd get a bare 404. Resolve the seeded KS's
+        // actual Guid here.
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            $"/api/knowledge/{ksGuid}/ontology/edit")
         {
             Content = JsonContent.Create(new { }),
         };
