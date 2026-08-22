@@ -23,6 +23,7 @@ using OnToPilot.Knowledge;
 using OnToPilot.Mcp;
 using OnToPilot.Observability;
 using OnToPilot.Ontology;
+using OnToPilot.Exports;
 using OnToPilot.Parsing;
 using OnToPilot.Prompts;
 using OnToPilot.Sparql;
@@ -491,6 +492,18 @@ builder.Services.AddExtractionServices();
 builder.Services.AddSingleton<SkosManager>(sp =>
     new SkosManager(sp.GetService<StoreWrapper>()));
 builder.Services.AddVocabularyServices();
+
+// ---- Releases exports (slice 7b) ----
+// ExportArtifactStore writes per-job N-Quads shards under
+// `{ExportRoot}/{publicId}/{jobLegacyId}/…`. The root is independent of
+// the RDF workspace root so a future swap to object storage (MinIO) only
+// touches the store implementation. The contract-test factory overrides
+// the path via configuration (per-test temp dir).
+var exportRoot = builder.Configuration["OnToPilot:Storage:ExportRoot"]
+    ?? Path.Combine(AppContext.BaseDirectory, "data", "exports");
+Directory.CreateDirectory(exportRoot);
+builder.Services.AddSingleton(_ => new ExportArtifactStore(exportRoot));
+builder.Services.AddExportServices();
 
 builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(
