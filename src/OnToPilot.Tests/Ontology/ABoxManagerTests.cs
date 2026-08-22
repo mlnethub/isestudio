@@ -44,8 +44,8 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     {
         _fx = fx;
         _ks = new KsContext(
-            GraphIri: "http://ontopilot.local/ks/test/abox-mgr",
-            BaseIri: "http://ontopilot.local/ks/test/abox-mgr/onto#");
+            GraphIri: "http://goodcrew.local/ks/test/abox-mgr",
+            BaseIri: "http://goodcrew.local/ks/test/abox-mgr/onto#");
     }
 
     public Task InitializeAsync()

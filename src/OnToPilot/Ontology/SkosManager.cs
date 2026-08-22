@@ -18,7 +18,34 @@ public static class SkosVocab
 {
     public const string Skos = "http://www.w3.org/2004/02/skos/core#";
     public const string Dcterms = "http://purl.org/dc/terms/";
-    public const string Ontopilot = "http://ontopilot.local/vocab#";
+
+    /// <summary>
+    /// OnToPilot vocabulary namespace prefix (the <c>op:</c> shorthand in
+    /// Turtle). Settable at startup via <see cref="Configure"/> so the
+    /// runtime prefix tracks <c>OnToPilot:VocabNamespace</c> without
+    /// recompiling. Must end with <c>#</c>.
+    /// </summary>
+    public static string Ontopilot { get; private set; } = "http://goodcrew.local/vocab#";
+
+    /// <summary>
+    /// Set the OnToPilot vocabulary prefix from configuration. Call once
+    /// during host startup (<c>Program.cs</c>). Triggers a rebuild of the
+    /// cached <c>Op*</c> NamedNodes on next access so any test or hot
+    /// reload that changes the prefix at runtime sees the new values.
+    /// </summary>
+    public static void Configure(string vocabNamespace)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(vocabNamespace);
+        if (!vocabNamespace.EndsWith('#'))
+            throw new ArgumentException(
+                "VocabNamespace must end with '#' (SHACL @prefix + Ontopilot + 'predicate' concatenation).",
+                nameof(vocabNamespace));
+        Ontopilot = vocabNamespace;
+        _opDefaultLanguage = null;
+        _opStatus = null;
+        _opMapsTo = null;
+        _opOrigin = null;
+    }
 
     public static readonly OntoNamedNode ConceptScheme = new(Skos + "ConceptScheme");
     public static readonly OntoNamedNode Concept = new(Skos + "Concept");
@@ -36,10 +63,22 @@ public static class SkosVocab
     public static readonly OntoNamedNode DcCreated = new(Dcterms + "created");
     public static readonly OntoNamedNode DcModified = new(Dcterms + "modified");
 
-    public static readonly OntoNamedNode OpDefaultLanguage = new(Ontopilot + "defaultLanguage");
-    public static readonly OntoNamedNode OpStatus = new(Ontopilot + "status");
-    public static readonly OntoNamedNode OpMapsTo = new(Ontopilot + "mapsTo");
-    public static readonly OntoNamedNode OpOrigin = new(Ontopilot + "origin");
+    // Op* NamedNodes depend on the configurable Ontopilot prefix, so they
+    // are lazy + invalidated by Configure(). Read via the property accessors
+    // below so any code path that needs them always sees the current prefix.
+    private static OntoNamedNode? _opDefaultLanguage;
+    private static OntoNamedNode? _opStatus;
+    private static OntoNamedNode? _opMapsTo;
+    private static OntoNamedNode? _opOrigin;
+
+    public static OntoNamedNode OpDefaultLanguage =>
+        _opDefaultLanguage ??= new OntoNamedNode(Ontopilot + "defaultLanguage");
+    public static OntoNamedNode OpStatus =>
+        _opStatus ??= new OntoNamedNode(Ontopilot + "status");
+    public static OntoNamedNode OpMapsTo =>
+        _opMapsTo ??= new OntoNamedNode(Ontopilot + "mapsTo");
+    public static OntoNamedNode OpOrigin =>
+        _opOrigin ??= new OntoNamedNode(Ontopilot + "origin");
 }
 
 // ----------------------------------------------------------------------

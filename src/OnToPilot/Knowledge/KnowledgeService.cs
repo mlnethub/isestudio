@@ -1,8 +1,10 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using OnToPilot.Api;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Authorization;
+using OnToPilot.Configuration;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
 
@@ -38,19 +40,22 @@ public sealed class KnowledgeService
     private readonly KnowledgeSystemAccessService _access;
     private readonly LegacyIdAllocator _allocator;
     private readonly KnowledgeStatsService _stats;
+    private readonly OnToPilotOptions _options;
 
     public KnowledgeService(
         OnToPilotDbContext db,
         TimeProvider clock,
         KnowledgeSystemAccessService access,
         LegacyIdAllocator allocator,
-        KnowledgeStatsService stats)
+        KnowledgeStatsService stats,
+        IOptions<OnToPilotOptions> options)
     {
         _db = db;
         _clock = clock;
         _access = access;
         _allocator = allocator;
         _stats = stats;
+        _options = options.Value;
     }
 
     // ----------------------------------------------------------------------
@@ -181,8 +186,13 @@ public sealed class KnowledgeService
         // GraphIri/BaseIri embed the assigned LegacyId, so they are
         // patched in by a second SaveChanges below.
         await _allocator.AllocateAndPersistAsync(ks, ct).ConfigureAwait(false);
-        ks.GraphIri = $"http://ontopilot.local/ks/{ks.LegacyId}";
-        ks.BaseIri = $"http://ontopilot.local/ks/{ks.LegacyId}/onto#";
+        // Stamp the knowledge system's IRI root + base from the configured
+        // IriRoot so a future migration is a config change rather than a
+        // code change. Mirrors Python `GRAPH_ROOT` (`backend/app/api/
+        // knowledge.py:25`) — the two stacks must agree byte-for-byte
+        // for the same KS id.
+        ks.GraphIri = $"{_options.IriRoot}/{ks.LegacyId}";
+        ks.BaseIri = $"{_options.IriRoot}/{ks.LegacyId}/onto#";
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         var projection = await ProjectAsync(new[] { ks }, user, ct).ConfigureAwait(false);

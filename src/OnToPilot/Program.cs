@@ -613,6 +613,13 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
     };
 });
 
+// Stamp the SKOS vocabulary prefix from configuration BEFORE building
+// the host so any service that captures SkosVocab.Ontopilot (e.g.
+// ShaclValidator, SkosManager) at construction time sees the configured
+// value rather than the default.
+SkosVocab.Configure(builder.Configuration["OnToPilot:VocabNamespace"]
+    ?? new OnToPilotOptions().VocabNamespace);
+
 var app = builder.Build();
 
 // Global error envelope runs FIRST so every response shape (auth challenges,

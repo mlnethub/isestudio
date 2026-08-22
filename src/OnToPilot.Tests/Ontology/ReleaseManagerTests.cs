@@ -62,8 +62,8 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     {
         _fx = fx;
         _ks = new KsContext(
-            GraphIri: "http://ontopilot.local/ks/test/releasemgr",
-            BaseIri: "http://ontopilot.local/ks/test/releasemgr/onto#");
+            GraphIri: "http://goodcrew.local/ks/test/releasemgr",
+            BaseIri: "http://goodcrew.local/ks/test/releasemgr/onto#");
     }
 
     public Task InitializeAsync()

@@ -38,8 +38,8 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     {
         _fx = fx;
         _ks = new KsContext(
-            GraphIri: "http://ontopilot.local/ks/test/skos-mgr",
-            BaseIri: "http://ontopilot.local/ks/test/skos-mgr/onto#");
+            GraphIri: "http://goodcrew.local/ks/test/skos-mgr",
+            BaseIri: "http://goodcrew.local/ks/test/skos-mgr/onto#");
     }
 
     public Task InitializeAsync()

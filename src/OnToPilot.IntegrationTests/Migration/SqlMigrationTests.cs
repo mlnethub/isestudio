@@ -424,8 +424,8 @@ public sealed class SqlMigrationTests : IAsyncLifetime
         -- 2 knowledge systems
         INSERT INTO knowledgesystem (id, publicid, name, description, ownerid, graphiri, baseiri, createdat, updatedat, classcount, propertycount, axiomcount, llmproviderid, embeddingproviderid)
             OVERRIDING SYSTEM VALUE
-            VALUES (100, 'ks-1', 'KS One', 'first ks', 10, 'http://ontopilot.local/ks/100', 'http://ontopilot.local/ks/100/onto#', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', 0, 0, 0, 1, 2),
-                   (101, 'ks-2', 'KS Two', 'second ks', 11, 'http://ontopilot.local/ks/101', 'http://ontopilot.local/ks/101/onto#', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', 0, 0, 0, 1, 2);
+            VALUES (100, 'ks-1', 'KS One', 'first ks', 10, 'http://goodcrew.local/ks/100', 'http://goodcrew.local/ks/100/onto#', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', 0, 0, 0, 1, 2),
+                   (101, 'ks-2', 'KS Two', 'second ks', 11, 'http://goodcrew.local/ks/101', 'http://goodcrew.local/ks/101/onto#', '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z', 0, 0, 0, 1, 2);
         -- 2 sessions
         INSERT INTO authsession (id, token, userid, createdat, expiresat)
             OVERRIDING SYSTEM VALUE
@@ -498,7 +498,7 @@ public sealed class SqlMigrationTests : IAsyncLifetime
         -- entity resolution
         INSERT INTO entityresolution (id, knowledgesystemid, surfaceform, classiri, status, individualiri, confidence, resolvedby, sourcechunkid, context, createdat)
             OVERRIDING SYSTEM VALUE
-            VALUES (18000, 100, 'rex', 'http://ontopilot.local/ks/100/onto#Dog', 'matched', 'http://ontopilot.local/ks/100/ind/rex', 0.95, 'agent', 7000, '{""why"": ""high conf""}', '2026-01-17T00:00:00Z');
+            VALUES (18000, 100, 'rex', 'http://goodcrew.local/ks/100/onto#Dog', 'matched', 'http://goodcrew.local/ks/100/ind/rex', 0.95, 'agent', 7000, '{""why"": ""high conf""}', '2026-01-17T00:00:00Z');
         -- term proposal
         INSERT INTO termproposal (id, knowledgesystemid, signature, action, term, targetiri, status, payload, confidence, reason, evidence, sourcechunkids, extractionjobid, proposedby, createdat)
             OVERRIDING SYSTEM VALUE
@@ -506,11 +506,11 @@ public sealed class SqlMigrationTests : IAsyncLifetime
         -- tbox reconciliation
         INSERT INTO tboxreconciliation (id, knowledgesystemid, slot, propertylabel, propertyiri, candidates, choice, chosenlabel, reason, resolvedby, createdat)
             OVERRIDING SYSTEM VALUE
-            VALUES (20000, 100, 'domain', 'hasColor', 'http://ontopilot.local/ks/100/onto#hasColor', '{""a"": ""A""}', 'common_super', 'Thing', 'rationale', 'agent', '2026-01-19T00:00:00Z');
+            VALUES (20000, 100, 'domain', 'hasColor', 'http://goodcrew.local/ks/100/onto#hasColor', '{""a"": ""A""}', 'common_super', 'Thing', 'rationale', 'agent', '2026-01-19T00:00:00Z');
         -- validation decision
         INSERT INTO validationdecision (id, knowledgesystemid, propertylabel, propertyiri, xsdtype, action, reason, resolvedby, createdat)
             OVERRIDING SYSTEM VALUE
-            VALUES (21000, 100, 'age', 'http://ontopilot.local/ks/100/onto#age', 'decimal', 'relax', 'r', 'agent', '2026-01-20T00:00:00Z');
+            VALUES (21000, 100, 'age', 'http://goodcrew.local/ks/100/onto#age', 'decimal', 'relax', 'r', 'agent', '2026-01-20T00:00:00Z');
     ";
 
     /// <summary>Helper that dumps a table's columns + values to the given StringBuilder.</summary>

@@ -217,8 +217,8 @@ public sealed class KnowledgeSystemAccessTests
             Name = "Test KS",
             Description = "Test KS",
             OwnerId = owner.Id,
-            GraphIri = $"http://ontopilot.local/ks/{Guid.NewGuid():N}",
-            BaseIri = $"http://ontopilot.local/ks/{Guid.NewGuid():N}#",
+            GraphIri = $"http://goodcrew.local/ks/{Guid.NewGuid():N}",
+            BaseIri = $"http://goodcrew.local/ks/{Guid.NewGuid():N}#",
             CreatedAt = now,
             UpdatedAt = now,
         };

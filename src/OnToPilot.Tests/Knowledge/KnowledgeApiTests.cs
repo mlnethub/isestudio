@@ -51,9 +51,11 @@ public sealed class KnowledgeApiTests
         Assert.Equal("smoke test", created.GetProperty("description").GetString());
         Assert.Equal("owner", created.GetProperty("my_role").GetString());
         // graph_iri / base_iri still derive from the allocator-assigned
-        // LegacyId (Ruling 1), NOT the wire PK Guid.
+        // LegacyId (Ruling 1), NOT the wire PK Guid. Stamp uses the
+        // configured IriRoot (default http://goodcrew.local/ks) — see
+        // OnToPilotOptions.IriRoot.
         var legacyId = LookupKsLegacyId(app, id);
-        Assert.Equal($"http://ontopilot.local/ks/{legacyId}", created.GetProperty("graph_iri").GetString());
+        Assert.Equal($"http://goodcrew.local/ks/{legacyId}", created.GetProperty("graph_iri").GetString());
 
         var get = await client.GetAsync($"/api/knowledge/{id}");
         Assert.Equal(HttpStatusCode.OK, get.StatusCode);

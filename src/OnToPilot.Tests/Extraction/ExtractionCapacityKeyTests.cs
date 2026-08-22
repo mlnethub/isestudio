@@ -196,7 +196,7 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
     private Guid SeedKnowledgeSystem(string tag)
     {
         var id = Guid.NewGuid();
-        var graphIri = $"http://ontopilot.local/{tag}/{id:N}";
+        var graphIri = $"http://goodcrew.local/{tag}/{id:N}";
         var baseIri = $"{graphIri}/onto#";
         using var db = _contexts.CreateDbContext();
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity

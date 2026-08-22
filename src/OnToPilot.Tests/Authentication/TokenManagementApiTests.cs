@@ -316,8 +316,8 @@ public sealed class TokenManagementApiTests
             LegacyId = TestLegacyIds.Next("knowledge_system"),
             Name = $"token-tests-{tag}",
             Description = "Seed KS for token contract tests.",
-            GraphIri = $"http://ontopilot.local/ks/{tag}",
-            BaseIri = $"http://ontopilot.local/ks/{tag}#",
+            GraphIri = $"http://goodcrew.local/ks/{tag}",
+            BaseIri = $"http://goodcrew.local/ks/{tag}#",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         };

@@ -48,8 +48,8 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
     {
         _fx = fx;
         _ks = new KsContext(
-            GraphIri: "http://ontopilot.local/ks/test/rdf-rt",
-            BaseIri: "http://ontopilot.local/ks/test/rdf-rt/onto#");
+            GraphIri: "http://goodcrew.local/ks/test/rdf-rt",
+            BaseIri: "http://goodcrew.local/ks/test/rdf-rt/onto#");
     }
 
     public Task InitializeAsync()

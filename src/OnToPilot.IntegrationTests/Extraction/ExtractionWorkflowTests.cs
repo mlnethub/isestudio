@@ -69,7 +69,7 @@ public sealed class ExtractionWorkflowTests : IDisposable
         // Seed a knowledge system so the orchestrator can resolve the
         // graph IRI from the row (production contract).
         var ksId = Guid.NewGuid();
-        var graphIri = $"http://ontopilot.local/it/{ksId:N}";
+        var graphIri = $"http://goodcrew.local/it/{ksId:N}";
         var baseIri = $"{graphIri}/onto#";
         using (var db = _contexts.CreateDbContext())
         {

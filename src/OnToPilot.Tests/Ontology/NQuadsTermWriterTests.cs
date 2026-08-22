@@ -30,8 +30,8 @@ public sealed class NQuadsTermWriterFixture : IDisposable
         Importer = new RdfImportService(Store);
         Exporter = new RdfExportService(Store);
         Ks = new KsContext(
-            GraphIri: "http://ontopilot.local/ks/test/nquads-term-writer",
-            BaseIri: "http://ontopilot.local/ks/test/nquads-term-writer/onto#");
+            GraphIri: "http://goodcrew.local/ks/test/nquads-term-writer",
+            BaseIri: "http://goodcrew.local/ks/test/nquads-term-writer/onto#");
     }
 
     public void Dispose()

@@ -24,7 +24,7 @@ namespace OnToPilot.Tests.Extraction;
 [Collection(ExtractionTestCollection.Name)]
 public sealed class ExtractionStateTests : IDisposable
 {
-    private const string GraphIri = "http://ontopilot.local/ks/extraction-tests";
+    private const string GraphIri = "http://goodcrew.local/ks/extraction-tests";
     private const string BaseIri = GraphIri + "/onto#";
 
     private readonly string _root;

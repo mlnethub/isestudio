@@ -40,8 +40,8 @@ public sealed class ExportJobStoreFixture : IDisposable
             LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Export fixture",
-            GraphIri = "http://ontopilot.local/ks/export-fixture",
-            BaseIri = "http://ontopilot.local/ks/export-fixture/onto#",
+            GraphIri = "http://goodcrew.local/ks/export-fixture",
+            BaseIri = "http://goodcrew.local/ks/export-fixture/onto#",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });

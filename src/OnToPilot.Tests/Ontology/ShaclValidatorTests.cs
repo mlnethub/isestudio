@@ -38,8 +38,8 @@ public class ShaclValidatorTests : IClassFixture<ShaclValidatorFixture>, IAsyncL
     {
         _fx = fx;
         _ks = new KsContext(
-            GraphIri: "http://ontopilot.local/ks/test/shacl",
-            BaseIri: "http://ontopilot.local/ks/test/shacl/onto#");
+            GraphIri: "http://goodcrew.local/ks/test/shacl",
+            BaseIri: "http://goodcrew.local/ks/test/shacl/onto#");
     }
 
     public Task InitializeAsync()

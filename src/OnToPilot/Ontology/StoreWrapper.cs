@@ -524,6 +524,36 @@ public sealed class StoreWrapper : IDisposable
         _store.Load(Encoding.UTF8.GetString(turtle), RdfFormat.Turtle, opts);
     }
 
+    /// <summary>
+    /// Load a Turtle serialization with a one-shot prefix rewrite so a
+    /// static <c>.ttl</c> file declaring <c>@prefix op:</c> against the
+    /// legacy IRI can be loaded into a host configured for a different
+    /// vocabulary namespace. Replaces every occurrence of
+    /// <paramref name="fromPrefix"/> in the Turtle text with
+    /// <paramref name="toPrefix"/> before parsing.
+    /// </summary>
+    /// <remarks>
+    /// Used by <c>tbox-shapes.ttl</c>: the file ships with
+    /// <c>@prefix op: &lt;http://ontopilot.local/vocab#&gt;</c> baked in
+    /// (it's a Content item, not a parameterised template). At load time
+    /// we substitute the configured <c>OnToPilotOptions.VocabNamespace</c>
+    /// so the shape subject IRI stays aligned with
+    /// <see cref="SkosVocab.Ontopilot"/>.
+    /// </remarks>
+    public void LoadTurtleWithPrefixRewrite(
+        byte[] turtle, OntoNamedNode toGraph, string fromPrefix, string toPrefix)
+    {
+        ArgumentNullException.ThrowIfNull(turtle);
+        ArgumentNullException.ThrowIfNull(toGraph);
+        ArgumentException.ThrowIfNullOrEmpty(fromPrefix);
+        ArgumentException.ThrowIfNullOrEmpty(toPrefix);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var raw = Encoding.UTF8.GetString(turtle);
+        var rewritten = fromPrefix == toPrefix ? raw : raw.Replace(fromPrefix, toPrefix);
+        var opts = new LoadOptions(ToGraph: toGraph);
+        _store.Load(rewritten, RdfFormat.Turtle, opts);
+    }
+
     // Internal: replace a named graph by N-Quads bytes. Used by QuadChangeCapture
     // revert paths so the snapshot format is byte-exact and the embedded graph
     // context re-attaches the quads to the right slot.

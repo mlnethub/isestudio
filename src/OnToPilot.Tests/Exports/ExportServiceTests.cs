@@ -21,7 +21,7 @@ namespace OnToPilot.Tests.Exports;
 /// </summary>
 public sealed class ExportServiceFixture : IDisposable
 {
-    private const string GraphIri = "http://ontopilot.local/ks/export-tests";
+    private const string GraphIri = "http://goodcrew.local/ks/export-tests";
     private const string BaseIri = GraphIri + "/onto#";
 
     public string Root { get; }

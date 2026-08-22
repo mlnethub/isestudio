@@ -20,7 +20,7 @@ namespace OnToPilot.Tests.Extraction;
 [Collection(ExtractionTestCollection.Name)]
 public sealed class ExtractionLlmFailureTests : IDisposable
 {
-    private const string GraphIri = "http://ontopilot.local/ks/llm-failure-tests";
+    private const string GraphIri = "http://goodcrew.local/ks/llm-failure-tests";
     private const string BaseIri = GraphIri + "/onto#";
 
     private readonly string _root;

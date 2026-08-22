@@ -178,8 +178,8 @@ public class ConflictDetectorTests : IClassFixture<ConflictDetectorFixture>
         // must yield the same SHA-256. Repeated with a different layer to
         // ensure the equality holds across multiple captures.
         var ks = new KsContext(
-            GraphIri: "http://ontopilot.local/ks/test/conflict-i1",
-            BaseIri: "http://ontopilot.local/ks/test/conflict-i1/onto#");
+            GraphIri: "http://goodcrew.local/ks/test/conflict-i1",
+            BaseIri: "http://goodcrew.local/ks/test/conflict-i1/onto#");
         var tbox = new OntoNamedNode(ks.TBoxGraph);
         var abox = new OntoNamedNode(ks.ABoxGraph);
 

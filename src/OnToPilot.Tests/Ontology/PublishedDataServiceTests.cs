@@ -21,7 +21,7 @@ namespace OnToPilot.Tests.Ontology;
 /// </summary>
 public sealed class PublishedDataServiceFixture : IDisposable
 {
-    public const string GraphIri = "http://ontopilot.local/ks/published-tests";
+    public const string GraphIri = "http://goodcrew.local/ks/published-tests";
     public const string BaseIri = GraphIri + "/onto#";
 
     public string Root { get; }
