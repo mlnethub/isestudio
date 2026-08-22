@@ -173,6 +173,151 @@ public sealed class StoreWrapper : IDisposable
         return _store.Match(subject: subject, predicate: predicate, @object: null, graph: null);
     }
 
+    /// <summary>
+    /// Execute a read-only SPARQL query against the workspace store and
+    /// project the bindings into <see cref="IReadOnlyDictionary{TKey, TValue}"/>
+    /// rows. Supports SELECT (row-per-solution, keys = SPARQL variables)
+    /// and ASK (single row, <c>{ "boolean": bool }</c>); CONSTRUCT / DESCRIBE
+    /// are not reachable through <see cref="Api.ReadOnlySparqlPolicy"/>
+    /// but the dispatcher still projects them as <c>{ s, p, o }</c> rows
+    /// so the wire envelope stays stable.
+    /// </summary>
+    /// <param name="sparql">SPARQL text; already passed the read-only guard.</param>
+    /// <param name="options">Per-call options; pass
+    /// <c>QueryOptions.DefaultGraphs = [tbox, abox, vocab]</c> to KS-bind.</param>
+    public IReadOnlyList<IReadOnlyDictionary<string, object?>> Query(
+        string sparql,
+        QueryOptions options)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(sparql);
+        ArgumentNullException.ThrowIfNull(options);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        using var activity = Telemetry.RdfSource.StartActivity("rdf.store.query", ActivityKind.Internal);
+        try
+        {
+            using var results = _store.Query(sparql, options);
+            var rows = ProjectQueryResults(results);
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "success");
+            return rows;
+        }
+        catch (Exception ex)
+        {
+            activity?.SetTag(TelemetryExtensions.OutcomeTag, "error");
+            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Async overload. Oxigraph 0.5.8 has no native async query API, so
+    /// the call is dispatched to the thread pool to keep the controller
+    /// scope non-blocking. Cancellation is observed before the work is
+    /// scheduled.
+    /// </summary>
+    public ValueTask<IReadOnlyList<IReadOnlyDictionary<string, object?>>> QueryAsync(
+        string sparql,
+        QueryOptions options,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(sparql);
+        ArgumentNullException.ThrowIfNull(options);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        return new ValueTask<IReadOnlyList<IReadOnlyDictionary<string, object?>>>(
+            Task.Run(() => Query(sparql, options), cancellationToken));
+    }
+
+    private static IReadOnlyList<IReadOnlyDictionary<string, object?>> ProjectQueryResults(
+        QueryResults results)
+    {
+        switch (results)
+        {
+            case QuerySolutions solutions:
+            {
+                var rows = new List<IReadOnlyDictionary<string, object?>>(solutions.Count);
+                foreach (var sol in solutions)
+                {
+                    var dict = new Dictionary<string, object?>(StringComparer.Ordinal);
+                    foreach (var v in solutions.Variables)
+                    {
+                        // Oxigraph exposes two indexing paths:
+                        //   - QuerySolution[Variable] -> ITerm
+                        //   - QuerySolution.TryGetValue(string, out ITerm)
+                        // The string-keyed indexer is what we want so the
+                        // wire row matches the SPARQL variable name verbatim.
+                        if (sol.TryGetValue(v.Value, out var term))
+                        {
+                            dict[v.Value] = ProjectTerm(term);
+                        }
+                        else
+                        {
+                            dict[v.Value] = null;
+                        }
+                    }
+                    rows.Add(dict);
+                }
+                return rows;
+            }
+            case QueryBoolean ask:
+            {
+                // Single-row projection so SELECT-style row iteration
+                // works uniformly on the caller side.
+                return new IReadOnlyDictionary<string, object?>[]
+                {
+                    new Dictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["boolean"] = ask.Value,
+                    },
+                };
+            }
+            case QueryTriples triples:
+            {
+                var rows = new List<IReadOnlyDictionary<string, object?>>();
+                foreach (var t in triples)
+                {
+                    rows.Add(new Dictionary<string, object?>(StringComparer.Ordinal)
+                    {
+                        ["s"] = ProjectTerm(t.Subject),
+                        ["p"] = t.Predicate.Value,
+                        ["o"] = ProjectTerm(t.Object),
+                    });
+                }
+                return rows;
+            }
+            default:
+                return Array.Empty<IReadOnlyDictionary<string, object?>>();
+        }
+    }
+
+    private static object? ProjectTerm(ITerm? term)
+    {
+        if (term is null) return null;
+        switch (term)
+        {
+            case OntoNamedNode node:
+                return node.Value;
+            case OntoBlankNode blank:
+                // Oxigraph 0.5.8 stores the bare label; prefix with "_:"
+                // to align with N-Quads wire encoding the rest of the
+                // store emits via DumpNQuads.
+                return "_:" + blank.Value;
+            case OntoLiteral literal:
+                // Datatype is non-nullable in 0.5.8; xsd:string is the
+                // implicit type for plain literals. We strip the datatype
+                // marker for plain strings and round-trip the lexical
+                // form otherwise so the caller can re-parse if needed.
+                if (literal.Datatype.Value != "http://www.w3.org/2001/XMLSchema#string")
+                {
+                    return literal.Value;
+                }
+                return literal.Value;
+            default:
+                return term.ToString();
+        }
+    }
+
     /// <summary>Total quad count. With <paramref name="graph"/>, scoped to one graph.</summary>
     public ulong Count(OntoNamedNode? graph = null)
     {
