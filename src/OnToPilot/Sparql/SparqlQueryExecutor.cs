@@ -36,8 +36,18 @@ public sealed class SparqlQueryExecutor : ISparqlQueryExecutor
     {
         if (string.IsNullOrWhiteSpace(publicId))
             throw new KeyNotFoundException("public_id is required.");
-        if (string.IsNullOrWhiteSpace(sparql))
-            throw new OnToPilot.Api.ValidationException("Query body is required.");
+
+        // Read-only policy enforcement lives here (the SPARQL boundary) so
+        // both the HTTP path through PublishedController and the MCP path
+        // through OnToPilotMcpTools are protected identically. The
+        // controller pre-validates for an early 400; this is the canonical
+        // safety net.
+        var policy = OnToPilot.Api.ReadOnlySparqlPolicy.Validate(sparql);
+        if (policy is OnToPilot.Api.ReadOnlySparqlPolicyResult.Reject rejected)
+        {
+            throw new OnToPilot.Api.ValidationException(rejected.Reason);
+        }
+        var normalised = ((OnToPilot.Api.ReadOnlySparqlPolicyResult.Allow)policy).Normalised;
 
         var ks = await _db.KnowledgeSystems.AsNoTracking()
             .FirstOrDefaultAsync(k => k.PublicId == publicId, cancellationToken)
@@ -57,7 +67,7 @@ public sealed class SparqlQueryExecutor : ISparqlQueryExecutor
         };
 
         var capped = Math.Clamp(maxRows, 1, 10_000);
-        var sparqlWithLimit = EnsureLimit(sparql, capped);
+        var sparqlWithLimit = EnsureLimit(normalised, capped);
         var rows = await _store.QueryAsync(sparqlWithLimit, options, cancellationToken)
             .ConfigureAwait(false);
 
@@ -66,9 +76,10 @@ public sealed class SparqlQueryExecutor : ISparqlQueryExecutor
 
     /// <summary>
     /// Append a <c>LIMIT N</c> clause if the SPARQL has none. SPARQL is
-    /// case-insensitive and tolerates whitespace before the trailing
-    /// semicolon; we match the trailing <c>LIMIT</c> keyword ignoring case
-    /// and, if absent, append <c>LIMIT N</c> at the end.
+    /// case-insensitive and tolerates whitespace; trailing semicolons are
+    /// stripped (SPARQL syntax does not accept them) and the <c>LIMIT</c>
+    /// keyword is matched case-insensitively. If absent, <c>LIMIT N</c> is
+    /// appended at the end.
     /// </summary>
     internal static string EnsureLimit(string sparql, int maxRows)
     {
@@ -80,8 +91,8 @@ public sealed class SparqlQueryExecutor : ISparqlQueryExecutor
                 trimmed, @"\bLIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase))
         {
-            return trimmed + ";";
+            return trimmed;
         }
-        return trimmed + " LIMIT " + maxRows + ";";
+        return trimmed + " LIMIT " + maxRows;
     }
 }
