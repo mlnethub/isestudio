@@ -420,9 +420,32 @@ builder.Services.AddKnowledgeServices();
 // the whole app. Contract-test factories override IDocumentParser /
 // IBlobStore (see AuthTestWebApplicationFactory.ConfigureServices) to
 // inject a TestDocumentParser + per-test temp blob root.
+//
+// Blob backend is selected by the Storage:Endpoint config key (slice 9):
+// when the key is present, point at MinIO/S3-compatible object storage;
+// otherwise fall back to the local CAS-on-disk backend so dev runs and
+// unit tests stay self-contained.
 var blobRoot = builder.Configuration["OnToPilot:Storage:BlobRoot"]
     ?? Path.Combine(AppContext.BaseDirectory, "data", "blobs");
-builder.Services.AddSingleton<IBlobStore>(_ => new LocalCasBlobStore(blobRoot));
+var minioEndpoint = builder.Configuration["OnToPilot:Storage:Endpoint"];
+if (!string.IsNullOrWhiteSpace(minioEndpoint))
+{
+    var minioAccess = builder.Configuration["OnToPilot:Storage:AccessKey"] ?? "";
+    var minioSecret = builder.Configuration["OnToPilot:Storage:SecretKey"] ?? "";
+    var minioBucket = builder.Configuration["OnToPilot:Storage:Bucket"] ?? "";
+    var minioUseSsl = builder.Configuration.GetValue<bool?>("OnToPilot:Storage:UseSsl") ?? true;
+    var endpoint = minioUseSsl
+        ? minioEndpoint
+        : (minioEndpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            ? minioEndpoint
+            : "http://" + minioEndpoint);
+    builder.Services.AddSingleton<IBlobStore>(_ =>
+        MinioBlobStore.Create(endpoint, minioAccess, minioSecret, minioBucket));
+}
+else
+{
+    builder.Services.AddSingleton<IBlobStore>(_ => new LocalCasBlobStore(blobRoot));
+}
 builder.Services.AddSingleton<IDocumentParser, DocumentParser>();
 builder.Services.AddSingleton<Chunker>(_ => new Chunker(
     size: DocumentService.DefaultChunkSize,
