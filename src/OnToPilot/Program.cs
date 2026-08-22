@@ -13,6 +13,7 @@ using OnToPilot.Authorization;
 using OnToPilot.Configuration;
 using OnToPilot.Conflicts;
 using OnToPilot.Documents;
+using OnToPilot.EntityResolution;
 using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
