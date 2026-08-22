@@ -1,6 +1,6 @@
 import type { MouseEvent, ReactNode } from "react"
 import { useCallback, useEffect, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { useNavigate, NavLink } from "react-router-dom"
 import { toast } from "sonner"
 import { Boxes, Cpu, FileUp, Link2, Network, Pencil, Plus, Sparkles, Trash2 } from "lucide-react"
 import { api } from "@/lib/api"
@@ -281,54 +281,64 @@ export default function KnowledgePage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {systems.map((ks) => (
-            <Card
-              key={ks.id}
-              className="cursor-pointer transition-colors hover:border-primary/50"
-              onClick={() => navigate(`/knowledge/${ks.id}`)}
-            >
-              <CardHeader>
-                <div className="flex items-start justify-between gap-2">
-                  <CardTitle className="text-base">{ks.name}</CardTitle>
-                  <div className="flex shrink-0 items-center gap-1">
-                    <Badge variant="outline" className="text-[10px]">{t(ROLE_LABEL[ks.my_role])}</Badge>
-                    {ks.my_role !== "viewer" && (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                        title={t("knowledge.editSettings")}
-                        onClick={(e) => openEdit(ks, e)}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                    )}
-                    {ks.my_role === "owner" && (
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                        onClick={(e) => remove(ks, e)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
-                </div>
-                <CardDescription className="line-clamp-2 min-h-[2.5rem]">
-                  {ks.description || t("common.noDescription")}
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex gap-4">
-                <Stat icon={<Boxes className="h-3.5 w-3.5" />} value={ks.class_count} label={t("knowledge.classes")} />
-                <Stat icon={<Link2 className="h-3.5 w-3.5" />} value={ks.property_count} label={t("knowledge.properties")} />
-                <Stat icon={<Network className="h-3.5 w-3.5" />} value={ks.axiom_count} label={t("knowledge.axioms")} />
-              </CardContent>
-              <CardFooter className="text-xs text-muted-foreground">
-                {new Date(ks.created_at).toLocaleString(locale)}
-              </CardFooter>
-            </Card>
-          ))}
+          {systems.map((ks) => {
+            // Card-as-link: wrap the Card in a NavLink so the whole tile is
+            // clickable and exposes a real link role for assistive tech
+            // (WCAG H30). The action buttons sit above the link surface
+            // and stop propagation so they do not also trigger navigation.
+            const openLabel = t("knowledge.open", { name: ks.name })
+            return (
+              <NavLink
+                key={ks.id}
+                to={`/knowledge/${ks.id}`}
+                aria-label={openLabel}
+                className="block rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Card className="cursor-pointer transition-colors hover:border-primary/50">
+                  <CardHeader>
+                    <div className="flex items-start justify-between gap-2">
+                      <CardTitle className="text-base">{ks.name}</CardTitle>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <Badge variant="outline" className="text-[10px]">{t(ROLE_LABEL[ks.my_role])}</Badge>
+                        {ks.my_role !== "viewer" && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="relative z-10 h-7 w-7 text-muted-foreground hover:text-foreground"
+                            title={t("knowledge.editSettings")}
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); openEdit(ks, e) }}
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        {ks.my_role === "owner" && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="relative z-10 h-7 w-7 text-muted-foreground hover:text-destructive"
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); remove(ks, e) }}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <CardDescription className="line-clamp-2 min-h-[2.5rem]">
+                      {ks.description || t("common.noDescription")}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="flex gap-4">
+                    <Stat icon={<Boxes className="h-3.5 w-3.5" />} value={ks.class_count} label={t("knowledge.classes")} />
+                    <Stat icon={<Link2 className="h-3.5 w-3.5" />} value={ks.property_count} label={t("knowledge.properties")} />
+                    <Stat icon={<Network className="h-3.5 w-3.5" />} value={ks.axiom_count} label={t("knowledge.axioms")} />
+                  </CardContent>
+                  <CardFooter className="text-xs text-muted-foreground">
+                    {new Date(ks.created_at).toLocaleString(locale)}
+                  </CardFooter>
+                </Card>
+              </NavLink>
+            )
+          })}
         </div>
       )}
     </div>

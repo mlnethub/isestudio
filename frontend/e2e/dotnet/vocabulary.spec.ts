@@ -29,11 +29,13 @@ test.describe("dotnet / vocabulary (SKOS CRUD)", () => {
     await loginAsAdmin(page)
 
     // The first knowledge system on the seeded backend is the default
-    // landing surface. We click whichever card is rendered.
+    // landing surface. Click whichever Card-as-link tile is rendered.
     await page.getByRole("link", { name: /open/i }).first().click()
 
-    // Open the vocabulary / terminology tab.
-    await page.getByRole("tab", { name: /terminology|vocabulary/i }).click()
+    // The side nav exposes the vocabulary section as a "Terminology" link
+    // (URL: /knowledge/{ksId}/vocabulary). Main content does not yet use
+    // a tablist primitive, so a `getByRole('tab')` selector would miss it.
+    await page.getByRole("link", { name: /terminology|vocabulary/i }).click()
 
     const uniqueLabel = `dotnet-e2e-${Date.now()}`
 

@@ -26,10 +26,12 @@ test.describe("dotnet / session round-trip", () => {
   test("login then logout against dotnet", async ({ page }) => {
     await loginAsAdmin(page)
 
-    // The Documents link only renders when the auth context is established.
+    // Sidebar nav only renders inside a KS route; on the home page we
+    // instead assert that the global header shows the logged-in user's
+    // display name (or username when no display name is set).
     await expect(
-      page.getByRole("link", { name: /documents/i }).first(),
-      "Post-login Documents link never appeared — session was not established.",
+      page.getByRole("button", { name: /log\s*out|sign\s*out/i }),
+      "Post-login header never showed a logout control — session was not established.",
     ).toBeVisible({ timeout: 10_000 })
 
     await logoutAsAdmin(page)

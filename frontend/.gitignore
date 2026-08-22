@@ -22,3 +22,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Playwright (run output — never committed)
+# https://playwright.dev/docs/test-reporters
+test-results
+playwright-report
+blob-report
+playwright/.cache
+playwright/.last-run.json

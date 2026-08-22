@@ -1,4 +1,20 @@
-// Thin typed API client. All calls go to /api which Vite proxies to the FastAPI backend.
+// Thin typed API client for the OntoPilot .NET backend.
+// All calls go to /api/* which Vite proxies to the ASP.NET Core service
+// (see `vite.config.ts` — `VITE_BACKEND_PROXY_TARGET`).
+//
+// BACKEND = ASP.NET Core 10 (since the dotnet migration; see
+// `docs/superpowers/specs/2026-08-13-ontopilot-dotnet-migration-design.md`).
+// The legacy FastAPI Python implementation under `backend/` is frozen as
+// a contract baseline only and is no longer served in dev or prod.
+//
+// ID / URL CONVENTION (cross-link `lib/types.ts` header):
+//   - Every id passed into an `api.*` helper is a Guid string.
+//   - Guids are RFC-3986 unreserved, so they are concatenated into URL
+//     paths with template literals — **do not** wrap them in
+//     `encodeURIComponent`. Only true user-supplied free text needs it
+//     (e.g. `filename` in `exportFileUrl`, `iri` in vocabulary helpers).
+//   - Numeric query params (`limit`, `offset`) are coerced with `String()`
+//     only to satisfy `URLSearchParams` typing, never as id coercion.
 import type {
   AboxClassList,
   ApiToken,

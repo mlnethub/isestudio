@@ -84,7 +84,7 @@ export default function ValidationPanel({
   useEffect(() => { load() }, [load])
 
   const applyFix = useCallback(async (violation: Violation, fix: ValidationFix) => {
-    setBusy(violation.id + fix.id)
+    setBusy(`${violation.id}::${fix.id}`)
     try {
       const validation = await api.fixViolation(ksId, fix.op, `${fix.label} — ${violation.summary}`)
       setResult(validation)

@@ -3,7 +3,7 @@ import { Loader2, Network } from "lucide-react"
 import { useAuth } from "@/lib/auth"
 import { useI18n } from "@/lib/i18n"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
@@ -37,7 +37,9 @@ export default function LoginPage() {
           <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Network className="h-5 w-5" />
           </div>
-          <CardTitle className="text-lg">{t("login.title")}</CardTitle>
+          {/* Page heading — uses a real <h1> instead of <CardTitle> so screen readers
+              (and Playwright's getByRole('heading')) can locate the login screen. */}
+          <h1 className="text-lg font-heading font-medium leading-snug">{t("login.title")}</h1>
           <CardDescription>{t("login.description")}</CardDescription>
         </CardHeader>
         <CardContent>

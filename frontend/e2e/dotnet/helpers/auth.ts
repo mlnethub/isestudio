@@ -40,12 +40,13 @@ export async function loginAsAdmin(
   await page.getByLabel(/password/i).fill(password)
   await page.getByRole("button", { name: /sign in|log in|submit/i }).click()
 
-  // The shell renders the "Documents" link in the side nav once the
-  // session cookie is set, so the post-login landing page exposes it.
+  // The login form is removed from the tree once `useAuth()` flips to
+  // an authenticated user — that is the strongest signal that the
+  // session cookie has been accepted by the .NET backend.
   await expect(
-    page.getByRole("link", { name: /documents/i }).first(),
-    "Login did not complete — the side-nav 'Documents' link never appeared.",
-  ).toBeVisible({ timeout: 15_000 })
+    page.getByRole("heading", { name: /sign in|log in/i }),
+    "Login form did not disappear — credentials were rejected or the .NET backend is unreachable.",
+  ).toBeHidden({ timeout: 15_000 })
 }
 
 /**

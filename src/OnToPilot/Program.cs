@@ -280,36 +280,25 @@ builder.Services.AddScoped<IIntegrationApiFacade, IntegrationApiFacade>();
 builder.Services.Configure<OnToPilotOptions>(
     builder.Configuration.GetSection(OnToPilotOptions.SectionName));
 
-// Wire the EF Core DbContext. Production uses PostgreSQL; tests flip the
-// provider via configuration (see AuthTestWebApplicationFactory). The actual
-// schema is owned by the InitialCompatibility migration; the application
-// does not call EnsureCreated() at runtime. The provider choice is resolved
-// lazily from the IServiceProvider so test factories that add configuration
-// sources late in `ConfigureWebHost` are honored.
-builder.Services.AddDbContext<OnToPilotDbContext>((sp, options) =>
-{
-    var config = sp.GetRequiredService<IConfiguration>();
-    var provider = config["OnToPilot:Persistence:Provider"] ?? "npgsql";
-    if (string.Equals(provider, "sqlite", StringComparison.OrdinalIgnoreCase))
-    {
-        var sqlite = config["OnToPilot:Persistence:SqliteConnection"]
-            ?? "Data Source=:memory:";
-        options.UseSqlite(sqlite);
-    }
-    else
-    {
-        var npgsql = config["OnToPilot:Persistence:ConnectionString"]
-            ?? "Host=localhost;Port=5432;Database=ontopilot;Username=postgres;Password=postgres";
-        options.UseNpgsql(npgsql);
-    }
-});
-
-// Also register an IDbContextFactory<OnToPilotDbContext> so background
-// services (the ExtractionOrchestrator, the InternalOperationDispatcher's
-// "is extraction active" guard) can open a fresh DbContext per call without
-// sharing the scoped HttpContext-bound tracker. Both registrations point at
-// the same configuration so the production connection string and the
-// contract-test sqlite file are honoured identically.
+// Wire the EF Core DbContext via the factory-only pattern.
+//
+// Why factory-only (no `AddDbContext<>`):
+//   1. Background singletons (`ExtractionJobStore`, `ExportJobStore`) need
+//      to open fresh contexts without sharing an HttpContext-bound tracker.
+//   2. ASP.NET Core request handlers need a scoped `OnToPilotDbContext` for
+//      per-request tracking.
+//
+// The historical layout — `AddDbContext<>` (registers Scoped
+// `DbContextOptions<T>`) plus `AddDbContextFactory<>` (Singleton, tries to
+// consume those same Scoped `DbContextOptions<T>`) — produced a captive
+// dependency that only surfaced under `dotnet run`'s development-time
+// ServiceProvider validation. See `docs/superpowers/specs/2026-08-23-p0-blocker-captive-and-prompt-gap.md`.
+//
+// The single factory registration below produces the `DbContextOptions<T>`
+// exactly once (with lifetime = Singleton) so both consumers — request
+// handlers via the `AddScoped<OnToPilotDbContext>` proxy below, and
+// background services via `IDbContextFactory<TContext>` — share the same
+// options graph and never trip scope validation.
 builder.Services.AddDbContextFactory<OnToPilotDbContext>((sp, options) =>
 {
     var config = sp.GetRequiredService<IConfiguration>();
@@ -327,6 +316,14 @@ builder.Services.AddDbContextFactory<OnToPilotDbContext>((sp, options) =>
         options.UseNpgsql(npgsql);
     }
 });
+
+// Scoped proxy so per-request services can still inject `OnToPilotDbContext`
+// directly (37 services do — see `Ontology/HistoryService.cs:14` etc.).
+// The factory is owned by the root provider; this proxy hands each request
+// its own short-lived context via `CreateDbContext()`, keeping the
+// `DbContextOptions` graph compatible with both lifetimes.
+builder.Services.AddScoped<OnToPilotDbContext>(sp =>
+    sp.GetRequiredService<IDbContextFactory<OnToPilotDbContext>>().CreateDbContext());
 
 // Singleton so the dispatcher's "find any active extraction" guard does
 // not have to share state with the request-scoped DbContext; the store

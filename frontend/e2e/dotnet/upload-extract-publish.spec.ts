@@ -26,10 +26,33 @@ test.describe("dotnet / upload → extract → publish", () => {
 
   test("upload, extract, review and publish against dotnet", async ({ page }) => {
     await loginAsAdmin(page)
-    await page.getByRole("link", { name: "Documents" }).click()
-    await page.getByLabel("Upload files").setInputFiles("e2e/fixtures/pump.pdf")
-    await expect(page.getByText("parsed")).toBeVisible()
-    await page.getByRole("button", { name: "Extract" }).click()
+    // Enter the seeded knowledge system before reaching the
+    // Documents & Extraction side-nav link.
+    await page.getByRole("link", { name: /open/i }).first().click()
+    await page.getByRole("link", { name: /documents/i }).click()
+    // The Documents panel exposes a hidden <input type="file"> opened
+    // by an "Upload" button. Drive the input directly — it's the same
+    // primitive the trigger uses, just without the click intermediary.
+    await page.locator('input[type="file"]').first().setInputFiles("e2e/fixtures/pump.pdf")
+    // Wait for the upload to land: the row for `pump.pdf` must appear in
+    // the table. Upload itself only flips parse_status to "pending";
+    // parse is a separate step on the next button click.
+    const pdfRow = page.getByRole("row").filter({ hasText: /pump\.pdf/i }).first()
+    await expect(pdfRow, "Uploaded pump.pdf row never appeared in the documents table.")
+      .toBeVisible({ timeout: 15_000 })
+    // Step 1 — parse the PDF (per-row "Parse" button flips status to
+    // "parsed" / "已解析"). The Extract button only renders once parse
+    // succeeds, so this is a precondition for the next step.
+    await pdfRow.getByRole("button", { name: /^parse$|reparse|解析/i }).first().click()
+    await expect(pdfRow.getByText(/parsed|已解析/i).first(),
+      "pump.pdf did not reach 'parsed' state — backend PDF parser may be unhealthy.",
+    ).toBeVisible({ timeout: 60_000 })
+    // Step 2 — open the per-row Extract dialog and confirm. We click
+    // the dialog's primary action button rather than the row button, so
+    // the same selector works regardless of how the dialog labels itself
+    // across locales.
+    await pdfRow.getByRole("button", { name: /extract|抽取/i }).first().click()
+    await page.getByRole("button", { name: /extract|抽取|start|开始/i }).last().click()
     await expect(page.getByText("completed")).toBeVisible({ timeout: 60_000 })
     await publishCurrentDraft(page)
     await expect(page.getByText("published")).toBeVisible()
