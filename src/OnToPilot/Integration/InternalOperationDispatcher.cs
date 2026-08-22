@@ -247,25 +247,32 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
                 () => InvokePromptsRestoreAllAsync(request, cancellationToken)),
 
             // -- releases --
+            // 7a: list/create/review/publish/deploy/stop_deployment/delete/
+            // rollback/diff wired to ReleaseService + ReleaseManager (the
+            // serving-store spine). Exports (list_exports/create_export/
+            // get_export/download_export_file) land in 7b.
             "releases.list_exports" => Task.FromResult<object?>(EmptyListResponse()),
             "releases.create_export" => Task.FromResult<object?>(EmptyExportJob()),
             "releases.get_export" => Task.FromResult<object?>(EmptyExportJob()),
             "releases.download_export_file" => Task.FromResult<object?>(Array.Empty<byte>()),
-            "releases.list" => Task.FromResult<object?>(EmptyListResponse()),
-            // B9 create-draft wiring — was a Stage-1 placeholder
-            // returning {id: Guid.Empty, ...}, so a frontend
-            // ReleasePanel.createDraft click succeeded on the wire but
-            // never persisted an OntologyRelease row. Delegates to
-            // ReleaseService.CreateDraftAsync which mirrors the Python
-            // backend/app/api/releases.py:353 baseline.
+            "releases.list" => InvokeReleaseListAsync(request, cancellationToken),
+            // B9 create-draft wiring — ReleaseService.CreateDraftAsync now
+            // also kicks off the background capture (Task.Run +
+            // ExecutionContext.SuppressFlow) so the manifest moves from
+            // capture_status=pending → ready without blocking the response.
             "releases.create" => InvokeReleaseCreateAsync(request, cancellationToken),
-            "releases.diff" => Task.FromResult<object?>(EmptyReleaseDiff()),
-            "releases.delete" => Task.FromResult<object?>(new { ok = true }),
-            "releases.stop_deployment" => Task.FromResult<object?>(EmptyRelease()),
-            "releases.deploy" => Task.FromResult<object?>(EmptyRelease()),
-            "releases.publish" => Task.FromResult<object?>(EmptyRelease()),
-            "releases.review" => Task.FromResult<object?>(EmptyRelease()),
-            "releases.rollback" => Task.FromResult<object?>(EmptyRelease()),
+            "releases.diff" => InvokeReleaseDiffAsync(request, cancellationToken),
+            "releases.delete" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeReleaseDeleteAsync(request, cancellationToken)),
+            "releases.stop_deployment" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeReleaseStopDeploymentAsync(request, cancellationToken)),
+            "releases.deploy" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeReleaseDeployAsync(request, cancellationToken)),
+            "releases.publish" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeReleasePublishAsync(request, cancellationToken)),
+            "releases.review" => InvokeReleaseReviewAsync(request, cancellationToken),
+            "releases.rollback" => RunWithExtractionGuardAsync(request, cancellationToken,
+                () => InvokeReleaseRollbackAsync(request, cancellationToken)),
 
             // -- rdf-import --
             // Multipart-driven RDF import (replaces the Stage 1
@@ -2652,6 +2659,166 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             if (row is null) return (object?)EmptyRelease();
             return (object?)ProjectReleaseOut(row);
         });
+    }
+
+    // ------------------------------------------------------------------
+    // release lifecycle arms (7a). All resolve the scoped ReleaseService
+    // + the bound KS guid + the {release_id} route resource (a Guid).
+    // Read arms (list/review/diff) go through WrapAsync; write arms
+    // (publish/deploy/stop/delete/rollback) are wrapped by
+    // RunWithExtractionGuardAsync at the switch so an extraction in
+    // progress surfaces 409. State-machine conflicts throw
+    // ResourceInUseException → 409 (FastApiErrorMiddleware L92).
+    // ------------------------------------------------------------------
+
+    private Task<object?> InvokeReleaseListAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveReleaseService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+            return Task.FromResult<object?>(EmptyListResponse());
+        return WrapAsync(async () =>
+        {
+            var out_ = await svc.ListAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(out_ ?? (object)EmptyListResponse());
+        });
+    }
+
+    private Task<object?> InvokeReleaseReviewAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveReleaseService();
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
+            return Task.FromResult<object?>(EmptyRelease());
+        if (!Guid.TryParse(request.ResourceId, out var releaseId))
+            return Task.FromResult<object?>(EmptyRelease());
+        return WrapAsync(async () =>
+        {
+            var note = ReadStringField(request, "note");
+            var row = await svc.ReviewAsync(
+                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, note, ct)
+                .ConfigureAwait(false);
+            return (object?)(row is null ? (object?)EmptyRelease() : ProjectReleaseOut(row));
+        });
+    }
+
+    private Task<object?> InvokeReleasePublishAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveReleaseService();
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
+            return Task.FromResult<object?>(EmptyRelease());
+        if (!Guid.TryParse(request.ResourceId, out var releaseId))
+            return Task.FromResult<object?>(EmptyRelease());
+        return WrapAsync(async () =>
+        {
+            var note = ReadStringField(request, "note");
+            var row = await svc.PublishAsync(
+                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, note, ct)
+                .ConfigureAwait(false);
+            return (object?)(row is null ? (object?)EmptyRelease() : ProjectReleaseOut(row));
+        });
+    }
+
+    private Task<object?> InvokeReleaseDeployAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveReleaseService();
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
+            return Task.FromResult<object?>(EmptyRelease());
+        if (!Guid.TryParse(request.ResourceId, out var releaseId))
+            return Task.FromResult<object?>(EmptyRelease());
+        return WrapAsync(async () =>
+        {
+            var row = await svc.DeployAsync(
+                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(row is null ? (object?)EmptyRelease() : ProjectReleaseOut(row));
+        });
+    }
+
+    private Task<object?> InvokeReleaseStopDeploymentAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveReleaseService();
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
+            return Task.FromResult<object?>(EmptyRelease());
+        if (!Guid.TryParse(request.ResourceId, out var releaseId))
+            return Task.FromResult<object?>(EmptyRelease());
+        return WrapAsync(async () =>
+        {
+            var row = await svc.StopDeploymentAsync(
+                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(row is null ? (object?)EmptyRelease() : ProjectReleaseOut(row));
+        });
+    }
+
+    private Task<object?> InvokeReleaseDeleteAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveReleaseService();
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
+            return Task.FromResult<object?>(new { ok = true });
+        if (!Guid.TryParse(request.ResourceId, out var releaseId))
+            return Task.FromResult<object?>(new { ok = true });
+        return WrapAsync(async () =>
+        {
+            var row = await svc.DeleteAsync(
+                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(row is null ? (object?)new { ok = true } : ProjectReleaseOut(row));
+        });
+    }
+
+    private Task<object?> InvokeReleaseRollbackAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveReleaseService();
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
+            return Task.FromResult<object?>(new { restored = Guid.Empty, version = string.Empty });
+        if (!Guid.TryParse(request.ResourceId, out var releaseId))
+            return Task.FromResult<object?>(new { restored = Guid.Empty, version = string.Empty });
+        return WrapAsync(async () =>
+        {
+            var out_ = await svc.RollbackAsync(
+                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(out_ ?? (object)new { restored = Guid.Empty, version = string.Empty });
+        });
+    }
+
+    private Task<object?> InvokeReleaseDiffAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveReleaseService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+            return Task.FromResult<object?>(EmptyReleaseDiff());
+        var fromStr = QueryString(request, "from_id");
+        var toStr = QueryString(request, "to_id");
+        if (string.IsNullOrEmpty(fromStr) || string.IsNullOrEmpty(toStr)
+            || !Guid.TryParse(fromStr, out var fromId) || !Guid.TryParse(toStr, out var toId))
+        {
+            return Task.FromResult<object?>(EmptyReleaseDiff());
+        }
+        return WrapAsync(async () =>
+        {
+            var out_ = await svc.DiffAsync(
+                request.KnowledgeSystemGuid.Value, fromId, toId, request.Actor, ct)
+                .ConfigureAwait(false);
+            return (object?)(out_ ?? (object)EmptyReleaseDiff());
+        });
+    }
+
+    /// <summary>
+    /// Pull an optional string field from the loose body dict (the
+    /// controller wraps [FromBody] under the "_" key).
+    /// </summary>
+    private static string? ReadStringField(InternalRequest request, string name)
+    {
+        if (request.Body is null) return null;
+        if (request.Body.TryGetValue("_", out var raw) && raw is System.Text.Json.JsonElement el
+            && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            if (el.TryGetProperty(name, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String)
+                return v.GetString();
+        }
+        if (request.Body.TryGetValue(name, out var direct))
+            return direct?.ToString();
+        return null;
     }
 
     /// <summary>
