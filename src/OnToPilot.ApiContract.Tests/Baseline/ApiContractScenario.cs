@@ -282,6 +282,13 @@ internal static class ApiContractScenario
         {
             return """{"resolution_id":"demo"}""";
         }
+        // SPARQL query endpoints (external.query, published.query,
+        // published.release.query) take {query, max_rows}. Must be a
+        // SELECT/ASK to pass the read-only guard.
+        if (method == "POST" && path.Contains("/query", StringComparison.OrdinalIgnoreCase))
+        {
+            return """{"query":"SELECT * WHERE { ?s ?p ?o } LIMIT 5","max_rows":5}""";
+        }
         // resolution.resolve needs action ("match" requires individual_iri;
         // "new" mints one and needs ClassIri on the row).
         if (path.Contains("/resolution/{res_id}/resolve", StringComparison.OrdinalIgnoreCase))
