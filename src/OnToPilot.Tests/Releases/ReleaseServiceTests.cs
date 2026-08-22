@@ -162,6 +162,54 @@ public sealed class ReleaseServiceTests
         Assert.False(releases.IsPublished(draftId.ToString("N")));
     }
 
+    [Fact]
+    public async Task DeleteAsync_succeeds_for_stuck_pending_capture_and_flips_manifest()
+    {
+        // Regression: a draft whose capture_status is stuck at "pending"
+        // (because the create-draft request was interrupted) could not be
+        // deleted — DeleteAsync threw 409 "capture is still running" even
+        // though no background capture was actually running (MVP is
+        // synchronous). The fix removes the stale "pending" check and
+        // flips capture_status to "deleted" so the UI stops showing
+        // "正在生成" after the release is deleted.
+        await using var app = new AuthTestWebApplicationFactory();
+        var ks = await SeedKsAsync(app, "rel-stuck-pending");
+        var actor = await AdminActorAsync(app);
+
+        // Seed a release row with a stuck "pending" manifest (simulating
+        // an interrupted create-draft where the manifest was never updated).
+        var stuckId = Guid.NewGuid();
+        var db = app.CreateDbContext();
+        db.OntologyReleases.Add(new OntologyReleaseEntity
+        {
+            Id = stuckId,
+            LegacyId = TestLegacyIds.Next("ontology_releases"),
+            KnowledgeSystemId = ks.Id,
+            Version = $"draft-{stuckId.ToString("N")[..12]}",
+            Status = "draft",
+            Title = "stuck",
+            Notes = "",
+            Manifest = JsonDocument.Parse("""{"capture_status":"pending"}"""),
+            CreatedById = Guid.Parse(actor.UserId),
+            CreatedByName = actor.DisplayName,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        using var scope = app.Services.CreateScope();
+        var svc = scope.ServiceProvider.GetRequiredService<ReleaseService>();
+        var deleted = await svc.DeleteAsync(ks.Id, stuckId, actor, CancellationToken.None);
+        Assert.NotNull(deleted);
+        Assert.Equal("deleted", deleted!.Status);
+
+        // Manifest must now show capture_status="deleted" (not "pending")
+        // so the UI stops showing "正在生成".
+        var row = await app.CreateDbContext().OntologyReleases.AsNoTracking()
+            .FirstAsync(r => r.Id == stuckId);
+        Assert.Equal("deleted",
+            row.Manifest!.RootElement.GetProperty("capture_status").GetString());
+    }
+
     // -- rollback --
 
     [Fact]

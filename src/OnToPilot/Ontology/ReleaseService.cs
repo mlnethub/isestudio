@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Audit;
@@ -111,7 +112,14 @@ public sealed class ReleaseService
             row.Manifest = JsonDocument.Parse(
                 $$"""{"capture_status":"failed","error":{{JsonSerializer.Serialize(ex.Message)}}}""");
         }
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        // Persist the manifest update with CancellationToken.None so the
+        // capture result survives even when the HTTP client cancelled
+        // mid-capture (timeout / disconnect). If the request ct were
+        // used here, the OperationCanceledException from CaptureAsync
+        // would be caught and manifest set to "failed", but then
+        // SaveChangesAsync(ct) would also throw (ct is cancelled) —
+        // leaving the row stuck at capture_status="pending" forever.
+        await _db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
 
         return ProjectToOut(row, ks, deployment: null, publicId: ks.PublicId);
     }
@@ -279,11 +287,18 @@ public sealed class ReleaseService
         if (row.Status == "deleted")
             return ProjectToOut(row, ks, deployment, ks.PublicId);
 
-        if (!CaptureReady(row) && row.Manifest?.RootElement.GetProperty("capture_status").GetString() is "pending" or "running")
-            throw new ResourceInUseException("Release snapshot capture is still running.");
+        // With synchronous capture (MVP), a "pending" capture_status means
+        // the create-draft request was interrupted (client cancel / crash)
+        // — there is no actual background capture running. The dispatcher's
+        // RunWithExtractionGuardAsync already guards against real concurrent
+        // extractions, so this stale "pending" check only blocks the user
+        // from deleting stuck drafts. Removed to let the user clean up.
 
         var previousStatus = row.Status;
         row.Status = "deleted";
+        // Flip capture_status to "deleted" so the UI stops showing
+        // "正在生成" after the release is deleted.
+        row.Manifest = WithCaptureStatus(row.Manifest, "deleted");
         if (deployment is not null && deployment.Status != "stopped")
         {
             deployment.Status = "stopping";
@@ -490,6 +505,24 @@ public sealed class ReleaseService
         return row.Manifest.RootElement.TryGetProperty("capture_status", out var s)
             && s.ValueKind == JsonValueKind.String
             && s.GetString() == "ready";
+    }
+
+    /// <summary>
+    /// Return a copy of <paramref name="manifest"/> with its
+    /// <c>capture_status</c> field replaced by <paramref name="status"/>.
+    /// Preserves all other fields (version, sha256, error, …). Returns a
+    /// fresh <see cref="JsonDocument"/> because the source is immutable.
+    /// </summary>
+    private static JsonDocument WithCaptureStatus(JsonDocument? manifest, string status)
+    {
+        JsonObject? node = null;
+        if (manifest is not null)
+        {
+            node = JsonNode.Parse(manifest.RootElement.GetRawText()) as JsonObject;
+        }
+        node ??= new JsonObject();
+        node["capture_status"] = status;
+        return JsonDocument.Parse(node.ToJsonString());
     }
 
     private static List<string> Lines(byte[] nQuads)
