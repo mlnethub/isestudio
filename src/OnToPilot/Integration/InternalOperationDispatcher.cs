@@ -11,6 +11,7 @@ using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Knowledge;
 using OnToPilot.Ontology;
 using OnToPilot.Parsing;
+using OnToPilot.Prompts;
 using OnToPilot.Providers;
 using OnToPilot.Settings;
 using Oxigraph;
@@ -230,10 +231,16 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "vocabulary.sync" => InvokeVocabularySyncAsync(request, cancellationToken),
 
             // -- prompts --
-            "prompts.list" => Task.FromResult<object?>(EmptyPromptList()),
-            "prompts.restore_all" => Task.FromResult<object?>(EmptyPromptList()),
-            "prompts.restore" => Task.FromResult<object?>(EmptyPrompt()),
-            "prompts.update" => Task.FromResult<object?>(EmptyPrompt()),
+            "prompts.list" => InvokePromptsListAsync(request, cancellationToken),
+            "prompts.update" => RunWithExtractionGuardAsync(
+                request, cancellationToken,
+                () => InvokePromptsUpdateAsync(request, cancellationToken)),
+            "prompts.restore" => RunWithExtractionGuardAsync(
+                request, cancellationToken,
+                () => InvokePromptsRestoreAsync(request, cancellationToken)),
+            "prompts.restore_all" => RunWithExtractionGuardAsync(
+                request, cancellationToken,
+                () => InvokePromptsRestoreAllAsync(request, cancellationToken)),
 
             // -- releases --
             "releases.list_exports" => Task.FromResult<object?>(EmptyListResponse()),
@@ -563,6 +570,84 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             var rows = await svc.GetProvenanceAsync(
                 request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
             return (object?)(rows ?? (object)Array.Empty<object>());
+        });
+    }
+
+    private PromptService? ResolvePromptService() =>
+        _services.GetService(typeof(PromptService)) as PromptService;
+
+    private Task<object?> InvokePromptsListAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolvePromptService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+        {
+            return Task.FromResult<object?>(EmptyPromptList());
+        }
+        return WrapAsync(async () =>
+        {
+            var res = await svc.ListAsync(
+                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(res ?? (object)EmptyPromptList());
+        });
+    }
+
+    private Task<object?> InvokePromptsUpdateAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolvePromptService();
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
+        {
+            return Task.FromResult<object?>(EmptyPrompt());
+        }
+        var body = DeserializeBody<PromptUpdateIn>(request);
+        if (body is null || string.IsNullOrWhiteSpace(body.Content))
+        {
+            throw new InvalidOperationException("content must not be empty");
+        }
+        return WrapAsync(async () =>
+        {
+            var res = await svc.UpdateAsync(
+                request.KnowledgeSystemGuid.Value,
+                request.ResourceId,
+                body.Content,
+                request.Actor,
+                ct).ConfigureAwait(false);
+            return (object?)(res ?? (object)EmptyPrompt());
+        });
+    }
+
+    private Task<object?> InvokePromptsRestoreAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolvePromptService();
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
+        {
+            return Task.FromResult<object?>(EmptyPrompt());
+        }
+        return WrapAsync(async () =>
+        {
+            var res = await svc.RestoreAsync(
+                request.KnowledgeSystemGuid.Value,
+                request.ResourceId,
+                request.Actor,
+                ct).ConfigureAwait(false);
+            return (object?)(res ?? (object)EmptyPrompt());
+        });
+    }
+
+    private Task<object?> InvokePromptsRestoreAllAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolvePromptService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+        {
+            return Task.FromResult<object?>(EmptyPromptList());
+        }
+        return WrapAsync(async () =>
+        {
+            _ = await svc.RestoreAllAsync(
+                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
+            // PromptsController.RestoreAllAsync short-circuits to NoContent();
+            // the dispatcher still returns the empty list shape for any
+            // downstream fallback path that bypasses the controller.
+            return (object?)EmptyPromptList();
         });
     }
 
