@@ -73,6 +73,13 @@ internal sealed class ApiContractWebApplicationFactory : WebApplicationFactory<P
         Path.GetTempPath(),
         $"ontopilot-contract-blob-{Guid.NewGuid():N}");
 
+    // 7b: per-factory export shard root. Mirrors _rdfRoot / _blobRoot
+    // so ExportArtifactStore writes land in an isolated temp dir and
+    // parallel contract-theory cases don't collide on the same shards.
+    private readonly string _exportRoot = Path.Combine(
+        Path.GetTempPath(),
+        $"ontopilot-contract-exports-{Guid.NewGuid():N}");
+
     /// <inheritdoc />
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -83,6 +90,10 @@ internal sealed class ApiContractWebApplicationFactory : WebApplicationFactory<P
             {
                 ["OnToPilot:Persistence:Provider"] = "sqlite",
                 ["OnToPilot:Persistence:SqliteConnection"] = $"Data Source={_sqlitePath}",
+                // 7b: per-factory export shard root so the
+                // ExportArtifactStore singleton reads the same
+                // value that owns the temp dir we wipe in Dispose.
+                ["OnToPilot:Storage:ExportRoot"] = _exportRoot,
             });
         });
         builder.ConfigureServices(services =>
@@ -148,6 +159,8 @@ internal sealed class ApiContractWebApplicationFactory : WebApplicationFactory<P
             try { if (Directory.Exists(_rdfRoot)) Directory.Delete(_rdfRoot, recursive: true); }
             catch { /* best-effort cleanup */ }
             try { if (Directory.Exists(_blobRoot)) Directory.Delete(_blobRoot, recursive: true); }
+            catch { /* best-effort cleanup */ }
+            try { if (Directory.Exists(_exportRoot)) Directory.Delete(_exportRoot, recursive: true); }
             catch { /* best-effort cleanup */ }
         }
         base.Dispose(disposing);

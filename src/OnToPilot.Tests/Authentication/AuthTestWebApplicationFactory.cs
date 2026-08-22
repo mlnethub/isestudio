@@ -32,6 +32,7 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
     private readonly string _sqlitePath;
     private readonly string _blobRoot;
     private readonly string _rdfRoot;
+    private readonly string _exportRoot;
     private readonly IPasswordService? _passwordOverride;
 
     public AuthTestWebApplicationFactory() : this(passwordOverride: null)
@@ -63,6 +64,12 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
         _rdfRoot = Path.Combine(
             Path.GetTempPath(),
             $"ontopilot-rdf-{testId}").Replace('\\', '/');
+        // Per-test exports root so concurrent export tests don't share
+        // shards on disk. Mirrors the _rdfRoot / _blobRoot pattern
+        // above.
+        _exportRoot = Path.Combine(
+            Path.GetTempPath(),
+            $"ontopilot-exports-{testId}");
         _passwordOverride = passwordOverride;
     }
 
@@ -87,6 +94,10 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
                 // same root here colocates all three under the per-test
                 // temp dir so release-lifecycle tests don't collide.
                 ["OnToPilot:Storage:RdfRoot"] = _rdfRoot,
+                // 7b: per-test export shard root so the export
+                // runner + service don't share on-disk state
+                // between parallel tests.
+                ["OnToPilot:Storage:ExportRoot"] = _exportRoot,
             });
         });
 
@@ -162,6 +173,8 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             try { if (Directory.Exists(_blobRoot)) Directory.Delete(_blobRoot, recursive: true); }
             catch { /* ignore — best effort */ }
             try { if (Directory.Exists(_rdfRoot)) Directory.Delete(_rdfRoot, recursive: true); }
+            catch { /* ignore — best effort */ }
+            try { if (Directory.Exists(_exportRoot)) Directory.Delete(_exportRoot, recursive: true); }
             catch { /* ignore — best effort */ }
         }
         base.Dispose(disposing);

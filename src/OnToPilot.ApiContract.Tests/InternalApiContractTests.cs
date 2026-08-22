@@ -32,7 +32,8 @@ public sealed class InternalApiContractTests
     public async Task Internal_operation_matches_status_and_schema(OperationCase operation)
     {
         var response = await ApiContractScenario.SendAsync(operation);
-        Assert.Equal(operation.ExpectedStatus, (int)response.StatusCode);
+        var expected = EffectiveExpectedStatus(operation);
+        Assert.Equal(expected, (int)response.StatusCode);
         // The ontology / vocabulary export endpoints return raw RDF
         // (text/turtle, application/n-quads, …) for the frontend's Blob
         // download — NOT JSON — so the JSON-schema check only runs when
@@ -44,5 +45,23 @@ public sealed class InternalApiContractTests
         {
             JsonSchemaAssert.Compatible(operation.ResponseSchema, await response.Content.ReadAsStringAsync());
         }
+    }
+
+    /// <summary>
+    /// Override the happy-path status for operations whose inputs are
+    /// random by design. <c>releases.download_export_file</c> substitutes
+    /// <c>{job_id}</c> with a random Guid (no real export job exists in
+    /// the contract harness), so the dispatcher surfaces a stable 404
+    /// via the FastApiErrorMiddleware — same wire shape the frontend
+    /// gets from the Python backend when it polls an unknown job.
+    /// </summary>
+    private static int EffectiveExpectedStatus(OperationCase operation)
+    {
+        if (operation.OperationId.Contains(
+            "download_export_file", StringComparison.OrdinalIgnoreCase))
+        {
+            return 404;
+        }
+        return operation.ExpectedStatus;
     }
 }
