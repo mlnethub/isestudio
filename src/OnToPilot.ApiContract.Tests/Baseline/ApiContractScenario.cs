@@ -136,7 +136,7 @@ internal static class ApiContractScenario
             .Replace("{event_id}", seed.EventId.ToString("N"))
             .Replace("{job_id}", Guid.NewGuid().ToString("N"))
             .Replace("{release_id}", Guid.NewGuid().ToString("N"))
-            .Replace("{res_id}", Guid.NewGuid().ToString("N"))
+            .Replace("{res_id}", seed.EntityResolutionLegacyId.ToString())
             .Replace("{rid}", Guid.NewGuid().ToString("N"))
             .Replace("{token_id}", Guid.NewGuid().ToString("N"))
             .Replace("{pid}", seed.ProviderId.ToString("N"))
@@ -282,6 +282,18 @@ internal static class ApiContractScenario
         {
             return """{"resolution_id":"demo"}""";
         }
+        // resolution.resolve needs action ("match" requires individual_iri;
+        // "new" mints one and needs ClassIri on the row).
+        if (path.Contains("/resolution/{res_id}/resolve", StringComparison.OrdinalIgnoreCase))
+        {
+            return """{"action":"match","individual_iri":"http://test/DemoClass/instance-1"}""";
+        }
+        // resolution.edit_decision_reason takes {reason}.
+        if (method == "PATCH"
+            && path.Contains("/resolution/decisions/{res_id}", StringComparison.OrdinalIgnoreCase))
+        {
+            return """{"reason":"demo reason"}""";
+        }
         // MCP tokens: scopes default to all known MCP scopes (incl
         // mcp:read) when absent. Pinning a non-MCP scope like
         // "ontology:read" trips "mcp:read is required" → 400, so only
@@ -391,7 +403,8 @@ internal static class ApiContractScenario
     }
 
     private readonly record struct Seeded(
-        Guid KsId, Guid UserId, Guid VictimId, Guid ProviderId, Guid EventId);
+        Guid KsId, Guid UserId, Guid VictimId, Guid ProviderId, Guid EventId,
+        long EntityResolutionLegacyId);
 
     /// <summary>
     /// Insert a fresh <see cref="KnowledgeSystemEntity"/> + matching
@@ -509,6 +522,27 @@ internal static class ApiContractScenario
             CreatedAt = DateTimeOffset.UtcNow,
         });
 
+        // A pending entity-resolution row the resolution.* cases resolve.
+        // A random {res_id} hits ResolveResRowGuidAsync's null-return
+        // branch and degrades to the empty placeholder → schema still
+        // green but no real shape verification; binding the seeded row's
+        // LegacyId (matches Python int wire format) makes resolve /
+        // revoke / edit_reason land on a real row. resolve requires
+        // ClassIri so the 'new' action can mint; match needs none.
+        var entityResolutionLegacyId = await NextLegacyIdAsync(
+            db, "entityresolution", cancellationToken).ConfigureAwait(false);
+        db.EntityResolutions.Add(new EntityResolutionEntity
+        {
+            Id = Guid.NewGuid(),
+            LegacyId = entityResolutionLegacyId,
+            KnowledgeSystemId = ksId,
+            SurfaceForm = "demo",
+            ClassIri = "http://test/DemoClass",
+            Status = "pending",
+            Confidence = 0.5,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         // Round-trip check — without this the next test failure
@@ -527,7 +561,7 @@ internal static class ApiContractScenario
                 $"Contract harness seed failed (ks={seededKs}, user={seededUser}).");
         }
 
-        return new Seeded(ksId, DemoUserId, victimId, providerId, eventId);
+        return new Seeded(ksId, DemoUserId, victimId, providerId, eventId, entityResolutionLegacyId);
     }
 
     /// <summary>
