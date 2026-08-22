@@ -1,6 +1,8 @@
 using System.Globalization;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using OnToPilot.Configuration;
 using OnToPilot.Infrastructure.Persistence;
 
 namespace OnToPilot.Migration.Iri;
@@ -79,6 +81,11 @@ public static class IriMigrationCommand
 
           all       Run sql → rdf → shards. Stops on first failure.
 
+          config    Print the resolved IRI configuration (IriRoot +
+                    VocabNamespace) as JSON to stdout. Used by
+                    Test-CrossStackParity.ps1 to verify the .NET
+                    runtime reads the same env vars as Python.
+
         Common flags: --help / -h.
         """;
 
@@ -115,6 +122,7 @@ public static class IriMigrationCommand
                 "rdf" => await RunRdfAsync(rest, loggerFactoryScope).ConfigureAwait(false),
                 "shards" => await RunShardsAsync(rest, loggerFactoryScope).ConfigureAwait(false),
                 "all" => await RunAllAsync(rest, loggerFactoryScope).ConfigureAwait(false),
+                "config" => await RunConfigAsync(rest).ConfigureAwait(false),
                 _ => Fail($"unknown subcommand '{subcommand}'"),
             };
         }
@@ -227,6 +235,46 @@ public static class IriMigrationCommand
 
         return await RunShardsAsync(argv, loggerFactory).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Phase 3 cross-stack parity introspection. Builds an
+    /// <see cref="IConfiguration"/> exactly the way the production
+    /// host does (env vars + appsettings) and prints the resolved
+    /// <see cref="OnToPilotOptions.IriRoot"/> / <see cref="OnToPilotOptions.VocabNamespace"/>
+    /// as JSON to stdout. The Python Settings side reads the same
+    /// <c>OnToPilot__IriRoot</c> / <c>OnToPilot__VocabNamespace</c>
+    /// env vars via Pydantic, so <c>Test-CrossStackParity.ps1</c> can
+    /// diff the two outputs and assert byte-identical IRI resolution.
+    /// No side effects, no DB / store touched.
+    /// </summary>
+    private static async Task<int> RunConfigAsync(IReadOnlyList<string> argv)
+    {
+        // Build a configuration that mirrors the WebHost: env vars win
+        // over appsettings.json defaults. We only need the two IRI
+        // keys so we skip loading the full WebHost pipeline.
+        _ = argv; // accepted for parity with the other subcommand signatures; no flags today
+        var config = new ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: true)
+            .AddEnvironmentVariables()
+            .Build();
+
+        var opts = new OnToPilotOptions();
+        config.GetSection("OnToPilot").Bind(opts);
+
+        // Emit canonical JSON (sorted keys, no whitespace) so the
+        // parity diff is stable across PowerShell / .NET versions.
+        var payload =
+            "{" +
+            "\"iri_root\":\"" + EscapeJson(opts.IriRoot) + "\"," +
+            "\"vocab_namespace\":\"" + EscapeJson(opts.VocabNamespace) + "\"" +
+            "}";
+        await Console.Out.WriteLineAsync(payload).ConfigureAwait(false);
+        return 0;
+    }
+
+    private static string EscapeJson(string s) =>
+        s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
     // -----------------------------------------------------------------
     // Argv parsing
