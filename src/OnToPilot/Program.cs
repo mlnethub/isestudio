@@ -23,6 +23,7 @@ using OnToPilot.Mcp;
 using OnToPilot.Observability;
 using OnToPilot.Ontology;
 using OnToPilot.Parsing;
+using OnToPilot.Prompts;
 using OnToPilot.Providers;
 using OnToPilot.Serialization;
 using OnToPilot.Storage;
@@ -462,6 +463,7 @@ builder.Services.AddSingleton<ABoxManager>(sp =>
 builder.Services.AddSingleton<ABoxValidator>(sp =>
     new ABoxValidator(sp.GetService<StoreWrapper>()));
 builder.Services.AddOntologyServices();
+builder.Services.AddPromptServices();
 builder.Services.AddAboxServices();
 builder.Services.AddAboxProvenanceServices();
 builder.Services.AddValidationDecisionServices();
