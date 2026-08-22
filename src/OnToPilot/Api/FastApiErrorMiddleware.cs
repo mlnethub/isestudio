@@ -150,6 +150,23 @@ public sealed class FastApiErrorMiddleware
                 .ConfigureAwait(false);
             return;
         }
+        catch (ExportFilePayloadException ex)
+        {
+            // Download-style raw response: write Content-Type +
+            // Content-Disposition + the bytes verbatim, skip the JSON
+            // envelope. Used by releases.download_export_file to mirror
+            // Python FileResponse. MUST be caught BEFORE the generic
+            // Exception handler so the 500 path doesn't fire on an
+            // intentional sentinel.
+            context.Response.Clear();
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            context.Response.ContentType = ex.MediaType;
+            context.Response.Headers.ContentDisposition =
+                $"attachment; filename=\"{ex.FileName}\"";
+            await context.Response.Body.WriteAsync(ex.Bytes, context.RequestAborted)
+                .ConfigureAwait(false);
+            return;
+        }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Unhandled exception in OnToPilot pipeline");
