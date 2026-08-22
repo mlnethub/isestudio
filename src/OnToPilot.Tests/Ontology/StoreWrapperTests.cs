@@ -364,4 +364,19 @@ public class StoreWrapperTests : IClassFixture<StoreWrapperFixture>, IAsyncLifet
                 waitTimeout: TimeSpan.FromMilliseconds(200));
         });
     }
+
+    [Fact]
+    public void ParseNQuads_returns_quads_with_embedded_graph()
+    {
+        var nquads = System.Text.Encoding.UTF8.GetBytes(
+            "<urn:s1> <urn:p1> <urn:o1> <urn:g1> .\n" +
+            "<urn:s2> <urn:p2> \"lit\" <urn:g2> .\n");
+
+        var quads = StoreWrapper.ParseNQuads(nquads);
+
+        Assert.Equal(2, quads.Count);
+        // tmp.Match() 顺序非插入序(Oxigraph 内部序),按集合比较 graph IRI
+        var graphs = quads.Select(q => ((NamedNode)q.Graph).Value).OrderBy(g => g).ToArray();
+        Assert.Equal(new[] { "urn:g1", "urn:g2" }, graphs);
+    }
 }

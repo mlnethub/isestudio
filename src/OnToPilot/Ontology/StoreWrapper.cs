@@ -266,6 +266,22 @@ public sealed class StoreWrapper : IDisposable
         return (JoinLines(added), JoinLines(removed));
     }
 
+    /// <summary>
+    /// Parse raw UTF-8 N-Quads bytes into a list of <see cref="OntoQuad"/>.
+    /// Each N-Quads line carries its own graph IRI (4th term), so callers
+    /// can feed the result directly to <see cref="AddQuads"/>/<see cref="RemoveQuads"/>
+    /// — the graph arg there is telemetry-only; each quad routes by its own Graph.
+    /// Used by history rollback to replay inverse audit blobs (the audit
+    /// <c>Added</c>/<c>Removed</c> columns are raw N-Quads, not gzipped).
+    /// </summary>
+    public static IReadOnlyList<OntoQuad> ParseNQuads(byte[] nQuads)
+    {
+        ArgumentNullException.ThrowIfNull(nQuads);
+        using var tmp = new Oxigraph.Store();
+        tmp.Load(Encoding.UTF8.GetString(nQuads), RdfFormat.NQuads);
+        return tmp.Match().ToList();
+    }
+
     private static HashSet<string> SplitLines(byte[] bytes)
     {
         var result = new HashSet<string>(StringComparer.Ordinal);
