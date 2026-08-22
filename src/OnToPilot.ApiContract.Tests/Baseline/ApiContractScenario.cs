@@ -133,7 +133,7 @@ internal static class ApiContractScenario
             .Replace("{document_id}", Guid.NewGuid().ToString("N"))
             .Replace("{cid}", Guid.NewGuid().ToString("N"))
             .Replace("{did}", Guid.NewGuid().ToString("N"))
-            .Replace("{event_id}", Guid.NewGuid().ToString("N"))
+            .Replace("{event_id}", seed.EventId.ToString("N"))
             .Replace("{job_id}", Guid.NewGuid().ToString("N"))
             .Replace("{release_id}", Guid.NewGuid().ToString("N"))
             .Replace("{res_id}", Guid.NewGuid().ToString("N"))
@@ -382,7 +382,7 @@ internal static class ApiContractScenario
     }
 
     private readonly record struct Seeded(
-        Guid KsId, Guid UserId, Guid VictimId, Guid ProviderId);
+        Guid KsId, Guid UserId, Guid VictimId, Guid ProviderId, Guid EventId);
 
     /// <summary>
     /// Insert a fresh <see cref="KnowledgeSystemEntity"/> + matching
@@ -478,6 +478,28 @@ internal static class ApiContractScenario
             CreatedAt = DateTimeOffset.UtcNow,
         });
 
+        // An audit event the history.rollback case resolves. A random
+        // {event_id} hits 404 (KeyNotFoundException); binding the seeded
+        // event's id makes rollback 200 (non-empty Added blob skips the
+        // no-diff 400 guard). Graph=null → TBox (ks.GraphIri at replay).
+        var eventId = Guid.NewGuid();
+        db.AuditEvents.Add(new AuditEventEntity
+        {
+            Id = eventId,
+            LegacyId = await NextLegacyIdAsync(db, "auditevent", cancellationToken)
+                .ConfigureAwait(false),
+            KnowledgeSystemId = ksId,
+            ActorId = DemoUserId,
+            ActorName = "Contract Admin",
+            Action = "ontology.edit",
+            Summary = "contract seed edit",
+            Graph = null,
+            Added = System.Text.Encoding.UTF8.GetBytes(
+                $"<urn:Seed> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2002/07/owl#Class> <http://test/{DemoPublicId}> .\n"),
+            Removed = null,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         // Round-trip check — without this the next test failure
@@ -496,7 +518,7 @@ internal static class ApiContractScenario
                 $"Contract harness seed failed (ks={seededKs}, user={seededUser}).");
         }
 
-        return new Seeded(ksId, DemoUserId, victimId, providerId);
+        return new Seeded(ksId, DemoUserId, victimId, providerId, eventId);
     }
 
     /// <summary>

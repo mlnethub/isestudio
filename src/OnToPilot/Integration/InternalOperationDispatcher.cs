@@ -312,8 +312,10 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "mcp_tokens.revoke" => InvokeMcpTokenRevokeAsync(request, cancellationToken),
 
             // -- history --
-            "history.get" => Task.FromResult<object?>(EmptyListResponse()),
-            "history.rollback" => Task.FromResult<object?>(EmptyKnowledgeSystem()),
+            "history.get" => InvokeHistoryGetAsync(request, cancellationToken),
+            "history.rollback" => RunWithExtractionGuardAsync(
+                request, cancellationToken,
+                () => InvokeHistoryRollbackAsync(request, cancellationToken)),
 
             // -- external (stage 4 task 3) --
             // The External / Published controllers (task 3) dispatch
@@ -495,6 +497,41 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
     private OntologyService? ResolveOntologyService() =>
         _services.GetService(typeof(OntologyService)) as OntologyService;
+
+    private HistoryService? ResolveHistoryService() =>
+        _services.GetService(typeof(HistoryService)) as HistoryService;
+
+    private Task<object?> InvokeHistoryGetAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveHistoryService();
+        if (svc is null || request.KnowledgeSystemGuid is null)
+            return Task.FromResult<object?>(EmptyListResponse());
+        return WrapAsync(async () =>
+        {
+            var cat = QueryString(request, "category");
+            var q = QueryString(request, "q");
+            var limit = int.TryParse(QueryString(request, "limit"), out var l) ? l : 50;
+            var offset = int.TryParse(QueryString(request, "offset"), out var o) ? o : 0;
+            var res = await svc.ListHistoryAsync(
+                request.KnowledgeSystemGuid.Value, request.Actor, cat, q, limit, offset, ct).ConfigureAwait(false);
+            return (object?)(res ?? (object)EmptyListResponse());
+        });
+    }
+
+    private Task<object?> InvokeHistoryRollbackAsync(InternalRequest request, CancellationToken ct)
+    {
+        var svc = ResolveHistoryService();
+        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
+            return Task.FromResult<object?>(EmptyKnowledgeSystem());
+        return WrapAsync(async () =>
+        {
+            if (!Guid.TryParse(request.ResourceId, out var eventId))
+                throw new KeyNotFoundException("History event not found");
+            var res = await svc.RollbackAsync(
+                request.KnowledgeSystemGuid.Value, eventId, request.Actor, ct).ConfigureAwait(false);
+            return (object?)(res ?? (object)EmptyKnowledgeSystem());
+        });
+    }
 
     private OntologyProvenanceService? ResolveOntologyProvenanceService() =>
         _services.GetService(typeof(OntologyProvenanceService)) as OntologyProvenanceService;

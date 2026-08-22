@@ -732,6 +732,76 @@ public sealed class OntologyApiTests
     }
 
     // -----------------------------------------------------------------
+    // History: get + rollback (wire history.get / history.rollback)
+    // -----------------------------------------------------------------
+
+    [Fact]
+    public async Task History_get_returns_paginated_events()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "history-get-http");
+        var db = app.CreateDbContext();
+        var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
+        db.AuditEvents.Add(new AuditEventEntity
+        {
+            LegacyId = TestLegacyIds.Next("audit_event"), Id = Guid.NewGuid(),
+            KnowledgeSystemId = ksId, ActorId = admin.Id, ActorName = "Admin",
+            Action = "ontology.edit", Summary = "edit A", Graph = null,
+            Added = System.Text.Encoding.UTF8.GetBytes("<urn:A> a <urn:C> <urn:g> .\n"),
+            Removed = null, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        var response = await client.GetAsync($"/api/knowledge/{ksId}/history?limit=10");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("total").GetInt32());
+        Assert.Single(body.GetProperty("items").EnumerateArray());
+        var item = body.GetProperty("items").EnumerateArray().First();
+        Assert.Equal("ontology.edit", item.GetProperty("action").GetString());
+        Assert.True(item.GetProperty("can_rollback").GetBoolean());
+        Assert.False(item.TryGetProperty("added", out _));  // binary diff omitted
+    }
+
+    [Fact]
+    public async Task History_rollback_reverts_event_and_returns_envelope()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "history-rollback-http");
+        var db = app.CreateDbContext();
+        var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
+        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var graphIri = $"http://example.com/graph/history-rollback-http";
+        var gName = new Oxigraph.NamedNode(graphIri);
+        store.AddQuads(gName, new[] { new Oxigraph.Quad(
+            new Oxigraph.NamedNode("urn:X"), new Oxigraph.NamedNode("urn:p"),
+            new Oxigraph.NamedNode("urn:Y"), gName) });
+        db.AuditEvents.Add(new AuditEventEntity
+        {
+            LegacyId = TestLegacyIds.Next("audit_event"), Id = Guid.NewGuid(),
+            KnowledgeSystemId = ksId, ActorId = admin.Id, ActorName = "Admin",
+            Action = "ontology.edit", Summary = "add X", Graph = null,
+            Added = store.DumpNQuads(gName), Removed = null, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        var eventId = db.AuditEvents.AsNoTracking().First(e => e.KnowledgeSystemId == ksId).Id;
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/knowledge/{ksId}/history/{eventId}/rollback", new { });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, body.GetProperty("undone").GetInt32());
+        Assert.True(body.TryGetProperty("view", out _));
+        Assert.True(body.TryGetProperty("open_conflicts", out _));
+        // 三元已回滚移除
+        Assert.Empty(store.Match(subjectIri: "urn:X", predicateIri: "urn:p", objectIri: "urn:Y", graphIri: graphIri));
+    }
+
+    // -----------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------
 
