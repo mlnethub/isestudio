@@ -1,5 +1,6 @@
 using OnToPilot.Ontology;
 using Oxigraph;
+using OntoBlankNode = Oxigraph.BlankNode;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
@@ -265,5 +266,255 @@ public class OntologyEditorTests : IClassFixture<OntologyEditorFixture>, IAsyncL
         var ex = await Assert.ThrowsAsync<GraphWriteConflictException>(async () =>
             await editor.ApplyEditAsync(_graph.Value, _baseIri, delOp, cts.Token));
         Assert.Contains("abox", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    // ------------------------------------------------------------------
+    // set_property_union — builds an owl:unionOf blank-node expression
+    // on a property's domain/range slot. Mirrors Python _set_property_union.
+    // ------------------------------------------------------------------
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task SetPropertyUnion_creates_owl_unionOf_expression()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        var wellIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Well" });
+        var stationIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Station" });
+        var propIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_property", ["label"] = "located" });
+
+        var result = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "set_property_union",
+                ["iri"] = propIri,
+                ["slot"] = "range",
+                ["members"] = new[] { wellIri, stationIri },
+            });
+        Assert.Equal(propIri, result);
+
+        // The range slot must now point to a blank node.
+        var rangeQuads = _fx.Store.Match(
+            subjectIri: propIri,
+            predicateIri: Vocabulary.RdfsRange.Value,
+            graphIri: _graph.Value);
+        Assert.Single(rangeQuads);
+        Assert.IsType<OntoBlankNode>(rangeQuads[0].Object);
+
+        var unionRoot = (OntoBlankNode)rangeQuads[0].Object;
+        var unionTriples = _fx.Store.Match(graph: _graph)
+            .Where(q => q.Subject is OntoBlankNode bn && bn.Value == unionRoot.Value)
+            .ToList();
+        // _:u a owl:Class + _:u owl:unionOf _:cell0
+        Assert.Contains(unionTriples,
+            q => q.Predicate.Value == Vocabulary.RdfType.Value
+                && q.Object is OntoNamedNode o && o.Value == Vocabulary.OwlClass.Value);
+        Assert.Contains(unionTriples,
+            q => q.Predicate.Value == Vocabulary.OwlUnionOf.Value
+                && q.Object is OntoBlankNode);
+    }
+
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task SetPropertyUnion_replaces_old_union_and_GCs_blank_nodes()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        var aIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Alpha" });
+        var bIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Beta" });
+        var cIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Gamma" });
+        var propIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_property", ["label"] = "prop" });
+
+        // First union: (Alpha, Beta)
+        await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "set_property_union",
+                ["iri"] = propIri,
+                ["slot"] = "range",
+                ["members"] = new[] { aIri, bIri },
+            });
+        var firstRange = _fx.Store.Match(
+            subjectIri: propIri,
+            predicateIri: Vocabulary.RdfsRange.Value,
+            graphIri: _graph.Value);
+        Assert.Single(firstRange);
+        var oldRoot = (OntoBlankNode)firstRange[0].Object;
+
+        // Replace with a new union: (Alpha, Gamma)
+        await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "set_property_union",
+                ["iri"] = propIri,
+                ["slot"] = "range",
+                ["members"] = new[] { aIri, cIri },
+            });
+
+        // The old union's blank-node subgraph must be gone (GC'd).
+        var oldSurvivors = _fx.Store.Match(graph: _graph)
+            .Where(q => q.Subject is OntoBlankNode bn && bn.Value == oldRoot.Value)
+            .ToList();
+        Assert.Empty(oldSurvivors);
+
+        // Exactly one range slot remains, pointing to a fresh blank node.
+        var newRange = _fx.Store.Match(
+            subjectIri: propIri,
+            predicateIri: Vocabulary.RdfsRange.Value,
+            graphIri: _graph.Value);
+        Assert.Single(newRange);
+        Assert.IsType<OntoBlankNode>(newRange[0].Object);
+    }
+
+    // ------------------------------------------------------------------
+    // merge_properties — repoint usage triples to target, union d/r,
+    // drop sources, cascade ABox. Mirrors Python _merge_properties.
+    // ------------------------------------------------------------------
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task MergeProperties_repoints_predicates_and_unions_slots()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        var wellIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Well" });
+        var stationIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Station" });
+
+        // Two specialized properties, each with domain+range.
+        var ownsWellIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "add_property", ["label"] = "owns Well",
+                ["domain"] = "Well", ["range"] = "Well",
+            });
+        var ownsStationIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "add_property", ["label"] = "owns Station",
+                ["domain"] = "Station", ["range"] = "Station",
+            });
+
+        // An ABox usage of ownsWell so the cascade path is exercised.
+        var aboxGraph = new OntoNamedNode(_graph.Value.TrimEnd('/') + "/abox");
+        _fx.Store.AddQuads(aboxGraph, new[]
+        {
+            new OntoQuad(
+                new OntoNamedNode("urn:inst-1"),
+                new OntoNamedNode(ownsWellIri),
+                new OntoNamedNode("urn:target-1"),
+                aboxGraph),
+        });
+
+        // Merge into a new "owns" property (no existing target → target_label).
+        var result = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "merge_properties",
+                ["sources"] = new[] { ownsWellIri, ownsStationIri },
+                ["target_label"] = "owns",
+            });
+        Assert.Equal(_baseIri + "owns", result);
+
+        // Sources must be gone (no definition triples remain).
+        Assert.Empty(_fx.Store.Match(subjectIri: ownsWellIri, graphIri: _graph.Value));
+        Assert.Empty(_fx.Store.Match(subjectIri: ownsStationIri, graphIri: _graph.Value));
+
+        // Target is typed owl:ObjectProperty.
+        Assert.True(_fx.Store.ContainsQuad(new OntoQuad(
+            new OntoNamedNode(result),
+            Vocabulary.RdfType,
+            Vocabulary.OwlObjectProperty,
+            _graph)));
+
+        // The ABox assertion repointed to the target.
+        var repointed = _fx.Store.Match(
+            predicateIri: result, graphIri: aboxGraph.Value);
+        Assert.Single(repointed);
+        Assert.Empty(_fx.Store.Match(
+            predicateIri: ownsWellIri, graphIri: aboxGraph.Value));
+    }
+
+    // ------------------------------------------------------------------
+    // subordinate_properties — keep sources, add rdfs:subPropertyOf a
+    // general target, union d/r onto target. Mirrors Python
+    // _subordinate_properties.
+    // ------------------------------------------------------------------
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task SubordinateProperties_adds_subPropertyOf_and_unions_target()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Well" });
+        await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Station" });
+
+        var ownsWellIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "add_property", ["label"] = "owns Well",
+                ["domain"] = "Well", ["range"] = "Well",
+            });
+        var ownsStationIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "add_property", ["label"] = "owns Station",
+                ["domain"] = "Station", ["range"] = "Station",
+            });
+
+        var target = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "subordinate_properties",
+                ["sources"] = new[] { ownsWellIri, ownsStationIri },
+                ["target_label"] = "owns",
+            });
+        Assert.Equal(_baseIri + "owns", target);
+
+        // Both sources survive (subordinate keeps them).
+        Assert.NotEmpty(_fx.Store.Match(subjectIri: ownsWellIri, graphIri: _graph.Value));
+
+        // Each source now has rdfs:subPropertyOf target.
+        Assert.True(_fx.Store.ContainsQuad(new OntoQuad(
+            new OntoNamedNode(ownsWellIri),
+            Vocabulary.RdfsSubPropertyOf,
+            new OntoNamedNode(target),
+            _graph)));
+        Assert.True(_fx.Store.ContainsQuad(new OntoQuad(
+            new OntoNamedNode(ownsStationIri),
+            Vocabulary.RdfsSubPropertyOf,
+            new OntoNamedNode(target),
+            _graph)));
+
+        // Target's domain is a union (blank node) — both Well + Station.
+        var domQuads = _fx.Store.Match(
+            subjectIri: target,
+            predicateIri: Vocabulary.RdfsDomain.Value,
+            graphIri: _graph.Value);
+        Assert.Single(domQuads);
+        Assert.IsType<OntoBlankNode>(domQuads[0].Object);
+    }
+
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task MergeProperties_target_in_sources_throws()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        var aIri = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_property", ["label"] = "a" });
+
+        // target == one of the sources → must reject before any write.
+        await Assert.ThrowsAsync<OntologyEditException>(async () =>
+            await editor.ApplyEditAsync(_graph.Value, _baseIri,
+                new Dictionary<string, object?>
+                {
+                    ["op"] = "merge_properties",
+                    ["sources"] = new[] { aIri },
+                    ["target"] = aIri,
+                }));
     }
 }
