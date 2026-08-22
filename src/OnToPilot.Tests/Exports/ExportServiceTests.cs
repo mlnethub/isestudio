@@ -28,6 +28,7 @@ public sealed class ExportServiceFixture : IDisposable
     public SqliteContextFactory Contexts { get; }
     public StoreWrapper Store { get; }
     public ExportArtifactStore Artifacts { get; }
+    public ReleaseArtifactStore ReleaseArtifacts { get; }
     public ExportJobStore Jobs { get; }
     public ExportRunner Runner { get; }
     public KsContext KsCtx { get; }
@@ -44,8 +45,9 @@ public sealed class ExportServiceFixture : IDisposable
         Contexts = new SqliteContextFactory();
 
         Artifacts = new ExportArtifactStore(Path.Combine(Root, "exports"));
+        ReleaseArtifacts = new ReleaseArtifactStore(Path.Combine(Root, "releases"));
         Jobs = new ExportJobStore(Contexts, TimeProvider.System);
-        Runner = new ExportRunner(Jobs, Artifacts, Store, TimeProvider.System);
+        Runner = new ExportRunner(Jobs, Artifacts, Store, ReleaseArtifacts, TimeProvider.System);
         KsCtx = new KsContext(GraphIri, BaseIri);
     }
 
@@ -168,13 +170,14 @@ public class ExportServiceTests : IClassFixture<ExportServiceFixture>
 
     [Fact]
     [Trait("Category", "Export")]
-    public async Task CreateAsync_refuses_release_bound_exports()
+    public async Task CreateAsync_release_bound_export_404_for_unknown_release()
     {
         using var svc = _fx.CreateService();
         var ks = _fx.SeedKnowledgeSystem();
-        // MVP: release-bound exports aren't implemented; the service
-        // rejects the request rather than silently running the bundle.
-        await Assert.ThrowsAsync<OnToPilot.Api.ValidationException>(() =>
+        // Release-bound exports are now implemented — validate that an
+        // unknown release_id returns 404 (KeyNotFoundException) rather
+        // than the old "not implemented" 400.
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
             svc.CreateAsync(ks.Id,
                 new ExportRequest(Layer: ExportLayer.Bundle, ReleaseId: Guid.NewGuid(), ShardSize: 100_000),
                 TestActor(), CancellationToken.None));
@@ -232,6 +235,54 @@ public class ExportServiceTests : IClassFixture<ExportServiceFixture>
         Assert.Contains("vocabulary-0000.nq", names);
         Assert.Contains("abox-0000.nq", names);
         Assert.Contains("manifest.json", names);
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task CreateAsync_release_bound_export_reads_from_release_shards()
+    {
+        using var svc = _fx.CreateService();
+        var ks = _fx.SeedKnowledgeSystem();
+
+        // Seed a published release with capture_status="ready" + actual
+        // shard artifacts on disk (what ReleaseManager.CaptureAsync writes).
+        var releaseId = Guid.NewGuid();
+        var releaseKey = releaseId.ToString("N");
+        using (var db = _fx.Contexts.CreateDbContext())
+        {
+            db.OntologyReleases.Add(new OntologyReleaseEntity
+            {
+                Id = releaseId,
+                LegacyId = TestLegacyIds.Next("ontology_releases"),
+                KnowledgeSystemId = ks.Id,
+                Version = "v1",
+                Status = "published",
+                Title = "rel-bound",
+                Notes = "",
+                Manifest = System.Text.Json.JsonDocument.Parse(
+                    """{"capture_status":"ready","version":"v1"}"""),
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            db.SaveChanges();
+        }
+        // Write the release's layer shards (mirrors CaptureAsync output).
+        _fx.ReleaseArtifacts.Write(releaseKey, RdfLayer.TBox,
+            System.Text.Encoding.UTF8.GetBytes("<http://ex/A> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2002/07/owl#Class> .\n"));
+        _fx.ReleaseArtifacts.Write(releaseKey, RdfLayer.Vocabulary,
+            System.Text.Encoding.UTF8.GetBytes("<http://ex/t1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://www.w3.org/2004/02/skos/core#Concept> .\n"));
+        _fx.ReleaseArtifacts.Write(releaseKey, RdfLayer.ABox,
+            System.Text.Encoding.UTF8.GetBytes("<http://ex/ind1> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://ex/A> .\n"));
+
+        var job = await svc.CreateAsync(ks.Id,
+            new ExportRequest(Layer: ExportLayer.Bundle, ReleaseId: releaseId, ShardSize: 100_000),
+            TestActor(), CancellationToken.None);
+        Assert.NotNull(job);
+        Assert.Equal(releaseId, job!.ReleaseId);
+
+        var finished = await _fx.Jobs.WaitAsync(job.Id, CancellationToken.None);
+        Assert.Equal("completed", finished.Status);
+        Assert.True(finished.TotalStatements >= 3,
+            $"Expected ≥3 statements from the three release shards; got {finished.TotalStatements}.");
     }
 
     [Fact]

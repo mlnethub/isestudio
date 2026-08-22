@@ -34,12 +34,14 @@ public sealed class ExportRunner
     private readonly ExportJobStore _jobs;
     private readonly ExportArtifactStore _artifacts;
     private readonly StoreWrapper? _store;
+    private readonly ReleaseArtifactStore? _releaseArtifacts;
     private readonly TimeProvider _clock;
 
     public ExportRunner(
         ExportJobStore jobs,
         ExportArtifactStore artifacts,
         StoreWrapper? store,
+        ReleaseArtifactStore? releaseArtifacts,
         TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(jobs);
@@ -48,6 +50,7 @@ public sealed class ExportRunner
         _jobs = jobs;
         _artifacts = artifacts;
         _store = store;
+        _releaseArtifacts = releaseArtifacts;
         _clock = clock;
     }
 
@@ -69,7 +72,19 @@ public sealed class ExportRunner
 
         try
         {
-            if (_store is null)
+            var releaseKey = job.ReleaseId is { } relId ? relId.ToString("N") : null;
+            var isReleaseBound = releaseKey is not null;
+
+            if (isReleaseBound)
+            {
+                // Release-bound: read pre-sharded layers from the immutable
+                // release snapshot. No capture lease needed — the snapshot
+                // is frozen at publish time. Mirrors Python
+                // _run_export release branch (releases.py:242-245).
+                if (_releaseArtifacts is null)
+                    throw new InvalidOperationException("Release artifact store is not available.");
+            }
+            else if (_store is null)
             {
                 // No Oxigraph (contract-test factory with no RDF root).
                 // Fail loudly so the operator can see the export couldn't
@@ -88,14 +103,25 @@ public sealed class ExportRunner
             foreach (var layer in layers)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var graphIri = ReleaseManager.GraphIriFor(ksc, LayerToRdf(layer));
-                // Exclusive lease — slightly more conservative than the
-                // Python `store.read_lock` (shared). MVP; brief doesn't
-                // require concurrent-edit semantics.
-                await using var capture = await _store.CaptureAsync(
-                    graphIri, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
-                    .ConfigureAwait(false);
-                var nQuads = _store.DumpNQuads(graphIri);
+                byte[] nQuads;
+                if (isReleaseBound && releaseKey is not null)
+                {
+                    // Read the layer shard from the release's artifact
+                    // directory (written at capture time by
+                    // ReleaseManager.CaptureAsync).
+                    nQuads = _releaseArtifacts!.Read(releaseKey, LayerToRdf(layer));
+                }
+                else
+                {
+                    var graphIri = ReleaseManager.GraphIriFor(ksc, LayerToRdf(layer));
+                    // Exclusive lease — slightly more conservative than the
+                    // Python `store.read_lock` (shared). MVP; brief doesn't
+                    // require concurrent-edit semantics.
+                    await using var capture = await _store!.CaptureAsync(
+                        graphIri, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+                        .ConfigureAwait(false);
+                    nQuads = _store.DumpNQuads(graphIri);
+                }
                 var entry = _artifacts.WriteShard(
                     ks.PublicId, job.LegacyId, layer, shardIndex: 0, nQuads);
                 files.Add(entry);

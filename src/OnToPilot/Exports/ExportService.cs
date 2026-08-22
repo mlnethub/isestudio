@@ -103,15 +103,26 @@ public sealed class ExportService : IDisposable
                 "Shard size must be between 1_000 and 5_000_000.");
         }
 
-        // Release-bound exports are not implemented in this MVP; Python
-        // emits the bundle from the serving store, .NET doesn't have a
-        // per-release serving snapshot yet (slice 8). Refuse early so
-        // the caller can tell the difference between "rejected" and
-        // "will run on workspace".
+        // Release-bound exports read from the immutable release snapshot
+        // (ReleaseArtifactStore) instead of the live workspace. Validate
+        // the release exists, belongs to this KS, isn't deleted, and has
+        // a ready snapshot before creating the job. Mirrors Python
+        // _run_export (releases.py:228-234).
         if (body.ReleaseId is { } relId)
         {
-            throw new ValidationException(
-                "Release-bound exports are not implemented in this release.");
+            var rel = await _db.OntologyReleases.AsNoTracking()
+                .FirstOrDefaultAsync(r => r.Id == relId, cancellationToken)
+                .ConfigureAwait(false);
+            if (rel is null || rel.KnowledgeSystemId != ksId)
+                throw new KeyNotFoundException("Release not found.");
+            if (rel.Status == "deleted")
+                throw new KeyNotFoundException("Release has been deleted.");
+            if (rel.Manifest is null
+                || !rel.Manifest.RootElement.TryGetProperty("capture_status", out var cs)
+                || cs.GetString() != "ready")
+            {
+                throw new ValidationException("Release snapshot is not ready.");
+            }
         }
 
         // Insert pending row BEFORE Task.Run so the dispatcher's
@@ -124,7 +135,7 @@ public sealed class ExportService : IDisposable
             ? "system" : actor.DisplayName!;
         var job = await _jobs.CreateAsync(
             ksId,
-            releaseId: null,
+            releaseId: body.ReleaseId,
             layer: body.Layer,
             shardSize: body.ShardSize,
             format: "nquads",
