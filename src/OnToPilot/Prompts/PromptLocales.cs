@@ -32,7 +32,9 @@ namespace OnToPilot.Prompts;
 /// <see cref="Extraction.ABoxExtractionService"/>, and
 /// <see cref="Extraction.TerminologyAgent"/>;
 /// <c>conflict.resolution</c> is consumed by
-/// <see cref="Conflicts.ConflictAgent"/>. The remaining keys are
+/// <see cref="Conflicts.ConflictAgent"/>;
+/// <c>tbox.structure_repair</c> is consumed by
+/// <see cref="Ontology.StructureAgent"/>. The remaining keys are
 /// pre-seeded here as stubs (English placeholder) so a future slice can
 /// turn on additional agents without re-touching the catalog — see the
 /// outstanding agents tracked in [[ontopilot-dotnet-gap-2026-08-22]].
@@ -83,6 +85,12 @@ public static class PromptLocales
                 [SystemLanguage.SimplifiedChinese] = ConflictResolutionZhCn,
             },
 
+            ["tbox.structure_repair"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = StructureRepairEn,
+                [SystemLanguage.SimplifiedChinese] = StructureRepairZhCn,
+            },
+
             // ---- Python-registered but .NET-not-wired (stubs) --------------------
             // Each agent lives in a separate Python module; the English version is
             // the inline default registered there. The zh-CN text is in prompt_locales.py.
@@ -100,7 +108,6 @@ public static class PromptLocales
             ["abox.entity_resolution"] = NotWired(),
             ["abox.datatype_validation"] = NotWired(),
             ["conflict.duplicate_judge"] = NotWired(),
-            ["tbox.structure_repair"] = NotWired(),
             ["tbox.domain_range_reconcile"] = NotWired(),
         };
 
@@ -500,4 +507,39 @@ public static class PromptLocales
         - 对过度专门化的谓词，例如"拥有井"和"拥有计量站"，需要判断关系含义是否真正相同。即使置信度很高，这类决定也需要人工确认。
         - reason 保持简洁，不超过 200 个字符。
         """;
+
+    // -- tbox.structure_repair (English) --------------------------------------
+    // Source: backend/app/ontology/structure_agent.py:29-41 (_SYSTEM).
+    private const string StructureRepairEn = """
+        An ontology class is UNATTACHED: it has no parent class and no relationships. Use the
+        provided SOURCE EXCERPTS to suggest the single best BROADER parent class it should be a subclass of.
+
+        - Strongly prefer an EXISTING class from the provided list; reply with its exact label and new=false.
+        - Only propose a NEW general class when its exact reusable label occurs in the source and the source
+          explicitly states the is-a relation (new=true).
+        - If the class genuinely has no source-supported broader kind, reply parent="" (skip).
+        - The parent must be a strictly MORE GENERAL kind, never a synonym or the class itself.
+        - Do not use outside knowledge or mere semantic plausibility. Copy the decisive source wording
+          exactly into evidence. Named individuals must not be attached as subclasses.
+
+        Reply with EXACTLY ONE JSON object: {"parent":"<label or empty>","new":<bool>,
+        "confidence":<0..1>,"evidence":"<exact source span or empty>","reason":"<=200 chars>"}.
+        """;
+
+    // -- tbox.structure_repair (Simplified Chinese) ---------------------------
+    // Source: backend/app/prompt_locales.py:346-356 (key "tbox.structure_repair")
+    private const string StructureRepairZhCn = """
+        某个本体类处于未连接状态：它既没有父类，也没有关系。请使用提供的 SOURCE EXCERPTS，建议它应当所属的唯一最佳、更宽泛父类。
+
+        - 强烈优先选择提供列表中的 EXISTING 类；回复其精确标签并设置 new=false。
+        - 只有当新的一般类的精确可复用标签出现在来源中，且来源明确陈述了 is-a 关系时，才能提出 NEW 类，并设置 new=true。
+        - 如果来源确实不支持任何更宽泛种类，回复 parent=""，即跳过。
+        - 父类必须是严格更一般的种类，不能是同义词或该类本身。
+        - 不得使用外部知识或仅凭语义上看似合理。把决定性的来源措辞逐字复制到 evidence。不得把具名个体挂为子类。
+
+        必须且只能返回一个 JSON 对象：
+        {"parent":"<标签或空字符串>","new":<bool>,
+        "confidence":<0..1>,"evidence":"<精确来源片段或空字符串>","reason":"<不超过 200 字符>"}。
+        """;
 }
+

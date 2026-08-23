@@ -1645,6 +1645,18 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             {
                 await agent.TriageAsync(request.KnowledgeSystemGuid.Value, ct).ConfigureAwait(false);
             }
+            // Python conflicts.py then runs structure_agent.attach_isolated_bg
+            // (same not-extraction_active gate): attach classes the LLM left
+            // unrooted under a broader kind. Self-gated on
+            // agentic_isolated_classes + extraction-active, swallows every
+            // LLM error, and its writes land in the graph (not the response),
+            // so the detect rows stay the pre-agent snapshot.
+            var structure = _services.GetService(typeof(StructureAgent)) as StructureAgent;
+            if (structure is not null)
+            {
+                await structure.AttachIsolatedAsync(request.KnowledgeSystemGuid.Value, model: null, ct)
+                    .ConfigureAwait(false);
+            }
             return (object?)rows;
         });
     }

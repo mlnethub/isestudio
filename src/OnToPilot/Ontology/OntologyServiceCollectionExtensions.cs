@@ -17,6 +17,7 @@ public static class OntologyServiceCollectionExtensions
     public static IServiceCollection AddOntologyServices(this IServiceCollection services)
     {
         services.AddScoped<OntologyService>();
+        services.AddScoped<StructureAgent>();
         services.AddScoped<OntologyProvenanceService>();
         services.AddScoped<HistoryService>();
         services.AddScoped<PublishedOntologyService>();

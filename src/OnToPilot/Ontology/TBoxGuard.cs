@@ -118,7 +118,13 @@ public static class Guard
         return subTokens[^1] != parentTokens[^1];
     }
 
-    private static bool IsLexicallySafeSubclass(string subL, string parentL)
+    /// <summary>
+    /// Compound-head lexical rule: a subclass label must extend its parent's
+    /// token sequence as a suffix (<c>Centrifugal Pump</c> ⊑ <c>Pump</c>).
+    /// Also shared by <see cref="StructureAgent"/> as its lexical stand-in
+    /// for the (unported) TBox role-critic verification.
+    /// </summary>
+    internal static bool IsLexicallySafeSubclass(string subL, string parentL)
     {
         var subTokens = Normalize(subL).Split(' ', StringSplitOptions.RemoveEmptyEntries);
         var parentTokens = Normalize(parentL).Split(' ', StringSplitOptions.RemoveEmptyEntries);

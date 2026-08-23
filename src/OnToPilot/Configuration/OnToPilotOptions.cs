@@ -71,6 +71,30 @@ public sealed class OnToPilotOptions
     public int ConflictAgentMaxSteps { get; set; } = 3;
 
     /// <summary>
+    /// Whether the structure agent attaches isolated classes (no parent, no
+    /// children, not a property domain/range) under a broader parent after
+    /// extraction / conflict detection. Mirrors the Python backend's
+    /// <c>agentic_isolated_classes</c> setting (default true).
+    /// </summary>
+    public bool AgenticIsolatedClasses { get; set; } = true;
+
+    /// <summary>
+    /// Confidence floor for auto-applying an agent suggestion without human
+    /// confirmation. Mirrors the Python backend's
+    /// <c>conflict_auto_apply_floor</c> setting (0.85) — shared by the
+    /// structure agent, which only auto-attaches a parent at or above this
+    /// confidence.
+    /// </summary>
+    public double AutoApplyFloor { get; set; } = 0.85;
+
+    /// <summary>
+    /// A parent proposed for more than this many isolated classes is
+    /// treated as an over-general catch-all and left for a human. Mirrors
+    /// the Python backend's <c>structure_max_same_parent</c> setting.
+    /// </summary>
+    public int StructureMaxSameParent { get; set; } = 5;
+
+    /// <summary>
     /// Root prefix used when stamping a fresh knowledge system's
     /// <see cref="Infrastructure.Persistence.Entities.KnowledgeSystemEntity.GraphIri"/>
     /// / <see cref="Infrastructure.Persistence.Entities.KnowledgeSystemEntity.BaseIri"/>.
