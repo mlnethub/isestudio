@@ -296,6 +296,333 @@ public sealed class IriSqlVerifierTests : IAsyncLifetime
     }
 
     // ------------------------------------------------------------------
+    // --expected-residual diff mode (P3-4:141) — rehearsal integrity
+    // check that runs the verifier against a captured baseline and
+    // records per-column differences instead of hard-failing on
+    // residual > 0. See P3-4 ADR §6 "dry-run 模式下写预期 residual 报告".
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Build an <see cref="ExpectedResidualReport"/> whose entries
+    /// mirror the seeded row count for the two IRI-bearing columns we
+    /// actually exercise in this fixture (knowledgesystem.GraphIri +
+    /// BaseIri). Other ColumnsToRewrite tuples (entity_resolution etc.)
+    /// would carry residual = 0 on a fresh schema, so we list them
+    /// as Match too; the verifier will produce Extra entries for any
+    /// column the baseline forgot, see the relevant test below.
+    /// </summary>
+    private static ExpectedResidualReport BuildBaseline(
+        long graphResidual, long baseResidual, string fromPrefix) => new(
+        CapturedAt: DateTimeOffset.UtcNow,
+        FromPrefix: fromPrefix,
+        Columns: new[]
+        {
+            new ExpectedResidualEntry("knowledgesystem", "GraphIri", graphResidual),
+            new ExpectedResidualEntry("knowledgesystem", "BaseIri", baseResidual),
+        });
+
+    [Fact]
+    public async Task VerifyAsync_with_expected_residual_does_not_throw_on_residual_match()
+    {
+        // Rehearsal happy path: residual > 0 (legacy data still
+        // there because the migrator was not invoked), but the
+        // baseline says we expected that. Verifier must NOT throw
+        // and must record Match entries for the affected columns.
+        if (DockerRequired()) return;
+        await SeedAsync(
+            graphIri: "http://ontopilot.local/ks/1",
+            baseIri:  "http://ontopilot.local/ks/1/onto#");
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+        var baseline = BuildBaseline(
+            graphResidual: 1, baseResidual: 1,
+            fromPrefix: "http://ontopilot.local/");
+
+        var report = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                ExpectedResidual: baseline),
+            CancellationToken.None);
+
+        Assert.Equal(1L, report.Steps.Single(s =>
+            s.Table == "knowledgesystem" && s.Column == "GraphIri").ResidualOldPrefixRows);
+        Assert.Equal(1L, report.Steps.Single(s =>
+            s.Table == "knowledgesystem" && s.Column == "BaseIri").ResidualOldPrefixRows);
+
+        // 比对:两条 Match 其它列 Empty / Extras 取决于 baseline 是否完整
+        // (Empty 因为其它列我们没列在 baseline 中)
+        Assert.NotEmpty(report.ResidualDifferences);
+        Assert.Contains(report.ResidualDifferences, d =>
+            d.Table == "knowledgesystem" && d.Column == "GraphIri"
+            && d.Kind == ResidualDifferenceKind.Match);
+        Assert.Contains(report.ResidualDifferences, d =>
+            d.Table == "knowledgesystem" && d.Column == "BaseIri"
+            && d.Kind == ResidualDifferenceKind.Match);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_with_expected_residual_actual_above_records_above_diff()
+    {
+        // 实际 residual 比 expected 多 1 — 表面 rehearsal 状态被
+        // 改动了(migrator 部分写入 或 new fixture seed)。这是
+        // 最重要的报警信号:必须在 report 中显式 Above 出来。
+        if (DockerRequired()) return;
+        await SeedAsync(
+            graphIri: "http://ontopilot.local/ks/1",
+            baseIri:  "http://ontopilot.local/ks/1/onto#");
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+        var baseline = BuildBaseline(
+            graphResidual: 0, baseResidual: 0,
+            fromPrefix: "http://ontopilot.local/");
+
+        var report = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                ExpectedResidual: baseline),
+            CancellationToken.None);
+
+        // actual=1, expected=0 → Above
+        var above = report.AboveExpectedDifferences.ToList();
+        Assert.Contains(above, d =>
+            d.Table == "knowledgesystem" && d.Column == "GraphIri"
+            && d.Actual == 1 && d.Expected == 0);
+        Assert.Contains(above, d =>
+            d.Table == "knowledgesystem" && d.Column == "BaseIri"
+            && d.Actual == 1 && d.Expected == 0);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_with_expected_residual_actual_below_records_below_diff()
+    {
+        // 实际 residual 比 expected 少 — 常见于"上一轮 rehearsal 写
+        // 入了一些 row,这次 reset 后少了"。benign 但要让操作员看到。
+        if (DockerRequired()) return;
+        // Seed 一个空 schema;baseline 期望 GraphIri/BaseIri 各有 1 行
+        await SeedAsync(graphIri: null, baseIri: null);
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+        var baseline = BuildBaseline(
+            graphResidual: 5, baseResidual: 3,
+            fromPrefix: "http://ontopilot.local/");
+
+        var report = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                ExpectedResidual: baseline),
+            CancellationToken.None);
+
+        var below = report.BelowExpectedDifferences.ToList();
+        Assert.Contains(below, d =>
+            d.Table == "knowledgesystem" && d.Column == "GraphIri"
+            && d.Actual == 0 && d.Expected == 5);
+        Assert.Contains(below, d =>
+            d.Table == "knowledgesystem" && d.Column == "BaseIri"
+            && d.Actual == 0 && d.Expected == 3);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_with_expected_residual_missing_baseline_entry_records_missing_diff()
+    {
+        // baseline 列出 verifier 没扫到的列 → Missing
+        // (实际场景:baseline 引用一个被删的 column;应当报警)
+        if (DockerRequired()) return;
+        await SeedAsync(graphIri: null, baseIri: null);
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+        var staleBaseline = new ExpectedResidualReport(
+            CapturedAt: DateTimeOffset.UtcNow,
+            FromPrefix: "http://ontopilot.local/",
+            Columns: new[]
+            {
+                new ExpectedResidualEntry("knowledgesystem", "GraphIri", 0),
+                // 下面这一行 — Schema 真正扫的是 "BaseIri",但 baseline 写错成了 "BaseIRI"
+                new ExpectedResidualEntry("knowledgesystem", "BaseIRI", 0),
+            });
+
+        var report = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                ExpectedResidual: staleBaseline),
+            CancellationToken.None);
+
+        var drift = report.SchemaDriftDifferences.ToList();
+        Assert.Contains(drift, d =>
+            d.Table == "knowledgesystem" && d.Column == "BaseIRI"
+            && d.Kind == ResidualDifferenceKind.Missing);
+        // Baseline 中 GraphIri 匹配 → Match 也要有
+        Assert.Contains(report.ResidualDifferences, d =>
+            d.Table == "knowledgesystem" && d.Column == "GraphIri"
+            && d.Kind == ResidualDifferenceKind.Match);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_with_expected_residual_extra_column_records_extra_diff()
+    {
+        // verifier 扫到但 baseline 没列的列 → Extra
+        // (实际场景:operator 用旧 baseline 跑,ColumnsToRewrite 加了新列)
+        if (DockerRequired()) return;
+        // Seed 1 行 legacy data 让 observed total > 0,这样 aggregate diff 也会被触发
+        await SeedAsync(
+            graphIri: "http://ontopilot.local/ks/1",
+            baseIri:  "http://ontopilot.local/ks/1/onto#");
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+        // 空 baseline — verifier 扫到的所有列都会是 Extra
+        var emptyBaseline = new ExpectedResidualReport(
+            CapturedAt: DateTimeOffset.UtcNow,
+            FromPrefix: "http://ontopilot.local/",
+            Columns: Array.Empty<ExpectedResidualEntry>());
+
+        var report = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                ExpectedResidual: emptyBaseline),
+            CancellationToken.None);
+
+        // Extras = verifier 扫到的全部 10 列
+        var extras = report.SchemaDriftDifferences
+            .Where(d => d.Kind == ResidualDifferenceKind.Extra).ToList();
+        Assert.Equal(report.Steps.Count, extras.Count);
+        // aggregate total (2 = GraphIri + BaseIri 各 1) 与 expected total (0) 不等 → Above
+        Assert.Contains(report.ResidualDifferences, d =>
+            d.Table == "(aggregate)" && d.Column == "_total"
+            && d.Expected == 0 && d.Actual == 2
+            && d.Kind == ResidualDifferenceKind.Above);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_with_expected_residual_aggregate_total_mismatch_records_aggregate_diff()
+    {
+        // Per-column Match 但 aggregate total 不等 → synthetic
+        // (aggregate, _total) Above/Below 报警。
+        if (DockerRequired()) return;
+        await SeedAsync(
+            graphIri: "http://ontopilot.local/ks/1",
+            baseIri:  "http://ontopilot.local/ks/1/onto#");
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+        // Baseline 说 GraphIri=2 / BaseIri=0 — 两列各自与 actual(1/1)不等,但
+        // 故意让 expected_total(2) == actual_total(1+1=2) 这样 per-column diff
+        // 会显示 Below + Above,仍能验出 per-column reporting 工作正常。
+        var baseline = BuildBaseline(
+            graphResidual: 2, baseResidual: 0,
+            fromPrefix: "http://ontopilot.local/");
+
+        var report = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                ExpectedResidual: baseline),
+            CancellationToken.None);
+
+        Assert.Contains(report.BelowExpectedDifferences, d =>
+            d.Table == "knowledgesystem" && d.Column == "GraphIri"
+            && d.Expected == 2 && d.Actual == 1);
+        Assert.Contains(report.AboveExpectedDifferences, d =>
+            d.Table == "knowledgesystem" && d.Column == "BaseIri"
+            && d.Expected == 0 && d.Actual == 1);
+        // aggregate 总数对得上(2 == 2),所以不应有 (aggregate, _total) 行
+        Assert.DoesNotContain(report.ResidualDifferences, d =>
+            d.Table == "(aggregate)" && d.Column == "_total");
+    }
+
+    [Fact]
+    public async Task VerifyAsync_throws_when_expected_residual_prefix_mismatches()
+    {
+        // Baseline 是在 prefix A 下 capture 的,verifier 跑 prefix B —
+        // 这是配置错误,应当立即抛(防止 silent 错误比对)。
+        if (DockerRequired()) return;
+        await SeedAsync(graphIri: null, baseIri: null);
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+        var staleBaseline = new ExpectedResidualReport(
+            CapturedAt: DateTimeOffset.UtcNow,
+            FromPrefix: "http://different-prefix.local/",
+            Columns: Array.Empty<ExpectedResidualEntry>());
+
+        await Assert.ThrowsAsync<ArgumentException>(() => verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                ExpectedResidual: staleBaseline),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task WriteExpectedResidualAsync_round_trips_through_diff_mode()
+    {
+        // End-to-end 闭环:capture baseline → write to disk → load
+        // back via CLI shape (模拟 rehearsal 完整生命周期)。
+        // 必须先传一个临时 baseline(空)让 verifier 走 diff 分支不抛
+        // 错,再从该 report 反推 captured baseline,再加载回来跑第二次
+        // 看到全 Match。
+        if (DockerRequired()) return;
+        await SeedAsync(
+            graphIri: "http://ontopilot.local/ks/1",
+            baseIri:  "http://ontopilot.local/ks/1/onto#");
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+
+        // 1) 用空 baseline 跑 verify(走 diff 分支,不抛错;Above diffs)
+        var emptyBaseline = new ExpectedResidualReport(
+            CapturedAt: DateTimeOffset.UtcNow,
+            FromPrefix: "http://ontopilot.local/",
+            Columns: Array.Empty<ExpectedResidualEntry>());
+        var firstReport = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                ExpectedResidual: emptyBaseline),
+            CancellationToken.None);
+
+        var baselinePath = Path.Combine(
+            Path.GetTempPath(),
+            $"iri-expected-residual-{Guid.NewGuid():N}.json");
+        try
+        {
+            // 2) 从 firstReport 反推 captured baseline
+            await firstReport.WriteExpectedResidualAsync(baselinePath, CancellationToken.None);
+            Assert.True(File.Exists(baselinePath));
+
+            var json = await File.ReadAllTextAsync(baselinePath);
+            var loaded = JsonSerializer.Deserialize<ExpectedResidualReport>(
+                json, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            Assert.NotNull(loaded);
+            Assert.Equal("http://ontopilot.local/", loaded!.FromPrefix);
+            Assert.NotEmpty(loaded.Columns);
+
+            // 3) 用加载回来的 baseline 跑第二次 verify → 不抛错,
+            //    所有 step 都是 Match (因为 DB 没变过)
+            var report2 = await verifier.VerifyAsync(
+                new IriSqlVerifyOptions(
+                    FromPrefix: "http://ontopilot.local/",
+                    ToPrefix:   "http://goodcrew.local/",
+                    ExpectedResidual: loaded),
+                CancellationToken.None);
+            Assert.All(report2.ResidualDifferences, d =>
+                Assert.Equal(ResidualDifferenceKind.Match, d.Kind));
+        }
+        finally
+        {
+            if (File.Exists(baselinePath)) File.Delete(baselinePath);
+        }
+    }
+
+    // ------------------------------------------------------------------
     // --strict mode (RequireNewPrefix=true) — added in P3-7.
     // Asserts the new-prefix presence check catches the failure mode
     // where the migrator removes the old prefix without writing the

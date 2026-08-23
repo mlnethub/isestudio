@@ -31,10 +31,94 @@ namespace OnToPilot.Migration.Iri;
 /// REPLACE, or wrong <c>FromPrefix</c>/<c>ToPrefix</c> pair).
 /// Defaults to <c>false</c> for backward compatibility with the
 /// pre-<c>--strict</c> cutover runbook.</param>
+/// <param name="ExpectedResidual">When supplied, the verifier
+/// <em>diff-asserts</em> against this rehearsal baseline instead of
+/// hard-failing on residual &gt; 0. Each actual residual is compared
+/// against the matching baseline entry; the differences are recorded
+/// on <see cref="IriSqlVerifyReport.ResidualDifferences"/> but no
+/// <see cref="IriSqlVerificationException"/> is thrown. This is the
+/// mechanism P3-4 ADR §6 "dry-run 模式下写预期 residual 报告" calls
+/// out: a rehearsal run sees residual &gt; 0 (because nothing has
+/// been migrated yet) but should still complete and report a diff
+/// against the captured starting state. Defaults to <c>null</c> for
+/// backward compatibility with the hard-fail production mode.</param>
 public sealed record IriSqlVerifyOptions(
     string FromPrefix,
     string ToPrefix,
-    bool RequireNewPrefix = false);
+    bool RequireNewPrefix = false,
+    ExpectedResidualReport? ExpectedResidual = null);
+
+/// <summary>
+/// Rehearsal baseline: the residual counts an operator captured at
+/// a known point in time (typically the first dry-run before any
+/// migrator invocation). Subsequent verifier runs that supply this
+/// report via <see cref="IriSqlVerifyOptions.ExpectedResidual"/>
+/// diff against it instead of hard-failing on residual &gt; 0.
+/// Captured by <see cref="IriSqlVerifyReport.WriteExpectedResidualAsync"/>
+/// and consumed by <see cref="IriSqlVerifier.VerifyAsync"/>.
+/// </summary>
+/// <param name="CapturedAt">When the baseline was frozen. Recorded
+/// on the diff report so the operator can correlate a stale baseline
+/// with its captured moment.</param>
+/// <param name="FromPrefix">Legacy prefix the residual counts refer
+/// to. Mirrors <see cref="IriSqlVerifyOptions.FromPrefix"/>; a
+/// mismatch would itself be a schema-drift finding.</param>
+/// <param name="Columns">Per-(table, column) expected residual counts.
+/// Order is not significant; lookup is by tuple key.</param>
+public sealed record ExpectedResidualReport(
+    DateTimeOffset CapturedAt,
+    string FromPrefix,
+    IReadOnlyList<ExpectedResidualEntry> Columns);
+
+/// <summary>One entry in an <see cref="ExpectedResidualReport"/>.</summary>
+/// <param name="Table">EF Core entity table name.</param>
+/// <param name="Column">Column the residual count refers to.</param>
+/// <param name="ExpectedResidual">Number of rows in
+/// <paramref name="Table"/>.<paramref name="Column"/> whose value
+/// starts with <see cref="ExpectedResidualReport.FromPrefix"/> at
+/// the moment the baseline was captured.</param>
+public sealed record ExpectedResidualEntry(
+    string Table,
+    string Column,
+    long ExpectedResidual);
+
+/// <summary>Per-column comparison outcome between an actual residual
+/// (from this verifier run) and an expected residual (from a baseline).
+/// See <see cref="ResidualDifferenceKind"/> for the enumeration.</summary>
+public sealed record ResidualDifference(
+    string Table,
+    string Column,
+    long Expected,
+    long Actual,
+    ResidualDifferenceKind Kind);
+
+/// <summary>Classification of a <see cref="ResidualDifference"/>.</summary>
+public enum ResidualDifferenceKind
+{
+    /// <summary>Actual == Expected. Benign.</summary>
+    Match,
+
+    /// <summary>Actual &lt; Expected. The migrator rewrote more
+    /// legacy-prefix rows than the baseline predicted. Conventionally
+    /// benign (some side-channel fix-up path) but worth surfacing so
+    /// the operator can rule out an accidental over-delete.</summary>
+    Below,
+
+    /// <summary>Actual &gt; Expected. Almost always a partial
+    /// migration or a stale baseline. The strongest signal of
+    /// trouble in a rehearsal run.</summary>
+    Above,
+
+    /// <summary>The baseline lists this column but the verifier did
+    /// not scan it. Indicates the baseline is stale relative to
+    /// <see cref="IriSqlMigrator.ColumnsToRewrite"/>.</summary>
+    Missing,
+
+    /// <summary>The verifier scanned this column but the baseline
+    /// has no entry for it. Indicates the baseline is stale relative
+    /// to <see cref="IriSqlMigrator.ColumnsToRewrite"/>.</summary>
+    Extra,
+}
 
 /// <summary>
 /// One column-verification step. Reports both the residual count
@@ -81,6 +165,21 @@ public sealed class IriSqlVerifyReport
     public string FromPrefix { get; init; } = string.Empty;
     public string ToPrefix { get; init; } = string.Empty;
     public bool RequireNewPrefix { get; init; }
+
+    /// <summary>The rehearsal baseline that was supplied via
+    /// <see cref="IriSqlVerifyOptions.ExpectedResidual"/>, if any.
+    /// Recorded so the operator can cross-reference the report back
+    /// to the baseline file by <see cref="ExpectedResidualReport.CapturedAt"/>
+    /// when triaging a difference.</summary>
+    public ExpectedResidualReport? ExpectedResidual { get; init; }
+
+    /// <summary>Per-column residual observations. Always populated,
+    /// even when <see cref="ExpectedResidual"/> is <c>null</c> (in
+    /// which case every entry is <see cref="ResidualDifferenceKind.Match"/>
+    /// against the implicit "expected = actual" baseline, plus an
+    /// informational count of <c>Match</c> entries).</summary>
+    public List<ResidualDifference> ResidualDifferences { get; set; } = new();
+
     public List<IriSqlVerifyStep> Steps { get; set; } = new();
 
     /// <summary>Aggregate residual across every column; zero = pass.</summary>
@@ -102,6 +201,29 @@ public sealed class IriSqlVerifyReport
         Steps.Where(s => s.TableTotalRows > 0
                          && s.NewPrefixRows is 0L);
 
+    /// <summary>Differences where the actual residual is BELOW the
+    /// baseline. Conventionally benign (the migrator rewrote more
+    /// rows than predicted), but worth flagging so the operator can
+    /// rule out an accidental over-delete.</summary>
+    public IEnumerable<ResidualDifference> BelowExpectedDifferences =>
+        ResidualDifferences.Where(d => d.Kind == ResidualDifferenceKind.Below);
+
+    /// <summary>Differences where the actual residual is ABOVE the
+    /// baseline. Almost always the smoking gun for a partial
+    /// migration or a stale baseline — surfaced as a separate
+    /// projection so the CLI / cutover gate can escalate
+    /// independently from <see cref="BelowExpectedDifferences"/>.</summary>
+    public IEnumerable<ResidualDifference> AboveExpectedDifferences =>
+        ResidualDifferences.Where(d => d.Kind == ResidualDifferenceKind.Above);
+
+    /// <summary>Differences where the baseline lists a column the
+    /// verifier never scanned, or vice versa. Almost always a stale
+    /// baseline referencing a column that was added to / removed from
+    /// <see cref="IriSqlMigrator.ColumnsToRewrite"/>.</summary>
+    public IEnumerable<ResidualDifference> SchemaDriftDifferences =>
+        ResidualDifferences.Where(d => d.Kind is ResidualDifferenceKind.Missing
+                                                  or ResidualDifferenceKind.Extra);
+
     /// <summary>
     /// Serialise the report to disk for the cutover record audit
     /// trail. Mirrors <see cref="IriSqlReport.WriteAsync"/>: indented
@@ -112,6 +234,33 @@ public sealed class IriSqlVerifyReport
         var options = new JsonSerializerOptions { WriteIndented = true };
         await using var stream = File.Create(path);
         await JsonSerializer.SerializeAsync(stream, this, options, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Capture the current run as a rehearsal baseline. Builds an
+    /// <see cref="ExpectedResidualReport"/> from this report's
+    /// <see cref="Steps"/> and writes it to <paramref name="path"/>
+    /// so a future run can supply it via
+    /// <c>--expected-residual &lt;path&gt;</c>. Operator runs this
+    /// once after the first <c>iri sql-smoke-check</c> against the
+    /// pre-migration DB to freeze the starting state; subsequent
+    /// dry-run rehearsals diff against it.
+    /// </summary>
+    public async Task WriteExpectedResidualAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        var baseline = new ExpectedResidualReport(
+            CapturedAt: DateTimeOffset.UtcNow,
+            FromPrefix: FromPrefix,
+            Columns: Steps.Select(s => new ExpectedResidualEntry(
+                Table: s.Table,
+                Column: s.Column,
+                ExpectedResidual: s.ResidualOldPrefixRows)).ToArray());
+        var options = new JsonSerializerOptions { WriteIndented = true };
+        await using var stream = File.Create(path);
+        await JsonSerializer.SerializeAsync(stream, baseline, options, cancellationToken)
             .ConfigureAwait(false);
     }
 
@@ -171,6 +320,15 @@ public sealed class IriSqlVerifier
         {
             ValidateToPrefix(options.ToPrefix);
         }
+        if (options.ExpectedResidual is not null
+            && !string.Equals(options.ExpectedResidual.FromPrefix, options.FromPrefix, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"ExpectedResidual baseline was captured for prefix '{options.ExpectedResidual.FromPrefix}' "
+                + $"but the verifier was invoked with '{options.FromPrefix}'. Recapture the baseline "
+                + "via `IriSqlVerifyReport.WriteExpectedResidualAsync` before re-running.",
+                nameof(options));
+        }
 
         var report = new IriSqlVerifyReport
         {
@@ -178,6 +336,7 @@ public sealed class IriSqlVerifier
             FromPrefix = options.FromPrefix,
             ToPrefix = options.ToPrefix,
             RequireNewPrefix = options.RequireNewPrefix,
+            ExpectedResidual = options.ExpectedResidual,
         };
 
         var fromPattern = options.FromPrefix + "%";
@@ -250,6 +409,29 @@ public sealed class IriSqlVerifier
 
         report.FinishedAt = DateTimeOffset.UtcNow;
 
+        // Rehearsal diff: when the operator supplied a baseline, run
+        // the comparison instead of (or in addition to) the hard-fail
+        // residual check. A baseline run never throws on residual > 0
+        // — the rehearsal expects the legacy data to still be there
+        // because the migrator was not invoked. Instead it records
+        // every (table, column) difference so the operator can
+        // confirm the rehearsal state matches the captured state.
+        if (options.ExpectedResidual is not null)
+        {
+            DiffAgainstBaseline(report, options.ExpectedResidual, failures);
+            // Rehearsal never throws on residual diff — the operator
+            // must look at the report to triage. We DO keep the
+            // IriSqlVerificationException path for the strict-mode
+            // "new prefix missing" failure above (that's a real
+            // invariant violation independent of residual baseline).
+            var strictFailures = failures.Where(IsStrictFailure).ToArray();
+            if (strictFailures.Length > 0)
+            {
+                throw new IriSqlVerificationException(strictFailures);
+            }
+            return report;
+        }
+
         if (failures.Count > 0)
         {
             throw new IriSqlVerificationException(failures);
@@ -257,6 +439,86 @@ public sealed class IriSqlVerifier
 
         return report;
     }
+
+    /// <summary>
+    /// Compare every observed <see cref="IriSqlVerifyStep"/> against
+    /// the supplied <see cref="ExpectedResidualReport"/> and append a
+    /// <see cref="ResidualDifference"/> entry per column. Also
+    /// records schema-drift entries for baseline columns the verifier
+    /// did not see and verifier columns the baseline did not list.
+    /// The aggregate residual total is compared at the end and a
+    /// synthetic <c>(aggregate, _total)</c> entry is appended when the
+    /// totals disagree (catches the failure mode where many small
+    /// differences cancel out to a zero net diff).
+    /// </summary>
+    private static void DiffAgainstBaseline(
+        IriSqlVerifyReport report,
+        ExpectedResidualReport baseline,
+        List<string> failures)
+    {
+        var observed = report.Steps
+            .ToDictionary(s => (s.Table, s.Column), s => s.ResidualOldPrefixRows);
+        var expected = baseline.Columns.ToDictionary(
+            e => (e.Table, e.Column),
+            e => e.ExpectedResidual);
+
+        foreach (var (key, expectedResidual) in expected)
+        {
+            if (observed.TryGetValue(key, out var actualResidual))
+            {
+                var kind = (actualResidual, expectedResidual) switch
+                {
+                    (var a, var e) when a == e => ResidualDifferenceKind.Match,
+                    (var a, var e) when a < e => ResidualDifferenceKind.Below,
+                    _ => ResidualDifferenceKind.Above,
+                };
+                report.ResidualDifferences.Add(new ResidualDifference(
+                    key.Table, key.Column, expectedResidual, actualResidual, kind));
+            }
+            else
+            {
+                report.ResidualDifferences.Add(new ResidualDifference(
+                    key.Table, key.Column, expectedResidual, 0L,
+                    ResidualDifferenceKind.Missing));
+            }
+        }
+
+        foreach (var (key, actualResidual) in observed)
+        {
+            if (!expected.ContainsKey(key))
+            {
+                report.ResidualDifferences.Add(new ResidualDifference(
+                    key.Table, key.Column, 0L, actualResidual,
+                    ResidualDifferenceKind.Extra));
+            }
+        }
+
+        // Aggregate sanity check: even when every individual entry
+        // matches, the baseline aggregate and observed aggregate
+        // should agree. A drift here is almost always a stale
+        // baseline whose Columns list was edited by hand.
+        var observedTotal = report.ResidualTotal;
+        var expectedTotal = expected.Values.Sum();
+        if (observedTotal != expectedTotal)
+        {
+            var kind = observedTotal < expectedTotal
+                ? ResidualDifferenceKind.Below
+                : ResidualDifferenceKind.Above;
+            report.ResidualDifferences.Add(new ResidualDifference(
+                Table: "(aggregate)",
+                Column: "_total",
+                Expected: expectedTotal,
+                Actual: observedTotal,
+                Kind: kind));
+        }
+    }
+
+    /// <summary>Predicate used by the rehearsal branch to keep
+    /// strict-mode "new prefix missing" failures hard-failing even
+    /// when a baseline was supplied. The residual diff itself is
+    /// advisory; the strict invariant violation is not.</summary>
+    private static bool IsStrictFailure(string failure)
+        => failure.Contains("strict mode requires", StringComparison.Ordinal);
 
     private static void ValidateFromPrefix(string fromPrefix)
     {

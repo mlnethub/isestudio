@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
@@ -79,6 +80,18 @@ public static class IriMigrationCommand
                                                           failure mode where the migrator
                                                           removed the old prefix without
                                                           writing the new one)
+                      --expected-residual <path>          (optional rehearsal baseline
+                                                          captured from a prior run via
+                                                          `IriSqlVerifyReport.WriteExpectedResidualAsync`.
+                                                          When supplied, the verifier
+                                                          diff-asserts against it
+                                                          instead of hard-failing on
+                                                          residual > 0 — the rehearsal
+                                                          expects legacy data to still
+                                                          be there because the migrator
+                                                          was not invoked. See P3-4
+                                                          ADR §6 "dry-run 模式下写预期
+                                                          residual 报告".)
                     Note: --dry-run is accepted but ignored (smoke-check is
                     inherently read-only).
 
@@ -202,6 +215,25 @@ public static class IriMigrationCommand
         var parsed = ParseSqlArgs(argv);
         if (parsed is null) return 1;
 
+        ExpectedResidualReport? expected = null;
+        if (!string.IsNullOrEmpty(parsed.ExpectedResidualPath))
+        {
+            try
+            {
+                expected = await LoadExpectedResidualAsync(
+                    parsed.ExpectedResidualPath, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "[iri-migration] sql-smoke-check: failed to load --expected-residual from '{0}': {1}",
+                    parsed.ExpectedResidualPath, ex.Message));
+                return 1;
+            }
+        }
+
         var verifyLogger = loggerFactory.CreateLogger<IriSqlVerifier>();
         var dbOptions = new DbContextOptionsBuilder<OnToPilotDbContext>()
             .UseNpgsql(parsed.PostgresConnectionString)
@@ -212,7 +244,8 @@ public static class IriMigrationCommand
             new IriSqlVerifyOptions(
                 FromPrefix: parsed.FromPrefix,
                 ToPrefix: parsed.ToPrefix,
-                RequireNewPrefix: parsed.Strict),
+                RequireNewPrefix: parsed.Strict,
+                ExpectedResidual: expected),
             CancellationToken.None).ConfigureAwait(false);
 
         // report-out 是 audit trail:写盘后再算 SHA-256,这样
@@ -238,7 +271,63 @@ public static class IriMigrationCommand
                 report.ResidualTotal,
                 report.Steps.Count));
         }
+
+        // Rehearsal diff summary: when a baseline was supplied, print
+        // one extra line so operators see the diff breakdown at a
+        // glance instead of having to open the JSON report. Mirrors
+        // the residualTotal line format above; downstream tooling can
+        // grep for `differences=` to detect rehearsal mode.
+        if (expected is not null)
+        {
+            var diffs = report.ResidualDifferences;
+            var below = report.BelowExpectedDifferences.Count();
+            var above = report.AboveExpectedDifferences.Count();
+            var schemaDrift = report.SchemaDriftDifferences.Count();
+            Console.WriteLine(string.Format(
+                CultureInfo.InvariantCulture,
+                "[iri-migration] sql-smoke-check: differences={0} above={1} below={2} schemaDrift={3} baselinePath={4} baselineCapturedAt={5:o}",
+                diffs.Count,
+                above,
+                below,
+                schemaDrift,
+                parsed.ExpectedResidualPath,
+                expected.CapturedAt));
+        }
+
         return 0;
+    }
+
+    /// <summary>
+    /// Load an <see cref="ExpectedResidualReport"/> from a JSON file
+    /// previously written by
+    /// <see cref="IriSqlVerifyReport.WriteExpectedResidualAsync"/>.
+    /// Throws <see cref="FileNotFoundException"/> /
+    /// <see cref="JsonException"/> on bad input so the CLI layer
+    /// can surface a clear error message without leaking the
+    /// deserialiser internals.
+    /// </summary>
+    private static async Task<ExpectedResidualReport> LoadExpectedResidualAsync(
+        string path,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException(
+                $"Expected-residual baseline not found at '{path}'. "
+                + "Capture one via `IriSqlVerifyReport.WriteExpectedResidualAsync` "
+                + "from a prior verifier run.", path);
+        }
+
+        await using var stream = File.OpenRead(path);
+        var report = await JsonSerializer.DeserializeAsync<ExpectedResidualReport>(
+            stream, JsonSerializerOptions.Default, cancellationToken)
+            .ConfigureAwait(false);
+        if (report is null)
+        {
+            throw new JsonException(
+                $"Expected-residual baseline at '{path}' deserialized to null.");
+        }
+        return report;
     }
 
     private static async Task<int> RunRdfAsync(
@@ -362,7 +451,8 @@ public static class IriMigrationCommand
         string ToPrefix,
         bool DryRun,
         string? ReportOut,
-        bool Strict);
+        bool Strict,
+        string? ExpectedResidualPath);
 
     private static SqlCliArgs? ParseSqlArgs(IReadOnlyList<string> argv)
     {
@@ -372,6 +462,7 @@ public static class IriMigrationCommand
         var dryRun = false;
         string? reportOut = null;
         var strict = false;
+        string? expectedResidualPath = null;
 
         for (var i = 0; i < argv.Count; i++)
         {
@@ -396,6 +487,9 @@ public static class IriMigrationCommand
                 // 但忽略,与 --report-out / --dry-run 同样保持 argv shape
                 // 对称(便于 ps1 包装层透传)。
                 case "--strict": strict = true; break;
+                // --expected-residual 同 --strict: 只被 sql-smoke-check
+                // 使用;sql subcommand 接受但忽略。
+                case "--expected-residual": expectedResidualPath = Next() ?? expectedResidualPath; break;
                 default:
                     Console.Error.WriteLine($"[iri-migration] sql: unknown argument '{a}'");
                     return null;
@@ -407,7 +501,7 @@ public static class IriMigrationCommand
             Console.Error.WriteLine("[iri-migration] sql: --postgres-connection-string is required");
             return null;
         }
-        return new SqlCliArgs(pg, fromPrefix, toPrefix, dryRun, reportOut, strict);
+        return new SqlCliArgs(pg, fromPrefix, toPrefix, dryRun, reportOut, strict, expectedResidualPath);
     }
 
     private sealed record RdfCliArgs(
