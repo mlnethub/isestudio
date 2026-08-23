@@ -88,7 +88,11 @@ public static class ExtractionDeltaParser
         {
             var label = Str(item, "label");
             if (label.Length == 0) continue;
-            classes.Add(new ClassMutation(label, NullIfEmpty(Str(item, "comment"))));
+            classes.Add(new ClassMutation(
+                label,
+                NullIfEmpty(Str(item, "comment")),
+                RoleVerified: false,
+                Evidence: NullIfEmpty(Str(item, "evidence"))));
         }
 
         var objectProperties = ReadProperties(root, "object_properties", "object");
@@ -100,7 +104,11 @@ public static class ExtractionDeltaParser
             var sub = Str(item, "sub");
             var super = Str(item, "super");
             if (sub.Length == 0 || super.Length == 0) continue;
-            axioms.Add(new AxiomMutation("subclass", Sub: sub, Super: super));
+            axioms.Add(new AxiomMutation(
+                "subclass",
+                Sub: sub,
+                Super: super,
+                Evidence: NullIfEmpty(Str(item, "evidence"))));
         }
         foreach (var (field, type) in new[] { ("disjoint_with", "disjoint"), ("equivalent_class", "equivalent") })
         {

@@ -419,6 +419,102 @@ public sealed class TBoxVerifyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task VerifyAsync_critic_payload_carries_extractor_evidence()
+    {
+        // The slice that wires ClassMutation.Evidence through to the critic
+        // payload: a delta whose classes / subclass edges carry source spans
+        // must surface those spans in the user message the critic sees. The
+        // critic itself ignores the field (it re-quotes the source on its
+        // own), so the test does not assert on the decision — only on the
+        // payload transport.
+        const string text = "The Animal kingdom has many species. A Dog is an Animal.";
+        var delta = new TBoxDelta(
+            Classes: new[]
+            {
+                new ClassMutation("Animal", "A living creature",
+                    RoleVerified: false,
+                    Evidence: "The Animal kingdom has many species"),
+                new ClassMutation("Dog", "A domesticated canid",
+                    RoleVerified: false,
+                    Evidence: "A Dog is an Animal"),
+            },
+            ObjectProperties: Array.Empty<PropertyMutation>(),
+            DataProperties: Array.Empty<PropertyMutation>(),
+            Axioms: new[]
+            {
+                new AxiomMutation("subclass",
+                    Sub: "Dog", Super: "Animal",
+                    Evidence: "A Dog is an Animal"),
+            });
+        var chat = new FakeChat()
+            .Enqueue(FakeChat.VerifyCriticAcceptAll)
+            .Enqueue(FakeChat.VerifyDenotationAcceptAll);
+
+        await Service.VerifyAsync(chat, text, delta, CancellationToken.None);
+
+        // The first chat call is the boundary critic. The user message is
+        // the second of the two ChatMessage entries (system + user). The
+        // JSON candidates payload starts after the "UNTRUSTED CANDIDATES:\n"
+        // marker; pull it out and deserialize so the test does not depend
+        // on JsonSerializer's whitespace / ordering choices.
+        var userText = chat.CallMessages[0][1].Text;
+        const string marker = "UNTRUSTED CANDIDATES:\n";
+        var jsonStart = userText.IndexOf(marker, StringComparison.Ordinal) + marker.Length;
+        using var document = JsonDocument.Parse(userText[jsonStart..]);
+
+        var classes = document.RootElement.GetProperty("classes");
+        Assert.Equal(2, classes.GetArrayLength());
+
+        var animal = classes[0];
+        Assert.Equal("Animal", animal.GetProperty("label").GetString());
+        Assert.Equal("The Animal kingdom has many species",
+            animal.GetProperty("extractor_evidence").GetString());
+
+        var dog = classes[1];
+        Assert.Equal("Dog", dog.GetProperty("label").GetString());
+        Assert.Equal("A Dog is an Animal",
+            dog.GetProperty("extractor_evidence").GetString());
+
+        var subclasses = document.RootElement.GetProperty("subclass_of");
+        Assert.Equal(1, subclasses.GetArrayLength());
+        var edge = subclasses[0];
+        Assert.Equal("Dog", edge.GetProperty("sub").GetString());
+        Assert.Equal("Animal", edge.GetProperty("super").GetString());
+        Assert.Equal("A Dog is an Animal",
+            edge.GetProperty("extractor_evidence").GetString());
+    }
+
+    [Fact]
+    public async Task VerifyAsync_critic_payload_uses_empty_string_for_missing_evidence()
+    {
+        // Legacy delta (no evidence on classes / subclass edges) must
+        // surface an empty extractor_evidence string in the critic payload
+        // so the prompt contract stays stable — the model never sees a
+        // missing / null value.
+        var delta = new TBoxDelta(
+            Classes: new[]
+            {
+                new ClassMutation("Animal", "A living creature"),
+            },
+            ObjectProperties: Array.Empty<PropertyMutation>(),
+            DataProperties: Array.Empty<PropertyMutation>(),
+            Axioms: Array.Empty<AxiomMutation>());
+        var chat = new FakeChat()
+            .Enqueue(FakeChat.VerifyCriticAcceptAll)
+            .Enqueue(FakeChat.VerifyDenotationAcceptAll);
+
+        await Service.VerifyAsync(chat, Text, delta, CancellationToken.None);
+
+        var userText = chat.CallMessages[0][1].Text;
+        const string marker = "UNTRUSTED CANDIDATES:\n";
+        var jsonStart = userText.IndexOf(marker, StringComparison.Ordinal) + marker.Length;
+        using var document = JsonDocument.Parse(userText[jsonStart..]);
+
+        var animal = document.RootElement.GetProperty("classes")[0];
+        Assert.Equal("", animal.GetProperty("extractor_evidence").GetString());
+    }
+
+    [Fact]
     public async Task VerifyAsync_critic_rejection_reaches_the_adjudicator()
     {
         const string criticRejectsDog = """

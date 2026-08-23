@@ -96,12 +96,15 @@ public sealed class TBoxVerifyService
 
         // 1. Boundary critic — the untrusted first pass is re-judged with
         // evidence from the source text only. The candidates payload carries
-        // no extractor evidence: the .NET delta parser drops it (Python's
-        // row["evidence"] is advisory context, not a decision input).
+        // the extractor's source span (Python <c>row["evidence"]</c>) as
+        // advisory context — the critic always re-quotes the source on its
+        // own, so extractor_evidence never enters the decision logic; it is
+        // only there to help the critic disambiguate when two candidates
+        // share the same label in different paragraphs.
         var candidates = new
         {
-            classes = delta.Classes.Select(c => new ClassCandidate(c.Label, c.Comment ?? "", "")).ToList(),
-            subclass_of = subclasses.Select(s => new SubclassCandidate(s.Sub ?? "", s.Super ?? "", "")).ToList(),
+            classes = delta.Classes.Select(c => new ClassCandidate(c.Label, c.Comment ?? "", c.Evidence ?? "")).ToList(),
+            subclass_of = subclasses.Select(s => new SubclassCandidate(s.Sub ?? "", s.Super ?? "", s.Evidence ?? "")).ToList(),
         };
         var criticPayload = await CallAsync(
             chat, BoundaryCriticKey,
@@ -136,7 +139,7 @@ public sealed class TBoxVerifyService
         var disputedPayload = new
         {
             classes = disputed.Select(c => new DisputedClassCandidate(
-                c.Label, c.Comment ?? "", "",
+                c.Label, c.Comment ?? "", c.Evidence ?? "",
                 firstReasons.GetValueOrDefault(LabelNorm(c.Label), ""))).ToList(),
         };
         TBoxVerifyResult adjudicated;
@@ -224,7 +227,7 @@ public sealed class TBoxVerifyService
             classes = candidateClasses.Select(c => new DenotationCandidate(
                 c.Label,
                 c.Comment ?? "",
-                AcceptedEvidence: "",
+                AcceptedEvidence: c.Evidence ?? "",
                 ProvisionallyAccepted: eligibleNorms.Contains(LabelNorm(c.Label)))).ToList(),
         };
         var payload = await CallAsync(

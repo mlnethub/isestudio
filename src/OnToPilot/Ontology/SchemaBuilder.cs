@@ -15,8 +15,16 @@ namespace OnToPilot.Ontology;
 /// A requested class declaration. <see cref="RoleVerified"/> mirrors the
 /// Python <c>_role_verified</c> flag: a class label that an independent role
 /// critic has confirmed is a reusable type rather than an individual.
+/// <see cref="Evidence"/> carries the source span the LLM extracted it from
+/// (Python <c>extract.py</c> <c>classes[].evidence</c>); it is advisory
+/// context for the verify critic, not a decision input — the critic always
+/// re-quotes the source on its own.
 /// </summary>
-public sealed record ClassMutation(string Label, string? Comment = null, bool RoleVerified = false);
+public sealed record ClassMutation(
+    string Label,
+    string? Comment = null,
+    bool RoleVerified = false,
+    string? Evidence = null);
 
 /// <summary>
 /// A requested property declaration. <see cref="Kind"/> is <c>"object"</c> or
@@ -31,14 +39,18 @@ public sealed record PropertyMutation(
 
 /// <summary>
 /// A requested class-level axiom. <see cref="Type"/> is <c>"subclass"</c>,
-/// <c>"disjoint"</c>, or <c>"equivalent"</c>.
+/// <c>"disjoint"</c>, or <c>"equivalent"</c>. <see cref="Evidence"/> is
+/// populated only for <c>subclass</c> axioms (Python
+/// <c>subclass_of[].evidence</c>); <c>disjoint</c> / <c>equivalent</c>
+/// never carry it.
 /// </summary>
 public sealed record AxiomMutation(
     string Type,
     string? Sub = null,
     string? Super = null,
     string? A = null,
-    string? B = null);
+    string? B = null,
+    string? Evidence = null);
 
 /// <summary>
 /// Aggregate of class / property / axiom mutations to translate into RDF
