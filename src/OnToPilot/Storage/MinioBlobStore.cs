@@ -33,7 +33,7 @@ namespace OnToPilot.Storage;
 /// pipeline (Task 4) owns that contract.
 /// </para>
 /// </remarks>
-public sealed class MinioBlobStore : IBlobStore
+public class MinioBlobStore : IBlobStore
 {
     private readonly IAmazonS3 _s3;
     private readonly string _bucket;
@@ -236,6 +236,75 @@ public sealed class MinioBlobStore : IBlobStore
             },
             cancellationToken).ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Idempotent: probe the bucket with <c>HeadBucket</c> and create it
+    /// when missing. Called once at startup by
+    /// <see cref="MinioBucketInitializer"/> so a fresh MinIO instance (or
+    /// an accidentally-deleted bucket) no longer surfaces as a 500
+    /// <c>AmazonS3Exception: The specified bucket does not exist</c> on
+    /// the first <c>POST /api/knowledge/{id}/documents/upload</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>The method is safe to call repeatedly: the happy path is a
+    /// single <c>HEAD</c> against MinIO's bucket endpoint. A missing
+    /// bucket triggers one <c>PUT</c>; subsequent restarts short-circuit
+    /// on the head. <see cref="AmazonS3Exception"/>s other than the
+    /// not-found case propagate so the caller surfaces real
+    /// configuration errors (bad credentials, wrong endpoint, …).</para>
+    /// <para>Race note: when two backend replicas start simultaneously
+    /// against a brand-new MinIO, both may see the head fail and race
+    /// the create. MinIO returns <c>BucketAlreadyOwnedByYou</c> (HTTP
+    /// 409) for the second writer, which we treat as success — the
+    /// bucket exists after either call.</para>
+    /// </remarks>
+    public virtual async Task EnsureBucketExistsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _s3.HeadBucketAsync(new HeadBucketRequest
+            {
+                BucketName = _bucket,
+            }, cancellationToken).ConfigureAwait(false);
+            return; // bucket exists — happy path
+        }
+        catch (AmazonS3Exception ex) when (IsNotFound(ex))
+        {
+            // Fall through to the create branch.
+        }
+        catch (AmazonS3Exception ex) when (IsAlreadyOwned(ex))
+        {
+            // Reached the same logical state via a different code path
+            // (some S3-compatible backends reply with this instead of
+            // NotFound when the bucket is provisioned but invisible to
+            // the head probe — treat as present rather than retrying).
+            return;
+        }
+
+        try
+        {
+            await _s3.PutBucketAsync(new PutBucketRequest
+            {
+                BucketName = _bucket,
+                // PutBucket.BucketRegion is optional; MinIO ignores it,
+                // AWS S3 will use the client's region. Leaving both
+                // unset means "use whatever the client was built with".
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (AmazonS3Exception ex) when (IsAlreadyOwned(ex))
+        {
+            // Lost the create race with a peer replica; bucket exists.
+        }
+    }
+
+    private static bool IsAlreadyOwned(AmazonS3Exception ex) =>
+        // Both AWS S3 and MinIO surface a concurrent-create race with
+        // HTTP 409 + ErrorCode "BucketAlreadyOwnedByYou". Match by
+        // status code so a localized ErrorCode string doesn't slip
+        // past us.
+        ex.StatusCode == System.Net.HttpStatusCode.Conflict
+            || string.Equals(ex.ErrorCode, "BucketAlreadyOwnedByYou", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(ex.ErrorCode, "BucketAlreadyExists", StringComparison.OrdinalIgnoreCase);
 
     /// <inheritdoc />
     public async Task<bool> RemoveAsync(string sha256, CancellationToken cancellationToken)

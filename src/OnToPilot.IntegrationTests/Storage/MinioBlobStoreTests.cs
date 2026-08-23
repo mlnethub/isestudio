@@ -188,6 +188,69 @@ public sealed class MinioBlobStoreTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// P1-2 regression: <see cref="MinioBlobStore.EnsureBucketExistsAsync"/>
+    /// must create a fresh bucket when MinIO does not yet know about it.
+    /// Closes the gap where a clean docker-compose stack would fail the
+    /// first <c>POST /api/knowledge/{id}/documents/upload</c> with
+    /// <c>AmazonS3Exception: The specified bucket does not exist</c>.
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Storage")]
+    public async Task EnsureBucketExistsAsync_creates_bucket_when_missing()
+    {
+        if (DockerRequired()) return;
+
+        // Pick a bucket name that nothing else in this fixture uses —
+        // parallel CI shards may share a MinIO instance, so make the
+        // name unique per test run.
+        var bucket = $"ontopilot-ensure-test-{Guid.NewGuid():N}"[..24];
+
+        try
+        {
+            // Sanity: the bucket must not exist before the call.
+            await Assert.ThrowsAsync<AmazonS3Exception>(async () =>
+                await _s3.GetBucketLocationAsync(new GetBucketLocationRequest { BucketName = bucket }));
+
+            var freshStore = new MinioBlobStore(_s3, bucket);
+
+            // Before the call: still missing.
+            await Assert.ThrowsAsync<AmazonS3Exception>(async () =>
+                await _s3.GetBucketLocationAsync(new GetBucketLocationRequest { BucketName = bucket }));
+
+            await freshStore.EnsureBucketExistsAsync(CancellationToken.None);
+
+            // After the call: HeadBucket no longer throws.
+            await _s3.GetBucketLocationAsync(new GetBucketLocationRequest { BucketName = bucket });
+        }
+        finally
+        {
+            try { await _s3.DeleteBucketAsync(new DeleteBucketRequest { BucketName = bucket }); }
+            catch { /* best-effort cleanup */ }
+        }
+    }
+
+    /// <summary>
+    /// P1-2 regression: a second <see cref="MinioBlobStore.EnsureBucketExistsAsync"/>
+    /// call against an already-present bucket must be a no-op (no second
+    /// PUT, no exception). This is the common restart-on-existing-bucket
+    /// path; treating it as idempotent means re-running the initializer
+    /// never fails the boot.
+    /// </summary>
+    [Fact]
+    [Trait("Category", "Storage")]
+    public async Task EnsureBucketExistsAsync_is_idempotent_when_bucket_already_exists()
+    {
+        if (DockerRequired()) return;
+
+        // The fixture's bucket (created in InitializeAsync) already
+        // exists, so we can verify the happy path directly against
+        // `_store` without any extra setup.
+        await _store.EnsureBucketExistsAsync(CancellationToken.None);
+        await _store.EnsureBucketExistsAsync(CancellationToken.None);
+        await _store.EnsureBucketExistsAsync(CancellationToken.None);
+    }
+
+    /// <summary>
     /// Gate helper. Returns <see langword="true"/> when Docker isn't
     /// available and the test should pass without exercising the body —
     /// returning early is the xUnit v2 way to express "skip dynamically"

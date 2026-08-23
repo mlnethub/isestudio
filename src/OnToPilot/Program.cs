@@ -436,8 +436,14 @@ if (!string.IsNullOrWhiteSpace(minioEndpoint))
         : (minioEndpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
             ? minioEndpoint
             : "http://" + minioEndpoint);
-    builder.Services.AddSingleton<IBlobStore>(_ =>
+    builder.Services.AddSingleton<MinioBlobStore>(_ =>
         MinioBlobStore.Create(endpoint, minioAccess, minioSecret, minioBucket));
+    builder.Services.AddSingleton<IBlobStore>(sp =>
+        sp.GetRequiredService<MinioBlobStore>());
+    // Closes the P1-2 backend gap (slice 9 follow-up): a fresh MinIO
+    // instance no longer surfaces as a 500 on the first document upload.
+    // See `MinioBucketInitializer` for the startup contract.
+    builder.Services.AddHostedService<MinioBucketInitializer>();
 }
 else
 {
