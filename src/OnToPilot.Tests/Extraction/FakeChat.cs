@@ -62,8 +62,26 @@ public sealed class FakeChat : IChatClient
     private readonly TaskCompletionSource _release =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    /// <summary>
+    /// Snapshot of the messages passed to every completed
+    /// <see cref="GetResponseAsync"/> call, in call order. Lets agent-loop
+    /// tests (e.g. ConflictAgent's ReAct turns) assert what the Nth turn's
+    /// conversation contained — including tool results injected by the
+    /// production code between turns.
+    /// </summary>
+    private readonly List<IReadOnlyList<ChatMessage>> _callMessages = new();
+
     private int _blockAfter = -1;
     private int _calls;
+
+    /// <summary>Copies of the message lists received on each call.</summary>
+    public IReadOnlyList<IReadOnlyList<ChatMessage>> CallMessages
+    {
+        get
+        {
+            lock (_gate) return _callMessages.ToList();
+        }
+    }
 
     /// <summary>How many times <see cref="GetResponseAsync"/> has been invoked.</summary>
     public int CallCount => Volatile.Read(ref _calls);
@@ -149,7 +167,11 @@ public sealed class FakeChat : IChatClient
     /// <summary>Drop every queued reply and reset the call counter / gate.</summary>
     public void Reset()
     {
-        lock (_gate) _replies.Clear();
+        lock (_gate)
+        {
+            _replies.Clear();
+            _callMessages.Clear();
+        }
         Volatile.Write(ref _calls, 0);
         Volatile.Write(ref _blockAfter, -1);
     }
@@ -179,6 +201,7 @@ public sealed class FakeChat : IChatClient
         string reply;
         lock (_gate)
         {
+            _callMessages.Add(messages.ToList());
             reply = _replies.Count > 0 ? _replies.Dequeue() : "{}";
         }
         return new ChatResponse(new ChatMessage(ChatRole.Assistant, reply));

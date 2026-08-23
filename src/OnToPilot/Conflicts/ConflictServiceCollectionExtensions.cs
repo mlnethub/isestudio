@@ -15,6 +15,7 @@ public static class ConflictServiceCollectionExtensions
     public static IServiceCollection AddConflictServices(this IServiceCollection services)
     {
         services.AddScoped<ConflictService>();
+        services.AddScoped<ConflictAgent>();
         return services;
     }
 }

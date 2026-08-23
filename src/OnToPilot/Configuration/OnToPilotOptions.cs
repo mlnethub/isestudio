@@ -57,6 +57,20 @@ public sealed class OnToPilotOptions
     public bool AutomaticTerminology { get; set; } = true;
 
     /// <summary>
+    /// Whether the conflict agent triages open <c>duplicate</c> /
+    /// <c>predicate_specialization</c> conflicts after detection and attaches
+    /// a recommendation for human confirmation. Mirrors the Python backend's
+    /// <c>agentic_conflict_resolution</c> setting (default true).
+    /// </summary>
+    public bool AgenticConflictResolution { get; set; } = true;
+
+    /// <summary>
+    /// ReAct tool-call budget per conflict for the conflict agent. Mirrors the
+    /// Python backend's <c>conflict_agent_max_steps</c> setting.
+    /// </summary>
+    public int ConflictAgentMaxSteps { get; set; } = 3;
+
+    /// <summary>
     /// Root prefix used when stamping a fresh knowledge system's
     /// <see cref="Infrastructure.Persistence.Entities.KnowledgeSystemEntity.GraphIri"/>
     /// / <see cref="Infrastructure.Persistence.Entities.KnowledgeSystemEntity.BaseIri"/>.

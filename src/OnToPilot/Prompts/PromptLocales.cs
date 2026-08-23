@@ -26,11 +26,13 @@ namespace OnToPilot.Prompts;
 /// </para>
 ///
 /// <para>
-/// P0 scope: only <c>tbox.extract.rag</c>, <c>abox.extract</c>, and
-/// <c>terminology.steward</c> are wired by the LLM call-sites in
+/// Wired call-sites: <c>tbox.extract.rag</c>, <c>abox.extract</c>, and
+/// <c>terminology.steward</c> are consumed by the LLM call-sites in
 /// <see cref="Extraction.TBoxExtractionService"/>,
 /// <see cref="Extraction.ABoxExtractionService"/>, and
-/// <see cref="Extraction.TerminologyAgent"/>. The remaining 16 keys are
+/// <see cref="Extraction.TerminologyAgent"/>;
+/// <c>conflict.resolution</c> is consumed by
+/// <see cref="Conflicts.ConflictAgent"/>. The remaining keys are
 /// pre-seeded here as stubs (English placeholder) so a future slice can
 /// turn on additional agents without re-touching the catalog — see the
 /// outstanding agents tracked in [[ontopilot-dotnet-gap-2026-08-22]].
@@ -75,6 +77,12 @@ public static class PromptLocales
                 [SystemLanguage.SimplifiedChinese] = TerminologyStewardZhCn,
             },
 
+            ["conflict.resolution"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = ConflictResolutionEn,
+                [SystemLanguage.SimplifiedChinese] = ConflictResolutionZhCn,
+            },
+
             // ---- Python-registered but .NET-not-wired (stubs) --------------------
             // Each agent lives in a separate Python module; the English version is
             // the inline default registered there. The zh-CN text is in prompt_locales.py.
@@ -92,7 +100,6 @@ public static class PromptLocales
             ["abox.entity_resolution"] = NotWired(),
             ["abox.datatype_validation"] = NotWired(),
             ["conflict.duplicate_judge"] = NotWired(),
-            ["conflict.resolution"] = NotWired(),
             ["tbox.structure_repair"] = NotWired(),
             ["tbox.domain_range_reconcile"] = NotWired(),
         };
@@ -455,5 +462,42 @@ public static class PromptLocales
         - 优先使用来源语言。解释保持简洁，并以证据为依据。
         - 不确定的噪声应跳过，不要勉强提出建议。proposals 为空是有效结果。
         - 下方的人工决定具有权威性；不得重复已被拒绝的建议。
+        """;
+
+    // -- conflict.resolution (English) ---------------------------------------
+    // Source: backend/app/ontology/conflict_agent.py:32-46 (_SYSTEM).
+    private const string ConflictResolutionEn = """
+        You resolve ONE ontology TBox conflict by choosing the best available resolution.
+
+        Respond with EXACTLY ONE JSON object per turn — one of:
+        1) {"action":"get_neighborhood","name":"<a class label>"}
+           → returns that class's superclasses/subclasses/related properties, to judge.
+        2) {"action":"finish","resolution":"<a resolution id, or 'skip'>","confidence":<0..1>,"reason":"<short>"}
+
+        Guidance:
+        - Choose a resolution ONLY if you are confident it is correct. If genuinely unsure, finish with
+          resolution "skip".
+        - Duplicate classes: merge the two only if they are truly the SAME concept (not a subtype); pick the
+          direction that KEEPS the more standard/general label as the target.
+        - Over-specialized predicates (e.g. 拥有井/拥有计量站): judge whether the relation meaning is truly
+          identical. These decisions require human confirmation even at high confidence.
+        - Keep "reason" concise (<= 200 chars).
+        """;
+
+    // -- conflict.resolution (Simplified Chinese) ----------------------------
+    // Source: backend/app/prompt_locales.py:333-344 (key "conflict.resolution")
+    private const string ConflictResolutionZhCn = """
+        你需要为一个本体 TBox 冲突选择最佳可用解决方案。
+
+        每一轮必须且只能返回一个 JSON 对象，格式为以下两种之一：
+        1) {"action":"get_neighborhood","name":"<类标签>"}
+           → 返回该类的父类、子类和相关属性，用于判断。
+        2) {"action":"finish","resolution":"<解决方案 id 或 skip>","confidence":<0..1>,"reason":"<简短理由>"}
+
+        指导原则：
+        - 只有确信解决方案正确时才选择它。如果确实不确定，以 resolution="skip" 结束。
+        - 对重复类，只有两个类确实表示同一概念而不是子类型关系时才能合并；合并方向应保留更标准、更一般的标签作为目标。
+        - 对过度专门化的谓词，例如"拥有井"和"拥有计量站"，需要判断关系含义是否真正相同。即使置信度很高，这类决定也需要人工确认。
+        - reason 保持简洁，不超过 200 个字符。
         """;
 }

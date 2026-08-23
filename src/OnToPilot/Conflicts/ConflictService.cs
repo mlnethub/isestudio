@@ -710,7 +710,12 @@ public sealed class ConflictService
     private static JsonDocument ToJsonArray(IReadOnlyList<string> items) =>
         JsonDocument.Parse(JsonSerializer.Serialize(items));
 
-    private static IReadOnlyList<ConflictDetection.EntityRef> ReadEntities(ConflictEntity row)
+    /// <summary>
+    /// Shared with <see cref="ConflictAgent"/> (internal) — the agent reads
+    /// the same stored payload the service writes so both see identical
+    /// entities/resolutions.
+    /// </summary>
+    internal static IReadOnlyList<ConflictDetection.EntityRef> ReadEntities(ConflictEntity row)
     {
         if (row.Payload is null) return Array.Empty<ConflictDetection.EntityRef>();
         var root = row.Payload.RootElement;
@@ -739,7 +744,7 @@ public sealed class ConflictService
         return true;
     }
 
-    private static IReadOnlyList<ConflictDetection.Resolution> ReadResolutions(ConflictEntity row)
+    internal static IReadOnlyList<ConflictDetection.Resolution> ReadResolutions(ConflictEntity row)
     {
         if (row.Payload is null) return Array.Empty<ConflictDetection.Resolution>();
         var root = row.Payload.RootElement;
@@ -765,7 +770,7 @@ public sealed class ConflictService
         return list;
     }
 
-    private static object? JsonElementToObject(JsonElement el) => el.ValueKind switch
+    internal static object? JsonElementToObject(JsonElement el) => el.ValueKind switch
     {
         JsonValueKind.String => el.GetString(),
         JsonValueKind.Number => el.TryGetInt64(out var l) ? l : (object)el.GetDouble(),

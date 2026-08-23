@@ -1630,6 +1630,21 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         {
             var rows = await svc.DetectAsync(request.KnowledgeSystemGuid.Value, ct)
                 .ConfigureAwait(false);
+
+            // Python conflicts.py runs the agentic triage right after the
+            // sync pass: resolve_open_conflicts_bg attaches recommendations
+            // to open duplicate / predicate_specialization conflicts (it
+            // never auto-applies). The agent self-gates on the
+            // agentic_conflict_resolution setting and on extraction_active,
+            // and swallows every LLM error, so the detect response is never
+            // affected. The returned rows are the pre-triage snapshot —
+            // matching Python, where the recommendation lands in the payload
+            // and surfaces on the next list/context read.
+            var agent = _services.GetService(typeof(ConflictAgent)) as ConflictAgent;
+            if (agent is not null)
+            {
+                await agent.TriageAsync(request.KnowledgeSystemGuid.Value, ct).ConfigureAwait(false);
+            }
             return (object?)rows;
         });
     }
