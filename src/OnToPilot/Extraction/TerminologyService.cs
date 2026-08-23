@@ -97,6 +97,17 @@ public sealed class TerminologyService : ITerminologySync
         var classes = view.Classes;
         if (classes.Count == 0) return TerminologyResult.Zero;
 
+        // Ensure a default ConceptScheme exists so the vocabulary view has a
+        // scheme to anchor the concepts this pass creates. Mirrors the Python
+        // backend's ensure_scheme(): reuse the fixed "#scheme-extracted" IRI
+        // (or the single / extraction / most-mapped existing scheme), and
+        // create it when the vocabulary graph has none yet. Without this a
+        // freshly-extracted knowledge system reports scheme_count=0 with a
+        // fully-populated concept list, leaving the "New term" button
+        // permanently disabled (empty selectedSchemeIri).
+        var schemeIri = EnsureScheme(ks, view);
+        if (schemeIri is null) return TerminologyResult.Zero;
+
         // Index existing mapped concepts by their pref-label so a re-run
         // counts as mapped rather than re-added.
         var mappedIndex = new SkosManager(_store).MappedAliases(ks);
@@ -125,38 +136,98 @@ public sealed class TerminologyService : ITerminologySync
             // mint fresh concepts when no concept advertises the label.
             if (PrefLabelExists(ks, cls.Label)) continue;
 
+            var concept = new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(cls.Iri)}");
             _store.AddQuads(graph, new[]
             {
-                new Oxigraph.Quad(
-                    new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(cls.Iri)}"),
-                    Vocabulary.RdfType,
-                    SkosVocab.Concept,
-                    graph),
-                new Oxigraph.Quad(
-                    new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(cls.Iri)}"),
-                    SkosVocab.PrefLabel,
-                    new OntoLiteral(cls.Label, "en"),
-                    graph),
-                new Oxigraph.Quad(
-                    new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(cls.Iri)}"),
-                    SkosVocab.OpStatus,
-                    new OntoLiteral("active"),
-                    graph),
-                new Oxigraph.Quad(
-                    new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(cls.Iri)}"),
-                    SkosVocab.OpMapsTo,
-                    new OntoNamedNode(cls.Iri),
-                    graph),
-                new Oxigraph.Quad(
-                    new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(cls.Iri)}"),
-                    SkosVocab.DcCreated,
-                    new OntoLiteral(now),
-                    graph),
+                new Oxigraph.Quad(concept, Vocabulary.RdfType, SkosVocab.Concept, graph),
+                new Oxigraph.Quad(concept, SkosVocab.InScheme, new OntoNamedNode(schemeIri), graph),
+                new Oxigraph.Quad(concept, SkosVocab.PrefLabel, new OntoLiteral(cls.Label, "en"), graph),
+                new Oxigraph.Quad(concept, SkosVocab.OpStatus, new OntoLiteral("active"), graph),
+                new Oxigraph.Quad(concept, SkosVocab.OpMapsTo, new OntoNamedNode(cls.Iri), graph),
+                new Oxigraph.Quad(concept, SkosVocab.DcCreated, new OntoLiteral(now), graph),
             });
             added++;
         }
 
         return new TerminologyResult(added, mapped, ProposalsQueued: 0, Error: null);
+    }
+
+    /// <summary>
+    /// Idempotently resolve (or create) the ConceptScheme the deterministic
+    /// sync anchors its fresh concepts to. Mirrors Python
+    /// <c>terminology_sync.ensure_scheme</c>:
+    /// <list type="number">
+    /// <item>the fixed <c>#scheme-extracted</c> IRI if it already exists;</item>
+    /// <item>the sole scheme when exactly one exists;</item>
+    /// <item>the largest <c>origin=extraction</c> scheme;</item>
+    /// <item>the scheme with the most mapped concepts (ties by concept count);</item>
+    /// <item>otherwise create a fresh default scheme titled from the KS name.</item>
+    /// </list>
+    /// Returns <c>null</c> when the TBox has no entities (nothing to anchor).
+    /// </summary>
+    private string? EnsureScheme(KsContext ks, OntologyView ontology)
+    {
+        if (ontology.Classes.Count + ontology.ObjectProperties.Count + ontology.DataProperties.Count == 0)
+            return null;
+
+        var view = new SkosManager(_store).BuildView(ks);
+        var fixedIri = $"{ks.VocabularyGraph}#scheme-extracted";
+        var fixedScheme = view.Schemes.FirstOrDefault(s => s.Iri == fixedIri);
+        if (fixedScheme is not null) return fixedScheme.Iri;
+        if (view.Schemes.Count == 1) return view.Schemes[0].Iri;
+
+        var generated = view.Schemes.Where(s => s.Origin == "extraction").ToList();
+        if (generated.Count > 0)
+            return generated.OrderByDescending(s => s.ConceptCount).First().Iri;
+
+        if (view.Schemes.Count > 0)
+        {
+            var mappedCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var c in view.Concepts)
+            {
+                if (!string.IsNullOrEmpty(c.MappedEntityIri))
+                    mappedCounts[c.SchemeIri] = mappedCounts.GetValueOrDefault(c.SchemeIri, 0) + 1;
+            }
+            return view.Schemes
+                .OrderByDescending(s => mappedCounts.GetValueOrDefault(s.Iri, 0))
+                .ThenByDescending(s => s.ConceptCount)
+                .First().Iri;
+        }
+
+        // No schemes yet — create the default extracted scheme so the
+        // vocabulary surface reports scheme_count >= 1.
+        var (title, description, language) = SchemeTitle(ks.Name);
+        return new SkosManager(_store).CreateScheme(ks, new SkosSchemeData(
+            Iri: fixedIri,
+            Title: title,
+            DefaultLanguage: language,
+            Description: description,
+            Origin: "extraction"));
+    }
+
+    /// <summary>
+    /// Derive the default scheme's title / description / language from the KS
+    /// name, matching Python <c>terminology_sync._scheme_title</c> (Chinese
+    /// names get a Chinese title, everything else an English one).
+    /// </summary>
+    private static (string Title, string Description, string Language) SchemeTitle(string ksName)
+    {
+        var language = ContainsCjk(ksName) ? "zh-CN" : "en";
+        return language == "zh-CN"
+            ? ($"{ksName}术语表", "随本体抽取自动形成，并由人工持续治理的受控词表。", language)
+            : ($"{ksName} terminology",
+                "Controlled terminology formed automatically during ontology extraction and governed by humans.",
+                language);
+    }
+
+    /// <summary>True when <paramref name="text"/> contains a CJK Unified Ideograph.</summary>
+    private static bool ContainsCjk(string? text)
+    {
+        foreach (var c in text ?? "")
+        {
+            if (c >= '㐀' && c <= '鿿') return true;
+        }
+        return false;
     }
 
     private bool PrefLabelExists(KsContext ks, string label)

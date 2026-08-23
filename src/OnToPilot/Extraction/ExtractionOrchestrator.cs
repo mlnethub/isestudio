@@ -182,7 +182,7 @@ public sealed class ExtractionOrchestrator
         // re-entrant acquires within one job from acquires by another
         // worker — sharing state across requests would let two independent
         // extractions oversubscribe the same endpoint.
-        var ksContext = new KsContext(GraphIri: ksEntity.GraphIri, BaseIri: ksEntity.BaseIri);
+        var ksContext = new KsContext(GraphIri: ksEntity.GraphIri, BaseIri: ksEntity.BaseIri, Name: ksEntity.Name);
         var runContext = new JobRunContext(job.Id, request, ksContext, chunks, chat);
 
         // SuppressFlow keeps the chat capacity coordinator's AsyncLocal

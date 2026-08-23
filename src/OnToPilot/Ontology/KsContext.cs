@@ -23,7 +23,8 @@ namespace OnToPilot.Ontology;
 /// </remarks>
 public sealed record KsContext(
     string GraphIri,
-    string BaseIri)
+    string BaseIri,
+    string Name = "")
 {
     /// <summary>The TBox (schema) graph for this knowledge system.</summary>
     public string TBoxGraph => GraphIri.TrimEnd('/');
@@ -38,6 +39,6 @@ public sealed record KsContext(
     public static KsContext FromEntity(KnowledgeSystemEntity entity)
     {
         ArgumentNullException.ThrowIfNull(entity);
-        return new KsContext(entity.GraphIri, entity.BaseIri);
+        return new KsContext(entity.GraphIri, entity.BaseIri, entity.Name);
     }
 }
