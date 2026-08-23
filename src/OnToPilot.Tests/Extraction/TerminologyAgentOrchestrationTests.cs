@@ -81,6 +81,53 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         }
         """;
 
+    /// <summary>
+    /// LLM reply whose <c>preferred_label</c> does NOT appear in the
+    /// cited chunk text. The seeded chunk mentions "impeller" — this
+    /// reply proposes "Compressor" verbatim, which the _source_contains
+    /// check should reject (parity with Python
+    /// <c>terminology_agent._filter_to_supported_labels</c>).
+    /// </summary>
+    private static string HallucinatedReply(long chunkLegacyId) => $$"""
+        {
+          "proposals": [{
+            "action": "create",
+            "preferred_label": "Compressor",
+            "language": "en",
+            "alternate_labels": [],
+            "description": "Device that pressurises gas",
+            "broader_concept_iri": null,
+            "mapped_entity_iri": null,
+            "confidence": 0.9,
+            "reason": "hallucinated term not in source",
+            "source_chunk_ids": [{{chunkLegacyId}}]
+          }]
+        }
+        """;
+
+    /// <summary>
+    /// LLM reply whose <c>preferred_label</c> matches a corpus term
+    /// only via case-insensitive comparison. The seeded chunk text
+    /// uses lowercase "pump" — this reply proposes "PUMP" (uppercase),
+    /// which the OrdinalIgnoreCase grounding check should accept.
+    /// </summary>
+    private static string CaseVariantReply(long chunkLegacyId) => $$"""
+        {
+          "proposals": [{
+            "action": "create",
+            "preferred_label": "PUMP",
+            "language": "en",
+            "alternate_labels": [],
+            "description": "Device that moves fluid",
+            "broader_concept_iri": null,
+            "mapped_entity_iri": null,
+            "confidence": 0.9,
+            "reason": "case variant of corpus term",
+            "source_chunk_ids": [{{chunkLegacyId}}]
+          }]
+        }
+        """;
+
     private readonly string _root;
     private readonly SqliteContextFactory _contexts;
     private readonly Guid _ksId = Guid.NewGuid();
@@ -231,6 +278,55 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
 
         servicesNoChunk.Dispose();
         contextsNoChunk.Dispose();
+    }
+
+    [Fact]
+    [Trait("Category", "Extraction")]
+    public async Task Terminology_agent_drops_proposal_when_term_not_in_cited_chunks()
+    {
+        // _source_contains grounding check (P3-8, parity with Python
+        // `_filter_to_supported_labels`): if the LLM proposes a term
+        // that does not literally appear in any cited chunk, the agent
+        // must drop it silently rather than write a row the reviewer
+        // has no evidence to verify against. The seeded chunk text
+        // mentions "impeller" verbatim; this test proposes "Compressor"
+        // (NOT in the chunk) and asserts 0 proposals are persisted.
+        FakeChat.Enqueue(TBoxDelta);
+        FakeChat.Enqueue(HallucinatedReply(ChunkLegacyId));
+
+        var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
+        var finished = await Jobs.WaitAsync(job.Id);
+
+        Assert.Equal("completed", finished.Status);
+        Assert.Equal(0, finished.TerminologyProposals);
+
+        await using var db = _contexts.CreateDbContext();
+        Assert.Empty(await db.TermProposals
+            .Where(p => p.KnowledgeSystemId == _ksId).ToListAsync());
+    }
+
+    [Fact]
+    [Trait("Category", "Extraction")]
+    public async Task Terminology_agent_accepts_proposal_when_term_matches_case_insensitively()
+    {
+        // The grounding check uses OrdinalIgnoreCase so "PUMP" (uppercase)
+        // matches chunk text "pump". Protects against the LLM proposing
+        // a normalized-case variant of a corpus term — the reviewer's
+        // mental model is "the term string is present", not "exact byte
+        // match".
+        FakeChat.Enqueue(TBoxDelta);
+        FakeChat.Enqueue(CaseVariantReply(ChunkLegacyId));
+
+        var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
+        var finished = await Jobs.WaitAsync(job.Id);
+
+        Assert.Equal("completed", finished.Status);
+        Assert.Equal(1, finished.TerminologyProposals);
+
+        await using var db = _contexts.CreateDbContext();
+        var row = Assert.Single(await db.TermProposals
+            .Where(p => p.KnowledgeSystemId == _ksId).ToListAsync());
+        Assert.Equal("PUMP", row.Term);
     }
 
     // ------------------------------------------------------------------

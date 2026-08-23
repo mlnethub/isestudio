@@ -469,6 +469,21 @@ public sealed class TerminologyAgent
             return null;
         }
 
+        // _source_contains grounding check (parity with Python
+        // `terminology_agent._filter_to_supported_labels` after the
+        // `_sanitize` step). The term must appear as a substring in
+        // at least one cited chunk's text — otherwise the LLM is
+        // hallucinating a term that has no evidence in the source
+        // corpus, and the reviewer would have nothing to anchor on.
+        // Case-insensitive + whitespace-trimmed to match what a human
+        // reviewer would call "the term appears here". Drop silently
+        // (Python `continue` semantics) — the agent's caller already
+        // counts accepted rows; rejected ones don't contribute.
+        if (!IsTermGroundedInChunks(term!, sourceIds, chunks))
+        {
+            return null;
+        }
+
         var targetIri = ResolveTargetIri(raw);
         var language = ResolveLanguage(raw);
         var description = ResolveDescription(raw, action);
@@ -672,6 +687,47 @@ public sealed class TerminologyAgent
             }
         }
         return result;
+    }
+
+    /// <summary>
+    /// _source_contains grounding check. Returns <c>true</c> when
+    /// <paramref name="term"/> (case-insensitive, whitespace-trimmed)
+    /// appears as a substring in the text of at least one cited chunk.
+    /// Mirrors Python's
+    /// <c>terminology_agent._filter_to_supported_labels</c>: the term
+    /// must be supported by the source corpus, otherwise the LLM is
+    /// hallucinating and the reviewer has no evidence to anchor on.
+    /// </summary>
+    /// <remarks>
+    /// Substring matching (not word-boundary) is intentional: many
+    /// legitimate terms are multi-word ("centrifugal pump") and the
+    /// reviewer's mental model is "this term string is present in this
+    /// chunk" rather than "this single token matches". Empty / null
+    /// chunk text is treated as "no evidence" so the proposal is
+    /// rejected — same as Python's <c>continue</c> when the chunk
+    /// lookup misses.
+    /// </remarks>
+    private static bool IsTermGroundedInChunks(
+        string term,
+        List<long> sourceIds,
+        IReadOnlyDictionary<long, ChunkEntity> chunks)
+    {
+        if (string.IsNullOrWhiteSpace(term)) return false;
+        var needle = term.Trim();
+
+        foreach (var id in sourceIds)
+        {
+            if (!chunks.TryGetValue(id, out var chunk) || chunk is null) continue;
+            if (string.IsNullOrEmpty(chunk.Text)) continue;
+            // OrdinalIgnoreCase — keeps the check culture-stable so the
+            // test fixture "Pump" matches corpus text "pump" without a
+            // Turkish-I surprise.
+            if (chunk.Text.Contains(needle, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static double? ClampConfidence(JsonElement raw)
