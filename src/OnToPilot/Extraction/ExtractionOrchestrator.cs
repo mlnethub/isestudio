@@ -1,7 +1,11 @@
 using System.Text;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using OnToPilot.Configuration;
 using OnToPilot.Conflicts;
+using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Knowledge;
 using OnToPilot.Llm;
 using OnToPilot.Ontology;
@@ -78,6 +82,7 @@ public sealed class ExtractionOrchestrator
     private readonly IExtractionMerger _merger;
     private readonly StoreWrapper _store;
     private readonly TimeProvider _clock;
+    private readonly OnToPilotOptions _options;
 
     /// <summary>
     /// Scope factory for the post-TBox agent chain. The orchestrator is a
@@ -130,6 +135,7 @@ public sealed class ExtractionOrchestrator
         IExtractionMerger merger,
         StoreWrapper store,
         TimeProvider clock,
+        IOptions<OnToPilotOptions>? options = null,
         TBoxVerifyService? verify = null,
         CorpusRecoveryService? corpus = null,
         HierarchyRecoveryService? hierarchy = null,
@@ -162,6 +168,7 @@ public sealed class ExtractionOrchestrator
         _merger = merger;
         _store = store;
         _clock = clock;
+        _options = options?.Value ?? new OnToPilotOptions();
         _verify = verify;
         _corpus = corpus;
         _hierarchy = hierarchy;
@@ -473,6 +480,16 @@ public sealed class ExtractionOrchestrator
     /// lock target, so it gets a separate capture from the layer's RDF
     /// writes). Failures here are swallowed so a terminology blip can never
     /// fail an otherwise-successful extraction.
+    ///
+    /// <para>Mirrors <c>backend/app/api/extraction.py:_run_terminology_sync</c>
+    /// at the shape the orchestrator needs: the deterministic
+    /// <see cref="ITerminologySync.SyncAsync"/> pass runs first, then the
+    /// scoped <see cref="TerminologyAgent"/> is invoked against the same
+    /// scheme to queue <c>TermProposal</c> rows. Both stages are advisory —
+    /// any thrown exception is captured by the outer
+    /// <see cref="QuadChangeCapture.MarkError"/> and the job row's
+    /// <c>terminology_proposals</c> stays at zero, matching the Python
+    /// backend's "best-effort" semantics.</para>
     /// </summary>
     private async Task RunTerminologyAsync(JobRunContext ctx, int totalProcessed)
     {
@@ -487,12 +504,93 @@ public sealed class ExtractionOrchestrator
                 phase: ExtractionPhase.Terminology.ToWire(),
                 appendPhaseToLog: ExtractionPhase.Terminology.ToWire(),
                 cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+            // P3-1 (terminology proposals): deterministic sync was advisory
+            // and never queued any. Now that the deterministic pass has
+            // stamped the concept scheme, ask the scoped LLM-driven
+            // TerminologyAgent to suggest pending TermProposal rows. The
+            // agent is Scoped (own DbContext + LegacyIdAllocator), so we
+            // resolve it from a fresh scope the same way the post-TBox
+            // agent chain (RunAgentChainAsync) does.
+            //
+            // Skipped when:
+            //   * the operator opted out via OnToPilotOptions
+            //     (terminology_suggest_during_extraction)
+            //   * no scope factory is wired (hand-built test orchestrators)
+            //   * the deterministic sync short-circuited (no SchemeIri) or
+            //     errored (term.Error is set)
+            if (_options.TerminologySuggestDuringExtraction
+                && _scopes is not null
+                && term.Error is null
+                && !string.IsNullOrEmpty(term.SchemeIri))
+            {
+                term = await RunTerminologyAgentAsync(ctx, term).ConfigureAwait(false);
+            }
+
             await _jobs.RecordTerminologyAsync(ctx.JobId, term, CancellationToken.None).ConfigureAwait(false);
         }
         catch
         {
             termCapture.MarkError();
         }
+    }
+
+    /// <summary>
+    /// Resolve the scoped <see cref="TerminologyAgent"/> and ask it for
+    /// pending <c>TermProposal</c> rows scoped to the scheme the
+    /// deterministic sync just anchored. Returns the original
+    /// <see cref="TerminologyResult"/> with <c>ProposalsQueued</c>
+    /// replaced by the agent's accepted-row count. Any exception (missing
+    /// LLM provider, transient HTTP failure, etc.) propagates — the outer
+    /// <see cref="RunTerminologyAsync"/> catch turns it into a
+    /// <see cref="QuadChangeCapture.MarkError"/> rather than failing the
+    /// job.
+    /// </summary>
+    private async Task<TerminologyResult> RunTerminologyAgentAsync(
+        JobRunContext ctx,
+        TerminologyResult term)
+    {
+        using var scope = _scopes!.CreateScope();
+        var services = scope.ServiceProvider;
+        var db = services.GetRequiredService<OnToPilotDbContext>();
+
+        var ks = await db.KnowledgeSystems.AsNoTracking()
+            .FirstOrDefaultAsync(k => k.Id == ctx.Request.KnowledgeSystemId, CancellationToken.None)
+            .ConfigureAwait(false);
+        if (ks is null)
+        {
+            return term;
+        }
+
+        // job.ChunkIds stores ChunkSpan.Idx (an in-memory 0-based index,
+        // not ChunkEntity.LegacyId), so we cannot feed it to the agent
+        // directly. Query the parsed-document chunks belonging to this
+        // knowledge system, ordered for stable propose prompts (Python
+        // _terminology_rows orders by document then chunk order too).
+        // ChunkEntity has no `Document` navigation property — the join is
+        // explicit, mirroring TerminologyAgent.LoadChunksAsync.
+        var chunkLegacyIds = await db.Chunks.AsNoTracking()
+            .Join(db.Documents,
+                c => c.DocumentId,
+                d => d.Id,
+                (c, d) => new { Chunk = c, Document = d })
+            .Where(join => join.Document.KnowledgeSystemId == ks.Id
+                && join.Document.ParseStatus == "parsed")
+            .OrderBy(join => join.Chunk.DocumentId).ThenBy(join => join.Chunk.Idx)
+            .Take(_options.TerminologySuggestionMaxChunks)
+            .Select(join => join.Chunk.LegacyId)
+            .ToListAsync(CancellationToken.None)
+            .ConfigureAwait(false);
+        if (chunkLegacyIds.Count == 0)
+        {
+            return term;
+        }
+
+        var agent = services.GetRequiredService<TerminologyAgent>();
+        var proposals = await agent.SuggestAsync(
+            ks, term.SchemeIri!, chunkLegacyIds, ctx.Request.Model, CancellationToken.None)
+            .ConfigureAwait(false);
+        return term with { ProposalsQueued = proposals.Count };
     }
 
     /// <summary>

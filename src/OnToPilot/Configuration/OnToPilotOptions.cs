@@ -57,6 +57,20 @@ public sealed class OnToPilotOptions
     public bool AutomaticTerminology { get; set; } = true;
 
     /// <summary>
+    /// Maximum number of parsed chunks fed to a single terminology-agent
+    /// suggest pass. Mirrors the Python backend's
+    /// <c>terminology_suggestion_max_chunks</c> setting (default 50).
+    /// </summary>
+    public int TerminologySuggestionMaxChunks { get; set; } = 50;
+
+    /// <summary>
+    /// Whether the extraction-job pipeline runs the LLM-driven terminology
+    /// proposal pass after the deterministic sync. Mirrors the Python
+    /// backend's <c>terminology_suggest_during_extraction</c> setting.
+    /// </summary>
+    public bool TerminologySuggestDuringExtraction { get; set; } = true;
+
+    /// <summary>
     /// Whether the conflict agent triages open <c>duplicate</c> /
     /// <c>predicate_specialization</c> conflicts after detection and attaches
     /// a recommendation for human confirmation. Mirrors the Python backend's

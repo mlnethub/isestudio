@@ -17,14 +17,23 @@ namespace OnToPilot.Extraction;
 /// </param>
 /// <param name="ProposalsQueued">Concept suggestions queued for manual review.</param>
 /// <param name="Error">Set when the sync encountered an error; never propagated.</param>
+/// <param name="SchemeIri">
+/// IRI of the <c>skos:ConceptScheme</c> the deterministic sync anchored
+/// its new concepts to, when one was resolved. Mirrors the Python
+/// backend's <c>sync_result["scheme_iri"]</c>. <c>null</c> when the TBox
+/// had no entities or the sync short-circuited. The extraction-job
+/// orchestrator reads this to feed
+/// <see cref="TerminologyAgent.SuggestAsync"/>.
+/// </param>
 public sealed record TerminologyResult(
     int TermsAdded,
     int TermsMapped,
     int ProposalsQueued,
-    string? Error)
+    string? Error,
+    string? SchemeIri = null)
 {
     /// <summary>All-zero summary used when sync is skipped.</summary>
-    public static TerminologyResult Zero { get; } = new(0, 0, 0, null);
+    public static TerminologyResult Zero { get; } = new(0, 0, 0, null, null);
 }
 
 /// <summary>
@@ -42,10 +51,12 @@ public sealed record TerminologyResult(
 /// advisory rather than required.</para>
 /// </summary>
 /// <remarks>
-/// <para>Unlike the Python backend, the .NET port does not yet run an LLM
-/// proposal stage. <see cref="ProposalsQueued"/> is therefore always zero —
-/// the column stays in the contract so later tasks can drop in an LLM
-/// stage without a schema change.</para>
+/// <para>The deterministic sync itself never produces proposals — LLM
+/// suggestions are queued by
+/// <see cref="ExtractionOrchestrator.RunTerminologyAsync"/> via
+/// <see cref="TerminologyAgent.SuggestAsync"/>, which reads the
+/// <see cref="SchemeIri"/> this pass returns and folds the resulting count
+/// into <see cref="ProposalsQueued"/> before the job row is written.</para>
 /// </remarks>
 public sealed class TerminologyService : ITerminologySync
 {
@@ -80,7 +91,7 @@ public sealed class TerminologyService : ITerminologySync
         }
         catch (Exception ex)
         {
-            return new TerminologyResult(0, 0, 0, ex.Message);
+            return new TerminologyResult(0, 0, 0, ex.Message, null);
         }
     }
 
@@ -106,7 +117,10 @@ public sealed class TerminologyService : ITerminologySync
         // fully-populated concept list, leaving the "New term" button
         // permanently disabled (empty selectedSchemeIri).
         var schemeIri = EnsureScheme(ks, view);
-        if (schemeIri is null) return TerminologyResult.Zero;
+        if (schemeIri is null)
+        {
+            return new TerminologyResult(0, 0, 0, null, null);
+        }
 
         // Index existing mapped concepts by their pref-label so a re-run
         // counts as mapped rather than re-added.
@@ -149,7 +163,7 @@ public sealed class TerminologyService : ITerminologySync
             added++;
         }
 
-        return new TerminologyResult(added, mapped, ProposalsQueued: 0, Error: null);
+        return new TerminologyResult(added, mapped, ProposalsQueued: 0, Error: null, SchemeIri: schemeIri);
     }
 
     /// <summary>

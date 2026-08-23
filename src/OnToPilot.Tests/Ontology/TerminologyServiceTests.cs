@@ -136,6 +136,55 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
     }
 
     // ------------------------------------------------------------------
+    // P3-1 (terminology proposals): the deterministic sync now stamps the
+    // resolved scheme IRI onto the result so the orchestrator can feed it
+    // to the scoped TerminologyAgent.SuggestAsync pass that follows.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void Sync_sets_scheme_iri_when_default_scheme_is_seeded()
+    {
+        SeedClasses("Pump");
+
+        var svc = new TerminologyService(_fx.Store);
+        var result = svc.SyncAsync(_ks, CancellationToken.None);
+
+        Assert.Null(result.Error);
+        Assert.Equal($"{_ks.VocabularyGraph}#scheme-extracted", result.SchemeIri);
+    }
+
+    [Fact]
+    public void Sync_sets_scheme_iri_when_reusing_existing_scheme()
+    {
+        SeedClasses("Pump");
+        var svc = new TerminologyService(_fx.Store);
+
+        // First pass seeds the scheme; second pass reuses it (no new
+        // terms). Both must report the scheme IRI so the agent step the
+        // orchestrator appends can always feed a non-null scheme.
+        svc.SyncAsync(_ks, CancellationToken.None);
+        var second = svc.SyncAsync(_ks, CancellationToken.None);
+
+        Assert.Equal($"{_ks.VocabularyGraph}#scheme-extracted", second.SchemeIri);
+    }
+
+    [Fact]
+    public void Sync_leaves_scheme_iri_null_when_no_entities_to_anchor()
+    {
+        // TBox is empty — EnsureScheme has nothing to anchor, so the
+        // sync short-circuits before resolving a scheme. The orchestrator
+        // uses SchemeIri as the gate for the agent step, so null must
+        // round-trip cleanly (the proposal stage is skipped).
+        var svc = new TerminologyService(_fx.Store);
+        var result = svc.SyncAsync(_ks, CancellationToken.None);
+
+        Assert.Null(result.Error);
+        Assert.Null(result.SchemeIri);
+        Assert.Equal(0, result.TermsAdded);
+        Assert.Equal(0, result.ProposalsQueued);
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 
