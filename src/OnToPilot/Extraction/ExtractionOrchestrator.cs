@@ -25,6 +25,27 @@ internal sealed record JobRunContext(
     IChatClient Chat);
 
 /// <summary>
+/// One chunk's verified TBox candidate set: the merged delta plus the full
+/// <see cref="TBoxVerifyResult"/> so the per-chunk
+/// <see cref="ExtractionMergeResult"/> can carry the
+/// <see cref="RejectedClass"/> / <see cref="RecoveredClass"/> lists into the
+/// post-extraction corpus recovery pass.
+/// </summary>
+internal sealed record VerifiedTBox(TBoxDelta Delta, TBoxVerifyResult? Verify);
+
+/// <summary>
+/// Per-chunk roll-up handed to the corpus / hierarchy recovery passes. The
+/// chunk text is captured alongside the rejections so the recovery prompt
+/// can quote the source verbatim; only the rejections are forwarded — the
+/// rest of the verdict (adjudicator reasons, denotation stats) lives inside
+/// the per-chunk <see cref="ExtractionMergeResult"/> for the audit trail.
+/// </summary>
+internal sealed record ChunkVerifyOutcome(
+    int ChunkId,
+    string Text,
+    IReadOnlyList<RejectedClass> Rejected);
+
+/// <summary>
 /// Top-level extraction job runner.
 ///
 /// <para>The orchestrator owns the job lifecycle:
@@ -79,6 +100,22 @@ public sealed class ExtractionOrchestrator
     /// </summary>
     private readonly TBoxVerifyService? _verify;
 
+    /// <summary>
+    /// Job-level corpus recovery pass (Python
+    /// <c>_recover_rejected_classes</c>): revisits every per-chunk rejection
+    /// with cross-chunk evidence and re-decides them. Like
+    /// <see cref="_verify"/>, null in hand-built test orchestrators where
+    /// the second-pass is skipped.
+    /// </summary>
+    private readonly CorpusRecoveryService? _corpus;
+
+    /// <summary>
+    /// Per-chunk hierarchy recovery pass (Python <c>_recover_hierarchy_one</c>):
+    /// second-pass edge extraction against the merged class vocabulary. Same
+    /// optional-seam pattern as <see cref="_verify"/> and <see cref="_corpus"/>.
+    /// </summary>
+    private readonly HierarchyRecoveryService? _hierarchy;
+
     public ExtractionOrchestrator(
         ExtractionJobStore jobs,
         IBlobStore blobs,
@@ -94,6 +131,8 @@ public sealed class ExtractionOrchestrator
         StoreWrapper store,
         TimeProvider clock,
         TBoxVerifyService? verify = null,
+        CorpusRecoveryService? corpus = null,
+        HierarchyRecoveryService? hierarchy = null,
         IServiceScopeFactory? scopes = null)
     {
         ArgumentNullException.ThrowIfNull(jobs);
@@ -124,6 +163,8 @@ public sealed class ExtractionOrchestrator
         _store = store;
         _clock = clock;
         _verify = verify;
+        _corpus = corpus;
+        _hierarchy = hierarchy;
         _scopes = scopes;
     }
 
@@ -296,17 +337,30 @@ public sealed class ExtractionOrchestrator
     private async Task<bool> TBoxOnlyRunnerAsync(JobRunContext ctx)
     {
         var promptSnapshot = _promptSnapshot.SnapshotAsync(BuildTBoxPromptSnapshot());
+        var perChunk = new List<ChunkVerifyOutcome>();
         var succeeded = await RunLayerAsync(
             ctx,
             graphIri: ctx.KsContext.TBoxGraph,
             phase: ExtractionPhase.TBox,
             baseProcessedOffset: 0,
             extractor: async (chunk, ct) =>
-                await ExtractAndVerifyAsync(ctx, chunk, ct).ConfigureAwait(false),
-            merger: delta => _merger.MergeTBox(ctx.KsContext, (TBoxDelta)delta),
+                (object)await ExtractAndVerifyAsync(ctx, chunk, ct).ConfigureAwait(false),
+            merger: item => _merger.MergeTBox(ctx.KsContext, ((VerifiedTBox)item).Delta, ((VerifiedTBox)item).Verify),
             recordMergeAsync: (id, result, ct) => _jobs.RecordTBoxMergeAsync(id, result, ct),
+            onChunk: (i, item) =>
+            {
+                var verified = (VerifiedTBox)item;
+                perChunk.Add(new ChunkVerifyOutcome(
+                    ctx.Chunks[i].Idx,
+                    ctx.Chunks[i].Text,
+                    verified.Verify?.Rejections ?? Array.Empty<RejectedClass>()));
+                return default;
+            },
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
         if (!succeeded) return false;
+
+        await RunCorpusRecoveryAsync(ctx, perChunk).ConfigureAwait(false);
+        await RunHierarchyRecoveryAsync(ctx, perChunk).ConfigureAwait(false);
 
         await RunAgentChainAsync(ctx).ConfigureAwait(false);
         await RunTerminologyAsync(ctx, totalProcessed: ctx.Chunks.Count).ConfigureAwait(false);
@@ -330,6 +384,7 @@ public sealed class ExtractionOrchestrator
                     ctx.Chat, ctx.KsContext, chunk, labels, ct).ConfigureAwait(false),
             merger: delta => _merger.MergeABox(ctx.KsContext, (ABoxDelta)delta),
             recordMergeAsync: (id, result, ct) => _jobs.RecordABoxMergeAsync(id, result, ct),
+            onChunk: null,
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
         if (!succeeded) return false;
 
@@ -353,15 +408,25 @@ public sealed class ExtractionOrchestrator
                 [ABoxExtractionService.PromptKey] = _abox.ResolveSystemPrompt(),
             });
 
+        var perChunk = new List<ChunkVerifyOutcome>();
         var tboxOk = await RunLayerAsync(
             ctx,
             graphIri: ctx.KsContext.TBoxGraph,
             phase: ExtractionPhase.TBox,
             baseProcessedOffset: 0,
             extractor: async (chunk, ct) =>
-                await ExtractAndVerifyAsync(ctx, chunk, ct).ConfigureAwait(false),
-            merger: delta => _merger.MergeTBox(ctx.KsContext, (TBoxDelta)delta),
+                (object)await ExtractAndVerifyAsync(ctx, chunk, ct).ConfigureAwait(false),
+            merger: item => _merger.MergeTBox(ctx.KsContext, ((VerifiedTBox)item).Delta, ((VerifiedTBox)item).Verify),
             recordMergeAsync: (id, result, ct) => _jobs.RecordTBoxMergeAsync(id, result, ct),
+            onChunk: (i, item) =>
+            {
+                var verified = (VerifiedTBox)item;
+                perChunk.Add(new ChunkVerifyOutcome(
+                    ctx.Chunks[i].Idx,
+                    ctx.Chunks[i].Text,
+                    verified.Verify?.Rejections ?? Array.Empty<RejectedClass>()));
+                return default;
+            },
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
         if (!tboxOk) return false;
 
@@ -371,6 +436,14 @@ public sealed class ExtractionOrchestrator
         // structure agent's attached classes must exist before ABox chunks
         // type against them.
         await RunAgentChainAsync(ctx).ConfigureAwait(false);
+
+        // Corpus + hierarchy recovery run between TBox and ABox, mirroring
+        // Python extract.py:1629-1708: the agents may have merged / attached
+        // classes that change the vocabulary the recovery prompts see, and
+        // the edges / classes it produces must exist before ABox chunks type
+        // against them.
+        await RunCorpusRecoveryAsync(ctx, perChunk).ConfigureAwait(false);
+        await RunHierarchyRecoveryAsync(ctx, perChunk).ConfigureAwait(false);
 
         // After TBox completes, refresh the label set so ABox chunks see the
         // newly minted classes.
@@ -386,6 +459,7 @@ public sealed class ExtractionOrchestrator
                     ctx.Chat, ctx.KsContext, chunk, labels, ct).ConfigureAwait(false),
             merger: delta => _merger.MergeABox(ctx.KsContext, (ABoxDelta)delta),
             recordMergeAsync: (id, result, ct) => _jobs.RecordABoxMergeAsync(id, result, ct),
+            onChunk: null,
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
         if (!aboxOk) return false;
 
@@ -514,6 +588,10 @@ public sealed class ExtractionOrchestrator
     /// single atomic revert. The 60s capture timeout guards against a dead
     /// lock on the same graph from a parallel write (e.g. an upload in
     /// flight); production graph-leases normally resolve in milliseconds.
+    /// <paramref name="onChunk"/> runs after the lease releases and before
+    /// the per-chunk merge row is written, so the runner can observe the
+    /// verify result alongside the merger — used by the TBox phase to feed
+    /// the corpus / hierarchy recovery passes.
     /// </summary>
     private async Task<bool> RunLayerAsync(
         JobRunContext ctx,
@@ -523,6 +601,7 @@ public sealed class ExtractionOrchestrator
         Func<ChunkSpan, CancellationToken, Task<object>> extractor,
         Func<object, ExtractionMergeResult> merger,
         Func<Guid, ExtractionMergeResult, CancellationToken, Task> recordMergeAsync,
+        Func<int, object, ValueTask>? onChunk,
         CancellationToken cancellationToken)
     {
         var jobId = ctx.JobId;
@@ -556,6 +635,7 @@ public sealed class ExtractionOrchestrator
                 {
                     var delta = await extractor(chunk, cancellationToken).ConfigureAwait(false);
                     merged = merger(delta);
+                    if (onChunk is not null) await onChunk(i, delta).ConfigureAwait(false);
                 }
 
                 await recordMergeAsync(jobId, merged, cancellationToken).ConfigureAwait(false);
@@ -595,26 +675,31 @@ public sealed class ExtractionOrchestrator
     /// budget; a delta with no class / subclass candidates is returned
     /// untouched by <see cref="TBoxVerifyService.VerifyAsync"/>'s early
     /// return without any extra LLM call. Skipped entirely when no verifier
-    /// is wired (hand-built test orchestrators).
+    /// is wired (hand-built test orchestrators). The full
+    /// <see cref="TBoxVerifyResult"/> is forwarded to the merger so
+    /// <see cref="RejectedClass"/> / <see cref="RecoveredClass"/> lists flow
+    /// into the per-chunk result and into the corpus recovery pass.
     /// </summary>
-    private async Task<TBoxDelta> ExtractAndVerifyAsync(
+    private async Task<VerifiedTBox> ExtractAndVerifyAsync(
         JobRunContext ctx, ChunkSpan chunk, CancellationToken cancellationToken)
     {
         var delta = await _tbox.ExtractAsync(ctx.Chat, ctx.KsContext, chunk, cancellationToken)
             .ConfigureAwait(false);
         if (_verify is null)
         {
-            return delta;
+            return new VerifiedTBox(delta, null);
         }
         var verified = await _verify.VerifyAsync(ctx.Chat, chunk.Text, delta, cancellationToken)
             .ConfigureAwait(false);
-        return verified.Delta;
+        return new VerifiedTBox(verified.Delta, verified);
     }
 
     /// <summary>
     /// Prompt snapshot entries for a TBox phase: the extractor prompt plus,
     /// when the verifier is wired, the three critic prompts the pipeline
-    /// consumes (Python records every prompt a job actually used).
+    /// consumes plus, when the corpus / hierarchy recovery passes are
+    /// wired, the two selector / recovery / two hierarchy critic / recovery
+    /// prompts (Python records every prompt a job actually used).
     /// </summary>
     private Dictionary<string, string> BuildTBoxPromptSnapshot()
     {
@@ -631,7 +716,166 @@ public sealed class ExtractionOrchestrator
             prompts[TBoxVerifyService.DenotationCriticKey] =
                 _verify.ResolveSystemPrompt(TBoxVerifyService.DenotationCriticKey);
         }
+        if (_corpus is not null)
+        {
+            prompts[CorpusRecoveryService.EvidenceSelectorKey] =
+                _corpus.ResolveSystemPrompt(CorpusRecoveryService.EvidenceSelectorKey);
+            prompts[CorpusRecoveryService.CorpusRecoveryKey] =
+                _corpus.ResolveSystemPrompt(CorpusRecoveryService.CorpusRecoveryKey);
+        }
+        if (_hierarchy is not null)
+        {
+            prompts[HierarchyRecoveryService.HierarchyCriticKey] =
+                _hierarchy.ResolveSystemPrompt(HierarchyRecoveryService.HierarchyCriticKey);
+            prompts[HierarchyRecoveryService.HierarchyRecoveryKey] =
+                _hierarchy.ResolveSystemPrompt(HierarchyRecoveryService.HierarchyRecoveryKey);
+        }
         return prompts;
+    }
+
+    /// <summary>
+    /// Python <c>_recover_rejected_classes</c>: job-level second pass over
+    /// the per-chunk rejection list. Skipped entirely when the service is
+    /// not wired (hand-built test orchestrators); failures inside the pass
+    /// are swallowed so a recovery blip cannot fail an otherwise-successful
+    /// extraction (Python <c>logger.warning</c> only — extract.py:1349-1354,
+    /// :1612-1616).
+    /// </summary>
+    private async Task RunCorpusRecoveryAsync(JobRunContext ctx, IReadOnlyList<ChunkVerifyOutcome> perChunk)
+    {
+        if (_corpus is null || _verify is null) return;
+        if (perChunk.Count == 0) return;
+
+        try
+        {
+            await _jobs.UpdateProgressAsync(ctx.JobId,
+                processedChunks: ctx.Chunks.Count,
+                phase: ExtractionPhase.TBox.ToWire(),
+                appendPhaseToLog: "corpus-recovery",
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+            var existingNorms = SchemaBuilder.BuildView(ctx.KsContext.TBoxGraph, _store).Classes
+                .Select(c => TBoxVerifyService.LabelNorm(c.Label))
+                .ToHashSet(StringComparer.Ordinal);
+
+            var recoveryChunks = perChunk
+                .Select(p => new CorpusRecoveryChunk(p.ChunkId, p.Text, p.Rejected))
+                .ToList();
+
+            var recovered = await _corpus.RecoverAsync(
+                ctx.Chat, recoveryChunks, existingNorms, CancellationToken.None).ConfigureAwait(false);
+
+            if (recovered.Classes.Count > 0)
+            {
+                await MergeCorpusRecoveredAsync(ctx, recovered).ConfigureAwait(false);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Fail-soft: Python's recovery never fails the job.
+        }
+    }
+
+    private async Task MergeCorpusRecoveredAsync(JobRunContext ctx, CorpusRecoveryResult recovered)
+    {
+        await using var capture = await _store.CaptureAsync(
+            ctx.KsContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+            .ConfigureAwait(false);
+        try
+        {
+            foreach (var row in recovered.Classes)
+            {
+                var delta = new TBoxDelta(
+                    new[] { new ClassMutation(row.Label, Comment: null, RoleVerified: true) },
+                    Array.Empty<PropertyMutation>(),
+                    Array.Empty<PropertyMutation>(),
+                    Array.Empty<AxiomMutation>());
+                var result = _merger.MergeTBox(ctx.KsContext, delta, verify: null);
+                await _jobs.RecordTBoxMergeAsync(ctx.JobId, result, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+        }
+        catch
+        {
+            capture.MarkError();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Python <c>_recover_hierarchy_one</c>: per-chunk second pass that
+    /// proposes super-classes / edges, then runs both through the
+    /// independent critics. Like the corpus pass, skipped when not wired
+    /// and failures are swallowed.
+    /// </summary>
+    private async Task RunHierarchyRecoveryAsync(JobRunContext ctx, IReadOnlyList<ChunkVerifyOutcome> perChunk)
+    {
+        if (_hierarchy is null || _verify is null) return;
+        if (perChunk.Count == 0) return;
+
+        var labels = ExistingClassLabels(ctx.KsContext);
+
+        try
+        {
+            await _jobs.UpdateProgressAsync(ctx.JobId,
+                processedChunks: ctx.Chunks.Count,
+                phase: ExtractionPhase.TBox.ToWire(),
+                appendPhaseToLog: "hierarchy-recovery",
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+            foreach (var outcome in perChunk)
+            {
+                try
+                {
+                    await using var lease = await _capacity.AcquireAsync(
+                        ctx.Request.CapacityKey,
+                        permits: 1,
+                        cancellationToken: CancellationToken.None).ConfigureAwait(false);
+                    var grounded = labels
+                        .Where(l => RoleEvidence.SurfaceIsGrounded(outcome.Text, l))
+                        .Take(400)
+                        .ToList();
+                    if (grounded.Count == 0) continue;
+                    var recovered = await _hierarchy.RecoverAsync(
+                        ctx.Chat, outcome.Text, grounded, CancellationToken.None).ConfigureAwait(false);
+                    await MergeHierarchyRecoveredAsync(ctx, recovered).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // Fail-soft per chunk — one bad recovery must not lose
+                    // the rest, mirroring Python extract.py:1699.
+                }
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Fail-soft at the outer level.
+        }
+    }
+
+    private async Task MergeHierarchyRecoveredAsync(JobRunContext ctx, HierarchyRecoveryResult recovered)
+    {
+        if (recovered.Classes.Count == 0 && recovered.Edges.Count == 0) return;
+        await using var capture = await _store.CaptureAsync(
+            ctx.KsContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+            .ConfigureAwait(false);
+        try
+        {
+            var delta = new TBoxDelta(
+                recovered.Classes.Select(c => c with { RoleVerified = true }).ToList(),
+                Array.Empty<PropertyMutation>(),
+                Array.Empty<PropertyMutation>(),
+                recovered.Edges.Select(e => new AxiomMutation(
+                    Type: "subclass", Sub: e.Sub, Super: e.Super)).ToList());
+            var result = _merger.MergeTBox(ctx.KsContext, delta, verify: null);
+            await _jobs.RecordTBoxMergeAsync(ctx.JobId, result, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            capture.MarkError();
+            throw;
+        }
     }
 
     /// <summary>Read + parse + chunk the uploaded document once at boot.</summary>

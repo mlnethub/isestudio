@@ -20,6 +20,8 @@ public static class ExtractionServiceCollectionExtensions
         services.AddSingleton<EndpointCapacityCoordinator>();
         services.AddSingleton<TBoxExtractionService>();
         services.AddSingleton<TBoxVerifyService>();
+        services.AddSingleton<CorpusRecoveryService>();
+        services.AddSingleton<HierarchyRecoveryService>();
         services.AddSingleton<ABoxExtractionService>();
         services.AddSingleton<TerminologyService>();
         services.AddSingleton<ITerminologySync>(sp => sp.GetRequiredService<TerminologyService>());

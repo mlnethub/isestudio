@@ -40,10 +40,10 @@ public sealed class FakeMerger : IExtractionMerger
     }
 
     /// <inheritdoc />
-    public ExtractionMergeResult MergeTBox(KsContext ks, TBoxDelta delta)
+    public ExtractionMergeResult MergeTBox(KsContext ks, TBoxDelta delta, TBoxVerifyResult? verify)
     {
         MergeCount++;
-        var result = _inner.MergeTBox(ks, delta);
+        var result = _inner.MergeTBox(ks, delta, verify);
         if (_failure is not null) throw _failure;
         return result;
     }

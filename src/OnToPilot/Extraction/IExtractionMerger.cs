@@ -19,6 +19,17 @@ namespace OnToPilot.Extraction;
 /// Canonical axiom / fact keys (see <see cref="StatementProvenanceService"/>)
 /// this merge produced, for the provenance rows the API layer writes.
 /// </param>
+/// <param name="RejectedClasses">
+/// TBox candidate classes rejected by the verify pipeline (critic / adjudicator /
+/// denotation) and therefore dropped from the graph. Carried forward to the
+/// post-extraction <c>corpus recovery</c> pass so the model gets a second
+/// look with cross-chunk evidence (Python <c>_recover_rejected_classes</c>).
+/// </param>
+/// <param name="RecoveredClasses">
+/// Class labels recovered by the verify pipeline's denotation phase as a
+/// suffix replacement (Python <c>_role_recoveries</c>). Reported back to the
+/// job row's phase log alongside <see cref="RejectedClasses"/>.
+/// </param>
 public sealed record ExtractionMergeResult(
     int ClassesAdded,
     int PropertiesAdded,
@@ -27,13 +38,17 @@ public sealed record ExtractionMergeResult(
     int AssertionsAdded,
     int PendingAdded,
     IReadOnlyDictionary<string, int> UnknownClasses,
-    IReadOnlyList<string> ProvenanceKeys)
+    IReadOnlyList<string> ProvenanceKeys,
+    IReadOnlyList<RejectedClass> RejectedClasses,
+    IReadOnlyList<RecoveredClass> RecoveredClasses)
 {
     /// <summary>An all-zero result.</summary>
     public static ExtractionMergeResult Empty { get; } = new(
         0, 0, 0, 0, 0, 0,
         new Dictionary<string, int>(StringComparer.Ordinal),
-        Array.Empty<string>());
+        Array.Empty<string>(),
+        Array.Empty<RejectedClass>(),
+        Array.Empty<RecoveredClass>());
 
     /// <summary>Sum two results, merging the unknown-class histograms.</summary>
     public ExtractionMergeResult Add(ExtractionMergeResult other)
@@ -50,6 +65,14 @@ public sealed record ExtractionMergeResult(
         provenance.AddRange(ProvenanceKeys);
         provenance.AddRange(other.ProvenanceKeys);
 
+        var rejected = new List<RejectedClass>(RejectedClasses.Count + other.RejectedClasses.Count);
+        rejected.AddRange(RejectedClasses);
+        rejected.AddRange(other.RejectedClasses);
+
+        var recovered = new List<RecoveredClass>(RecoveredClasses.Count + other.RecoveredClasses.Count);
+        recovered.AddRange(RecoveredClasses);
+        recovered.AddRange(other.RecoveredClasses);
+
         return new ExtractionMergeResult(
             ClassesAdded + other.ClassesAdded,
             PropertiesAdded + other.PropertiesAdded,
@@ -58,7 +81,9 @@ public sealed record ExtractionMergeResult(
             AssertionsAdded + other.AssertionsAdded,
             PendingAdded + other.PendingAdded,
             unknown,
-            provenance);
+            provenance,
+            rejected,
+            recovered);
     }
 }
 
@@ -85,8 +110,14 @@ public sealed record ExtractionMergeResult(
 /// </summary>
 public interface IExtractionMerger
 {
-    /// <summary>Merge one chunk's schema candidates into the TBox graph.</summary>
-    ExtractionMergeResult MergeTBox(KsContext ks, TBoxDelta delta);
+    /// <summary>
+    /// Merge one chunk's schema candidates into the TBox graph. The verify
+    /// pipeline's rejection / recovery list is forwarded so the result row
+    /// can carry the cross-chunk evidence the corpus recovery pass needs.
+    /// Pass <c>null</c> when no verifier is wired (hand-built test
+    /// orchestrators).
+    /// </summary>
+    ExtractionMergeResult MergeTBox(KsContext ks, TBoxDelta delta, TBoxVerifyResult? verify);
 
     /// <summary>Merge one chunk's instance candidates into the ABox graph.</summary>
     ExtractionMergeResult MergeABox(KsContext ks, ABoxDelta delta);

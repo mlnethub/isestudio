@@ -33,7 +33,7 @@ public sealed class ExtractionMerger : IExtractionMerger
     }
 
     /// <inheritdoc />
-    public ExtractionMergeResult MergeTBox(KsContext ks, TBoxDelta delta)
+    public ExtractionMergeResult MergeTBox(KsContext ks, TBoxDelta delta, TBoxVerifyResult? verify)
     {
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentNullException.ThrowIfNull(delta);
@@ -80,7 +80,9 @@ public sealed class ExtractionMerger : IExtractionMerger
             AssertionsAdded: 0,
             PendingAdded: 0,
             new Dictionary<string, int>(StringComparer.Ordinal),
-            provenance);
+            provenance,
+            RejectedClasses: verify?.Rejections ?? Array.Empty<RejectedClass>(),
+            RecoveredClasses: verify?.Recoveries ?? Array.Empty<RecoveredClass>());
     }
 
     /// <inheritdoc />
@@ -187,7 +189,9 @@ public sealed class ExtractionMerger : IExtractionMerger
             assertionsAdded,
             pendingAdded,
             unknownClasses,
-            provenance);
+            provenance,
+            RejectedClasses: Array.Empty<RejectedClass>(),
+            RecoveredClasses: Array.Empty<RecoveredClass>());
     }
 
     private static Dictionary<string, string> BuildIndex(IEnumerable<(string Label, string Iri)> entries)
