@@ -102,9 +102,16 @@ public sealed class StructureAgent
     /// when <c>not extraction_active(session, ks.id)</c> and the agent
     /// itself early-returns when <c>settings.agentic_isolated_classes</c>
     /// is false.</para>
+    ///
+    /// <para><paramref name="skipActiveExtractionGate"/> is for the
+    /// extraction pipeline: Python's <c>attach_isolated_bg</c> carries no
+    /// <c>extraction_active</c> gate (that guard lives in the detect
+    /// endpoint only), so the job's own running row must not no-op the
+    /// in-pipeline pass. The pipeline caller passes <c>true</c>; the
+    /// detect endpoint keeps the default.</para>
     /// </summary>
     public async Task<IReadOnlyList<string>> AttachIsolatedAsync(
-        Guid ksId, string? model, CancellationToken ct)
+        Guid ksId, string? model, CancellationToken ct, bool skipActiveExtractionGate = false)
     {
         if (!_options.AgenticIsolatedClasses)
         {
@@ -115,7 +122,7 @@ public sealed class StructureAgent
             return Array.Empty<string>();
         }
 
-        if (_jobs is not null)
+        if (_jobs is not null && !skipActiveExtractionGate)
         {
             var active = await _jobs.FindActiveJobAsync(ksId, ct).ConfigureAwait(false);
             if (active is not null)

@@ -13,6 +13,12 @@ public enum ExtractionPhase
     /// <summary>Instances (ABox) are being extracted and merged.</summary>
     ABox,
 
+    /// <summary>Conflict queue re-sync before the agents look at it.</summary>
+    Conflicts,
+
+    /// <summary>Agentic isolated-class attach (structure agent pass).</summary>
+    Structure,
+
     /// <summary>Deterministic SKOS terminology sync (never fails the run).</summary>
     Terminology,
 
@@ -61,6 +67,8 @@ public static class ExtractionWire
     {
         ExtractionPhase.TBox => "tbox",
         ExtractionPhase.ABox => "abox",
+        ExtractionPhase.Conflicts => "conflicts",
+        ExtractionPhase.Structure => "structure",
         ExtractionPhase.Terminology => "terminology",
         ExtractionPhase.Finalizing => "finalizing",
         _ => throw new ArgumentOutOfRangeException(nameof(phase), phase, "Unknown extraction phase."),

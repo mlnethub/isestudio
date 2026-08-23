@@ -1,5 +1,8 @@
 using System.Text;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using OnToPilot.Conflicts;
+using OnToPilot.Knowledge;
 using OnToPilot.Llm;
 using OnToPilot.Ontology;
 using OnToPilot.Parsing;
@@ -55,6 +58,19 @@ public sealed class ExtractionOrchestrator
     private readonly StoreWrapper _store;
     private readonly TimeProvider _clock;
 
+    /// <summary>
+    /// Scope factory for the post-TBox agent chain. The orchestrator is a
+    /// singleton whose background work outlives any HTTP request, so the
+    /// scoped services the chain needs (<see cref="Conflicts.ConflictService"/>,
+    /// <see cref="Conflicts.ConflictAgent"/>, <see cref="Ontology.StructureAgent"/>,
+    /// <see cref="Knowledge.KnowledgeStatsService"/>) are resolved from a
+    /// fresh scope per job — the same pattern
+    /// <see cref="ExtractionJobStore"/> uses for the completion-time stats
+    /// refresh. Null in hand-built test orchestrators, where the agent
+    /// chain is skipped entirely.
+    /// </summary>
+    private readonly IServiceScopeFactory? _scopes;
+
     public ExtractionOrchestrator(
         ExtractionJobStore jobs,
         IBlobStore blobs,
@@ -68,7 +84,8 @@ public sealed class ExtractionOrchestrator
         PromptSnapshotService promptSnapshot,
         IExtractionMerger merger,
         StoreWrapper store,
-        TimeProvider clock)
+        TimeProvider clock,
+        IServiceScopeFactory? scopes = null)
     {
         ArgumentNullException.ThrowIfNull(jobs);
         ArgumentNullException.ThrowIfNull(blobs);
@@ -97,6 +114,7 @@ public sealed class ExtractionOrchestrator
         _merger = merger;
         _store = store;
         _clock = clock;
+        _scopes = scopes;
     }
 
     // ------------------------------------------------------------------
@@ -260,8 +278,10 @@ public sealed class ExtractionOrchestrator
     /// <summary>
     /// TBox-only runner. Returns <c>true</c> on success, <c>false</c> on
     /// atomic failure (job already marked failed inside the capture's catch).
-    /// Terminology sync runs after the TBox layer so the job row reports
-    /// <c>terms_added</c> / <c>terms_mapped</c> even on single-layer runs.
+    /// The agent chain (conflicts → structure) runs right after the TBox
+    /// layer, mirroring Python's <c>_run_extraction_job</c>; terminology
+    /// sync runs after it so the job row reports <c>terms_added</c> /
+    /// <c>terms_mapped</c> even on single-layer runs.
     /// </summary>
     private async Task<bool> TBoxOnlyRunnerAsync(JobRunContext ctx)
     {
@@ -280,6 +300,7 @@ public sealed class ExtractionOrchestrator
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
         if (!succeeded) return false;
 
+        await RunAgentChainAsync(ctx).ConfigureAwait(false);
         await RunTerminologyAsync(ctx, totalProcessed: ctx.Chunks.Count).ConfigureAwait(false);
         await _jobs.SetPromptSnapshotAsync(ctx.JobId, promptSnapshot, CancellationToken.None).ConfigureAwait(false);
         return true;
@@ -338,6 +359,13 @@ public sealed class ExtractionOrchestrator
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
         if (!tboxOk) return false;
 
+        // Agent chain runs between the layers, exactly where Python's
+        // _run_combined_extraction_job places it: predicate merges the
+        // conflict agent recommends must act on a still-empty ABox, and the
+        // structure agent's attached classes must exist before ABox chunks
+        // type against them.
+        await RunAgentChainAsync(ctx).ConfigureAwait(false);
+
         // After TBox completes, refresh the label set so ABox chunks see the
         // newly minted classes.
         labels = ExistingClassLabels(ctx.KsContext);
@@ -384,6 +412,88 @@ public sealed class ExtractionOrchestrator
         catch
         {
             termCapture.MarkError();
+        }
+    }
+
+    /// <summary>
+    /// Post-TBox agent chain, mirroring Python extraction.py's conflicts →
+    /// structure segment (<c>_sync_conflicts_bg</c> →
+    /// <c>conflict_agent.resolve_open_conflicts_bg</c> →
+    /// <c>structure_agent.attach_isolated_bg</c>, with
+    /// <c>job.phase = "conflicts" / "structure"</c> updates and a
+    /// <c>refresh_ks_stats</c> at the end). The TBox capture is already
+    /// committed when this runs, so each agent opens its own capture for
+    /// its own writes.
+    ///
+    /// <para>The chain runs only when a scope factory is wired (production
+    /// DI); hand-built test orchestrators pass null and skip it — the same
+    /// optional-seam pattern <see cref="ExtractionJobStore"/> uses for its
+    /// completion-time stats refresh. A thrown exception here propagates to
+    /// <see cref="RunJobSafelyAsync"/> and fails the job while keeping the
+    /// committed TBox layer — exactly like Python, where the agents run
+    /// after <c>cap.diff()</c> already released the capture.</para>
+    /// </summary>
+    private async Task RunAgentChainAsync(JobRunContext ctx)
+    {
+        if (_scopes is null)
+        {
+            return;
+        }
+
+        using var scope = _scopes.CreateScope();
+        var services = scope.ServiceProvider;
+
+        // The chain's services are scoped and share one DbContext instance
+        // within this scope, so the conflicts DetectAsync just wrote are
+        // visible to the agent's triage query right after.
+        await _jobs.UpdateProgressAsync(ctx.JobId,
+            processedChunks: ctx.Chunks.Count,
+            phase: ExtractionPhase.Conflicts.ToWire(),
+            appendPhaseToLog: ExtractionPhase.Conflicts.ToWire(),
+            cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+        var conflictService = services.GetRequiredService<ConflictService>();
+        await conflictService.DetectAsync(ctx.Request.KnowledgeSystemId, CancellationToken.None)
+            .ConfigureAwait(false);
+
+        // Python resolve_open_conflicts_bg carries no extraction_active
+        // gate (the guard lives in the detect endpoint only), so the
+        // pipeline call must skip the agent's own job-active check — the
+        // job's running row would otherwise no-op the pass.
+        var conflictAgent = services.GetRequiredService<ConflictAgent>();
+        await conflictAgent.TriageAsync(
+            ctx.Request.KnowledgeSystemId,
+            CancellationToken.None,
+            model: ctx.Request.Model,
+            skipActiveExtractionGate: true).ConfigureAwait(false);
+
+        await _jobs.UpdateProgressAsync(ctx.JobId,
+            processedChunks: ctx.Chunks.Count,
+            phase: ExtractionPhase.Structure.ToWire(),
+            appendPhaseToLog: ExtractionPhase.Structure.ToWire(),
+            cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+        var structureAgent = services.GetRequiredService<StructureAgent>();
+        await structureAgent.AttachIsolatedAsync(
+            ctx.Request.KnowledgeSystemId,
+            ctx.Request.Model,
+            CancellationToken.None,
+            skipActiveExtractionGate: true).ConfigureAwait(false);
+
+        // Re-sync cached class/property/axiom counts after the agents may
+        // have merged / added classes (Python refresh_ks_stats at
+        // extraction.py:344/558). Best-effort like the completion-time
+        // refresh in ExtractionJobStore.MarkCompletedAsync: a stats
+        // failure must not fail an otherwise-successful extraction.
+        try
+        {
+            var stats = services.GetRequiredService<KnowledgeStatsService>();
+            await stats.RefreshAsync(ctx.Request.KnowledgeSystemId, CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Swallowed — MarkCompletedAsync refreshes again at completion.
         }
     }
 

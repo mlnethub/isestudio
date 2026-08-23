@@ -107,8 +107,19 @@ public sealed class ConflictAgent
     /// <c>not extraction_active(session, ks.id)</c> and the agent itself
     /// early-returns when <c>settings.agentic_conflict_resolution</c> is
     /// false.</para>
+    ///
+    /// <para><paramref name="skipActiveExtractionGate"/> is for the
+    /// extraction pipeline: Python's <c>resolve_open_conflicts_bg</c>
+    /// carries no <c>extraction_active</c> gate (that guard lives in the
+    /// detect endpoint only), so the job's own running row must not
+    /// no-op the in-pipeline pass. The pipeline caller passes
+    /// <c>true</c>; the detect endpoint keeps the default.</para>
     /// </summary>
-    public async Task<IReadOnlyList<string>> TriageAsync(Guid ksId, CancellationToken ct)
+    public async Task<IReadOnlyList<string>> TriageAsync(
+        Guid ksId,
+        CancellationToken ct,
+        string? model = null,
+        bool skipActiveExtractionGate = false)
     {
         if (!_options.AgenticConflictResolution)
         {
@@ -119,7 +130,7 @@ public sealed class ConflictAgent
             return Array.Empty<string>();
         }
 
-        if (_jobs is not null)
+        if (_jobs is not null && !skipActiveExtractionGate)
         {
             var active = await _jobs.FindActiveJobAsync(ksId, ct).ConfigureAwait(false);
             if (active is not null)
@@ -139,7 +150,7 @@ public sealed class ConflictAgent
         LlmProviderConfig providerConfig;
         try
         {
-            providerConfig = await BuildProviderConfigAsync(ks, model: null, ct).ConfigureAwait(false);
+            providerConfig = await BuildProviderConfigAsync(ks, model, ct).ConfigureAwait(false);
         }
         catch (InvalidOperationException)
         {
