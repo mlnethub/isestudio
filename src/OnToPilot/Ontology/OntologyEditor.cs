@@ -102,6 +102,7 @@ public sealed class OntologyEditor
                 "set_property_union" => SetPropertyUnion(graphIri, baseIri, op),
                 "merge_properties" => await MergePropertiesAsync(graphIri, baseIri, op).ConfigureAwait(false),
                 "subordinate_properties" => await SubordinatePropertiesAsync(graphIri, baseIri, op).ConfigureAwait(false),
+                "merge_classes" => await MergeClassesAsync(graphIri, baseIri, op).ConfigureAwait(false),
                 _ => throw new OntologyEditException($"Unknown edit op: {opName}"),
             };
         }
@@ -169,6 +170,19 @@ public sealed class OntologyEditor
                         throw new OntologyEditException($"{opName} requires 'sources'");
                     var tgt = GetString(op, "target") ?? GetString(op, "target_label") ?? srcList[0];
                     return tgt;
+                }
+            case "merge_classes":
+                {
+                    // Validate source + target present so the contract-test
+                    // path returns a non-empty envelope without touching
+                    // the graph (no StoreWrapper).
+                    var source = GetString(op, "source");
+                    var target = GetString(op, "target");
+                    if (string.IsNullOrEmpty(source) || string.IsNullOrEmpty(target))
+                        throw new OntologyEditException("merge_classes requires 'source' and 'target'");
+                    if (string.Equals(source, target, StringComparison.Ordinal))
+                        throw new OntologyEditException("Cannot merge a class into itself");
+                    return target;
                 }
             default:
                 throw new OntologyEditException($"Unknown edit op: {opName}");
@@ -751,6 +765,140 @@ public sealed class OntologyEditor
         UnionSlot(graphIri, baseIri, target, Vocabulary.RdfsDomain, "domain", domains);
         UnionSlot(graphIri, baseIri, target, Vocabulary.RdfsRange, "range", ranges);
         return target.Value;
+    }
+
+    /// <summary>
+    /// Merge <c>source</c> into <c>target</c>: repoint every reference
+    /// that mentions <c>source</c>, drop <c>source</c>'s own type/label
+    /// triples (target keeps its own), skip self-loops on symmetric
+    /// predicates (<c>subClassOf</c>, <c>disjointWith</c>,
+    /// <c>equivalentClass</c>) that would otherwise materialise a
+    /// <c>target ⊑ target</c> triple, then sweep the ABox to re-type
+    /// every instance of <c>source</c> onto <c>target</c>. Mirrors
+    /// Python <c>_merge_classes</c>.
+    /// </summary>
+    private async Task<string> MergeClassesAsync(string graphIri, string baseIri, IReadOnlyDictionary<string, object?> p)
+    {
+        var source = GetString(p, "source");
+        var target = GetString(p, "target");
+        if (string.IsNullOrEmpty(source))
+            throw new OntologyEditException("merge_classes requires 'source'");
+        if (string.IsNullOrEmpty(target))
+            throw new OntologyEditException("merge_classes requires 'target'");
+        if (string.Equals(source, target, StringComparison.Ordinal))
+            throw new OntologyEditException("Cannot merge a class into itself");
+
+        var graph = new OntoNamedNode(graphIri);
+        var srcNode = new OntoNamedNode(source);
+        var tgtNode = new OntoNamedNode(target);
+        // Predicates whose object is the class itself — we drop the
+        // source's own triple and keep the target's. Mirrors Python
+        // `keep_preds = {RDF_TYPE, RDFS_LABEL}`.
+        var keepPreds = new HashSet<string>(StringComparer.Ordinal)
+        {
+            Vocabulary.RdfType.Value,
+            Vocabulary.RdfsLabel.Value,
+        };
+        // Predicates that are inherently symmetric in the pair axis; if
+        // repointing source→target would land both ends on target
+        // (e.g. `source disjointWith source` → `target disjointWith target`)
+        // we skip the triple to avoid a meaningless self-loop.
+        var symmetricPreds = new HashSet<string>(StringComparer.Ordinal)
+        {
+            Vocabulary.RdfsSubClassOf.Value,
+            Vocabulary.OwlDisjointWith.Value,
+            Vocabulary.OwlEquivalentClass.Value,
+        };
+
+        var toAdd = new List<OntoQuad>();
+        var toRemove = new List<OntoQuad>();
+
+        foreach (var q in _store!.Match(graph: graph))
+        {
+            var sIri = q.Subject is OntoNamedNode sn ? sn.Value : null;
+            var oIri = q.Object is OntoNamedNode on ? on.Value : null;
+            var sIsSource = sIri is not null && string.Equals(sIri, source, StringComparison.Ordinal);
+            var oIsSource = oIri is not null && string.Equals(oIri, source, StringComparison.Ordinal);
+            if (!sIsSource && !oIsSource) continue;
+
+            // Drop the source's own type/label — the target already has
+            // its own. A blank node in subject/object position falls
+            // through to the repoint branch (no `sIri` to compare).
+            if (sIsSource && keepPreds.Contains(q.Predicate.Value))
+            {
+                toRemove.Add(q);
+                continue;
+            }
+
+            var s2 = sIsSource ? tgtNode : q.Subject;
+            var o2 = oIsSource ? tgtNode : q.Object;
+            // Skip self-loops: target ⊑ target, target ⊥ target, target ≡ target.
+            if (symmetricPreds.Contains(q.Predicate.Value)
+                && q.Object is OntoNamedNode
+                && s2 is OntoNamedNode sn2 && o2 is OntoNamedNode on2
+                && string.Equals(sn2.Value, on2.Value, StringComparison.Ordinal))
+            {
+                toRemove.Add(q);
+                continue;
+            }
+            toRemove.Add(q);
+            toAdd.Add(new OntoQuad(s2, q.Predicate, o2, graph));
+        }
+
+        if (toRemove.Count > 0) _store!.RemoveQuads(graph, toRemove);
+        if (toAdd.Count > 0) _store!.AddQuads(graph, toAdd);
+
+        // ABox cascade — re-type the source class's individuals onto the
+        // target. Wrapped in its own capture so a thrown exception reverts
+        // only the ABox writes; the outer capture reverts the TBox writes
+        // via MarkError() on the way out.
+        await CascadeMergeClassesAsync(graphIri, source, target).ConfigureAwait(false);
+        return target;
+    }
+
+    /// <summary>
+    /// Walk the paired ABox graph and rewrite any <c>(ind, rdf:type,
+    /// source)</c> triple to <c>(ind, rdf:type, target)</c>. Individuals
+    /// themselves are NOT deleted — only their class membership is
+    /// repointed. Mirrors the ABox tail of Python <c>_merge_classes</c>.
+    /// </summary>
+    private async ValueTask CascadeMergeClassesAsync(string graphIri, string sourceIri, string targetIri)
+    {
+        var aboxIri = AboxIri(graphIri);
+        var aboxGraph = new OntoNamedNode(aboxIri);
+        // revertOnError:false so the cascade persists on success; the
+        // catch calls MarkError() to force revert on failure. Mirrors
+        // CascadePropertyRepointAsync and the outer ApplyEditAsync
+        // capture pattern (.NET revertOnError:true reverts UNCONDITIONALLY,
+        // which is the opposite of Python's revert_on_error semantics —
+        // see P3-11 / commit 29af563).
+        await using var aboxCapture = await _store!.CaptureAsync(
+            aboxGraph, revertOnError: false).ConfigureAwait(false);
+
+        try
+        {
+            var toAdd = new List<OntoQuad>();
+            var toRemove = new List<OntoQuad>();
+            var target = new OntoNamedNode(targetIri);
+            foreach (var q in _store!.Match(
+                predicate: new OntoNamedNode(Vocabulary.RdfType.Value),
+                graph: aboxGraph))
+            {
+                if (q.Object is OntoNamedNode o
+                    && string.Equals(o.Value, sourceIri, StringComparison.Ordinal))
+                {
+                    toRemove.Add(q);
+                    toAdd.Add(new OntoQuad(q.Subject, q.Predicate, target, aboxGraph));
+                }
+            }
+            if (toRemove.Count > 0) _store!.RemoveQuads(aboxGraph, toRemove);
+            if (toAdd.Count > 0) _store!.AddQuads(aboxGraph, toAdd);
+        }
+        catch
+        {
+            aboxCapture.MarkError();
+            throw;
+        }
     }
 
     /// <summary>
