@@ -196,48 +196,60 @@ public sealed class OntologyEditor
     {
         var aboxIri = AboxIri(graphIri);
         var aboxGraph = new OntoNamedNode(aboxIri);
-        // Snapshot the ABox BEFORE taking the capture so we don't depend on
-        // the outer capture being open for this graph (different locks).
+        // revertOnError:false so the cascade persists on success; the
+        // catch calls MarkError() to force revert on failure. (.NET
+        // revertOnError:true would ALWAYS revert — the opposite of
+        // Python's revert_on_error semantics — so we open false and
+        // MarkError explicitly, mirroring the outer ApplyEditAsync
+        // capture pattern.)
         await using var aboxCapture = await _store!.CaptureAsync(
-            aboxGraph, revertOnError: true).ConfigureAwait(false);
+            aboxGraph, revertOnError: false).ConfigureAwait(false);
 
-        var aboxQuads = _store!.Match(graph: aboxGraph);
-        var typesByInd = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
-        foreach (var q in aboxQuads)
+        try
         {
-            if (q.Predicate.Value == Vocabulary.RdfType.Value && q.Object is OntoNamedNode o)
+            var aboxQuads = _store!.Match(graph: aboxGraph);
+            var typesByInd = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            foreach (var q in aboxQuads)
             {
-                var subjIri = q.Subject switch
+                if (q.Predicate.Value == Vocabulary.RdfType.Value && q.Object is OntoNamedNode o)
                 {
-                    OntoNamedNode n => n.Value,
-                    OntoBlankNode b => b.Value,
-                    _ => q.Subject.ToString() ?? "",
-                };
-                if (!typesByInd.TryGetValue(subjIri, out var set))
-                {
-                    set = new HashSet<string>(StringComparer.Ordinal);
-                    typesByInd[subjIri] = set;
+                    var subjIri = q.Subject switch
+                    {
+                        OntoNamedNode n => n.Value,
+                        OntoBlankNode b => b.Value,
+                        _ => q.Subject.ToString() ?? "",
+                    };
+                    if (!typesByInd.TryGetValue(subjIri, out var set))
+                    {
+                        set = new HashSet<string>(StringComparer.Ordinal);
+                        typesByInd[subjIri] = set;
+                    }
+                    set.Add(o.Value);
                 }
-                set.Add(o.Value);
+            }
+            foreach (var (indIri, types) in typesByInd)
+            {
+                if (!types.Contains(clsIri)) continue;
+                var remaining = new HashSet<string>(types, StringComparer.Ordinal);
+                remaining.Remove(clsIri);
+                remaining.Remove(Vocabulary.OwlNamedIndividual.Value);
+                if (remaining.Count > 0)
+                {
+                    var drop = _store!.Match(subjectIri: indIri, predicateIri: Vocabulary.RdfType.Value,
+                        objectIri: clsIri, graphIri: aboxIri);
+                    if (drop.Count > 0) _store!.RemoveQuads(aboxGraph, drop);
+                }
+                else
+                {
+                    var individualQuads = _store!.Match(subjectIri: indIri, graphIri: aboxIri);
+                    if (individualQuads.Count > 0) _store!.RemoveQuads(aboxGraph, individualQuads);
+                }
             }
         }
-        foreach (var (indIri, types) in typesByInd)
+        catch
         {
-            if (!types.Contains(clsIri)) continue;
-            var remaining = new HashSet<string>(types, StringComparer.Ordinal);
-            remaining.Remove(clsIri);
-            remaining.Remove(Vocabulary.OwlNamedIndividual.Value);
-            if (remaining.Count > 0)
-            {
-                var drop = _store!.Match(subjectIri: indIri, predicateIri: Vocabulary.RdfType.Value,
-                    objectIri: clsIri, graphIri: aboxIri);
-                if (drop.Count > 0) _store!.RemoveQuads(aboxGraph, drop);
-            }
-            else
-            {
-                var individualQuads = _store!.Match(subjectIri: indIri, graphIri: aboxIri);
-                if (individualQuads.Count > 0) _store!.RemoveQuads(aboxGraph, individualQuads);
-            }
+            aboxCapture.MarkError();
+            throw;
         }
     }
 
@@ -245,11 +257,22 @@ public sealed class OntologyEditor
     {
         var aboxIri = AboxIri(graphIri);
         var aboxGraph = new OntoNamedNode(aboxIri);
+        // Same revertOnError:false + explicit MarkError pattern as
+        // CascadeClassDeleteAsync — revertOnError:true always reverts in
+        // .NET and would silently discard the cascade.
         await using var aboxCapture = await _store!.CaptureAsync(
-            aboxGraph, revertOnError: true).ConfigureAwait(false);
+            aboxGraph, revertOnError: false).ConfigureAwait(false);
 
-        var used = _store!.Match(predicateIri: propIri, graphIri: aboxIri);
-        if (used.Count > 0) _store!.RemoveQuads(aboxGraph, used);
+        try
+        {
+            var used = _store!.Match(predicateIri: propIri, graphIri: aboxIri);
+            if (used.Count > 0) _store!.RemoveQuads(aboxGraph, used);
+        }
+        catch
+        {
+            aboxCapture.MarkError();
+            throw;
+        }
     }
 
     // The cascade takes its own capture on the ABox graph (a different
