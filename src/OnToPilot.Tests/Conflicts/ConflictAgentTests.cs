@@ -9,6 +9,8 @@ using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Ontology;
 using OnToPilot.Tests.Extraction;
 using OnToPilot.Tests.Persistence;
+using Oxigraph;
+using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace OnToPilot.Tests.Conflicts;
@@ -17,10 +19,15 @@ namespace OnToPilot.Tests.Conflicts;
 /// Unit tests for the agentic conflict triage (.NET port of
 /// <c>backend/app/ontology/conflict_agent.py</c>). The agent attaches a
 /// <c>payload.recommendation</c> to open <c>duplicate</c> /
-/// <c>predicate_specialization</c> conflicts after a short ReAct tool loop
-/// and never auto-applies (Python <c>AUTO_APPLY_TYPES</c> is empty).
-/// Structural conflicts are untouched; every LLM hiccup leaves the conflict
-/// for a human instead of failing.
+/// <c>predicate_specialization</c> conflicts after a short ReAct tool loop;
+/// decisions at or above <see cref="OnToPilotOptions.AutoApplyFloor"/>
+/// auto-apply instead (product decision P3-11 — Python's
+/// <c>AUTO_APPLY_TYPES</c> stays empty, so the apply branch is a .NET
+/// extension). Tests exercise auto-apply by passing
+/// <c>autoApply: true</c> to <see cref="RunTriageAsync"/>; the default
+/// (no allocator) keeps the recommendation-only behaviour so the P1-1
+/// contract tests stay representative. Structural conflicts are untouched;
+/// every LLM hiccup leaves the conflict for a human instead of failing.
 ///
 /// <para>Each test owns a <see cref="FakeChat"/> instance (fresh per test
 /// method via xUnit's per-test class construction), so the tests run in
@@ -324,6 +331,205 @@ public sealed class ConflictAgentTests : IDisposable
     }
 
     // ------------------------------------------------------------------
+    // P3-11 auto-apply (product decision: decisions at or above the
+    // confidence floor apply automatically; below-floor decisions attach a
+    // recommendation). Mirrors the (unreachable-in-Python) auto-apply
+    // branch of conflict_agent._resolve.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task Triage_auto_applies_confident_decision()
+    {
+        const string tag = "auto-apply";
+        var graphIri = $"http://goodcrew.local/ks/{tag}";
+        var baseIri = $"{graphIri}#";
+        var ksId = await SeedWorkspaceAsync(tag);
+        await SeedConflictWithOpAsync(ksId, "duplicate", "keep-general", "Keep general",
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "AutoClass" });
+
+        _chat.Enqueue("""{"action":"finish","resolution":"keep-general","confidence":0.92,"reason":"confident merge"}""");
+
+        var log = await RunTriageAsync(ksId, new OnToPilotOptions(), graphIri: graphIri, autoApply: true);
+
+        var entry = Assert.Single(log);
+        Assert.Contains("auto", entry);
+
+        await using var verify = _dbFactory.CreateDbContext();
+        var row = await verify.Conflicts.SingleAsync(c => c.KnowledgeSystemId == ksId);
+        Assert.Equal("resolved", row.Status);
+        Assert.Equal("keep-general", row.Resolution);
+        Assert.NotNull(row.ResolvedAt);
+
+        // The editor really ran: the TBox graph gained the new class.
+        Assert.NotEmpty(_store.Match(
+            subjectIri: $"{baseIri}AutoClass", graphIri: graphIri));
+
+        // One audit row: agent actor, conflict.resolve action, agent flag,
+        // non-empty TBox diff, Python conflict_id key.
+        var audit = await verify.AuditEvents.SingleAsync(e => e.KnowledgeSystemId == ksId);
+        Assert.Equal("conflict.resolve", audit.Action);
+        Assert.Equal("conflict-agent", audit.ActorName);
+        Assert.Null(audit.ActorId);
+        Assert.Null(audit.Graph);
+        Assert.NotNull(audit.Added);
+        var detail = audit.Detail!.RootElement;
+        Assert.True(detail.GetProperty("agent").GetBoolean());
+        Assert.Equal(row.LegacyId, detail.GetProperty("conflict_id").GetInt64());
+        Assert.Equal("keep-general", detail.GetProperty("resolution").GetString());
+        Assert.Equal("confident merge", detail.GetProperty("reason").GetString());
+        Assert.Equal(0.92, detail.GetProperty("confidence").GetDouble());
+    }
+
+    [Fact]
+    public async Task Triage_floor_boundary_confidence_auto_applies()
+    {
+        // conf == floor (0.85) satisfies Python's `conf >= floor` check.
+        const string tag = "floor-boundary";
+        var graphIri = $"http://goodcrew.local/ks/{tag}";
+        var ksId = await SeedWorkspaceAsync(tag);
+        await SeedConflictWithOpAsync(ksId, "predicate_specialization", "merge", "Merge",
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "FloorClass" });
+
+        _chat.Enqueue("""{"action":"finish","resolution":"merge","confidence":0.85,"reason":"at the floor"}""");
+
+        var log = await RunTriageAsync(ksId, new OnToPilotOptions(), graphIri: graphIri, autoApply: true);
+
+        Assert.Contains("auto", Assert.Single(log));
+        await using var verify = _dbFactory.CreateDbContext();
+        var row = await verify.Conflicts.SingleAsync(c => c.KnowledgeSystemId == ksId);
+        Assert.Equal("resolved", row.Status);
+        Assert.Single(await verify.AuditEvents.Where(e => e.KnowledgeSystemId == ksId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Triage_below_floor_attaches_recommendation_instead()
+    {
+        // conf 0.84 < floor 0.85 → recommendation path, row stays open,
+        // no audit rows — even with the allocator wired.
+        const string tag = "below-floor";
+        var graphIri = $"http://goodcrew.local/ks/{tag}";
+        var ksId = await SeedWorkspaceAsync(tag);
+        await SeedConflictWithOpAsync(ksId, "duplicate", "keep-general", "Keep general",
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Nope" });
+
+        _chat.Enqueue("""{"action":"finish","resolution":"keep-general","confidence":0.84,"reason":"almost"}""");
+
+        var log = await RunTriageAsync(ksId, new OnToPilotOptions(), graphIri: graphIri, autoApply: true);
+
+        Assert.Contains("recommend", Assert.Single(log));
+        await using var verify = _dbFactory.CreateDbContext();
+        var row = await verify.Conflicts.SingleAsync(c => c.KnowledgeSystemId == ksId);
+        Assert.Equal("open", row.Status);
+        Assert.Null(row.Resolution);
+        Assert.True(row.Payload!.RootElement.TryGetProperty("recommendation", out _));
+        Assert.Empty(await verify.AuditEvents.Where(e => e.KnowledgeSystemId == ksId).ToListAsync());
+        // The graph is untouched too.
+        Assert.Empty(_store.Match(subjectIri: $"{graphIri}#Nope", graphIri: graphIri));
+    }
+
+    [Fact]
+    public async Task Triage_apply_failure_leaves_conflict_open_and_unattached()
+    {
+        // Python catches the apply error, logs a warning and continues —
+        // no recommendation, no audit, the row stays open for a human.
+        const string tag = "apply-fail";
+        var graphIri = $"http://goodcrew.local/ks/{tag}";
+        var ksId = await SeedWorkspaceAsync(tag);
+        await SeedConflictWithOpAsync(ksId, "predicate_specialization", "merge", "Merge",
+            new Dictionary<string, object?> { ["op"] = "bogus_op" });
+
+        _chat.Enqueue("""{"action":"finish","resolution":"merge","confidence":0.9,"reason":"confident but broken"}""");
+
+        var log = await RunTriageAsync(ksId, new OnToPilotOptions(), graphIri: graphIri, autoApply: true);
+
+        Assert.Empty(log);
+        await using var verify = _dbFactory.CreateDbContext();
+        var row = await verify.Conflicts.SingleAsync(c => c.KnowledgeSystemId == ksId);
+        Assert.Equal("open", row.Status);
+        Assert.Null(row.Resolution);
+        Assert.False(row.Payload!.RootElement.TryGetProperty("recommendation", out _));
+        Assert.Empty(await verify.AuditEvents.Where(e => e.KnowledgeSystemId == ksId).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Triage_auto_apply_cascades_to_abox_with_grouped_audit()
+    {
+        // delete_class repoints/retypes instance data: the TBox row and the
+        // cascaded ABox row share one GroupId, the ABox row carries the
+        // abox graph IRI. Mirrors Python's dual-capture + grouped audit.
+        const string tag = "cascade";
+        var graphIri = $"http://goodcrew.local/ks/{tag}";
+        var baseIri = $"{graphIri}#";
+        var ksId = await SeedWorkspaceAsync(tag);
+
+        SeedTBox(graphIri, baseIri); // classes incl. Pump
+        var aboxIri = $"{graphIri}/abox";
+        var aboxGraph = new OntoNamedNode(aboxIri);
+        var alice = new OntoNamedNode($"{baseIri}alice");
+        var pump = new OntoNamedNode($"{baseIri}Pump");
+        _store.AddQuads(aboxGraph, new[]
+        {
+            new OntoQuad(alice, Vocabulary.RdfType, pump, aboxGraph),
+        });
+
+        await SeedConflictWithOpAsync(ksId, "duplicate", "keep-general", "Keep general",
+            new Dictionary<string, object?> { ["op"] = "delete_class", ["iri"] = $"{baseIri}Pump" });
+
+        _chat.Enqueue("""{"action":"finish","resolution":"keep-general","confidence":0.95,"reason":"drop the duplicate"}""");
+
+        var log = await RunTriageAsync(ksId, new OnToPilotOptions(), graphIri: graphIri, autoApply: true);
+
+        Assert.Contains("auto", Assert.Single(log));
+
+        await using var verify = _dbFactory.CreateDbContext();
+        var row = await verify.Conflicts.SingleAsync(c => c.KnowledgeSystemId == ksId);
+        Assert.Equal("resolved", row.Status);
+
+        // The individual lost its only type → removed with its assertions.
+        Assert.Empty(_store.Match(graph: aboxGraph));
+
+        // TBox + ABox audit rows share one GroupId; the ABox row names the
+        // instance graph and omits the reason (Python parity).
+        var audits = await verify.AuditEvents.Where(e => e.KnowledgeSystemId == ksId)
+            .OrderBy(e => e.Graph).ToListAsync();
+        Assert.Equal(2, audits.Count);
+        var tboxAudit = audits.Single(a => a.Graph is null);
+        var aboxAudit = audits.Single(a => a.Graph is not null);
+        Assert.Equal(aboxIri, aboxAudit.Graph);
+        Assert.NotNull(tboxAudit.GroupId);
+        Assert.Equal(tboxAudit.GroupId, aboxAudit.GroupId);
+        Assert.NotNull(aboxAudit.Removed);
+        Assert.Contains("cascaded", aboxAudit.Summary);
+        Assert.False(aboxAudit.Detail!.RootElement.TryGetProperty("reason", out _));
+        Assert.True(tboxAudit.Detail!.RootElement.TryGetProperty("reason", out _));
+    }
+
+    [Fact]
+    public async Task Triage_auto_apply_noop_resolution_resolves_with_empty_diff()
+    {
+        // A noop resolution (detector hint) skips the editor entirely and
+        // resolves with an empty diff — the audit row still records the
+        // decision so every auto-apply is auditable.
+        const string tag = "noop-apply";
+        var graphIri = $"http://goodcrew.local/ks/{tag}";
+        var ksId = await SeedWorkspaceAsync(tag);
+        await SeedConflictAsync(ksId, "predicate_specialization", PayloadWithResolutions("merge"));
+
+        _chat.Enqueue("""{"action":"finish","resolution":"merge","confidence":0.9,"reason":"keep as-is"}""");
+
+        var log = await RunTriageAsync(ksId, new OnToPilotOptions(), graphIri: graphIri, autoApply: true);
+
+        Assert.Contains("auto", Assert.Single(log));
+        await using var verify = _dbFactory.CreateDbContext();
+        var row = await verify.Conflicts.SingleAsync(c => c.KnowledgeSystemId == ksId);
+        Assert.Equal("resolved", row.Status);
+        var audit = await verify.AuditEvents.SingleAsync(e => e.KnowledgeSystemId == ksId);
+        Assert.Equal("conflict.resolve", audit.Action);
+        Assert.Null(audit.Added);
+        Assert.Null(audit.Removed);
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 
@@ -331,7 +537,8 @@ public sealed class ConflictAgentTests : IDisposable
         Guid ksId,
         OnToPilotOptions options,
         ExtractionJobStore? jobs = null,
-        string? graphIri = null)
+        string? graphIri = null,
+        bool autoApply = false)
     {
         if (graphIri is not null)
         {
@@ -344,8 +551,11 @@ public sealed class ConflictAgentTests : IDisposable
         }
 
         await using var agentDb = _dbFactory.CreateDbContext();
+        // Auto-apply needs the allocator (audit rows); tests that don't
+        // opt in keep the recommendation-only path of the P1-1 contract.
+        var allocator = autoApply ? new LegacyIdAllocator(agentDb) : null;
         var agent = new ConflictAgent(
-            _chatFactory, agentDb, _store, jobs, Options.Create(options));
+            _chatFactory, agentDb, _store, jobs, Options.Create(options), allocator);
         return await agent.TriageAsync(ksId, CancellationToken.None);
     }
 
@@ -397,6 +607,48 @@ public sealed class ConflictAgentTests : IDisposable
             Title = $"{ctype} (agent test)",
             Detail = "Seeded for ConflictAgent tests.",
             Payload = JsonDocument.Parse(payloadJson),
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>Seed a conflict whose single resolution carries a custom editor op.</summary>
+    private async Task SeedConflictWithOpAsync(
+        Guid ksId, string ctype, string resolutionId, string resolutionLabel,
+        Dictionary<string, object?> op)
+    {
+        await using var db = _dbFactory.CreateDbContext();
+        db.Conflicts.Add(new ConflictEntity
+        {
+            Id = Guid.NewGuid(),
+            LegacyId = TestLegacyIds.Next("conflict"),
+            KnowledgeSystemId = ksId,
+            Signature = $"{ctype}|{Guid.NewGuid():N}",
+            Ctype = ctype,
+            Severity = "warning",
+            Status = "open",
+            Title = $"{ctype} (agent test)",
+            Detail = "Seeded for ConflictAgent tests.",
+            Payload = JsonDocument.Parse(JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["entities"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["iri"] = "http://goodcrew.local/onto#X",
+                        ["label"] = "X",
+                    },
+                },
+                ["resolutions"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["id"] = resolutionId,
+                        ["label"] = resolutionLabel,
+                        ["op"] = op,
+                    },
+                },
+            })),
             CreatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();

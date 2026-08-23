@@ -148,15 +148,18 @@ public sealed class ExtractionAgentChainTests : IDisposable
         // The chain's trailing stats refresh (Python refresh_ks_stats at
         // extraction.py:344) re-synced the cached counters:
         // 4 seeded classes + Kennel (extraction) + Pump (structure agent).
+        // The conflict agent auto-applied the 0.92-confidence merge (P0
+        // decision), so the seeded "trains Dog" / "trains Cat" pair is now
+        // ONE merged property.
         await using var db = _contexts.CreateDbContext();
         var ks = await db.KnowledgeSystems.SingleAsync(k => k.Id == _ksId);
         Assert.Equal(6, ks.ClassCount);
-        Assert.Equal(2, ks.PropertyCount);
+        Assert.Equal(1, ks.PropertyCount);
     }
 
     [Fact]
     [Trait("Category", "Extraction")]
-    public async Task Conflict_agent_attaches_recommendation_inside_the_pipeline()
+    public async Task Conflict_agent_auto_applies_confident_decision_inside_the_pipeline()
     {
         FakeChat.Enqueue(TBoxDelta);
         FakeChat.Enqueue(ConflictFinish);
@@ -167,14 +170,22 @@ public sealed class ExtractionAgentChainTests : IDisposable
 
         Assert.Equal("completed", finished.Status);
 
-        // DetectAsync found the seeded "trains Dog" / "trains Cat" family
-        // and the agent attached its merge recommendation to the row.
+        // DetectAsync found the seeded "trains Dog" / "trains Cat" family;
+        // the 0.92-confidence decision meets the auto-apply floor, so the
+        // agent ran the merge and flipped the row to resolved (P0 product
+        // decision) — no recommendation payload, one agent audit row.
         await using var db = _contexts.CreateDbContext();
         var row = await db.Conflicts.SingleAsync(c => c.KnowledgeSystemId == _ksId);
         Assert.Equal("predicate_specialization", row.Ctype);
-        var rec = row.Payload!.RootElement.GetProperty("recommendation");
-        Assert.Equal("merge", rec.GetProperty("resolution_id").GetString());
-        Assert.Equal(0.92, rec.GetProperty("confidence").GetDouble());
+        Assert.Equal("resolved", row.Status);
+        Assert.Equal("merge", row.Resolution);
+        Assert.NotNull(row.ResolvedAt);
+        Assert.False(row.Payload!.RootElement.TryGetProperty("recommendation", out _));
+
+        var audit = await db.AuditEvents.SingleAsync(e => e.KnowledgeSystemId == _ksId);
+        Assert.Equal("conflict.resolve", audit.Action);
+        Assert.Equal("conflict-agent", audit.ActorName);
+        Assert.True(audit.Detail!.RootElement.GetProperty("agent").GetBoolean());
     }
 
     [Fact]

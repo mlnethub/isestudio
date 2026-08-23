@@ -96,8 +96,10 @@ public sealed class OnToPilotOptions
     /// Confidence floor for auto-applying an agent suggestion without human
     /// confirmation. Mirrors the Python backend's
     /// <c>conflict_auto_apply_floor</c> setting (0.85) — shared by the
-    /// structure agent, which only auto-attaches a parent at or above this
-    /// confidence.
+    /// structure agent (auto-attaches a parent at or above this confidence)
+    /// and the conflict agent (auto-applies the chosen resolution at or
+    /// above this confidence; below-floor decisions attach a recommendation
+    /// for human confirmation instead).
     /// </summary>
     public double AutoApplyFloor { get; set; } = 0.85;
 

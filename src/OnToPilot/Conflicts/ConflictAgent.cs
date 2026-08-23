@@ -11,6 +11,7 @@ using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Llm;
 using OnToPilot.Ontology;
 using OnToPilot.Prompts;
+using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace OnToPilot.Conflicts;
 
@@ -21,12 +22,23 @@ namespace OnToPilot.Conflicts;
 /// <para>After conflict detection, the agent looks at open
 /// <c>duplicate</c> / <c>predicate_specialization</c> conflicts and asks
 /// the chat model to pick the best available resolution through a short
-/// ReAct tool loop (<c>get_neighborhood</c> / <c>finish</c>). Semantic
-/// merges are lossy, so the agent only attaches a
-/// <c>payload.recommendation</c> for human one-click confirmation —
-/// mirroring the Python backend where <c>AUTO_APPLY_TYPES</c> is empty and
-/// the auto-apply branch is therefore unreachable. Structural conflicts
-/// (cycles, disjoint contradictions) are never touched by the agent.</para>
+/// ReAct tool loop (<c>get_neighborhood</c> / <c>finish</c>). Structural
+/// conflicts (cycles, disjoint contradictions) are never touched by the
+/// agent.</para>
+///
+/// <para>Product decision (P3-11): decisions at or above
+/// <see cref="OnToPilotOptions.AutoApplyFloor"/> auto-apply — the editor
+/// op runs inside <see cref="OntologyEditor.ApplyEditAsync"/>'s own
+/// capture, the conflict row flips to <c>resolved</c>, and a
+/// <c>conflict.resolve</c> audit row (actor <c>conflict-agent</c>,
+/// <c>agent: true</c>) records the TBox diff plus a grouped ABox row
+/// when the edit cascaded into instance data. Decisions below the floor
+/// only attach a <c>payload.recommendation</c> for human one-click
+/// confirmation. The Python backend keeps <c>AUTO_APPLY_TYPES</c> empty
+/// so its apply branch is unreachable; the .NET product decision enables
+/// it behind the confidence floor (shared with the structure agent). A
+/// failed apply leaves the conflict open and unattached (Python
+/// <c>logger.warning + continue</c>).</para>
 ///
 /// <para>Every LLM hiccup (unparsable reply, provider error, missing
 /// provider) leaves the conflict untouched for a human instead of failing
@@ -57,6 +69,7 @@ public sealed class ConflictAgent
     private readonly OnToPilotDbContext _db;
     private readonly StoreWrapper? _store;
     private readonly ExtractionJobStore? _jobs;
+    private readonly LegacyIdAllocator? _allocator;
     private readonly OnToPilotOptions _options;
 
     public ConflictAgent(
@@ -64,7 +77,8 @@ public sealed class ConflictAgent
         OnToPilotDbContext db,
         StoreWrapper? store = null,
         ExtractionJobStore? jobs = null,
-        IOptions<OnToPilotOptions>? options = null)
+        IOptions<OnToPilotOptions>? options = null,
+        LegacyIdAllocator? allocator = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
         ArgumentNullException.ThrowIfNull(db);
@@ -73,6 +87,7 @@ public sealed class ConflictAgent
         _store = store;
         _jobs = jobs;
         _options = options?.Value ?? new OnToPilotOptions();
+        _allocator = allocator;
     }
 
     /// <summary>
@@ -183,11 +198,25 @@ public sealed class ConflictAgent
                 continue;
             }
 
-            // Low-confidence decisions and every lossy property merge
-            // require human confirmation: attach a recommendation, never
-            // apply. (Python AUTO_APPLY_TYPES is empty, so the auto-apply
-            // + audit branch in conflict_agent.py is unreachable there and
-            // intentionally not ported.)
+            // P0 (product decision): decisions at or above the floor
+            // auto-apply. Auto-apply needs the graph store and the
+            // allocator (audit rows); without either (contract-test path)
+            // the loop degrades to the recommendation-only behaviour.
+            var canAutoApply = _store is not null && _allocator is not null;
+            if (canAutoApply && decision.Confidence >= _options.AutoApplyFloor)
+            {
+                if (await TryAutoApplyAsync(ks, conflict, chosen, decision, ct).ConfigureAwait(false))
+                {
+                    log.Add($"{conflict.Title} → \"{chosen.Label}\" (auto {decision.Confidence:F2})");
+                }
+                // A failed apply leaves the conflict open, untouched
+                // (Python logs a warning and continues — no recommendation;
+                // the human triages from the unchanged row).
+                continue;
+            }
+
+            // Below-floor decisions require human confirmation: attach a
+            // recommendation, never apply.
             AttachRecommendation(conflict, decision);
             log.Add($"{conflict.Title} → recommend \"{chosen.Label}\" ({decision.Confidence:F2})");
         }
@@ -439,6 +468,121 @@ public sealed class ConflictAgent
     // ----------------------------------------------------------------------
     // Persistence helpers
     // ----------------------------------------------------------------------
+
+    /// <summary>
+    /// Auto-apply one confident decision. Mirrors the auto-apply branch of
+    /// Python <c>_resolve</c> (unreachable there because
+    /// <c>AUTO_APPLY_TYPES</c> is empty): run the chosen editor op inside
+    /// <see cref="OntologyEditor.ApplyEditAsync"/>'s own capture — opening
+    /// another capture on the same graph would trip the lock-recursion
+    /// guard — diff the TBox and ABox graphs around the call, flip the row
+    /// to resolved, and record <c>conflict.resolve</c> audit rows (TBox row
+    /// always; a grouped ABox row when the edit cascaded into instance
+    /// data).
+    ///
+    /// <para>Returns <c>false</c> when the edit throws (the capture
+    /// already reverted the RDF writes; the conflict stays open for a
+    /// human). A <c>noop</c> resolution skips the editor and resolves
+    /// with an empty diff, mirroring <see cref="ConflictService.ResolveAsync"/>.</para>
+    /// </summary>
+    private async Task<bool> TryAutoApplyAsync(
+        KnowledgeSystemEntity ks,
+        ConflictEntity conflict,
+        ConflictDetection.Resolution chosen,
+        Decision decision,
+        CancellationToken ct)
+    {
+        var tboxIri = ks.GraphIri;
+        var aboxIri = tboxIri.TrimEnd('/') + "/abox";
+        var tboxGraph = new OntoNamedNode(tboxIri);
+        var aboxGraph = new OntoNamedNode(aboxIri);
+
+        var tboxPre = _store!.DumpNQuads(tboxGraph);
+        var aboxPre = _store.DumpNQuads(aboxGraph);
+
+        if (!IsNoOp(chosen.Op))
+        {
+            try
+            {
+                var editor = new OntologyEditor(_store);
+                await editor.ApplyEditAsync(tboxIri, ks.BaseIri, chosen.Op, ct).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // ApplyEditAsync's capture reverted the RDF writes on the
+                // throw; leave the conflict open (Python warns + continues).
+                return false;
+            }
+        }
+
+        var (added, removed) = StoreWrapper.DiffNQuads(tboxPre, _store.DumpNQuads(tboxGraph));
+        var (aAdded, aRemoved) = StoreWrapper.DiffNQuads(aboxPre, _store.DumpNQuads(aboxGraph));
+        var gid = aAdded.Length > 0 || aRemoved.Length > 0
+            ? Guid.NewGuid().ToString("N")[..16]
+            : null;
+
+        // Python audit.record(action="conflict.resolve", actor_id=None,
+        // actor_name="conflict-agent", detail={..., "agent": True}).
+        await _allocator!.AllocateAndPersistAsync(new AuditEventEntity
+        {
+            Id = Guid.NewGuid(),
+            KnowledgeSystemId = ks.Id,
+            ActorId = null,
+            ActorName = "conflict-agent",
+            Action = "conflict.resolve",
+            Summary = $"Agent resolved \"{conflict.Title}\": {chosen.Label}",
+            Detail = ConflictAuditDetail(conflict, decision, withReason: true),
+            Graph = null,
+            GroupId = gid,
+            Added = added.Length == 0 ? null : added,
+            Removed = removed.Length == 0 ? null : removed,
+            CreatedAt = DateTimeOffset.UtcNow,
+        }, ct).ConfigureAwait(false);
+
+        if (aAdded.Length > 0 || aRemoved.Length > 0)
+        {
+            await _allocator.AllocateAndPersistAsync(new AuditEventEntity
+            {
+                Id = Guid.NewGuid(),
+                KnowledgeSystemId = ks.Id,
+                ActorId = null,
+                ActorName = "conflict-agent",
+                Action = "conflict.resolve",
+                Summary = $"Agent resolved \"{conflict.Title}\" — cascaded to instances",
+                Detail = ConflictAuditDetail(conflict, decision, withReason: false),
+                Graph = aboxIri,
+                GroupId = gid,
+                Added = aAdded.Length == 0 ? null : aAdded,
+                Removed = aRemoved.Length == 0 ? null : aRemoved,
+                CreatedAt = DateTimeOffset.UtcNow,
+            }, ct).ConfigureAwait(false);
+        }
+
+        conflict.Status = "resolved";
+        conflict.ResolvedAt = DateTimeOffset.UtcNow;
+        conflict.Resolution = decision.Resolution;
+        return true;
+    }
+
+    private static bool IsNoOp(IReadOnlyDictionary<string, object?> op)
+        => op.TryGetValue("op", out var v) && v is string s && s == "noop";
+
+    private static JsonDocument ConflictAuditDetail(
+        ConflictEntity conflict, Decision decision, bool withReason)
+    {
+        var detail = new Dictionary<string, object?>
+        {
+            ["conflict_id"] = conflict.LegacyId,
+            ["resolution"] = decision.Resolution,
+            ["confidence"] = decision.Confidence,
+            ["agent"] = true,
+        };
+        if (withReason)
+        {
+            detail["reason"] = decision.Reason;
+        }
+        return JsonDocument.Parse(JsonSerializer.Serialize(detail));
+    }
 
     /// <summary>
     /// Merge <c>payload.recommendation</c> into the stored payload while
