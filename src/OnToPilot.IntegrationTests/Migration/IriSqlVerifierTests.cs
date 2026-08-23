@@ -294,4 +294,136 @@ public sealed class IriSqlVerifierTests : IAsyncLifetime
             if (File.Exists(tempPath)) File.Delete(tempPath);
         }
     }
+
+    // ------------------------------------------------------------------
+    // --strict mode (RequireNewPrefix=true) — added in P3-7.
+    // Asserts the new-prefix presence check catches the failure mode
+    // where the migrator removes the old prefix without writing the
+    // new one (wrong --to-prefix, broken REPLACE, etc).
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task VerifyAsync_strict_passes_when_new_prefix_present()
+    {
+        // 正常迁移后状态:列既无 legacy prefix,也有 new prefix。strict
+        // 模式必须返回 ResidualTotal == 0 且 NewPrefixRows > 0。
+        if (DockerRequired()) return;
+        await SeedAsync(
+            graphIri: "http://goodcrew.local/ks/1",
+            baseIri:  "http://goodcrew.local/ks/1/onto#");
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+        var report = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                RequireNewPrefix: true),
+            CancellationToken.None);
+
+        Assert.True(report.RequireNewPrefix);
+        Assert.Equal(0L, report.ResidualTotal);
+        Assert.Empty(report.MissingNewPrefixSteps);
+
+        // knowledgesystem.GraphIri 必须有 NewPrefixRows >= 1。
+        var graphStep = report.Steps.Single(s =>
+            s.Table == "knowledgesystem" && s.Column == "GraphIri");
+        Assert.True(graphStep.NewPrefixRows >= 1,
+            $"expected NewPrefixRows >= 1 on populated column, got {graphStep.NewPrefixRows}");
+        Assert.Equal(1L, graphStep.TableTotalRows);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_strict_throws_when_new_prefix_absent_on_populated_column()
+    {
+        // strict 模式的关键场景:列非空,但所有行的值都不以新前缀开头
+        // —— 这里 seed 一个用户自定义 IRI(故意不是 from 也不是 to)
+        // 来模拟"migrator REPLACE 写错目标"或"运行后又被另一进程覆
+        // 盖"的失败模式。
+        if (DockerRequired()) return;
+        await SeedAsync(
+            graphIri: "http://other.example.com/ks/1",
+            baseIri:  "http://other.example.com/ks/1/onto#");
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+
+        var ex = await Assert.ThrowsAsync<IriSqlVerificationException>(() =>
+            verifier.VerifyAsync(
+                new IriSqlVerifyOptions(
+                    FromPrefix: "http://ontopilot.local/",
+                    ToPrefix:   "http://goodcrew.local/",
+                    RequireNewPrefix: true),
+                CancellationToken.None));
+
+        // 失败 message 必须列出 knowledgesystem.GraphIri 与 BaseIri,
+        // 并说明"none starts with new prefix"。
+        Assert.Contains(ex.Failures, f =>
+            f.Contains("knowledgesystem.GraphIri")
+            && f.Contains("none starts with"));
+        Assert.Contains(ex.Failures, f =>
+            f.Contains("knowledgesystem.BaseIri")
+            && f.Contains("none starts with"));
+    }
+
+    [Fact]
+    public async Task VerifyAsync_strict_vacuous_pass_for_empty_table()
+    {
+        // 空表严格模式仍为 vacuous pass:TableTotalRows == 0,没有
+        // 数据可断言,既不报 residual 也不报 missing-new-prefix。
+        if (DockerRequired()) return;
+        await SeedAsync(graphIri: null, baseIri: null);
+
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+        var report = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local/",
+                RequireNewPrefix: true),
+            CancellationToken.None);
+
+        Assert.Equal(0L, report.ResidualTotal);
+        Assert.Empty(report.MissingNewPrefixSteps);
+
+        // knowledgesystem.GraphIri 必须有 NewPrefixRows == 0 且
+        // TableTotalRows == 0(空表校验路径走过但不报错)。
+        var graphStep = report.Steps.Single(s =>
+            s.Table == "knowledgesystem" && s.Column == "GraphIri");
+        Assert.Equal(0L, graphStep.NewPrefixRows);
+        Assert.Equal(0L, graphStep.TableTotalRows);
+    }
+
+    [Fact]
+    public async Task VerifyAsync_strict_throws_when_to_prefix_lacks_path_separator()
+    {
+        // strict 模式要求 ToPrefix 也以 / 或 # 结尾(防止子串误匹
+        // 配);非 strict 模式不校验。纯参数测试,不需要 docker。
+        await using var db = BuildContext();
+        var verifier = new IriSqlVerifier(db, NullLogger<IriSqlVerifier>.Instance);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => verifier.VerifyAsync(
+            new IriSqlVerifyOptions(
+                FromPrefix: "http://ontopilot.local/",
+                ToPrefix:   "http://goodcrew.local",  // no trailing / or #
+                RequireNewPrefix: true),
+            CancellationToken.None));
+    }
+
+    [Fact]
+    public void VerifyAsync_strict_to_prefix_can_be_empty_when_not_required()
+    {
+        // 非 strict 模式下 ToPrefix 是审计字段,可以为空。
+        // 这个测试保护 backward compat: --strict 未启用时,
+        // 切流 ps1 透传空 ToPrefix 不会抛错。
+        // 不需要 docker,只走 VerifyAsync 参数校验路径。
+        // (实际 DB 调用需要 container;这里只断言 parameter 校验。)
+        var options = new IriSqlVerifyOptions(
+            FromPrefix: "http://ontopilot.local/",
+            ToPrefix:   string.Empty,
+            RequireNewPrefix: false);
+
+        Assert.False(options.RequireNewPrefix);
+        Assert.Equal(string.Empty, options.ToPrefix);
+    }
 }

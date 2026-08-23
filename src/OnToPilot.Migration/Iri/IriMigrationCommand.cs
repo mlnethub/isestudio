@@ -73,6 +73,12 @@ public static class IriMigrationCommand
                       --from-prefix <prefix>              (default http://ontopilot.local/)
                       --to-prefix <prefix>                (default http://goodcrew.local/)
                       --report-out <path>                 (optional JSON report path)
+                      --strict                            (also assert non-empty tables
+                                                          contain at least one row with
+                                                          the new prefix; catches the
+                                                          failure mode where the migrator
+                                                          removed the old prefix without
+                                                          writing the new one)
                     Note: --dry-run is accepted but ignored (smoke-check is
                     inherently read-only).
 
@@ -203,7 +209,10 @@ public static class IriMigrationCommand
         await using var db = new OnToPilotDbContext(dbOptions);
         var verifier = new IriSqlVerifier(db, verifyLogger);
         var report = await verifier.VerifyAsync(
-            new IriSqlVerifyOptions(parsed.FromPrefix, parsed.ToPrefix),
+            new IriSqlVerifyOptions(
+                FromPrefix: parsed.FromPrefix,
+                ToPrefix: parsed.ToPrefix,
+                RequireNewPrefix: parsed.Strict),
             CancellationToken.None).ConfigureAwait(false);
 
         // report-out 是 audit trail:写盘后再算 SHA-256,这样
@@ -352,7 +361,8 @@ public static class IriMigrationCommand
         string FromPrefix,
         string ToPrefix,
         bool DryRun,
-        string? ReportOut);
+        string? ReportOut,
+        bool Strict);
 
     private static SqlCliArgs? ParseSqlArgs(IReadOnlyList<string> argv)
     {
@@ -361,6 +371,7 @@ public static class IriMigrationCommand
         var toPrefix = DefaultToPrefix;
         var dryRun = false;
         string? reportOut = null;
+        var strict = false;
 
         for (var i = 0; i < argv.Count; i++)
         {
@@ -381,6 +392,10 @@ public static class IriMigrationCommand
                 // --report-out 只被 sql-smoke-check 使用;sql subcommand
                 // 接受但忽略,保证两个子命令的 argv shape 一致。
                 case "--report-out": reportOut = Next() ?? reportOut; break;
+                // --strict 只被 sql-smoke-check 使用;sql subcommand 接受
+                // 但忽略,与 --report-out / --dry-run 同样保持 argv shape
+                // 对称(便于 ps1 包装层透传)。
+                case "--strict": strict = true; break;
                 default:
                     Console.Error.WriteLine($"[iri-migration] sql: unknown argument '{a}'");
                     return null;
@@ -392,7 +407,7 @@ public static class IriMigrationCommand
             Console.Error.WriteLine("[iri-migration] sql: --postgres-connection-string is required");
             return null;
         }
-        return new SqlCliArgs(pg, fromPrefix, toPrefix, dryRun, reportOut);
+        return new SqlCliArgs(pg, fromPrefix, toPrefix, dryRun, reportOut, strict);
     }
 
     private sealed record RdfCliArgs(
