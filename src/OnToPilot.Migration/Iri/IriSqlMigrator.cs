@@ -205,12 +205,17 @@ public sealed class IriSqlMigrator
             }
             else
             {
+                // EF1002: ExecuteSqlRawAsync 同样把 table/column 作为字面量
+                // 拼接(来自静态 ColumnsToRewrite 元组);前缀走 positional
+                // {0}/{1}/{2} 参数。与 dry-run 分支对称抑制。
+#pragma warning disable EF1002
                 affected = await _db.Database
                     .ExecuteSqlRawAsync(
                         $"UPDATE \"{table}\" SET \"{column}\" = REPLACE(\"{column}\", {{0}}, {{1}}) WHERE \"{column}\" LIKE {{2}}",
                         new object[] { options.FromPrefix, options.ToPrefix, likePattern },
                         cancellationToken)
                     .ConfigureAwait(false);
+#pragma warning restore EF1002
             }
 
             report.Steps.Add(new IriSqlColumnStep(table, column, affected));
