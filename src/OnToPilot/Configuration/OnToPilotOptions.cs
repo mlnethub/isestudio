@@ -104,6 +104,45 @@ public sealed class OnToPilotOptions
     public double AutoApplyFloor { get; set; } = 0.85;
 
     /// <summary>
+    /// Whether the conflict detector runs the embedding + LLM-judge
+    /// semantic-duplicate pass in addition to the cheap string-similarity
+    /// pass. Mirrors the Python backend's
+    /// <c>enable_semantic_conflicts</c> setting (default true). When
+    /// <c>false</c>, only string similarity contributes candidate duplicate
+    /// class pairs.
+    /// </summary>
+    public bool EnableSemanticConflicts { get; set; } = true;
+
+    /// <summary>
+    /// Embedding model identifier passed to the OpenAI-compatible
+    /// embeddings endpoint when the semantic duplicate pass runs. Default
+    /// <c>baai/bge-m3</c> mirrors the Python backend's
+    /// <c>embedding_model</c> setting — a strong multilingual model that
+    /// handles Chinese and English labels in the same vector space.
+    /// </summary>
+    public string EmbeddingModel { get; set; } = "baai/bge-m3";
+
+    /// <summary>
+    /// Cosine similarity threshold above which two class labels become a
+    /// semantic-duplicate candidate before the LLM judge filters them.
+    /// Mirrors the Python backend's <c>semantic_candidate_threshold</c>
+    /// setting (default 0.75). Cosine conflates "related" with "same",
+    /// so this is only a candidate generator — the LLM judge decides
+    /// which candidates are truly one concept.
+    /// </summary>
+    public double SemanticCandidateThreshold { get; set; } = 0.75;
+
+    /// <summary>
+    /// Whether the LLM <c>conflict.duplicate_judge</c> prompt is invoked
+    /// to filter the union of string-similarity and embedding-cosine
+    /// candidate pairs down to true duplicates. Mirrors the Python
+    /// backend's <c>verify_duplicates_with_llm</c> setting (default
+    /// true). Disabling skips the LLM call; the candidate set itself is
+    /// still surfaced (with its cosine / string-similarity provenance).
+    /// </summary>
+    public bool VerifyDuplicatesWithLlm { get; set; } = true;
+
+    /// <summary>
     /// A parent proposed for more than this many isolated classes is
     /// treated as an over-general catch-all and left for a human. Mirrors
     /// the Python backend's <c>structure_max_same_parent</c> setting.

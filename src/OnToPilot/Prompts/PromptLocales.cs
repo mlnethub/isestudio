@@ -141,7 +141,11 @@ public static class PromptLocales
             ["abox.boundary.self_typed_adjudicator"] = NotWired(),
             ["abox.entity_resolution"] = NotWired(),
             ["abox.datatype_validation"] = NotWired(),
-            ["conflict.duplicate_judge"] = NotWired(),
+            ["conflict.duplicate_judge"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = DuplicateJudgeEn,
+                [SystemLanguage.SimplifiedChinese] = DuplicateJudgeZhCn,
+            },
             ["tbox.domain_range_reconcile"] = NotWired(),
         };
 
@@ -574,6 +578,21 @@ public static class PromptLocales
         必须且只能返回一个 JSON 对象：
         {"parent":"<标签或空字符串>","new":<bool>,
         "confidence":<0..1>,"evidence":"<精确来源片段或空字符串>","reason":"<不超过 200 字符>"}。
+        """;
+
+    // -- conflict.duplicate_judge (English) -----------------------------------
+    // Source: backend/app/ontology/conflicts.py:38-43 (_DUPLICATE_SYSTEM).
+    private const string DuplicateJudgeEn = """
+        You compare pairs of class labels from ONE ontology. For each pair decide whether
+        the two labels are SYNONYMS naming the SAME class (should be merged) or DIFFERENT
+        classes. Treat siblings, part-of, general-vs-specific and merely-related terms as
+        DIFFERENT. Be conservative: answer SAME only for genuinely interchangeable names.
+        """;
+
+    // -- conflict.duplicate_judge (Simplified Chinese) ------------------------
+    // Source: backend/app/prompt_locales.py:331 (key "conflict.duplicate_judge")
+    private const string DuplicateJudgeZhCn = """
+        你需要比较同一个本体中的成对类标签。对每一对标签，判断它们是否为命名同一类的同义词（应当合并），还是不同的类。兄弟类、部分关系、一般与具体关系以及仅仅相关的术语都应判断为 DIFFERENT。保持保守：只有真正可以互换的名称才能回答 SAME。
         """;
 
     // =====================================================================
