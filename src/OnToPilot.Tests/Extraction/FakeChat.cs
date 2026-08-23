@@ -57,6 +57,51 @@ public sealed class FakeChat : IChatClient
         }
         """;
 
+    /// <summary>
+    /// Source text the verify harness replies are grounded in: names every
+    /// <see cref="ValidTBoxDelta"/> class label plus the Dog⊑Animal subclass
+    /// evidence, so the TBoxVerifyService grounding checks pass when a test
+    /// extracts this text. Used by tests that run the verify pipeline against
+    /// the real DI graph (ExtractionRunApiTests).
+    /// </summary>
+    public const string VerifySourceText =
+        "The Animal kingdom has many species. A Dog is an Animal. A Collar is worn by a Dog.";
+
+    /// <summary>
+    /// Boundary-critic reply that keeps every <see cref="ValidTBoxDelta"/>
+    /// candidate when the source text is <see cref="VerifySourceText"/>:
+    /// keep=true type decisions at 0.95 confidence with evidence spans quoted
+    /// verbatim from the source.
+    /// </summary>
+    public const string VerifyCriticAcceptAll = """
+        {
+          "class_decisions": [
+            {"label": "Animal", "role": "type", "keep": true, "confidence": 0.95, "evidence": "The Animal kingdom has many species", "reason": ""},
+            {"label": "Dog", "role": "type", "keep": true, "confidence": 0.95, "evidence": "A Dog is an Animal", "reason": ""},
+            {"label": "Collar", "role": "type", "keep": true, "confidence": 0.95, "evidence": "A Collar is worn by a Dog", "reason": ""}
+          ],
+          "subclass_decisions": [
+            {"sub": "Dog", "super": "Animal", "keep": true, "confidence": 0.95, "evidence": "A Dog is an Animal"}
+          ]
+        }
+        """;
+
+    /// <summary>
+    /// Denotation-critic reply that re-accepts every provisionally accepted
+    /// class and proposes no suffix replacements. Pairs with
+    /// <see cref="VerifyCriticAcceptAll"/>.
+    /// </summary>
+    public const string VerifyDenotationAcceptAll = """
+        {
+          "class_decisions": [
+            {"label": "Animal", "role": "type", "keep": true, "confidence": 0.95, "evidence": "The Animal kingdom has many species", "reason": ""},
+            {"label": "Dog", "role": "type", "keep": true, "confidence": 0.95, "evidence": "A Dog is an Animal", "reason": ""},
+            {"label": "Collar", "role": "type", "keep": true, "confidence": 0.95, "evidence": "A Collar is worn by a Dog", "reason": ""}
+          ],
+          "replacement_classes": []
+        }
+        """;
+
     private readonly Queue<string> _replies = new();
     private readonly object _gate = new();
     private readonly TaskCompletionSource _release =
@@ -98,6 +143,21 @@ public sealed class FakeChat : IChatClient
 
     /// <summary>Queue one canned ABox delta reply.</summary>
     public FakeChat EnqueueValidABoxDelta() => Enqueue(ValidABoxDelta);
+
+    /// <summary>
+    /// Queue the verify replies that keep every <see cref="ValidTBoxDelta"/>
+    /// candidate: one boundary-critic reply and one denotation-critic reply,
+    /// both grounded in <see cref="VerifySourceText"/>. A run whose chunk
+    /// text is that source and whose extractor returned
+    /// <see cref="ValidTBoxDelta"/> then passes verification untouched (no
+    /// adjudicator call — the critic accepts everything).
+    /// </summary>
+    public FakeChat EnqueueVerifyAcceptAll()
+    {
+        Enqueue(VerifyCriticAcceptAll);
+        Enqueue(VerifyDenotationAcceptAll);
+        return this;
+    }
 
     /// <summary>
     /// Enqueue one LLM reply shaped like a terminology proposal batch. The reply

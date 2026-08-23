@@ -36,7 +36,11 @@ public sealed class ExtractionRunApiTests
     {
         await using var app = new AuthTestWebApplicationFactory();
         FakeChatClientFactory.Default.Reset();
-        FakeChatClientFactory.Default.UseClient(new FakeChat().EnqueueValidDelta());
+        // Extract reply + the two verify replies that keep every candidate.
+        // The blob text is FakeChat.VerifySourceText so the critic evidence
+        // and label grounding checks pass against the real DI pipeline.
+        FakeChatClientFactory.Default.UseClient(
+            new FakeChat().EnqueueValidDelta().EnqueueVerifyAcceptAll());
 
         var (client, _) = await SeedAdminAndClientAsync(app);
         var (ksId, ksGuid) = await SeedKnowledgeSystemAsync(app, client, "b6b-tbox");
@@ -184,11 +188,14 @@ public sealed class ExtractionRunApiTests
         var (ksId, ksGuid) = await SeedKnowledgeSystemAsync(app, client, "b6b-combined");
         var blobSha = SeedBlobSha(app);
 
-        // Combined needs both TBox and ABox replies — enqueue many to cover
-        // multi-chunk corpora. FakeChat falls back to "{}" if queue empties,
-        // which is fine for an empty one-paragraph blob.
+        // Combined needs TBox extract + verify (critic → denotation), the
+        // agent chain's LLM turns, then the ABox extract. The two trailing
+        // ValidTBoxDelta replies feed the agents exactly as they did before
+        // the verify pipeline landed; FakeChat falls back to "{}" if the
+        // queue empties, which the agents tolerate.
         FakeChatClientFactory.Default.UseClient(
-            new FakeChat().EnqueueValidDeltas(5));
+            new FakeChat().EnqueueValidDelta().EnqueueVerifyAcceptAll()
+                .EnqueueValidDeltas(2).EnqueueValidABoxDelta());
 
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/extract-all",
@@ -491,9 +498,12 @@ public sealed class ExtractionRunApiTests
 
     private static string SeedBlobSha(AuthTestWebApplicationFactory app)
     {
+        // The blob text names the ValidTBoxDelta labels so the verify
+        // pipeline's label / evidence grounding checks pass (the verify
+        // replies in FakeChat quote these exact spans).
         var blobs = app.Services.GetRequiredService<IBlobStore>();
         using var stream = new MemoryStream(
-            Encoding.UTF8.GetBytes("the quick brown fox jumps over the lazy dog"));
+            Encoding.UTF8.GetBytes(FakeChat.VerifySourceText));
         return blobs.PutAsync(stream, CancellationToken.None)
             .GetAwaiter().GetResult().Sha256;
     }

@@ -313,7 +313,8 @@ public sealed class ExtractionAgentChainTests : IDisposable
             new ExtractionMerger(Store),
             Store,
             TimeProvider.System,
-            scopes);
+            verify: null,
+            scopes: scopes);
 
     private int ClassCount() =>
         Store.Match(

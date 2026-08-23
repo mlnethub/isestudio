@@ -71,6 +71,14 @@ public sealed class ExtractionOrchestrator
     /// </summary>
     private readonly IServiceScopeFactory? _scopes;
 
+    /// <summary>
+    /// Per-chunk TBox role verifier (critic → adjudicator → denotation,
+    /// Python <c>_verify_tbox_candidates</c>). Stateless like
+    /// <see cref="TBoxExtractionService"/>, so it is injected directly. Null
+    /// in hand-built test orchestrators, where verification is skipped.
+    /// </summary>
+    private readonly TBoxVerifyService? _verify;
+
     public ExtractionOrchestrator(
         ExtractionJobStore jobs,
         IBlobStore blobs,
@@ -85,6 +93,7 @@ public sealed class ExtractionOrchestrator
         IExtractionMerger merger,
         StoreWrapper store,
         TimeProvider clock,
+        TBoxVerifyService? verify = null,
         IServiceScopeFactory? scopes = null)
     {
         ArgumentNullException.ThrowIfNull(jobs);
@@ -114,6 +123,7 @@ public sealed class ExtractionOrchestrator
         _merger = merger;
         _store = store;
         _clock = clock;
+        _verify = verify;
         _scopes = scopes;
     }
 
@@ -285,16 +295,14 @@ public sealed class ExtractionOrchestrator
     /// </summary>
     private async Task<bool> TBoxOnlyRunnerAsync(JobRunContext ctx)
     {
-        var promptSnapshot = _promptSnapshot.SnapshotAsync(
-            new Dictionary<string, string> { [TBoxExtractionService.PromptKey] = _tbox.ResolveSystemPrompt() });
+        var promptSnapshot = _promptSnapshot.SnapshotAsync(BuildTBoxPromptSnapshot());
         var succeeded = await RunLayerAsync(
             ctx,
             graphIri: ctx.KsContext.TBoxGraph,
             phase: ExtractionPhase.TBox,
             baseProcessedOffset: 0,
             extractor: async (chunk, ct) =>
-                await _tbox.ExtractAsync(
-                    ctx.Chat, ctx.KsContext, chunk, ct).ConfigureAwait(false),
+                await ExtractAndVerifyAsync(ctx, chunk, ct).ConfigureAwait(false),
             merger: delta => _merger.MergeTBox(ctx.KsContext, (TBoxDelta)delta),
             recordMergeAsync: (id, result, ct) => _jobs.RecordTBoxMergeAsync(id, result, ct),
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
@@ -340,9 +348,8 @@ public sealed class ExtractionOrchestrator
     {
         var labels = ExistingClassLabels(ctx.KsContext);
         var promptSnapshot = _promptSnapshot.SnapshotAsync(
-            new Dictionary<string, string>
+            new Dictionary<string, string>(BuildTBoxPromptSnapshot())
             {
-                [TBoxExtractionService.PromptKey] = _tbox.ResolveSystemPrompt(),
                 [ABoxExtractionService.PromptKey] = _abox.ResolveSystemPrompt(),
             });
 
@@ -352,8 +359,7 @@ public sealed class ExtractionOrchestrator
             phase: ExtractionPhase.TBox,
             baseProcessedOffset: 0,
             extractor: async (chunk, ct) =>
-                await _tbox.ExtractAsync(
-                    ctx.Chat, ctx.KsContext, chunk, ct).ConfigureAwait(false),
+                await ExtractAndVerifyAsync(ctx, chunk, ct).ConfigureAwait(false),
             merger: delta => _merger.MergeTBox(ctx.KsContext, (TBoxDelta)delta),
             recordMergeAsync: (id, result, ct) => _jobs.RecordTBoxMergeAsync(id, result, ct),
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
@@ -580,6 +586,53 @@ public sealed class ExtractionOrchestrator
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Extract + verify one chunk's TBox candidates — Python's worker
+    /// sequence <c>_extract_for_chunk → _verify_tbox_candidates</c>
+    /// (extract.py:1596-1597). Verification runs inside the same capacity
+    /// lease as extraction so the extra critic calls respect the provider
+    /// budget; a delta with no class / subclass candidates is returned
+    /// untouched by <see cref="TBoxVerifyService.VerifyAsync"/>'s early
+    /// return without any extra LLM call. Skipped entirely when no verifier
+    /// is wired (hand-built test orchestrators).
+    /// </summary>
+    private async Task<TBoxDelta> ExtractAndVerifyAsync(
+        JobRunContext ctx, ChunkSpan chunk, CancellationToken cancellationToken)
+    {
+        var delta = await _tbox.ExtractAsync(ctx.Chat, ctx.KsContext, chunk, cancellationToken)
+            .ConfigureAwait(false);
+        if (_verify is null)
+        {
+            return delta;
+        }
+        var verified = await _verify.VerifyAsync(ctx.Chat, chunk.Text, delta, cancellationToken)
+            .ConfigureAwait(false);
+        return verified.Delta;
+    }
+
+    /// <summary>
+    /// Prompt snapshot entries for a TBox phase: the extractor prompt plus,
+    /// when the verifier is wired, the three critic prompts the pipeline
+    /// consumes (Python records every prompt a job actually used).
+    /// </summary>
+    private Dictionary<string, string> BuildTBoxPromptSnapshot()
+    {
+        var prompts = new Dictionary<string, string>
+        {
+            [TBoxExtractionService.PromptKey] = _tbox.ResolveSystemPrompt(),
+        };
+        if (_verify is not null)
+        {
+            prompts[TBoxVerifyService.BoundaryCriticKey] =
+                _verify.ResolveSystemPrompt(TBoxVerifyService.BoundaryCriticKey);
+            prompts[TBoxVerifyService.BoundaryAdjudicatorKey] =
+                _verify.ResolveSystemPrompt(TBoxVerifyService.BoundaryAdjudicatorKey);
+            prompts[TBoxVerifyService.DenotationCriticKey] =
+                _verify.ResolveSystemPrompt(TBoxVerifyService.DenotationCriticKey);
+        }
+        return prompts;
+    }
 
     /// <summary>Read + parse + chunk the uploaded document once at boot.</summary>
     private async Task<(IReadOnlyList<ChunkSpan> Chunks, ParseResult Result)> ReadDocumentAsync(

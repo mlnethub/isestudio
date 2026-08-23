@@ -34,7 +34,13 @@ namespace OnToPilot.Prompts;
 /// <c>conflict.resolution</c> is consumed by
 /// <see cref="Conflicts.ConflictAgent"/>;
 /// <c>tbox.structure_repair</c> is consumed by
-/// <see cref="Ontology.StructureAgent"/>. The remaining keys are
+/// <see cref="Ontology.StructureAgent"/>. The seven TBox verify prompts
+/// (<c>tbox.boundary.critic</c>, <c>tbox.boundary.adjudicator</c>,
+/// <c>tbox.denotation.critic</c>, <c>tbox.boundary.evidence_selector</c>,
+/// <c>tbox.boundary.corpus_recovery</c>, <c>tbox.hierarchy.critic</c>,
+/// <c>tbox.hierarchy.recovery</c>) are consumed by
+/// <see cref="Extraction.TBoxVerifyService"/> (corpus / hierarchy recovery
+/// arrive with the second slice). The remaining keys are
 /// pre-seeded here as stubs (English placeholder) so a future slice can
 /// turn on additional agents without re-touching the catalog — see the
 /// outstanding agents tracked in [[ontopilot-dotnet-gap-2026-08-22]].
@@ -96,13 +102,41 @@ public static class PromptLocales
             // the inline default registered there. The zh-CN text is in prompt_locales.py.
 
             ["tbox.extract.agent"] = NotWired(),
-            ["tbox.hierarchy.recovery"] = NotWired(),
-            ["tbox.boundary.critic"] = NotWired(),
-            ["tbox.boundary.adjudicator"] = NotWired(),
-            ["tbox.boundary.evidence_selector"] = NotWired(),
-            ["tbox.boundary.corpus_recovery"] = NotWired(),
-            ["tbox.denotation.critic"] = NotWired(),
-            ["tbox.hierarchy.critic"] = NotWired(),
+            ["tbox.hierarchy.recovery"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = HierarchyRecoveryEn,
+                [SystemLanguage.SimplifiedChinese] = HierarchyRecoveryZhCn,
+            },
+            ["tbox.boundary.critic"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = BoundaryCriticEn,
+                [SystemLanguage.SimplifiedChinese] = BoundaryCriticZhCn,
+            },
+            ["tbox.boundary.adjudicator"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = BoundaryAdjudicatorEn,
+                [SystemLanguage.SimplifiedChinese] = BoundaryAdjudicatorZhCn,
+            },
+            ["tbox.boundary.evidence_selector"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = EvidenceSelectorEn,
+                [SystemLanguage.SimplifiedChinese] = EvidenceSelectorZhCn,
+            },
+            ["tbox.boundary.corpus_recovery"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = CorpusRecoveryEn,
+                [SystemLanguage.SimplifiedChinese] = CorpusRecoveryZhCn,
+            },
+            ["tbox.denotation.critic"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = DenotationCriticEn,
+                [SystemLanguage.SimplifiedChinese] = DenotationCriticZhCn,
+            },
+            ["tbox.hierarchy.critic"] = new Dictionary<SystemLanguage, string>
+            {
+                [SystemLanguage.English] = HierarchyCriticEn,
+                [SystemLanguage.SimplifiedChinese] = HierarchyCriticZhCn,
+            },
             ["abox.boundary.critic"] = NotWired(),
             ["abox.boundary.self_typed_adjudicator"] = NotWired(),
             ["abox.entity_resolution"] = NotWired(),
@@ -540,6 +574,399 @@ public static class PromptLocales
         必须且只能返回一个 JSON 对象：
         {"parent":"<标签或空字符串>","new":<bool>,
         "confidence":<0..1>,"evidence":"<精确来源片段或空字符串>","reason":"<不超过 200 字符>"}。
+        """;
+
+    // =====================================================================
+    //  TBox verify prompts — the English bodies are copied verbatim from
+    //  backend/app/ontology/extract.py (the module-inline defaults each
+    //  prompt_config.register uses); the Simplified Chinese bodies from
+    //  backend/app/prompt_locales.py. The TBox verify pipeline
+    //  (critic → adjudicator → denotation) consumes boundary.critic /
+    //  boundary.adjudicator / denotation.critic today; evidence_selector /
+    //  corpus_recovery / hierarchy.critic / hierarchy.recovery are wired by
+    //  the corpus + hierarchy recovery slice.
+    // =====================================================================
+
+    // -- tbox.boundary.critic (English) --------------------------------------
+    // Source: backend/app/ontology/extract.py:131-163 (_TBOX_CRITIC_PROMPT)
+    private const string BoundaryCriticEn = """
+        You are an independent ontology-boundary critic. The first extractor is
+        untrusted and may turn a concrete value into a type-like label. Judge every candidate only from
+        the supplied source text; do not use outside domain knowledge.
+
+        For each CLASS candidate choose exactly one role:
+        - type: a reusable category that can have multiple instances;
+        - individual: one concrete named/identified entity or controlled entry;
+        - literal: a scalar, measurement, status, option, identifier value, or descriptive text;
+        - uncertain: the source does not establish the role.
+
+        Reject labels manufactured from a concrete value by adding a type word. For example, source
+        `Asset: Orion-7` does not support classes `Orion-7 Asset` or `Orion-7 Device`. A structured scalar
+        is not a type unless a type/kind/class/category declaration or prose explicitly says so.
+
+        For each SUBCLASS candidate keep it only when every SUB is necessarily a SUPER and an exact source
+        span supports that is-a relation. Reject part-of, field-of, value-of, status-of, managed-by,
+        created-by, used-by, grouping, implementation, and mere co-occurrence.
+
+        Return ONLY:
+        {
+          "class_decisions": [
+            {"label":"<exact candidate label>","role":"type|individual|literal|uncertain",
+             "keep":true,"confidence":0.0,"evidence":"<short exact source span>","reason":"<short reason>"}
+          ],
+          "subclass_decisions": [
+            {"sub":"<exact candidate sub>","super":"<exact candidate super>",
+             "keep":true,"confidence":0.0,"evidence":"<short exact source span>",
+             "reason":"<short substitution-test reason>"}
+          ]
+        }
+
+        Do not add, rename, or repair candidates. Evidence must be copied from the source text. Use
+        keep=false or role=uncertain when evidence is absent.
+        """;
+
+    // -- tbox.boundary.critic (Simplified Chinese) ----------------------------
+    // Source: backend/app/prompt_locales.py:167-192
+    private const string BoundaryCriticZhCn = """
+        你是独立的本体边界批评器。第一阶段抽取器不可信，可能把具体值改造成类似类型的标签。只能根据提供的来源文本判断每个候选，不得使用外部领域知识。
+
+        对每个 CLASS 候选，必须且只能选择一种角色：
+        - type：可以拥有多个实例的可复用类别；
+        - individual：一个具有名称或标识的具体实体或受控条目；
+        - literal：标量、测量值、状态、选项、标识符值或描述文本；
+        - uncertain：来源无法确定其角色。
+
+        如果标签是通过给具体值添加类型词制造出来的，必须拒绝。例如来源 Asset: Orion-7 不支持 Orion-7 Asset 或 Orion-7 Device 作为类。结构化标量不是类型，除非类型、种类、类、类别声明或正文明确如此说明。
+
+        对每个 SUBCLASS 候选，只有当每个 SUB 必然都是 SUPER，且有精确来源片段支持该 is-a 关系时才保留。拒绝 part-of、field-of、value-of、status-of、managed-by、created-by、used-by、分组、实现和仅仅共现。
+
+        只返回：
+        {
+          "class_decisions": [
+            {"label":"<精确候选标签>","role":"type|individual|literal|uncertain",
+             "keep":true,"confidence":0.0,"evidence":"<简短来源原文>","reason":"<简短理由>"}
+          ],
+          "subclass_decisions": [
+            {"sub":"<精确候选子类>","super":"<精确候选父类>",
+             "keep":true,"confidence":0.0,"evidence":"<简短来源原文>",
+             "reason":"<简短的替换测试理由>"}
+          ]
+        }
+
+        不得添加、重命名或修复候选。evidence 必须从来源文本中原样复制。没有证据时使用 keep=false 或 role=uncertain。
+        """;
+
+    // -- tbox.boundary.adjudicator (English) -----------------------------------
+    // Source: backend/app/ontology/extract.py:174-200 (_TBOX_BOUNDARY_ADJUDICATOR_PROMPT)
+    private const string BoundaryAdjudicatorEn = """
+        You are the final adjudicator for class candidates that
+        one ontology critic rejected. The extractor and first critic disagreed. Re-evaluate each candidate
+        only from the supplied source text; do not use outside domain knowledge and do not add labels.
+
+        A candidate is a reusable TYPE only when the text uses it generically for a category that can have
+        multiple members. Strong type evidence includes an indefinite or generic use (for example, "a/an
+        X", "each X", or generic plural Xs), an explicit type/kind/class/category declaration, or a
+        definition that clearly applies to repeatable members. Capitalization alone is neither positive nor
+        negative evidence.
+
+        A proper name remains an INDIVIDUAL when the text says that named subject is a type of something
+        (for example, "Argentina is a country" or "Blue Danube Wine Co. is a winery"). Quoted names,
+        identifiers, records, places, organizations, products, and one-off events are not classes merely
+        because an extractor proposed them. Mere mention or co-occurrence is insufficient.
+
+        Return ONLY:
+        {
+          "class_decisions": [
+            {"label":"<exact candidate label>","role":"type|individual|literal|uncertain",
+             "keep":true,"confidence":0.0,"evidence":"<short exact source span>",
+             "reason":"<short repeatability/proper-name reason>"}
+          ],
+          "subclass_decisions": []
+        }
+
+        Copy evidence exactly from the source. Set keep=false unless the source establishes a reusable
+        type with high confidence.
+        """;
+
+    // -- tbox.boundary.adjudicator (Simplified Chinese) -------------------------
+    // Source: backend/app/prompt_locales.py:194-210
+    private const string BoundaryAdjudicatorZhCn = """
+        你是类候选的最终裁决器，负责重新判断被第一位本体批评器拒绝的候选。抽取器和第一位批评器意见不一致。只能依据提供的来源文本重新评估每个候选；不得使用外部领域知识，也不得添加标签。
+
+        只有当文本把候选一般性地用于一个可以拥有多个成员的类别时，它才是可复用 TYPE。强类型证据包括不定或一般性用法（例如“一个 X”“每个 X”或 X 的通用复数）、明确的类型/种类/类/类别声明，或显然适用于可重复成员的定义。首字母大小写本身既不是正面证据，也不是负面证据。
+
+        当文本说某个专名属于某种类型时，该专名仍是 INDIVIDUAL，例如“Argentina is a country”或“Blue Danube Wine Co. is a winery”。带引号的名称、标识符、记录、地点、组织、产品和一次性事件，不会因为抽取器提出它们就成为类。仅仅提及或共现不足以成立。
+
+        只返回：
+        {
+          "class_decisions": [
+            {"label":"<精确候选标签>","role":"type|individual|literal|uncertain",
+             "keep":true,"confidence":0.0,"evidence":"<简短来源原文>",
+             "reason":"<关于可重复性或专名的简短理由>"}
+          ],
+          "subclass_decisions": []
+        }
+
+        evidence 必须从来源中原样复制。除非来源以高置信度确立了可复用类型，否则设置 keep=false。
+        """;
+
+    // -- tbox.denotation.critic (English) --------------------------------------
+    // Source: backend/app/ontology/extract.py:211-245 (_TBOX_DENOTATION_CRITIC_PROMPT)
+    private const string DenotationCriticEn = """
+        You are the final independent ontology denotation critic.
+        Earlier extraction stages proposed every supplied label, but may have accepted or rejected it.
+        Apply a stricter modeling convention: distinguish a repeatable category from one named design,
+        variant, place, organization, standard, mode, algorithm, product, or software module.
+
+        - A full label is a TYPE only when distinct members can instantiate that full category. Text that
+          uses "a/an", "each/every", a generic plural, or an explicit type/kind/class definition is strong
+          positive evidence.
+        - Copies, deployments, installations, configurations, or executions of one named design do not make
+          the named design itself a class. Model the named design as an INDIVIDUAL of its reusable general
+          type; model runtime copies separately when the source discusses them.
+        - A proper-name-plus-generic-head phrase such as "FalconGuard admission plugin" normally denotes the
+          one named plugin design. Reject the full phrase. When its reusable generic head occurs as an exact
+          suffix, you MUST recover the longest meaningful suffix ("admission plugin", not merely "plugin")
+          as a replacement class; its occurrence inside the full phrase is sufficient lexical evidence.
+        - By contrast, a phrase used as a repeatable schema category, such as "an ExternalName Service" or
+          "each ConfigMap", remains a TYPE.
+        - Do not use outside knowledge. Capitalization alone proves nothing. Copy evidence from the source.
+
+        Return ONLY:
+        {
+          "class_decisions": [
+            {"label":"<exact candidate>","role":"type|individual|literal|uncertain",
+             "keep":true,"confidence":0.0,"evidence":"<exact source span>","reason":"<short reason>"}
+          ],
+          "replacement_classes": [
+            {"from":"<rejected exact candidate>","label":"<exact reusable suffix from source>",
+             "confidence":0.0,"evidence":"<exact source span>","reason":"<short reason>"}
+          ],
+          "subclass_decisions": []
+        }
+
+        For every rejected proper-name-plus-generic-head individual, include a replacement when an exact
+        reusable suffix exists in the source. Only omit it when no such suffix exists. Never invent or
+        translate the replacement.
+        """;
+
+    // -- tbox.denotation.critic (Simplified Chinese) ----------------------------
+    // Source: backend/app/prompt_locales.py:235-256
+    private const string DenotationCriticZhCn = """
+        你是最终的独立本体指称批评器。前面的抽取阶段提出了所有给定标签，但可能已经接受或拒绝其中一些。请应用更严格的建模约定：区分可重复类别，与某个具名设计、变体、地点、组织、标准、模式、算法、产品或软件模块。
+
+        - 只有当不同成员可以实例化完整标签所表示的类别时，该完整标签才是 TYPE。文本中的“一个/一种”、each/every、通用复数或明确的类型/种类/类定义，都是强正面证据。
+        - 某个具名设计存在多个副本、部署、安装、配置或执行，不会使该具名设计本身成为类。应把具名设计建模为其可复用一般类型的 INDIVIDUAL；如果来源讨论运行时副本，再单独建模这些副本。
+        - “专名 + 通用中心词”的短语，例如 FalconGuard admission plugin，通常表示这一个具名插件设计，应拒绝完整短语。当其可复用通用中心部分作为精确后缀出现时，必须恢复最长且有意义的后缀，例如恢复 admission plugin 而不是仅恢复 plugin，作为替代类；该后缀出现在完整短语内部，就足以构成词汇证据。
+        - 相反，被用作可重复模式类别的短语，例如 an ExternalName Service 或 each ConfigMap，仍是 TYPE。
+        - 不得使用外部知识。大小写本身不能证明任何结论。evidence 必须从来源复制。
+
+        只返回：
+        {
+          "class_decisions": [
+            {"label":"<精确候选>","role":"type|individual|literal|uncertain",
+             "keep":true,"confidence":0.0,"evidence":"<精确来源原文>","reason":"<简短理由>"}
+          ],
+          "replacement_classes": [
+            {"from":"<被拒绝的精确候选>","label":"<来源中的精确可复用后缀>",
+             "confidence":0.0,"evidence":"<精确来源原文>","reason":"<简短理由>"}
+          ],
+          "subclass_decisions": []
+        }
+
+        对每个被拒绝的“专名 + 通用中心词”个体，如果来源中存在精确的可复用后缀，就必须提供 replacement。只有不存在这种后缀时才能省略。不得发明或翻译替代标签。
+        """;
+
+    // -- tbox.boundary.evidence_selector (English) ------------------------------
+    // Source: backend/app/ontology/extract.py:293-310 (inline register default)
+    private const string EvidenceSelectorEn = """
+        You are a source-evidence curator for ontology boundary review.
+        For every exact candidate label, select the passages that best let a later adjudicator determine
+        whether it denotes a reusable DOMAIN TYPE, a particular individual, a literal value, or document
+        metadata. Do not make the final role decision and do not use outside knowledge.
+
+        Prefer direct definitions, explicit class/category declarations, reusable membership statements,
+        and class hierarchy statements. Also retain a contradictory passage when it directly identifies
+        the label as one particular entity or as publication, vocabulary, standardization, authorship, or
+        tooling discourse. Mere repetition and navigational mentions are weak evidence.
+
+        Return ONLY:
+        {"evidence_selections":[
+          {"label":"<exact candidate label>","passage_ids":["p1","p3"],
+           "reason":"<short selection reason>"}
+        ]}
+
+        Every candidate needs one entry. Select one to four supplied passage IDs per candidate, ordered
+        strongest first. Never invent a passage ID or alter a label.
+        """;
+
+    // -- tbox.boundary.evidence_selector (Simplified Chinese) --------------------
+    // Source: backend/app/prompt_locales.py:258-268
+    private const string EvidenceSelectorZhCn = """
+        你是本体边界审阅的来源证据筛选员。对每个精确候选标签，选择最有助于后续裁决器判断它表示可复用 DOMAIN TYPE、具体个体、字面量值还是文档元数据的段落。不要做最终角色判断，也不得使用外部知识。
+
+        优先选择直接定义、明确的类或类别声明、可复用成员关系陈述和类层级陈述。如果某段内容直接把标签识别为一个具体实体，或表明它属于出版、词表、标准化、作者或工具相关话语，也要保留该矛盾段落。单纯重复和导航式提及是弱证据。
+
+        只返回：
+        {"evidence_selections":[
+          {"label":"<精确候选标签>","passage_ids":["p1","p3"],
+           "reason":"<简短的选择理由>"}
+        ]}
+
+        每个候选必须有一个条目。每个候选选择一到四个提供的 passage ID，并按证据强度从高到低排序。不得发明 passage ID 或修改标签。
+        """;
+
+    // -- tbox.boundary.corpus_recovery (English) -------------------------------
+    // Source: backend/app/ontology/extract.py:256-286 (_TBOX_CORPUS_ROLE_RECOVERY_PROMPT)
+    private const string CorpusRecoveryEn = """
+        You are a corpus-level ontology boundary adjudicator.
+        Earlier per-passage critics rejected the supplied class candidates, but a short passage can be
+        ambiguous or omit the definition found elsewhere. Re-evaluate every candidate from ALL supplied
+        source passages together. Do not use outside knowledge and do not add or rename labels.
+
+        A candidate is a reusable TYPE when at least one passage explicitly establishes that exact label
+        as a class, category, kind, reusable role, superclass, or definition applying to multiple possible
+        members. A generic singular/plural use or an explicit class hierarchy statement is also positive
+        evidence. Other passages may use the same type label in examples without changing its type role.
+
+        The reusable type must belong to the domain model described by the source. Do not promote terms
+        that only describe the publication, vocabulary, standardization activity, authorship, tooling, or
+        document discourse. Such a term is in scope only when the passages explicitly model its possible
+        members as domain entities, rather than merely mentioning the artifact that contains the model.
+
+        A candidate is an INDIVIDUAL only when the full label identifies one particular person, place,
+        organization, product, document, event, record, asset, design, or controlled entry. A scalar,
+        identifier value, status, option, measurement, or datatype is a LITERAL. Use UNCERTAIN when the
+        passages never establish a reusable type or a particular identity. A direct statement that the
+        exact label is an "instance" or "individual" is authoritative identity evidence and must not be
+        overridden by another passage describing what that named instance categorizes or represents.
+
+        Return ONLY:
+        {"class_decisions":[
+          {"label":"<exact candidate label>","role":"type|individual|literal|uncertain",
+           "keep":true,"confidence":0.0,"evidence":"<exact span from one supplied passage>",
+           "reason":"<short corpus-level reason>"}
+        ]}
+
+        Every candidate needs one decision. Evidence must be copied exactly from a supplied passage. Set
+        keep=true only for role=type with high confidence; otherwise set keep=false.
+        """;
+
+    // -- tbox.boundary.corpus_recovery (Simplified Chinese) ----------------------
+    // Source: backend/app/prompt_locales.py:270-285
+    private const string CorpusRecoveryZhCn = """
+        你是语料库级本体边界裁决器。此前按段落工作的批评器拒绝了给定类候选，但短段落可能有歧义，或缺少出现在其他位置的定义。请综合所有提供的来源段落重新评估每个候选。不得使用外部知识，也不得添加或重命名标签。
+
+        只要至少一个段落明确把该精确标签确立为类、类别、种类、可复用角色、父类，或适用于多个可能成员的定义，候选就是可复用 TYPE。通用单数或复数用法，以及明确的类层级陈述，也是正面证据。其他段落可以在示例中使用同一类型标签，而不会改变它的类型角色。
+
+        可复用类型必须属于来源所描述的领域模型。不得提升只用于描述出版物、词表、标准化活动、作者、工具或文档话语的术语。只有当段落明确把该术语的可能成员建模为领域实体，而不是仅仅提到承载模型的制品时，它才属于范围内。
+
+        只有完整标签标识一个特定的人、地点、组织、产品、文档、事件、记录、资产、设计或受控条目时，候选才是 INDIVIDUAL。标量、标识符值、状态、选项、测量值或数据类型是 LITERAL。如果所有段落都没有确立可复用类型或具体身份，使用 UNCERTAIN。如果来源直接把该精确标签称为“实例”或“个体”，这是权威的身份证据；不得因为另一段描述该具名实例所分类或表示的内容，就把它重新提升为类。
+
+        只返回：
+        {"class_decisions":[
+          {"label":"<精确候选标签>","role":"type|individual|literal|uncertain",
+           "keep":true,"confidence":0.0,"evidence":"<某个提供段落中的精确原文>",
+           "reason":"<简短的语料库级理由>"}
+        ]}
+
+        每个候选必须有一个决定。evidence 必须从提供的段落中原样复制。只有 role=type 且置信度高时才能设置 keep=true，否则设置 keep=false。
+        """;
+
+    // -- tbox.hierarchy.critic (English) ----------------------------------------
+    // Source: backend/app/ontology/extract.py:475-491 (_SUBCLASS_CRITIC_PROMPT)
+    private const string HierarchyCriticEn = """
+        You are an independent ontology subclass critic. The endpoint
+        labels are already admitted reusable classes; do NOT reclassify or reject those classes. Judge
+        only whether each proposed directed edge is a valid is-a relation in the supplied source text.
+
+        Keep an edge only when the exact source supports: every SUB is necessarily a SUPER. Definitions,
+        explicit superclass/subclass statements, and phrases such as "X is a Y" or "X generalizes Y" are
+        valid when used for reusable classes. Reject part-of, contains, uses, creates, manages, located-in,
+        configured-by, grouping, implementation, and mere co-occurrence.
+
+        Return ONLY:
+        {"subclass_decisions":[
+          {"sub":"<exact proposed sub>","super":"<exact proposed super>","keep":true,
+           "confidence":0.0,"evidence":"<short exact source span>","reason":"<short reason>"}
+        ]}
+
+        Return one decision for every proposed edge. Do not add, rename, reverse, or repair edges. Evidence
+        must be copied exactly from the source text.
+        """;
+
+    // -- tbox.hierarchy.critic (Simplified Chinese) -------------------------------
+    // Source: backend/app/prompt_locales.py:299-309
+    private const string HierarchyCriticZhCn = """
+        你是独立的本体子类关系批评器。边两端的标签已经被确认是可复用类；不要重新分类或拒绝这些类。只判断每条候选有向边在提供的来源文本中是否构成有效 is-a 关系。
+
+        只有精确来源支持“每个 SUB 必然都是 SUPER”时才保留边。定义、明确的父类或子类陈述，以及“X 是 Y”或“X 泛化 Y”等短语，在用于可复用类时是有效证据。拒绝 part-of、contains、uses、creates、manages、located-in、configured-by、分组、实现和仅仅共现。
+
+        只返回：
+        {"subclass_decisions":[
+          {"sub":"<精确候选子类>","super":"<精确候选父类>","keep":true,
+           "confidence":0.0,"evidence":"<简短来源原文>","reason":"<简短理由>"}
+        ]}
+
+        每条候选边必须返回一个决定。不得添加、重命名、反向或修复边。evidence 必须从来源文本中原样复制。
+        """;
+
+    // -- tbox.hierarchy.recovery (English) ----------------------------------------
+    // Source: backend/app/ontology/extract.py:437-464 (_HIERARCHY_RECOVERY_PROMPT)
+    private const string HierarchyRecoveryEn = """
+        You are a specialist in recovering EXPLICIT ontology class
+        hierarchies that a general extractor may have missed. Read the source and the supplied EXISTING
+        CLASSES, then return directly supported is-a relations for those classes. You may also recover a
+        missing reusable superclass when its exact label and the is-a statement both occur in the source.
+
+        Return ONLY:
+        {
+          "classes":[{"label":"<exact missing superclass label>","comment":"",
+                      "evidence":"<short exact source span>"}],
+          "subclass_of":[{"sub":"<exact existing class>",
+                          "super":"<exact existing or recovered superclass>",
+                          "evidence":"<short exact source span>"}]
+        }
+
+        Rules:
+        - Every `sub` must be an exact label from EXISTING CLASSES.
+        - A `super` may be an exact existing label or a missing reusable type copied exactly from the
+          source. Declare each missing superclass in `classes`; never emit an unconnected class.
+        - Never rename, translate, combine, or infer a label that does not occur in the source.
+        - Add an edge only when the source explicitly supports "Every SUB is necessarily a SUPER".
+        - Definitions such as "X is a Y", "X is a type/kind/form of Y", and an explicit statement that
+          X is an object/component/resource are valid when X is used as a reusable type in that statement.
+        - If an existing label is used as one concrete proper name in the source, do not attach it as a
+          subclass even when the sentence says that named thing is a type of something.
+        - Part-of, contains, uses, creates, manages, runs-on, configured-by, association, co-occurrence,
+          and a shared topic are NOT subclass relations.
+        - Copy the decisive wording verbatim into evidence. Do not rely on outside knowledge, even when
+          the domain is familiar. If the source has no explicit hierarchy, return both arrays empty.
+        """;
+
+    // -- tbox.hierarchy.recovery (Simplified Chinese) ------------------------------
+    // Source: backend/app/prompt_locales.py:112-131
+    private const string HierarchyRecoveryZhCn = """
+        你是恢复显式本体类层级关系的专家，需要找出通用抽取器可能遗漏的层级。阅读来源文本和提供的 EXISTING CLASSES，然后只返回文本直接支持的 is-a 关系。如果某个缺失的可复用父类及其 is-a 陈述都以精确标签出现在来源中，也可以恢复该父类。
+
+        只返回：
+        {
+          "classes":[{"label":"<缺失父类的精确标签>","comment":"",
+                      "evidence":"<简短的来源原文>"}],
+          "subclass_of":[{"sub":"<精确的现有类标签>",
+                          "super":"<精确的现有或恢复的父类标签>",
+                          "evidence":"<简短的来源原文>"}]
+        }
+
+        规则：
+        - 每个 sub 必须是 EXISTING CLASSES 中的精确标签。
+        - super 可以是精确的现有标签，也可以是从来源中原样复制的缺失可复用类型。每个缺失父类必须在 classes 中声明；不得输出未连接的类。
+        - 不得重命名、翻译、组合或推断来源中不存在的标签。
+        - 只有来源明确支持“每个 SUB 必然都是 SUPER”时才能添加边。
+        - 当 X 在陈述中被用作可复用类型时，“X 是 Y”“X 是 Y 的一种类型/种类/形式”，以及明确说明 X 是某种对象、组件或资源的定义，都是有效证据。
+        - 如果某个现有标签在来源中是一个具体专名，即使句子说该具名事物属于某种类型，也不要把它挂为子类。
+        - part-of、contains、uses、creates、manages、runs-on、configured-by、关联、共现和共享主题都不是子类关系。
+        - 将决定性的措辞逐字复制到 evidence。即使熟悉该领域，也不得使用外部知识。如果来源没有显式层级，两个数组都返回空。
         """;
 }
 

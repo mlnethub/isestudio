@@ -19,6 +19,7 @@ public static class ExtractionServiceCollectionExtensions
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
         services.AddSingleton<EndpointCapacityCoordinator>();
         services.AddSingleton<TBoxExtractionService>();
+        services.AddSingleton<TBoxVerifyService>();
         services.AddSingleton<ABoxExtractionService>();
         services.AddSingleton<TerminologyService>();
         services.AddSingleton<ITerminologySync>(sp => sp.GetRequiredService<TerminologyService>());

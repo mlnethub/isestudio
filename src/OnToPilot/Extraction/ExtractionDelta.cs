@@ -206,8 +206,9 @@ public static class ExtractionDeltaParser
     /// Handles bare JSON, fenced code blocks, and prose-wrapped JSON. Tracks
     /// brace depth through quoted strings so an unescaped <c>}</c> inside a
     /// string (which models regularly produce) does not cut the object short.
+    /// Shared with <see cref="TBoxVerifyService"/> for critic replies.
     /// </summary>
-    private static bool TryReadObject(string? reply, out JsonElement root)
+    internal static bool TryReadObject(string? reply, out JsonElement root)
     {
         root = default;
         if (string.IsNullOrWhiteSpace(reply)) return false;
