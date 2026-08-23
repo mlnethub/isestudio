@@ -529,6 +529,66 @@ public sealed class ConflictAgentTests : IDisposable
         Assert.Null(audit.Removed);
     }
 
+    [Fact]
+    public async Task Triage_auto_apply_merge_classes_repoints_and_retypes_individuals()
+    {
+        // P1-1:83 pipeline — ConflictAgent auto-applies a confident
+        // merge_classes decision; the editor must repoint the TBox and
+        // re-type ABox individuals off the source class.
+        const string tag = "merge-classes";
+        var graphIri = $"http://goodcrew.local/ks/{tag}";
+        var baseIri = $"{graphIri}#";
+        var ksId = await SeedWorkspaceAsync(tag);
+        SeedTBox(graphIri, baseIri); // Pump, Equipment, Centrifugal Pump, Station
+
+        // An individual typed as Centrifugal Pump — must survive and be
+        // retyped to Pump after the merge.
+        var aboxGraph = new OntoNamedNode($"{graphIri}/abox");
+        var alice = new OntoNamedNode($"{baseIri}alice");
+        var pump = new OntoNamedNode($"{baseIri}Pump");
+        // SchemaBuilder.BuildMutation normalises "Centrifugal Pump" → PascalCase local "CentrifugalPump".
+        var cp = new OntoNamedNode($"{baseIri}CentrifugalPump");
+        _store.AddQuads(aboxGraph, new[]
+        {
+            new OntoQuad(alice, Vocabulary.RdfType, cp, aboxGraph),
+        });
+
+        // Duplicate conflict: merge CentrifugalPump → Pump.
+        await SeedConflictWithOpAsync(ksId, "duplicate", "merge-cp-into-pump", "Merge Centrifugal Pump → Pump",
+            new Dictionary<string, object?>
+            {
+                ["op"] = "merge_classes",
+                ["source"] = $"{baseIri}CentrifugalPump",
+                ["target"] = $"{baseIri}Pump",
+            });
+
+        _chat.Enqueue("""{"action":"finish","resolution":"merge-cp-into-pump","confidence":0.95,"reason":"CP is a specialization"}""");
+
+        var log = await RunTriageAsync(ksId, new OnToPilotOptions(), graphIri: graphIri, autoApply: true);
+
+        Assert.Contains("auto", Assert.Single(log));
+
+        await using var verify = _dbFactory.CreateDbContext();
+        var row = await verify.Conflicts.SingleAsync(c => c.KnowledgeSystemId == ksId && c.Ctype == "duplicate");
+        Assert.Equal("resolved", row.Status);
+
+        // The source class is gone (its rdf:type + rdfs:label dropped).
+        Assert.Empty(_store.Match(subjectIri: $"{baseIri}CentrifugalPump", graphIri: graphIri));
+
+        // alice is now typed as Pump, no longer as CentrifugalPump.
+        Assert.Empty(_store.Match(objectIri: cp.Value, graphIri: aboxGraph.Value));
+        Assert.Single(_store.Match(objectIri: pump.Value, graphIri: aboxGraph.Value));
+
+        // One audit row carrying the agent flag + merge reason (the
+        // TBox row — the ABox cascade's audit row, when present, shares
+        // the GroupId and is asserted below if needed).
+        var audits = await verify.AuditEvents
+            .Where(e => e.KnowledgeSystemId == ksId && e.Action == "conflict.resolve")
+            .ToListAsync();
+        Assert.NotEmpty(audits);
+        Assert.Contains(audits, a => a.Detail!.RootElement.GetProperty("agent").GetBoolean());
+    }
+
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------

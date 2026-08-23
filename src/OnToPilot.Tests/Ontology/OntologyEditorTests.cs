@@ -517,4 +517,223 @@ public class OntologyEditorTests : IClassFixture<OntologyEditorFixture>, IAsyncL
                     ["target"] = aIri,
                 }));
     }
+
+    // ------------------------------------------------------------------
+    // merge_classes — duplicate-class resolution from DuplicateJudge
+    // (P1-1:83). Mirrors Python _merge_classes in
+    // backend/app/ontology/editor.py:270-310:
+    //   - keep_preds = {rdf:type, rdfs:label}: drop source's own type/label.
+    //   - symmetric = {subClassOf, disjointWith, equivalentClass}: skip
+    //     self-loops after repoint.
+    //   - ABox cascade: rewrite (ind, rdf:type, source) → (ind, rdf:type,
+    //     target). Individuals are NOT deleted.
+    // ------------------------------------------------------------------
+
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task MergeClasses_repoints_subclass_and_drops_source_type_label()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        var source = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "SourceClass" });
+        var target = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "TargetClass" });
+
+        // Seed a third class that subclasses source — its triple must be
+        // repointed onto target (not dropped).
+        var child = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Child" });
+        await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "add_axiom", ["type"] = "subclass",
+                ["sub"] = child, ["super"] = source,
+            });
+
+        var result = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "merge_classes",
+                ["source"] = source, ["target"] = target,
+            });
+        Assert.Equal(target, result);
+
+        // 1) Source's own type/label are dropped.
+        Assert.Empty(_fx.Store.Match(subjectIri: source, graphIri: _graph.Value));
+
+        // 2) Target keeps its own type/label.
+        Assert.True(_fx.Store.ContainsQuad(new OntoQuad(
+            new OntoNamedNode(target),
+            Vocabulary.RdfType,
+            Vocabulary.OwlClass,
+            _graph)));
+
+        // 3) The child's subclass triple now points at target.
+        var subclasses = _fx.Store.Match(
+            subjectIri: child,
+            predicateIri: Vocabulary.RdfsSubClassOf.Value,
+            graphIri: _graph.Value);
+        Assert.Single(subclasses);
+        Assert.Equal(target, ((OntoNamedNode)subclasses[0].Object).Value);
+    }
+
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task MergeClasses_skips_self_loop_on_symmetric_predicates()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        var source = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "S" });
+        var target = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "T" });
+
+        // Seed: source disjointWith source — a degenerate but legal seed;
+        // after repoint it would become target disjointWith target. The
+        // symmetric-pred self-loop guard must drop it instead of writing.
+        await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "add_axiom", ["type"] = "disjoint",
+                ["a"] = source, ["b"] = source,
+            });
+        // Seed a second triple that survives: child disjointWith source
+        // — its source-side should repoint onto target.
+        var child = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "C" });
+        await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "add_axiom", ["type"] = "disjoint",
+                ["a"] = child, ["b"] = source,
+            });
+
+        await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "merge_classes",
+                ["source"] = source, ["target"] = target,
+            });
+
+        // No target disjointWith target triple.
+        var selfLoop = _fx.Store.Match(
+            subjectIri: target, objectIri: target,
+            predicateIri: Vocabulary.OwlDisjointWith.Value,
+            graphIri: _graph.Value);
+        Assert.Empty(selfLoop);
+
+        // child disjointWith target survives the repoint.
+        var childDisjoint = _fx.Store.Match(
+            subjectIri: child,
+            predicateIri: Vocabulary.OwlDisjointWith.Value,
+            graphIri: _graph.Value);
+        Assert.Single(childDisjoint);
+        Assert.Equal(target, ((OntoNamedNode)childDisjoint[0].Object).Value);
+    }
+
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task MergeClasses_cascade_retypes_abox_individuals_but_keeps_them()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        var source = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "OldClass" });
+        var target = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "NewClass" });
+
+        // Seed two individuals typed against source in the ABox, plus a
+        // bogus assertion triple that the merge must NOT touch.
+        var aboxGraph = new OntoNamedNode(_graph.Value.TrimEnd('/') + "/abox");
+        var ind1 = new OntoNamedNode("urn:ind-1");
+        var ind2 = new OntoNamedNode("urn:ind-2");
+        var other = new OntoNamedNode("urn:other");
+        _fx.Store.AddQuads(aboxGraph, new[]
+        {
+            new OntoQuad(ind1, Vocabulary.RdfType, new OntoNamedNode(source), aboxGraph),
+            new OntoQuad(ind2, Vocabulary.RdfType, new OntoNamedNode(source), aboxGraph),
+            new OntoQuad(ind1, Vocabulary.RdfType, other, aboxGraph), // unrelated type
+        });
+
+        await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "merge_classes",
+                ["source"] = source, ["target"] = target,
+            });
+
+        // No instance is typed against source anymore.
+        var oldTypings = _fx.Store.Match(
+            predicateIri: Vocabulary.RdfType.Value,
+            objectIri: source,
+            graphIri: aboxGraph.Value);
+        Assert.Empty(oldTypings);
+
+        // Both ind-1 and ind-2 now typed against target.
+        var newTypings = _fx.Store.Match(
+            predicateIri: Vocabulary.RdfType.Value,
+            objectIri: target,
+            graphIri: aboxGraph.Value);
+        Assert.Equal(2, newTypings.Count);
+
+        // The unrelated other-typing on ind-1 is preserved (no orphans).
+        Assert.True(_fx.Store.ContainsQuad(new OntoQuad(
+            ind1, Vocabulary.RdfType, other, aboxGraph)));
+    }
+
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task MergeClasses_rejects_self_merge()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        var cls = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "Self" });
+
+        await Assert.ThrowsAsync<OntologyEditException>(async () =>
+            await editor.ApplyEditAsync(_graph.Value, _baseIri,
+                new Dictionary<string, object?>
+                {
+                    ["op"] = "merge_classes",
+                    ["source"] = cls, ["target"] = cls,
+                }));
+    }
+
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task MergeClasses_rejects_missing_source_or_target()
+    {
+        var editor = new OntologyEditor(_fx.Store);
+        var cls = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?> { ["op"] = "add_class", ["label"] = "X" });
+
+        await Assert.ThrowsAsync<OntologyEditException>(async () =>
+            await editor.ApplyEditAsync(_graph.Value, _baseIri,
+                new Dictionary<string, object?>
+                {
+                    ["op"] = "merge_classes",
+                    ["target"] = cls,
+                }));
+        await Assert.ThrowsAsync<OntologyEditException>(async () =>
+            await editor.ApplyEditAsync(_graph.Value, _baseIri,
+                new Dictionary<string, object?>
+                {
+                    ["op"] = "merge_classes",
+                    ["source"] = cls,
+                }));
+    }
+
+    [Fact]
+    [Trait("Category", "RdfCore")]
+    public async Task MergeClasses_no_store_path_validates_and_returns_target()
+    {
+        // No StoreWrapper wired — exercises the ApplyEditNoStore mirror
+        // (contract-test factory).
+        var editor = new OntologyEditor(store: null);
+        var result = await editor.ApplyEditAsync(_graph.Value, _baseIri,
+            new Dictionary<string, object?>
+            {
+                ["op"] = "merge_classes",
+                ["source"] = "http://example.com/a",
+                ["target"] = "http://example.com/b",
+            });
+        Assert.Equal("http://example.com/b", result);
+    }
 }
