@@ -25,15 +25,49 @@ namespace OnToPilot.Extraction;
 /// orchestrator reads this to feed
 /// <see cref="TerminologyAgent.SuggestAsync"/>.
 /// </param>
+/// <param name="Properties">
+/// Property entities (object + data) the sync observed in the TBox. Mirrors
+/// Python's <c>entities = classes + object_properties + data_properties</c>
+/// aggregate. Surfaced in the audit row so reviewers can spot TBoxes that
+/// have properties without classes (or vice versa) without re-querying.
+/// </param>
+/// <param name="AliasesAdded">
+/// Concepts that gained an additional <c>skos:altLabel</c> triple during this
+/// pass because the entity's normalised label was not yet attached. Mirrors
+/// Python's <c>result["aliases_added"]</c>.
+/// </param>
+/// <param name="BroaderAdded">
+/// <c>skos:broader</c> triple additions seeded from <c>rdfs:subClassOf</c>
+/// relations among mapped classes. Mirrors Python's
+/// <c>result["broader_added"]</c>; only relations whose endpoints share a
+/// scheme are counted.
+/// </param>
+/// <param name="StaleMappingsRemoved">
+/// Concepts whose <c>op:mapsTo</c> was cleared — they had previously pointed
+/// at an ontology / ABox IRI that no longer exists. Mirrors Python's
+/// <c>result["stale_mappings_removed"]</c>; the concept row is preserved so
+/// a human can remap or deprecate it.
+/// </param>
+/// <param name="MappingConflicts">
+/// Entities whose label collided with a concept already mapped to a
+/// different ontology IRI. The sync skipped them (no write) so the existing
+/// mapping wins; the reviewer can resolve manually. Mirrors Python's
+/// <c>result["mapping_conflicts"]</c>.
+/// </param>
 public sealed record TerminologyResult(
     int TermsAdded,
     int TermsMapped,
     int ProposalsQueued,
     string? Error,
-    string? SchemeIri = null)
+    string? SchemeIri = null,
+    int Properties = 0,
+    int AliasesAdded = 0,
+    int BroaderAdded = 0,
+    int StaleMappingsRemoved = 0,
+    int MappingConflicts = 0)
 {
     /// <summary>All-zero summary used when sync is skipped.</summary>
-    public static TerminologyResult Zero { get; } = new(0, 0, 0, null, null);
+    public static TerminologyResult Zero { get; } = new(0, 0, 0, null, null, 0, 0, 0, 0, 0);
 }
 
 /// <summary>
@@ -105,8 +139,18 @@ public sealed class TerminologyService : ITerminologySync
             return TerminologyResult.Zero;
         }
         var view = SchemaBuilder.BuildView(ks.TBoxGraph, _store);
-        var classes = view.Classes;
-        if (classes.Count == 0) return TerminologyResult.Zero;
+
+        // Python parity: `entities = classes + object_properties + data_properties`.
+        // The property count surfaces separately in the audit row so reviewers
+        // can spot TBoxes that have properties without classes (or vice versa)
+        // without re-querying the schema builder.
+        var ontologyIris = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var c in view.Classes) ontologyIris.Add(c.Iri);
+        foreach (var p in view.ObjectProperties) ontologyIris.Add(p.Iri);
+        foreach (var p in view.DataProperties) ontologyIris.Add(p.Iri);
+        var propertyCount = view.ObjectProperties.Count + view.DataProperties.Count;
+
+        if (ontologyIris.Count == 0) return TerminologyResult.Zero;
 
         // Ensure a default ConceptScheme exists so the vocabulary view has a
         // scheme to anchor the concepts this pass creates. Mirrors the Python
@@ -119,51 +163,284 @@ public sealed class TerminologyService : ITerminologySync
         var schemeIri = EnsureScheme(ks, view);
         if (schemeIri is null)
         {
-            return new TerminologyResult(0, 0, 0, null, null);
+            return new TerminologyResult(0, 0, 0, null, null,
+                Properties: propertyCount, AliasesAdded: 0, BroaderAdded: 0,
+                StaleMappingsRemoved: 0, MappingConflicts: 0);
         }
 
-        // Index existing mapped concepts by their pref-label so a re-run
-        // counts as mapped rather than re-added.
-        var mappedIndex = new SkosManager(_store).MappedAliases(ks);
+        var skos = new SkosManager(_store);
+
+        // ---- Pass 1: stale mappings ----
+        // Mirrors Python `terminology_sync.sync_from_ontology` lines 122-130:
+        // any concept whose `mappedEntityIri` no longer exists in either the
+        // ontology or the ABox gets its mapping cleared (but the concept row
+        // itself is preserved so a human can remap or deprecate it).
+        // `valid_mapping_iris = ontology_iris | abox_iris` — the ABox half
+        // reads the subject set of the `…/abox` named graph (every instance
+        // IRI), mirroring `store.read_triples(abox_iri)`.
+        var aboxIris = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var q in _store.Match(graph: new OntoNamedNode(ks.ABoxGraph)))
+        {
+            if (q.Subject is OntoNamedNode n) aboxIris.Add(n.Value);
+        }
+        var validMappingIris = new HashSet<string>(ontologyIris, StringComparer.Ordinal);
+        validMappingIris.UnionWith(aboxIris);
+
+        var staleMappingsRemoved = 0;
+        var preView = skos.BuildView(ks);
+        foreach (var concept in preView.Concepts)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrEmpty(concept.MappedEntityIri)) continue;
+            if (validMappingIris.Contains(concept.MappedEntityIri!)) continue;
+            // The mapping target no longer exists in the ontology or ABox;
+            // preserve the concept but drop the op:mapsTo triple so the
+            // reviewer can decide (remap or deprecate). Python's
+            // update_concept rewrites the whole concept payload; the
+            // minimal RemoveQuads here produces the same final graph state
+            // without the round-trip.
+            var stale = _store.Match(
+                subjectIri: concept.Iri,
+                predicateIri: SkosVocab.OpMapsTo.Value,
+                graphIri: ks.VocabularyGraph);
+            if (stale.Count > 0) _store.RemoveQuads(new OntoNamedNode(ks.VocabularyGraph), stale);
+            staleMappingsRemoved++;
+        }
+
+        // ---- Pass 2: entity sync ----
+        // Python decision tree per entity (mirrors `terminology_sync`):
+        //   1. `concept_by_mapping[iri]` exists → entity already has a
+        //      mapped concept; nothing to create, the alias pass below
+        //      attaches the entity label if it's missing.
+        //   2. the entity's label is owned by a mapped concept pointing at a
+        //      different IRI → `mapping_conflicts += 1; continue`.
+        //   3. the entity's label exists as a pref-label on an unmapped
+        //      concept → map that concept onto the entity (`terms_mapped`).
+        //   4. otherwise create a fresh mapped concept (`terms_added` and
+        //      `terms_mapped`).
+        //
+        // `conceptByMapping` mirrors Python's `concept_by_mapping` dict;
+        // `mappedIndex` mirrors the mapped subset of `label_owner`
+        // (via MappedAliases). Both are refreshed after each create so a
+        // re-encountered entity in the same pass sees the new state.
+        var conceptByMapping = new Dictionary<string, string>(StringComparer.Ordinal);
+        var mappedIndex = new Dictionary<string, string>(skos.MappedAliases(ks), StringComparer.Ordinal);
+        foreach (var c in preView.Concepts)
+        {
+            if (!string.IsNullOrEmpty(c.MappedEntityIri))
+                conceptByMapping[c.MappedEntityIri!] = c.Iri;
+        }
 
         var graph = new OntoNamedNode(ks.VocabularyGraph);
         var now = _clock.GetUtcNow().UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
         var added = 0;
         var mapped = 0;
+        var mappingConflicts = 0;
 
-        foreach (var cls in classes)
+        // Iterate classes first (the order the previous version of this
+        // method used), then properties — Python aggregates them in the same
+        // order via `dict(entity, entity_kind="class"|"object_property"|...)`.
+        foreach (var entity in EnumerateEntities(view))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var normalized = Vocabulary.NormLabel(cls.Label);
+            var (iri, label) = entity;
+            var normalized = Vocabulary.NormLabel(label);
             if (normalized.Length == 0) continue;
 
-            // A mapped alias means a SKOS concept already points at this
-            // class IRI through its `mappedEntityIri`. No write required.
-            if (mappedIndex.ContainsKey(normalized))
+            // Branch 1: entity already has a mapped concept.
+            if (conceptByMapping.ContainsKey(iri)) continue;
+
+            // Branch 2: label owned by a mapped concept at a different IRI.
+            if (mappedIndex.TryGetValue(normalized, out _))
             {
-                mapped++;
+                mappingConflicts++;
                 continue;
             }
 
-            // Otherwise check whether a pref-label without a mapping exists;
-            // if so, leave it alone (we don't own the prior data) and only
-            // mint fresh concepts when no concept advertises the label.
-            if (PrefLabelExists(ks, cls.Label)) continue;
+            // Branch 3: label exists as an unmapped pref-label → adopt it.
+            var existingConcept = FindConceptIriByPrefLabel(ks, label);
+            if (existingConcept is not null)
+            {
+                _store.AddQuads(graph, new[]
+                {
+                    new Oxigraph.Quad(
+                        new OntoNamedNode(existingConcept),
+                        SkosVocab.OpMapsTo,
+                        new OntoNamedNode(iri),
+                        graph),
+                });
+                mapped++;
+                mappedIndex[normalized] = iri;
+                conceptByMapping[iri] = existingConcept;
+                continue;
+            }
 
-            var concept = new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(cls.Iri)}");
+            // Branch 4: fresh mapped concept. The label language mirrors
+            // Python's `_language(label)` CJK heuristic ("zh-CN" for CJK
+            // labels, "en" otherwise) so Chinese TBoxes mint Chinese
+            // pref labels.
+            var concept = new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(iri)}");
             _store.AddQuads(graph, new[]
             {
                 new Oxigraph.Quad(concept, Vocabulary.RdfType, SkosVocab.Concept, graph),
                 new Oxigraph.Quad(concept, SkosVocab.InScheme, new OntoNamedNode(schemeIri), graph),
-                new Oxigraph.Quad(concept, SkosVocab.PrefLabel, new OntoLiteral(cls.Label, "en"), graph),
+                new Oxigraph.Quad(concept, SkosVocab.PrefLabel, new OntoLiteral(label, ContainsCjk(label) ? "zh-CN" : "en"), graph),
                 new Oxigraph.Quad(concept, SkosVocab.OpStatus, new OntoLiteral("active"), graph),
-                new Oxigraph.Quad(concept, SkosVocab.OpMapsTo, new OntoNamedNode(cls.Iri), graph),
+                new Oxigraph.Quad(concept, SkosVocab.OpMapsTo, new OntoNamedNode(iri), graph),
                 new Oxigraph.Quad(concept, SkosVocab.DcCreated, new OntoLiteral(now), graph),
             });
+            // Python parity: a fresh concept is both `terms_added` and
+            // `terms_mapped` (its mapping exists by construction).
             added++;
+            mapped++;
+            mappedIndex[normalized] = iri;
+            conceptByMapping[iri] = concept.Value;
         }
 
-        return new TerminologyResult(added, mapped, ProposalsQueued: 0, Error: null, SchemeIri: schemeIri);
+        // ---- Pass 3: alias additions ----
+        // For every mapped concept, ensure its entity's normalised label is
+        // attached as at least one of `pref_labels` / `alt_labels` /
+        // `hidden_labels`. Mirrors Python's
+        // `result["aliases_added"] += 1` increment after the
+        // `existing_keys / label_owner` dedup loop.
+        //
+        // Python parity notes:
+        // - `label_owner` contains only labels of concepts in the resolved
+        //   scheme, so an alias that another concept in the SAME scheme
+        //   already owns is skipped (`key not in label_owner`).
+        // - Python rewrites the whole concept via update_concept; we add the
+        //   single `skos:altLabel` triple directly. Final graph state is
+        //   identical and the minimal write avoids SkosManager's
+        //   single-prefLabel round-trip (which would drop extra-language
+        //   pref labels on concepts this sync did not create).
+        var aliasesAdded = 0;
+        var postView = skos.BuildView(ks);
+        var labelOwners = new HashSet<(string Norm, string Lang)>(NormLangOrdinalComparer.Instance);
+        foreach (var c in postView.Concepts)
+        {
+            if (c.SchemeIri != schemeIri) continue;
+            foreach (var l in c.PrefLabels.Concat(c.AltLabels).Concat(c.HiddenLabels))
+                labelOwners.Add((Vocabulary.NormLabel(l.Value), l.Language.ToLowerInvariant()));
+        }
+        var entityIndex = BuildEntityIndex(view);
+        foreach (var concept in postView.Concepts)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrEmpty(concept.MappedEntityIri)) continue;
+            if (!entityIndex.TryGetValue(concept.MappedEntityIri!, out var entity)) continue;
+            var (label, lang) = entity;
+            var key = (Vocabulary.NormLabel(label), lang.ToLowerInvariant());
+            var existing = new HashSet<(string Norm, string Lang)>(NormLangOrdinalComparer.Instance);
+            foreach (var l in concept.PrefLabels)
+                existing.Add((Vocabulary.NormLabel(l.Value), l.Language.ToLowerInvariant()));
+            foreach (var l in concept.AltLabels)
+                existing.Add((Vocabulary.NormLabel(l.Value), l.Language.ToLowerInvariant()));
+            foreach (var l in concept.HiddenLabels)
+                existing.Add((Vocabulary.NormLabel(l.Value), l.Language.ToLowerInvariant()));
+            if (existing.Contains(key)) continue;
+            if (labelOwners.Contains(key)) continue;
+            _store.AddQuads(new OntoNamedNode(ks.VocabularyGraph), new[]
+            {
+                new Oxigraph.Quad(
+                    new OntoNamedNode(concept.Iri),
+                    SkosVocab.AltLabel,
+                    new OntoLiteral(label, lang),
+                    new OntoNamedNode(ks.VocabularyGraph)),
+            });
+            aliasesAdded++;
+            // Python refreshes `label_owner[key] = concept` after each
+            // alias write so a second concept mapped to the same entity
+            // does not attach the same label again.
+            labelOwners.Add(key);
+        }
+
+        // ---- Pass 4: broader additions ----
+        // For every class with a superclass relation, add the corresponding
+        // mapped parent concept's IRI to its `skos:broader` set (mirrors
+        // Python `result["broader_added"] += len(additions)`).
+        // Relations spanning different schemes, self-loops, and already-
+        // present entries are skipped. Python funnels the whole batch
+        // through update_concept (cycle check); we add each triple directly
+        // because the same-scheme + non-self filters above already exclude
+        // every relation the SKOS validator would reject except a cycle,
+        // which the schema builder's subclass view does not produce.
+        var broaderAdded = 0;
+        var finalView = skos.BuildView(ks);
+        foreach (var cls in view.Classes)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (cls.Superclasses.Count == 0) continue;
+            var concept = finalView.Concepts.FirstOrDefault(c => c.MappedEntityIri == cls.Iri);
+            if (concept is null) continue;
+            var additions = new List<string>();
+            foreach (var parentIri in cls.Superclasses)
+            {
+                var parentConcept = finalView.Concepts.FirstOrDefault(c => c.MappedEntityIri == parentIri);
+                if (parentConcept is null) continue;
+                if (parentConcept.SchemeIri != concept.SchemeIri) continue;
+                if (parentConcept.Iri == concept.Iri) continue;
+                if (concept.Broader.Contains(parentConcept.Iri, StringComparer.Ordinal)) continue;
+                additions.Add(parentConcept.Iri);
+            }
+            if (additions.Count == 0) continue;
+            var broaderQuads = new List<Oxigraph.Quad>(additions.Count);
+            foreach (var parent in additions)
+            {
+                broaderQuads.Add(new Oxigraph.Quad(
+                    new OntoNamedNode(concept.Iri),
+                    SkosVocab.Broader,
+                    new OntoNamedNode(parent),
+                    new OntoNamedNode(ks.VocabularyGraph)));
+            }
+            _store.AddQuads(new OntoNamedNode(ks.VocabularyGraph), broaderQuads);
+            broaderAdded += additions.Count;
+        }
+
+        return new TerminologyResult(
+            TermsAdded: added,
+            TermsMapped: mapped,
+            ProposalsQueued: 0,
+            Error: null,
+            SchemeIri: schemeIri,
+            Properties: propertyCount,
+            AliasesAdded: aliasesAdded,
+            BroaderAdded: broaderAdded,
+            StaleMappingsRemoved: staleMappingsRemoved,
+            MappingConflicts: mappingConflicts);
+    }
+
+    /// <summary>
+    /// Enumerate the ontology's classes + properties as a uniform sequence of
+    /// (Iri, Label) tuples so the entity loop can iterate without dispatching
+    /// on the concrete view type. Python parity: the source aggregate is
+    /// <c>classes + object_properties + data_properties</c> in that order.
+    /// </summary>
+    private static IEnumerable<(string Iri, string Label)> EnumerateEntities(OntologyView view)
+    {
+        foreach (var c in view.Classes)
+            yield return (c.Iri, c.Label);
+        foreach (var p in view.ObjectProperties)
+            yield return (p.Iri, p.Label);
+        foreach (var p in view.DataProperties)
+            yield return (p.Iri, p.Label);
+    }
+
+    /// <summary>
+    /// Reverse-lookup from IRI → (Label, Language) for every ontology entity.
+    /// Used by the alias-addition pass to find each mapped concept's source
+    /// entity's label so it can re-attach it as an <c>skos:altLabel</c>.
+    /// Language mirrors Python's <c>_language(label)</c> CJK heuristic.
+    /// </summary>
+    private static Dictionary<string, (string Label, string Language)> BuildEntityIndex(OntologyView view)
+    {
+        var index = new Dictionary<string, (string, string)>(StringComparer.Ordinal);
+        foreach (var c in view.Classes)
+            index[c.Iri] = (c.Label, ContainsCjk(c.Label) ? "zh-CN" : "en");
+        foreach (var p in view.ObjectProperties)
+            index[p.Iri] = (p.Label, ContainsCjk(p.Label) ? "zh-CN" : "en");
+        foreach (var p in view.DataProperties)
+            index[p.Iri] = (p.Label, ContainsCjk(p.Label) ? "zh-CN" : "en");
+        return index;
     }
 
     /// <summary>
@@ -244,9 +521,16 @@ public sealed class TerminologyService : ITerminologySync
         return false;
     }
 
-    private bool PrefLabelExists(KsContext ks, string label)
+    /// <summary>
+    /// Find a concept IRI in the vocabulary graph whose <c>skos:prefLabel</c>
+    /// normalises to <paramref name="label"/>. Returns <c>null</c> when no
+    /// concept advertises the label. Mirrors Python's
+    /// <c>label_owner.get(key)</c> lookup for the unmapped-exact branch
+    /// (branch 3 of the entity loop).
+    /// </summary>
+    private string? FindConceptIriByPrefLabel(KsContext ks, string label)
     {
-        if (_store is null) return false;
+        if (_store is null) return null;
         var existing = _store.Match(
             predicateIri: SkosVocab.PrefLabel.Value,
             graphIri: ks.VocabularyGraph);
@@ -256,10 +540,10 @@ public sealed class TerminologyService : ITerminologySync
             if (quad.Object is OntoLiteral l &&
                 string.Equals(Vocabulary.NormLabel(l.Value), normalized, StringComparison.Ordinal))
             {
-                return true;
+                return quad.Subject is OntoNamedNode n ? n.Value : null;
             }
         }
-        return false;
+        return null;
     }
 
     /// <summary>
@@ -276,5 +560,23 @@ public sealed class TerminologyService : ITerminologySync
         var slash = iri.LastIndexOf('/');
         var cut = hash > slash ? hash : slash;
         return cut >= 0 ? iri[(cut + 1)..] : iri;
+    }
+
+    /// <summary>
+    /// Ordinal-comparer for the (normalised label, language) tuples the
+    /// alias-dedup pass uses. <see cref="StringComparer.Ordinal"/> does
+    /// not implement <see cref="IEqualityComparer{T}"/> for value tuples
+    /// directly, so we wrap it.
+    /// </summary>
+    private sealed class NormLangOrdinalComparer : IEqualityComparer<(string Norm, string Lang)>
+    {
+        public static readonly NormLangOrdinalComparer Instance = new();
+        public bool Equals((string Norm, string Lang) x, (string Norm, string Lang) y) =>
+            string.Equals(x.Norm, y.Norm, StringComparison.Ordinal)
+            && string.Equals(x.Lang, y.Lang, StringComparison.Ordinal);
+        public int GetHashCode((string Norm, string Lang) obj) =>
+            HashCode.Combine(
+                StringComparer.Ordinal.GetHashCode(obj.Norm ?? string.Empty),
+                StringComparer.Ordinal.GetHashCode(obj.Lang ?? string.Empty));
     }
 }

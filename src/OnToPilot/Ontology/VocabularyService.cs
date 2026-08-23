@@ -566,6 +566,11 @@ public sealed class VocabularyService
                 ["terms_added"] = result.TermsAdded,
                 ["terms_mapped"] = result.TermsMapped,
                 ["proposals_queued"] = result.ProposalsQueued,
+                ["properties"] = result.Properties,
+                ["aliases_added"] = result.AliasesAdded,
+                ["broader_added"] = result.BroaderAdded,
+                ["stale_mappings_removed"] = result.StaleMappingsRemoved,
+                ["mapping_conflicts"] = result.MappingConflicts,
                 ["error"] = result.Error,
             },
             ksc.VocabularyGraph, added, removed, ct).ConfigureAwait(false);

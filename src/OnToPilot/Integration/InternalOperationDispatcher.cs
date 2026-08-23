@@ -1332,9 +1332,15 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         },
         terminology = result.Terminology is null ? null : new
         {
+            scheme_iri = result.Terminology.SchemeIri,
             terms_added = result.Terminology.TermsAdded,
             terms_mapped = result.Terminology.TermsMapped,
             proposals_queued = result.Terminology.ProposalsQueued,
+            properties = result.Terminology.Properties,
+            aliases_added = result.Terminology.AliasesAdded,
+            broader_added = result.Terminology.BroaderAdded,
+            stale_mappings_removed = result.Terminology.StaleMappingsRemoved,
+            mapping_conflicts = result.Terminology.MappingConflicts,
             error = result.Terminology.Error,
         },
     };

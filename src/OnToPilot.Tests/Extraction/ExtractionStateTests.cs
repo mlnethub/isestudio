@@ -300,9 +300,13 @@ public sealed class ExtractionStateTests : IDisposable
         Assert.Null(finished.TerminologyError);
 
         // Re-running against the same vocabulary maps rather than re-adds.
+        // Python parity (P3-10): terms_mapped counts mappings the PASS
+        // performed (fresh creates + adopted unmapped concepts), so an
+        // idempotent rerun reports 0 — every entity already has its
+        // mapped concept and the loop skips it.
         var second = new TerminologyService(Store).SyncAsync(Ks, CancellationToken.None);
         Assert.Equal(0, second.TermsAdded);
-        Assert.True(second.TermsMapped > 0, "Existing concepts should be reported as mapped.");
+        Assert.Equal(0, second.TermsMapped);
     }
 
     // ------------------------------------------------------------------
