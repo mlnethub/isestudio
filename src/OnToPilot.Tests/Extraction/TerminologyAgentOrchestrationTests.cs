@@ -178,6 +178,33 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
 
     [Fact]
     [Trait("Category", "Extraction")]
+    public async Task Terminology_proposals_serialize_as_nonzero_in_wire_shape()
+    {
+        // P3-4 follow-up gap: the dispatcher's wire field is `terminology_proposals`
+        // (JobOut.From + controller SnakeCaseLower). The non-zero path is
+        // wired end-to-end via the existing test above; this one explicitly
+        // pins the JSON shape so future refactors of the projection (e.g.
+        // collapsing it into the dispatcher's anonymous object) cannot
+        // silently drop the count without a test failure.
+        FakeChat.Enqueue(TBoxDelta);
+        FakeChat.Enqueue(ProposeReply(ChunkLegacyId));
+
+        var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
+        var finished = await Jobs.WaitAsync(job.Id);
+
+        Assert.True(finished.TerminologyProposals > 0,
+            $"expected TerminologyProposals > 0, got {finished.TerminologyProposals}");
+
+        // Round-trip the wire projection and prove the count survives
+        // serialisation. This is the field the InternalApiFacade hands
+        // clients via extraction.get_job.
+        var wireOut = ExtractionJobOut.From(finished);
+        var wireJson = JsonSerializer.Serialize(wireOut);
+        Assert.Contains("\"terminology_proposals\":1", wireJson);
+    }
+
+    [Fact]
+    [Trait("Category", "Extraction")]
     public async Task Terminology_agent_short_circuits_when_no_chunks_exist()
     {
         // No chunk is seeded — RunTerminologyAgentAsync must bail before

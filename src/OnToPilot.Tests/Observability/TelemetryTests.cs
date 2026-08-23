@@ -26,6 +26,7 @@ namespace OnToPilot.Tests.Observability;
 ///     log events — including nested dictionary / sequence values.</item>
 /// </list>
 /// </summary>
+[Collection("ActivityWrapping")]
 public sealed class TelemetryTests
 {
     private const string Provider = "fake";

@@ -137,7 +137,6 @@ src/
 │   ├── Services/                   # 业务编排层（调用 Ontology + LLM）
 │   │   ├── IntegrationApiFacade.cs # 对外 API 聚合入口（MCP Tools 依赖于此）
 │   │   ├── ExtractionOrchestrator.cs
-│   │   └── MigrationCoordinator.cs # 迁移阶段协调（SQL + RDF + MinIO）
 │   ├── Ontology/                   # RDF 本体逻辑（领域层）
 │   │   ├── StoreWrapper.cs         # Oxigraph.NET 封装（替代 store.py）
 │   │   ├── SchemaBuilder.cs        # 替代 schema.py
