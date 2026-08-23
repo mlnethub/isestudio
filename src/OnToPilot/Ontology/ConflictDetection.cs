@@ -71,7 +71,11 @@ public static class ConflictDetection
     /// </summary>
     /// <param name="store">The TBox graph store.</param>
     /// <param name="graphIri">Named graph carrying the TBox quads.</param>
-    /// <param name="semantic">Reserved for the deferred duplicate pass; ignored today.</param>
+    /// <param name="semantic">Reserved for the duplicate-class pass;
+    /// <see cref="Detect"/> itself stays purely structural. The full
+    /// surface (Detect + duplicate pass) is produced by calling
+    /// <see cref="DuplicateJudge.DetectAsync(StoreWrapper, string, CancellationToken)"/>
+    /// after this method and merging results.</param>
     public static IReadOnlyList<DetectedConflict> Detect(
         StoreWrapper store,
         string graphIri,
@@ -101,6 +105,54 @@ public static class ConflictDetection
 
         return found;
     }
+
+    // ------------------------------------------------------------------
+    // Read-only helpers exposed to the DuplicateJudge semantic pass
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Public read-only view of the TBox's classes (each with its union-expanded
+    /// label) so <see cref="DuplicateJudge"/> can run its
+    /// string-similarity + embedding-cosine + LLM-judge pipeline on the
+    /// same label source the structural detectors use. The returned IRI
+    /// order matches the order <see cref="Detect"/> saw; consumers that
+    /// need a stable cross-call order should sort themselves.
+    /// </summary>
+    public static IReadOnlyList<ClassLabel> ReadClassLabels(
+        StoreWrapper store, string graphIri)
+    {
+        var m = ReadGraph(store, graphIri);
+        var list = new List<ClassLabel>(m.Classes.Count);
+        foreach (var iri in m.Classes)
+        {
+            list.Add(new ClassLabel(iri, LabelOf(m, iri)));
+        }
+        return list;
+    }
+
+    /// <summary>One class IRI plus its union-expanded label (mirrors the Python <c>_lbl(m, iri)</c> helper).</summary>
+    public sealed record ClassLabel(string Iri, string Label);
+
+    /// <summary>
+    /// Flat view of the TBox's class-class relationships for
+    /// <see cref="DuplicateJudge"/>'s <c>_related</c> filter (skip pairs
+    /// already declared subclass / disjoint / equivalent — those are
+    /// deliberately distinct, not accidental duplicates).
+    /// </summary>
+    public static GraphRelations ReadGraphRelations(StoreWrapper store, string graphIri)
+    {
+        var m = ReadGraph(store, graphIri);
+        return new GraphRelations(
+            Subclass: m.Subclass.Select(p => (p.Item1, p.Item2)).ToList(),
+            Disjoint: m.Disjoint.Select(p => (p.Item1, p.Item2)).ToList(),
+            Equivalent: m.Equivalent.Select(p => (p.Item1, p.Item2)).ToList());
+    }
+
+    /// <summary>Flat view of the TBox's class-class relationships.</summary>
+    public sealed record GraphRelations(
+        IReadOnlyList<(string Sub, string Sup)> Subclass,
+        IReadOnlyList<(string A, string B)> Disjoint,
+        IReadOnlyList<(string A, string B)> Equivalent);
 
     // ----------------------------------------------------------------------
     // Graph read

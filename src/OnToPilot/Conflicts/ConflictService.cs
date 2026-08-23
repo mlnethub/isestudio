@@ -28,6 +28,14 @@ public sealed class ConflictService
     /// <summary>Used for the <c>extraction_active</c> guard on resolve / dismiss.</summary>
     private readonly ExtractionJobStore? _jobs;
 
+    /// <summary>
+    /// Optional semantic duplicate-class pass (string sim + embedding
+    /// cosine + LLM judge). <c>null</c> in the contract-test factory —
+    /// the structural surface alone is then returned, mirroring the
+    /// pre-P1-1:83 behaviour.
+    /// </summary>
+    private readonly DuplicateJudge? _duplicateJudge;
+
     private readonly OnToPilotDbContext _db;
     private readonly TimeProvider _clock;
     private readonly LegacyIdAllocator _allocator;
@@ -37,13 +45,15 @@ public sealed class ConflictService
         TimeProvider clock,
         LegacyIdAllocator allocator,
         ExtractionJobStore? jobs = null,
-        StoreWrapper? store = null)
+        StoreWrapper? store = null,
+        DuplicateJudge? duplicateJudge = null)
     {
         _db = db;
         _clock = clock;
         _allocator = allocator;
         _jobs = jobs;
         _store = store;
+        _duplicateJudge = duplicateJudge;
     }
 
     // ----------------------------------------------------------------------
@@ -110,6 +120,18 @@ public sealed class ConflictService
         }
 
         var detected = ConflictDetection.Detect(_store, ks.GraphIri, semantic: true);
+        // The semantic duplicate-class pass (P1-1:83): runs after the
+        // structural detectors and merges its candidates into the queue
+        // by signature. When the optional DuplicateJudge service is not
+        // wired (contract-test factory), we stay structural-only.
+        if (_duplicateJudge is not null)
+        {
+            var semantic = await _duplicateJudge.DetectAsync(_store, ks.GraphIri, ct).ConfigureAwait(false);
+            foreach (var d in semantic)
+            {
+                detected = detected.Append(d).ToList();
+            }
+        }
         var bySig = detected.ToDictionary(d => d.Signature, StringComparer.Ordinal);
         var existing = await _db.Conflicts
             .Where(c => c.KnowledgeSystemId == ks.Id)

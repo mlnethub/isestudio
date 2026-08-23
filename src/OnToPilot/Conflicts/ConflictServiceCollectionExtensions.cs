@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using OnToPilot.Llm;
+using OnToPilot.Ontology;
 
 namespace OnToPilot.Conflicts;
 
@@ -14,6 +16,8 @@ public static class ConflictServiceCollectionExtensions
 {
     public static IServiceCollection AddConflictServices(this IServiceCollection services)
     {
+        services.AddScoped<EmbeddingGeneratorFactory>();
+        services.AddScoped<DuplicateJudge>();
         services.AddScoped<ConflictService>();
         services.AddScoped<ConflictAgent>();
         return services;
