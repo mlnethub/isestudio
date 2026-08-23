@@ -266,7 +266,7 @@ public sealed class ExtractionOrchestrator
     private async Task<bool> TBoxOnlyRunnerAsync(JobRunContext ctx)
     {
         var promptSnapshot = _promptSnapshot.SnapshotAsync(
-            new Dictionary<string, string> { [TBoxExtractionService.PromptKey] = TBoxExtractionService.SystemPrompt });
+            new Dictionary<string, string> { [TBoxExtractionService.PromptKey] = _tbox.ResolveSystemPrompt() });
         var succeeded = await RunLayerAsync(
             ctx,
             graphIri: ctx.KsContext.TBoxGraph,
@@ -290,7 +290,7 @@ public sealed class ExtractionOrchestrator
     {
         var labels = ExistingClassLabels(ctx.KsContext);
         var promptSnapshot = _promptSnapshot.SnapshotAsync(
-            new Dictionary<string, string> { [ABoxExtractionService.PromptKey] = ABoxExtractionService.SystemPrompt });
+            new Dictionary<string, string> { [ABoxExtractionService.PromptKey] = _abox.ResolveSystemPrompt() });
         var succeeded = await RunLayerAsync(
             ctx,
             graphIri: ctx.KsContext.ABoxGraph,
@@ -321,8 +321,8 @@ public sealed class ExtractionOrchestrator
         var promptSnapshot = _promptSnapshot.SnapshotAsync(
             new Dictionary<string, string>
             {
-                [TBoxExtractionService.PromptKey] = TBoxExtractionService.SystemPrompt,
-                [ABoxExtractionService.PromptKey] = ABoxExtractionService.SystemPrompt,
+                [TBoxExtractionService.PromptKey] = _tbox.ResolveSystemPrompt(),
+                [ABoxExtractionService.PromptKey] = _abox.ResolveSystemPrompt(),
             });
 
         var tboxOk = await RunLayerAsync(

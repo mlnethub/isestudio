@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using OnToPilot.Configuration;
 using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Llm;
@@ -104,8 +106,8 @@ public sealed class ExtractionWorkflowTests : IDisposable
             new Chunker(size: 200, overlap: 20),
             new SingleClientFactory(_chat),
             new EndpointCapacityCoordinator(),
-            new TBoxExtractionService(),
-            new ABoxExtractionService(),
+            new TBoxExtractionService(Options.Create(new OnToPilotOptions())),
+            new ABoxExtractionService(Options.Create(new OnToPilotOptions())),
             new TerminologyService(_store),
             new PromptSnapshotService(),
             new ExtractionMerger(_store),

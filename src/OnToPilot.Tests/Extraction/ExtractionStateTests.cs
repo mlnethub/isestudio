@@ -1,5 +1,7 @@
 using System.Text;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using OnToPilot.Configuration;
 using OnToPilot.Extraction;
 using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Llm;
@@ -79,8 +81,8 @@ public sealed class ExtractionStateTests : IDisposable
             new Chunker(size: 200, overlap: 20),
             FakeChatClientFactory.Default,
             new EndpointCapacityCoordinator(),
-            new TBoxExtractionService(),
-            new ABoxExtractionService(),
+            new TBoxExtractionService(Options.Create(new OnToPilotOptions())),
+            new ABoxExtractionService(Options.Create(new OnToPilotOptions())),
             new TerminologyService(Store),
             new PromptSnapshotService(),
             Merger,

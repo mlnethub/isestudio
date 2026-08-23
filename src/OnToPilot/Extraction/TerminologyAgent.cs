@@ -4,10 +4,13 @@ using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using OnToPilot.Configuration;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Llm;
 using OnToPilot.Observability;
+using OnToPilot.Prompts;
 
 namespace OnToPilot.Extraction;
 
@@ -28,59 +31,39 @@ namespace OnToPilot.Extraction;
 /// <para>The agent is registered as a <see cref="ServiceLifetime.Scoped"/>
 /// service so the orchestrator / dispatcher can resolve it per request and
 /// the EF <see cref="OnToPilotDbContext"/> flows through naturally.</para>
+///
+/// <para>The system prompt is resolved at call time from
+/// <see cref="PromptLocales"/> against <see cref="OnToPilotOptions.SystemLanguage"/>.
+/// The Python parity key is <c>terminology.steward</c>; the older
+/// <c>terminology.propose</c> name was a stale artefact from the first
+/// .NET slice and has been renamed so the .NET and Python registries line
+/// up byte-for-byte.</para>
 /// </summary>
 public sealed class TerminologyAgent
 {
-    /// <summary>Prompt registry key the orchestration snapshot references.</summary>
-    public const string PromptKey = "terminology.propose";
+    /// <summary>
+    /// Prompt registry key the orchestration snapshot references. Matches
+    /// the Python backend's <c>prompt_config</c> registry entry of the
+    /// same name (see <c>backend/app/prompt_locales.py</c>); the prior
+    /// <c>terminology.propose</c> name was an early .NET-only artefact.
+    /// </summary>
+    public const string PromptKey = "terminology.steward";
 
     /// <summary>
-    /// System prompt sent to the LLM. Mirrors the
-    /// <c>terminology.steward</c> default in
-    /// <c>backend/app/ontology/terminology_agent.py</c>: the model returns
-    /// one JSON object with <c>{"proposals": [...]}</c>; each entry uses one
-    /// of three actions (<c>create</c> | <c>add_alias</c> | <c>update</c>)
-    /// and the action-specific fields documented below. The model may emit
-    /// an empty <c>proposals</c> array &mdash; that is a valid response.
+    /// Resolve the current system prompt body for <see cref="PromptKey"/>
+    /// according to <see cref="OnToPilotOptions.SystemLanguage"/>. See
+    /// <c>TBoxExtractionService.ResolveSystemPrompt</c> for the rationale;
+    /// the agent is Scoped so it reads <see cref="OnToPilotOptions"/>
+    /// through <see cref="IOptions{TOptions}"/> once at construction time.
     /// </summary>
-    public const string SystemPrompt = """
-        You are a controlled-terminology steward. Read source excerpts, the current SKOS
-        vocabulary, the ontology, and past human decisions. Propose precise terminology governance
-        changes, but do not invent unsupported terms.
-
-        Return ONLY one JSON object: {"proposals": [...]}.
-        Each proposal must use exactly one action:
-
-        1. Create a new controlled concept:
-        {"action":"create","preferred_label":"...","language":"en","alternate_labels":["..."],
-         "hidden_labels":[],"description":"...","broader_concept_iri":null,
-         "mapped_entity_iri":null,"confidence":0.0,"reason":"...","source_chunk_ids":[1]}
-
-        2. Add genuine synonyms to an existing concept:
-        {"action":"add_alias","target_concept_iri":"...","alternate_labels":["..."],
-         "language":"en","confidence":0.0,"reason":"...","source_chunk_ids":[1]}
-
-        3. Add a broader relation or ontology mapping to an existing concept:
-        {"action":"update","target_concept_iri":"...","broader_concept_iri":null,
-         "mapped_entity_iri":null,"confidence":0.0,"reason":"...","source_chunk_ids":[1]}
-
-        Rules:
-        - Distinguish synonyms from subtypes. A subtype such as "permanent-magnet motor" is not an alias
-          of "motor"; create a narrower concept instead and set its broader concept.
-        - Every proposed preferred or alternate label MUST occur verbatim in at least one cited source
-          chunk. Do not synthesize contextual names.
-        - An alternate label must be a substitutable name for the same concept, not a definition,
-          description, metaphor, sentence fragment, or related phrase.
-        - Add a broader concept only when "Every target concept is necessarily a broader concept" is
-          true. Created-by, managed-by, used-by, contains, and part-of relations are NOT broader links.
-        - One mapped ontology entity has one controlled concept. For a spelling/spacing variant of an
-          already mapped entity, propose add_alias on its existing concept instead of create.
-        - Reuse only IRIs explicitly supplied below. Never fabricate a target, broader, or mapped IRI.
-        - Do not repeat an existing preferred/alternative/hidden label.
-        - Prefer the source language. Keep explanations concise and evidence-based.
-        - Skip uncertain noise rather than proposing it. Empty proposals are valid.
-        - Human decisions below are authoritative; do not repeat rejected proposals.
-        """;
+    public string ResolveSystemPrompt()
+    {
+        var lang = PromptLocales.ParseSystemLanguage(_options.SystemLanguage);
+        return PromptLocales.ResolveWithFallback(PromptKey, lang)
+            ?? throw new InvalidOperationException(
+                $"Prompt key '{PromptKey}' is not registered in PromptLocales. " +
+                "Add an entry to PromptLocales._byKey before shipping.");
+    }
 
     private static readonly JsonSerializerOptions PayloadSerializerOptions = new()
     {
@@ -113,19 +96,23 @@ public sealed class TerminologyAgent
     private readonly OnToPilotDbContext _db;
     private readonly TimeProvider _clock;
     private readonly LegacyIdAllocator _allocator;
+    private readonly OnToPilotOptions _options;
 
     public TerminologyAgent(
         IChatClientFactory chatFactory,
         OnToPilotDbContext db,
         LegacyIdAllocator allocator,
+        IOptions<OnToPilotOptions> options,
         TimeProvider? clock = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(allocator);
+        ArgumentNullException.ThrowIfNull(options);
         _chatFactory = chatFactory;
         _db = db;
         _allocator = allocator;
+        _options = options.Value;
         _clock = clock ?? TimeProvider.System;
     }
 
@@ -381,7 +368,7 @@ public sealed class TerminologyAgent
     // Message construction
     // ----------------------------------------------------------------------
 
-    private static List<ChatMessage> BuildMessages(
+    private List<ChatMessage> BuildMessages(
         KnowledgeSystemEntity ks,
         string schemeIri,
         IReadOnlyDictionary<long, ChunkEntity> chunks)
@@ -400,7 +387,7 @@ public sealed class TerminologyAgent
 
         return new List<ChatMessage>
         {
-            new(ChatRole.System, SystemPrompt),
+            new(ChatRole.System, ResolveSystemPrompt()),
             new(ChatRole.User, prompt),
         };
     }

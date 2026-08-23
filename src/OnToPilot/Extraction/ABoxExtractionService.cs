@@ -1,8 +1,11 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using OnToPilot.Configuration;
 using OnToPilot.Llm;
 using OnToPilot.Observability;
 using OnToPilot.Ontology;
 using OnToPilot.Parsing;
+using OnToPilot.Prompts;
 
 namespace OnToPilot.Extraction;
 
@@ -12,31 +15,44 @@ namespace OnToPilot.Extraction;
 /// vocabulary. Each call asks for evidence-grounded mentions plus the data
 /// and object assertions attached to them.
 /// </summary>
+/// <remarks>
+/// <para>The prompt body is resolved at call time from
+/// <see cref="PromptLocales"/> against <see cref="OnToPilotOptions.SystemLanguage"/>
+/// so the .NET backend can switch between English and Simplified Chinese
+/// at runtime without a recompile. The Python parity key is
+/// <c>abox.extract</c> (see <c>backend/app/ontology/abox_extract.py</c>).</para>
+/// </remarks>
 public sealed class ABoxExtractionService
 {
-    /// <summary>Prompt registry key for the instance extraction prompt.</summary>
+    /// <summary>
+    /// Prompt registry key for the instance extraction prompt. Matches the
+    /// Python backend's <c>prompt_config</c> registry exactly so a future
+    /// prompt-snapshot auditor can compare the two stacks verbatim.
+    /// </summary>
     public const string PromptKey = "abox.extract";
 
-    /// <summary>System prompt sent for every ABox chunk.</summary>
-    public const string SystemPrompt = """
-        You are reading a chunk of source documentation and identifying named
-        individuals (people, places, products, documents, events, …) that are
-        instances of classes already declared in the knowledge system's TBox.
-        Return only JSON of this exact shape:
+    private readonly OnToPilotOptions _options;
 
-        {
-          "individuals": [{
-            "label": "Exact Name From Source",
-            "class": "ExistingClassLabel",
-            "evidence": "verbatim span from the chunk",
-            "attributes": [{"property": "dataPropertyLabel", "value": "literal"}],
-            "relations": [{"property": "objectPropertyLabel", "target": "Label of another individual"}]
-          }]
-        }
+    public ABoxExtractionService(IOptions<OnToPilotOptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        _options = options.Value;
+    }
 
-        Skip any mention whose class is not already declared in the TBox.
-        Omit any section you have no evidence for (return an empty array).
-        """;
+    /// <summary>
+    /// Resolve the current system prompt body for <see cref="PromptKey"/>
+    /// according to <see cref="OnToPilotOptions.SystemLanguage"/>. See
+    /// <see cref="TBoxExtractionService.ResolveSystemPrompt"/> for the
+    /// rationale; this is the ABox-side mirror.
+    /// </summary>
+    public string ResolveSystemPrompt()
+    {
+        var lang = PromptLocales.ParseSystemLanguage(_options.SystemLanguage);
+        return PromptLocales.ResolveWithFallback(PromptKey, lang)
+            ?? throw new InvalidOperationException(
+                $"Prompt key '{PromptKey}' is not registered in PromptLocales. " +
+                "Add an entry to PromptLocales._byKey before shipping.");
+    }
 
     /// <summary>
     /// Send the chunk text to the LLM and parse the reply into an
@@ -66,6 +82,7 @@ public sealed class ABoxExtractionService
 
         var provider = ResolveProvider(chat);
         var model = ResolveModel(chat);
+        var systemPrompt = ResolveSystemPrompt();
 
         return await Telemetry.LlmSource.WithLlmActivity(
             operationName: "Llm.Extract",
@@ -79,7 +96,7 @@ public sealed class ABoxExtractionService
 
                 var messages = new List<ChatMessage>
                 {
-                    new(ChatRole.System, SystemPrompt),
+                    new(ChatRole.System, systemPrompt),
                     new(ChatRole.User,
                         $"Knowledge system: {ks.GraphIri}\nBase IRI: {ks.BaseIri}\n" +
                         $"Existing TBox classes: {classListing}\n\n" +

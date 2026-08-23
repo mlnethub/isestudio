@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using OnToPilot.Configuration;
 using OnToPilot.Extraction;
 using OnToPilot.Observability;
 using OnToPilot.Ontology;
@@ -29,7 +31,8 @@ public sealed class TelemetryTests
     private const string Provider = "fake";
     private const string Model = "fake-1";
 
-    private static TBoxExtractionService Service { get; } = new();
+    private static TBoxExtractionService Service { get; } =
+        new(Options.Create(new OnToPilotOptions()));
 
     // The "Request" placeholder from the brief test maps to the (chat, ks,
     // chunk) tuple the extraction services consume — same intent, same

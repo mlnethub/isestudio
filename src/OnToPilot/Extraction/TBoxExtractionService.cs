@@ -1,9 +1,12 @@
 using System.ClientModel;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
+using OnToPilot.Configuration;
 using OnToPilot.Llm;
 using OnToPilot.Observability;
 using OnToPilot.Ontology;
 using OnToPilot.Parsing;
+using OnToPilot.Prompts;
 
 namespace OnToPilot.Extraction;
 
@@ -17,28 +20,52 @@ namespace OnToPilot.Extraction;
 /// the fields it can defend with evidence — empty arrays are valid for any
 /// section. The merge tolerates the same: a chunk that returns nothing
 /// contributes zero counters.</para>
+/// <para>The body of the prompt is resolved at call time from
+/// <see cref="PromptLocales"/> against <see cref="OnToPilotOptions.SystemLanguage"/>
+/// so the .NET backend can switch between English and Simplified Chinese
+/// at runtime without a recompile. The Python parity key is
+/// <c>tbox.extract.rag</c> (see <c>backend/app/ontology/extract.py</c>).</para>
 /// </remarks>
 public sealed class TBoxExtractionService
 {
-    /// <summary>Prompt registry key for the schema extraction prompt.</summary>
-    public const string PromptKey = "tbox.extract";
+    /// <summary>
+    /// Prompt registry key for the schema extraction prompt. Matches the
+    /// Python backend's <c>prompt_config</c> registry exactly so a future
+    /// prompt-snapshot auditor can compare the two stacks verbatim.
+    /// </summary>
+    public const string PromptKey = "tbox.extract.rag";
 
-    /// <summary>System prompt sent for every TBox chunk.</summary>
-    public const string SystemPrompt = """
-        You are an ontology engineer reading a chunk of source documentation.
-        Return only JSON of this exact shape:
+    private readonly OnToPilotOptions _options;
 
-        {
-          "classes": [{"label": "PascalCase", "comment": "..."}],
-          "object_properties": [{"label": "camelCase", "domain": "Class", "range": "Class", "comment": "..."}],
-          "data_properties": [{"label": "camelCase", "domain": "Class", "range": "string|integer|decimal|boolean|date|dateTime", "comment": "..."}],
-          "subclass_of": [{"sub": "Child", "super": "Parent"}],
-          "disjoint_with": [{"a": "ClassA", "b": "ClassB"}],
-          "equivalent_class": [{"a": "ClassA", "b": "ClassB"}]
-        }
+    public TBoxExtractionService(IOptions<OnToPilotOptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        _options = options.Value;
+    }
 
-        Omit any section you have no evidence for (return an empty array).
-        """;
+    /// <summary>
+    /// Resolve the current system prompt body for
+    /// <see cref="PromptKey"/> according to
+    /// <see cref="OnToPilotOptions.SystemLanguage"/>. Falls back to the
+    /// English default when the key is unknown (it never is, today — the
+    /// defensive null-check makes a future rename a build break rather
+    /// than a runtime surprise).
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ExtractionOrchestrator"/> reads this method when building
+    /// the per-job prompt snapshot persisted on
+    /// <c>ExtractionJobEntity.PromptSnapshot</c> — the snapshot must capture
+    /// the body that was actually sent, so we resolve it here rather than
+    /// reading a baked-in <c>const string</c> at the call site.
+    /// </remarks>
+    public string ResolveSystemPrompt()
+    {
+        var lang = PromptLocales.ParseSystemLanguage(_options.SystemLanguage);
+        return PromptLocales.ResolveWithFallback(PromptKey, lang)
+            ?? throw new InvalidOperationException(
+                $"Prompt key '{PromptKey}' is not registered in PromptLocales. " +
+                "Add an entry to PromptLocales._byKey before shipping.");
+    }
 
     /// <summary>
     /// Send the chunk text to the LLM and parse the reply into a
@@ -68,6 +95,7 @@ public sealed class TBoxExtractionService
 
         var provider = ResolveProvider(chat);
         var model = ResolveModel(chat);
+        var systemPrompt = ResolveSystemPrompt();
 
         return await Telemetry.LlmSource.WithLlmActivity(
             operationName: "Llm.Extract",
@@ -77,7 +105,7 @@ public sealed class TBoxExtractionService
             {
                 var messages = new List<ChatMessage>
                 {
-                    new(ChatRole.System, SystemPrompt),
+                    new(ChatRole.System, systemPrompt),
                     new(ChatRole.User,
                         $"Knowledge system: {ks.GraphIri}\nBase IRI: {ks.BaseIri}\nChunk #{chunk.Idx} text:\n{chunk.Text}"),
                 };
