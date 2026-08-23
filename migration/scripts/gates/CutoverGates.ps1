@@ -261,6 +261,35 @@ function Invoke-IriSqlMigration {
     Write-Host "[cutover] IRI SQL migration (redacted): from=$FromPrefix to=$ToPrefix dryRun=$DryRun"
 }
 
+function Invoke-IriSqlSmokeCheck {
+    <#
+    .SYNOPSIS
+        Cutover gate 6.55: verify that Invoke-IriSqlMigration actually
+        rewrote every IRI-bearing column. Reads back COUNT(*) per
+        (table, column) tuple and asserts the legacy FromPrefix is
+        absent. Throws IriSqlVerificationException on any non-zero
+        residual, with one message line per failing column (mirrors
+        the failure-aggregation philosophy of Assert-AllMigrationManifests).
+
+        The cutover orchestration skips this gate when -IriDryRun is
+        set because the migrator did not write, so residual counts
+        would always fail under dry-run.
+
+        Mocked in tests. In rehearsal / production this delegates to
+        Invoke-IriSqlSmokeCheck.ps1.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$PostgresConnectionString,
+        [string]$FromPrefix = 'http://ontopilot.local/',
+        [string]$ToPrefix   = 'http://goodcrew.local/',
+        [string]$ReportOut,
+        [string]$ProjectPath = 'src/OnToPilot.Migration/OnToPilot.Migration.csproj'
+    )
+    # F-4 redaction: connection string never reaches the operator log.
+    Write-Host "[cutover] IRI SQL smoke-check (redacted): from=$FromPrefix to=$ToPrefix reportOut=$ReportOut"
+}
+
 function Invoke-IriRdfRelocation {
     <#
     .SYNOPSIS

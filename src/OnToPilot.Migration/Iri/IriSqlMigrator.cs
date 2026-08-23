@@ -138,6 +138,18 @@ public sealed class IriSqlMigrator
         ("aboxprovenance", "FactKey"),
     };
 
+    /// <summary>
+    /// Public read-only view of <see cref="ColumnsToRewrite"/> so
+    /// <see cref="IriSqlVerifier"/> verifies the same column set the
+    /// migrator touched, without restating the tuple list. Drift
+    /// between the two surfaces would silently invalidate the
+    /// smoke-check (false-positive guard lost), so the verifier
+    /// intentionally consumes this accessor rather than carrying its
+    /// own copy.
+    /// </summary>
+    public static IReadOnlyList<(string Table, string Column)> ColumnsToRewritePublic
+        => ColumnsToRewrite;
+
     public IriSqlMigrator(OnToPilotDbContext db, ILogger<IriSqlMigrator> logger)
     {
         _db = db;

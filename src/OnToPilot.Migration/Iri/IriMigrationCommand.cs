@@ -62,6 +62,20 @@ public static class IriMigrationCommand
                       --to-prefix <prefix>                (default http://goodcrew.local/)
                       --dry-run                           (flag)
 
+          sql-smoke-check
+                    Verify that 'sql' actually rewrote every IRI-bearing column.
+                    Counts residual rows whose value still starts with --from-prefix
+                    and throws on any non-zero residual. Idempotent re-runs of 'sql'
+                    report AffectedRows=0, which is vacuously true; this gate is
+                    the proof. Read-only by construction.
+                    Args:
+                      --postgres-connection-string <s>   (required)
+                      --from-prefix <prefix>              (default http://ontopilot.local/)
+                      --to-prefix <prefix>                (default http://goodcrew.local/)
+                      --report-out <path>                 (optional JSON report path)
+                    Note: --dry-run is accepted but ignored (smoke-check is
+                    inherently read-only).
+
           rdf       Relocate the live Oxigraph RocksDB store from the legacy
                     IRI prefix to the target one.
                     Args:
@@ -119,6 +133,7 @@ public static class IriMigrationCommand
             return subcommand switch
             {
                 "sql" => await RunSqlAsync(rest, loggerFactoryScope).ConfigureAwait(false),
+                "sql-smoke-check" => await RunSqlSmokeCheckAsync(rest, loggerFactoryScope).ConfigureAwait(false),
                 "rdf" => await RunRdfAsync(rest, loggerFactoryScope).ConfigureAwait(false),
                 "shards" => await RunShardsAsync(rest, loggerFactoryScope).ConfigureAwait(false),
                 "all" => await RunAllAsync(rest, loggerFactoryScope).ConfigureAwait(false),
@@ -162,6 +177,58 @@ public static class IriMigrationCommand
             parsed.DryRun ? "dry-run" : "apply",
             report.TotalRowsChanged,
             report.Steps.Count));
+        return 0;
+    }
+
+    /// <summary>
+    /// Post-migration verification dispatch. Runs
+    /// <see cref="IriSqlVerifier.VerifyAsync"/> against the same
+    /// connection string and prefix pair the migrator was invoked
+    /// with; optionally writes the JSON report + SHA-256 to
+    /// <c>--report-out</c> for the cutover record audit trail. Read
+    /// only; the <c>--dry-run</c> flag is accepted for symmetry with
+    /// <c>iri sql</c> but has no effect.
+    /// </summary>
+    private static async Task<int> RunSqlSmokeCheckAsync(
+        IReadOnlyList<string> argv,
+        ILoggerFactory loggerFactory)
+    {
+        var parsed = ParseSqlArgs(argv);
+        if (parsed is null) return 1;
+
+        var verifyLogger = loggerFactory.CreateLogger<IriSqlVerifier>();
+        var dbOptions = new DbContextOptionsBuilder<OnToPilotDbContext>()
+            .UseNpgsql(parsed.PostgresConnectionString)
+            .Options;
+        await using var db = new OnToPilotDbContext(dbOptions);
+        var verifier = new IriSqlVerifier(db, verifyLogger);
+        var report = await verifier.VerifyAsync(
+            new IriSqlVerifyOptions(parsed.FromPrefix, parsed.ToPrefix),
+            CancellationToken.None).ConfigureAwait(false);
+
+        // report-out 是 audit trail:写盘后再算 SHA-256,这样
+        // digest 与磁盘上的字节一一对应(cutover record 可直接引用)。
+        if (!string.IsNullOrEmpty(parsed.ReportOut))
+        {
+            await report.WriteAsync(parsed.ReportOut, CancellationToken.None)
+                .ConfigureAwait(false);
+            var sha = IriSqlVerifyReport.ComputeReportSha256(parsed.ReportOut);
+            Console.WriteLine(string.Format(
+                CultureInfo.InvariantCulture,
+                "[iri-migration] sql-smoke-check: residualTotal={0} steps={1} reportPath={2} reportSha256={3}",
+                report.ResidualTotal,
+                report.Steps.Count,
+                parsed.ReportOut,
+                sha));
+        }
+        else
+        {
+            Console.WriteLine(string.Format(
+                CultureInfo.InvariantCulture,
+                "[iri-migration] sql-smoke-check: residualTotal={0} steps={1} reportPath=(stdout-only)",
+                report.ResidualTotal,
+                report.Steps.Count));
+        }
         return 0;
     }
 
@@ -284,7 +351,8 @@ public static class IriMigrationCommand
         string PostgresConnectionString,
         string FromPrefix,
         string ToPrefix,
-        bool DryRun);
+        bool DryRun,
+        string? ReportOut);
 
     private static SqlCliArgs? ParseSqlArgs(IReadOnlyList<string> argv)
     {
@@ -292,6 +360,7 @@ public static class IriMigrationCommand
         var fromPrefix = DefaultFromPrefix;
         var toPrefix = DefaultToPrefix;
         var dryRun = false;
+        string? reportOut = null;
 
         for (var i = 0; i < argv.Count; i++)
         {
@@ -309,6 +378,9 @@ public static class IriMigrationCommand
                 case "--from-prefix": fromPrefix = Next() ?? fromPrefix; break;
                 case "--to-prefix": toPrefix = Next() ?? toPrefix; break;
                 case "--dry-run": dryRun = true; break;
+                // --report-out 只被 sql-smoke-check 使用;sql subcommand
+                // 接受但忽略,保证两个子命令的 argv shape 一致。
+                case "--report-out": reportOut = Next() ?? reportOut; break;
                 default:
                     Console.Error.WriteLine($"[iri-migration] sql: unknown argument '{a}'");
                     return null;
@@ -320,7 +392,7 @@ public static class IriMigrationCommand
             Console.Error.WriteLine("[iri-migration] sql: --postgres-connection-string is required");
             return null;
         }
-        return new SqlCliArgs(pg, fromPrefix, toPrefix, dryRun);
+        return new SqlCliArgs(pg, fromPrefix, toPrefix, dryRun, reportOut);
     }
 
     private sealed record RdfCliArgs(

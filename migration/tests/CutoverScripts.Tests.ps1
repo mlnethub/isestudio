@@ -91,6 +91,7 @@ Describe 'hard preflight gate: refuses cutover while python backend is running' 
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
@@ -112,6 +113,7 @@ Describe 'hard preflight gate: refuses cutover when database is still writable' 
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
@@ -132,6 +134,7 @@ Describe 'hard preflight gate: refuses cutover when backup is not verified' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
@@ -152,6 +155,7 @@ Describe 'happy path: proceeds past backup gate when backup is verified' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
@@ -173,6 +177,7 @@ Describe 'migration gates: stop the sequence on the first failure' {
         Mock Invoke-RdfCopyVerification { throw 'rdf copy mismatch' }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
@@ -190,6 +195,7 @@ Describe 'migration gates: stop the sequence on the first failure' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { throw 'minio unreachable' }
         Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
@@ -207,6 +213,7 @@ Describe 'migration gates: stop the sequence on the first failure' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { throw 'verify.sql rowcount drift' }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
@@ -227,6 +234,7 @@ Describe 'manifest validation gate: stops when checksums disagree' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { throw 'blob checksum mismatch' }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
@@ -247,6 +255,7 @@ Describe 'happy path: full sequence reaches post-cutover smoke on success' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
@@ -259,6 +268,7 @@ Describe 'happy path: full sequence reaches post-cutover smoke on success' {
         Assert-MockCalled Invoke-RdfCopyVerification -Times 1
         Assert-MockCalled Invoke-BlobMigration       -Times 1
         Assert-MockCalled Invoke-SqlMigration        -Times 1
+        Assert-MockCalled Invoke-IriSqlSmokeCheck    -Times 1
         Assert-MockCalled Assert-AllMigrationManifests -Times 1
         Assert-MockCalled Start-DotNetBackend        -Times 1
         Assert-MockCalled Invoke-PostCutoverSmoke    -Times 1
@@ -276,12 +286,65 @@ Describe 'cutover record gate: refuses to start when the record is incomplete' {
         Mock Invoke-RdfCopyVerification { }
         Mock Invoke-BlobMigration       { }
         Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { }
         Mock Assert-AllMigrationManifests { }
         Mock Start-DotNetBackend        { }
         Mock Invoke-PostCutoverSmoke    { }
 
         { & Invoke-ProductionCutover -Record $script:BadRecord } |
             Should Throw 'Cutover record'
+    }
+}
+
+Describe 'IRI SQL smoke-check gate: stops the sequence on residual legacy prefix' {
+
+    It 'stops immediately when smoke-check finds residual legacy-prefix rows' {
+        $script:ValidRecord = New-CutoverRecordFixture
+
+        Mock Test-PythonBackendStopped { $true }
+        Mock Test-DatabaseWriteFrozen  { $true }
+        Mock Test-VerifiedBackup       { param($Record) $true }
+        Mock Invoke-RdfCopyVerification { }
+        Mock Invoke-BlobMigration       { }
+        Mock Invoke-SqlMigration        { }
+        Mock Invoke-IriSqlSmokeCheck    { throw 'One or more IRI SQL columns still contain the legacy prefix: knowledgesystem.GraphIri: 1 row(s) still contain http://ontopilot.local/' }
+        Mock Invoke-IriRdfRelocation    { }
+        Mock Assert-AllMigrationManifests { }
+        Mock Start-DotNetBackend        { }
+        Mock Invoke-PostCutoverSmoke    { }
+
+        { & Invoke-ProductionCutover -Record $script:ValidRecord } |
+            Should Throw 'IRI SQL columns still contain the legacy prefix'
+        # Sequence must STOP at the smoke-check — RDF relocation must
+        # never run on top of an unverified IRI SQL state.
+        Assert-MockCalled Invoke-IriSqlSmokeCheck -Times 1
+        Assert-MockCalled Invoke-IriRdfRelocation -Times 0
+    }
+
+    It 'skips smoke-check when -IriDryRun is set' {
+        $script:ValidRecord = New-CutoverRecordFixture
+
+        Mock Test-PythonBackendStopped { $true }
+        Mock Test-DatabaseWriteFrozen  { $true }
+        Mock Test-VerifiedBackup       { param($Record) $true }
+        Mock Invoke-RdfCopyVerification { }
+        Mock Invoke-BlobMigration       { }
+        Mock Invoke-SqlMigration        { }
+        # NOTE: Invoke-IriSqlSmokeCheck is intentionally NOT mocked
+        # here. Pester 3 cannot detect "not called" for an unmocked
+        # function, so we instead mock the gate that runs AFTER the
+        # smoke-check (Invoke-IriRdfRelocation) and assert IT was
+        # called once — proving the cutover script reached the next
+        # step instead of throwing on a vacuous residual count.
+        Mock Invoke-IriRdfRelocation    { }
+        Mock Invoke-IriShardRewrite     { }
+        Mock Assert-AllMigrationManifests { }
+        Mock Start-DotNetBackend        { }
+        Mock Invoke-PostCutoverSmoke    { }
+
+        { & Invoke-ProductionCutover -Record $script:ValidRecord -IriDryRun } |
+            Should Not Throw
+        Assert-MockCalled Invoke-IriRdfRelocation -Times 1
     }
 }
 

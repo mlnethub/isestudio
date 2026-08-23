@@ -13,6 +13,7 @@
 #   6. Invoke-BlobMigration           (blobs into MinIO)
 #   7. Invoke-SqlMigration            (SQL GUID/LegacyId)
 #   8. Invoke-IriSqlMigration         (IRI prefix SQL REPLACE)
+#   8.5 Invoke-IriSqlSmokeCheck       (proves IRI SQL rewrite actually wrote data)
 #   9. Invoke-IriRdfRelocation        (Oxigraph RocksDB IRI rewrite)
 #  10. Invoke-IriShardRewrite         (N-Quads shard + manifest IRI rewrite)
 #  11. Assert-AllMigrationManifests   (every manifest checksum matches record)
@@ -68,6 +69,7 @@ param(
     [string]$IriReleasesRoot,
     [string]$IriExportsRoot,
     [switch]$IriDryRun,
+    [string]$IriSqlVerifyReportOut = '.artifacts/iri-sql-verify-report.json',
 
     [string]$DotNetProject = 'src/OnToPilot.WebHost/OnToPilot.WebHost.csproj',
     [string]$DotNetBindAddress = 'http://127.0.0.1:5000'
@@ -111,6 +113,7 @@ function Invoke-ProductionCutover {
         [string]$IriReleasesRoot,
         [string]$IriExportsRoot,
         [switch]$IriDryRun,
+        [string]$IriSqlVerifyReportOut = '.artifacts/iri-sql-verify-report.json',
 
         [string]$DotNetProject = 'src/OnToPilot.WebHost/OnToPilot.WebHost.csproj',
         [string]$DotNetBindAddress = 'http://127.0.0.1:5000',
@@ -176,6 +179,20 @@ function Invoke-ProductionCutover {
             -FromPrefix $IriFromPrefix `
             -ToPrefix   $IriToPrefix `
             -DryRun:([bool]$IriDryRun)
+
+        # Gate 6.55: smoke-check that Invoke-IriSqlMigration actually
+        # rewrote the data. Skipped under -IriDryRun because the
+        # migrator did not write, so residual counts would always fail
+        # (which would break the first-pass rehearsal). The verifier
+        # writes its JSON report to -IriSqlVerifyReportOut so the
+        # cutover record can pin the audit trail by SHA-256.
+        if (-not $IriDryRun) {
+            Invoke-IriSqlSmokeCheck `
+                -PostgresConnectionString $PostgresConnectionString `
+                -FromPrefix $IriFromPrefix `
+                -ToPrefix   $IriToPrefix `
+                -ReportOut  $IriSqlVerifyReportOut
+        }
 
         Invoke-IriRdfRelocation `
             -Source $IriRdfSource `
@@ -250,6 +267,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         'MigrationsDir',
         'IriFromPrefix', 'IriToPrefix', 'IriRdfSource', 'IriRdfTarget',
         'IriReleasesRoot', 'IriExportsRoot', 'IriDryRun',
+        'IriSqlVerifyReportOut',
         'DotNetProject', 'DotNetBindAddress'
     )) {
         $val = Get-Variable -Name $key -Scope Script -ErrorAction SilentlyContinue
