@@ -73,3 +73,37 @@ jobs:
       - run: pnpm audit --prod --audit-level=high
       - run: pnpm lint
       - run: pnpm build
+
+  dotnet-tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+          cache: true
+          cache-dependency-path: "**/*.csproj"
+      - name: Restore + build
+        run: |
+          dotnet restore src/OnToPilot.sln
+          dotnet build src/OnToPilot.sln --no-restore -c Release
+      - name: Unit tests (OnToPilot.Tests)
+        run: dotnet test src/OnToPilot.Tests/OnToPilot.Tests.csproj --no-build -c Release --logger "console;verbosity=normal"
+      - name: API contract tests
+        run: dotnet test src/OnToPilot.ApiContract.Tests/OnToPilot.ApiContract.Tests.csproj --no-build -c Release --logger "console;verbosity=normal"
+      - name: Integration tests (Postgres service)
+        run: dotnet test src/OnToPilot.IntegrationTests/OnToPilot.IntegrationTests.csproj --no-build -c Release --filter "Category!=Container" --logger "console;verbosity=normal"

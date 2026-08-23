@@ -112,20 +112,30 @@ public sealed class IriSqlMigrator
     /// <summary>
     /// The table + column pairs to rewrite. Order matters only for
     /// log readability &mdash; the SQL statements are independent.
+    /// <para>
+    /// Table / column spellings mirror the EF Core
+    /// <c>IEntityTypeConfiguration</c> mappings in
+    /// <c>src/OnToPilot/Infrastructure/Persistence/Configurations/EntityConfigurations.cs</c>:
+    /// tables are <c>lowercase-no-separator</c> (e.g. <c>knowledgesystem</c>)
+    /// and columns keep the PascalCase property name verbatim unless a
+    /// configuration explicitly calls <c>HasColumnName</c> (the only one
+    /// we touch here is <c>legacy_id</c> on each row, which is unchanged
+    /// because no IRI column is stored there).
+    /// </para>
     /// </summary>
     private static readonly IReadOnlyList<(string Table, string Column)> ColumnsToRewrite =
     new (string, string)[]
     {
-        ("knowledge_systems", "graph_iri"),
-        ("knowledge_systems", "base_iri"),
-        ("release_deployment", "tbox_graph_iri"),
-        ("release_deployment", "vocabulary_graph_iri"),
-        ("release_deployment", "abox_graph_iri"),
-        ("entity_resolution", "class_iri"),
-        ("entity_resolution", "individual_iri"),
-        ("tbox_reconciliation", "property_iri"),
-        ("validation_decision", "property_iri"),
-        ("abox_provenance", "fact_key"),
+        ("knowledgesystem", "GraphIri"),
+        ("knowledgesystem", "BaseIri"),
+        ("releasedeployment", "TboxGraphIri"),
+        ("releasedeployment", "VocabularyGraphIri"),
+        ("releasedeployment", "AboxGraphIri"),
+        ("entityresolution", "ClassIri"),
+        ("entityresolution", "IndividualIri"),
+        ("tboxreconciliation", "PropertyIri"),
+        ("validationdecision", "PropertyIri"),
+        ("aboxprovenance", "FactKey"),
     };
 
     public IriSqlMigrator(OnToPilotDbContext db, ILogger<IriSqlMigrator> logger)
@@ -157,36 +167,25 @@ public sealed class IriSqlMigrator
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // REPLACE() is two-argument and database-portable; using
-            // FromSqlInterpolated keeps @from / @to as parameterised
-            // values so the SQL is injection-safe regardless of what
-            // the prefix strings happen to contain.
-            var sql = options.DryRun
-                ? $"SELECT COUNT(*) FROM \"{table}\" WHERE \"{column}\" LIKE {{0}} || '%'"
-                : $"UPDATE \"{table}\" SET \"{column}\" = REPLACE(\"{column}\", {{0}}, {{1}}) WHERE \"{column}\" LIKE {{0}} || '%'";
-
-            var fromParam = options.FromPrefix;
-            var toParam = options.ToPrefix;
-            var likePattern = fromParam + "%";
-
+            // 表/列名走 C# 字符串内插编译成 SQL 字面量(来自静态 ColumnsToRewrite
+            // 元组,不是用户输入);值走 {0}/{1}/{2} positional placeholder,由
+            // EF Core 绑定为 Npgsql 参数。SQL injection surface 仅限
+            // FromPrefix / ToPrefix(均参数化)。
+            // 为什么不用 ExecuteSqlInterpolatedAsync:它的 FormattableString
+            // overload 会把每个 {...} 都当成 hole 转成 @p0..@pN,导致
+            // table/column 也被参数化,PG 报 42P01: relation "@p0"。
+            var likePattern = options.FromPrefix + "%";
             long affected;
             if (options.DryRun)
             {
-                // COUNT(*) query — returns the would-be row count. The
-                // table/column are baked into the SQL string (they come
-                // from the static ColumnsToRewrite list, never from user
-                // input); the prefix argument flows in as a parameterised
-                // {0} placeholder so the SQL is injection-safe.
-                // EF1002 suppression is appropriate: the interpolated
-                // {table} / {column} tokens are static compile-time
-                // literals from the ColumnsToRewrite list above, not
-                // runtime values, so the SQL injection surface is
-                // limited to the parameterised {0} placeholder.
+                // EF1002: SqlQueryRaw<int> 故意把 table/column 作为字面量
+                // 拼接(来自静态 ColumnsToRewrite 元组);前缀走 positional
+                // {0} 参数。
 #pragma warning disable EF1002
                 var countResult = await _db.Database
                     .SqlQueryRaw<int>(
                         $"SELECT COUNT(*) AS \"Value\" FROM \"{table}\" WHERE \"{column}\" LIKE {{0}} || '%'",
-                        fromParam)
+                        likePattern)
                     .ToListAsync(cancellationToken)
                     .ConfigureAwait(false);
 #pragma warning restore EF1002
@@ -195,8 +194,9 @@ public sealed class IriSqlMigrator
             else
             {
                 affected = await _db.Database
-                    .ExecuteSqlInterpolatedAsync(
-                        $"UPDATE \"{table}\" SET \"{column}\" = REPLACE(\"{column}\", {fromParam}, {toParam}) WHERE \"{column}\" LIKE {likePattern}",
+                    .ExecuteSqlRawAsync(
+                        $"UPDATE \"{table}\" SET \"{column}\" = REPLACE(\"{column}\", {{0}}, {{1}}) WHERE \"{column}\" LIKE {{2}}",
+                        new object[] { options.FromPrefix, options.ToPrefix, likePattern },
                         cancellationToken)
                     .ConfigureAwait(false);
             }
