@@ -212,10 +212,14 @@ function Invoke-ProductionCutover {
         # validating gate runs schema + business + MinIO HEAD + SHA
         # checks; it must NEVER silently bypass.
         $manifestGateArgs = @{
-            Record           = $resolvedRecord
+            Record = $resolvedRecord
             BlobManifestPath = $BlobManifestOut
-            MinioEndpoint    = $MinioEndpoint
-            MinioBucket      = $BlobBucket
+            # Mirror the gate 6.55 output path so the SHA-chain check
+            # in Assert-AllMigrationManifests can pin the exact report
+            # the smoke-check just wrote.
+            IriSqlVerifyReportPath = $IriSqlVerifyReportOut
+            MinioEndpoint = $MinioEndpoint
+            MinioBucket = $BlobBucket
         }
         if ($SqlManifestPath) { $manifestGateArgs['SqlManifestPath'] = $SqlManifestPath }
         if ($RdfManifestPath) { $manifestGateArgs['RdfManifestPath'] = $RdfManifestPath }

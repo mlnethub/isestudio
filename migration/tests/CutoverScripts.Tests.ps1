@@ -348,6 +348,106 @@ Describe 'IRI SQL smoke-check gate: stops the sequence on residual legacy prefix
     }
 }
 
+Describe 'manifest validation gate (gate 7): IRI SQL verify report SHA-chain (P3-4:139)' {
+
+    # Helper: write a minimal IriSqlVerifyReport JSON the verifier
+    # itself would have produced. The schema is intentionally not
+    # re-validated here — the SHA-chain only reads bytes for hashing,
+    # so any valid JSON is fine.
+    function New-IriSqlVerifyReportFixture {
+        [CmdletBinding()]
+        param(
+            [string]$Name = 'iri-sql-verify-report.json',
+            [hashtable]$Body = @{
+                steps         = @()
+                residualTotal = 0
+                fromPrefix    = 'http://ontopilot.local/'
+                toPrefix      = 'http://goodcrew.local/'
+            }
+        )
+        $path = Join-Path $TestDrive $Name
+        $Body | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $path -Encoding utf8
+        return $path
+    }
+
+    It 'refuses when expected-iri-sql-verify-sha256 in the record does not match the report file' {
+        $reportPath = New-IriSqlVerifyReportFixture
+        $actualSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $reportPath).Hash.ToLowerInvariant()
+        # Deliberately wrong SHA pinned by the operator.
+        $wrongSha  = 'ff' * 32
+
+        # SQL/RDF/Blob manifest paths deliberately point at nonexistent
+        # files so those blocks contribute "missing: ..." failures. The
+        # IRI SQL verify report block still runs and adds its own
+        # failure to the list, which is what we assert on.
+        $sqlPath  = Join-Path $TestDrive 'sql-missing.json'
+        $rdfPath  = Join-Path $TestDrive 'rdf-missing.json'
+        $blobPath = Join-Path $TestDrive 'blob-missing.json'
+
+        $script:IriRecord = New-CutoverRecordFixture -Body @"
+# Production Cutover Record
+
+- Cutover start (UTC): 2026-08-18T10:00:00Z
+- Backup path: /var/backups/ontopilot/2026-08-18
+- Backup SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
+- Operator signature: Test Operator
+- Expected post-cutover manifest checksums:
+  - SQL verify summary: abc123
+  - RDF verify summary: def456
+  - blob verify summary: 7890ab
+- expected-iri-sql-verify-sha256: $wrongSha
+"@
+
+        { Assert-AllMigrationManifests `
+            -Record $script:IriRecord `
+            -SqlManifestPath $sqlPath `
+            -RdfManifestPath $rdfPath `
+            -BlobManifestPath $blobPath `
+            -IriSqlVerifyReportPath $reportPath } |
+            Should Throw 'IRI SQL verify report SHA-256 mismatch'
+    }
+
+    It 'accepts when expected-iri-sql-verify-sha256 matches the report file' {
+        $reportPath = New-IriSqlVerifyReportFixture
+        $actualSha  = (Get-FileHash -Algorithm SHA256 -LiteralPath $reportPath).Hash.ToLowerInvariant()
+
+        # Pre-create empty SQL/RDF/Blob manifests so those blocks do
+        # NOT contribute "missing: ..." failures; the only remaining
+        # block is the IRI SQL verify report.
+        $sqlPath  = Join-Path $TestDrive 'sql.json'
+        $rdfPath  = Join-Path $TestDrive 'rdf.json'
+        $blobPath = Join-Path $TestDrive 'blob.json'
+        '{}' | Set-Content -LiteralPath $sqlPath  -Encoding utf8
+        '{}' | Set-Content -LiteralPath $rdfPath  -Encoding utf8
+        '{}' | Set-Content -LiteralPath $blobPath -Encoding utf8
+
+        $script:IriRecord = New-CutoverRecordFixture -Body @"
+# Production Cutover Record
+
+- Cutover start (UTC): 2026-08-18T10:00:00Z
+- Backup path: /var/backups/ontopilot/2026-08-18
+- Backup SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
+- Operator signature: Test Operator
+- Expected post-cutover manifest checksums:
+  - SQL verify summary: abc123
+  - RDF verify summary: def456
+  - blob verify summary: 7890ab
+- expected-sql-manifest-sha256:  $actualSha
+- expected-rdf-manifest-sha256:  $actualSha
+- expected-blob-manifest-sha256: $actualSha
+- expected-iri-sql-verify-sha256: $actualSha
+"@
+
+        { Assert-AllMigrationManifests `
+            -Record $script:IriRecord `
+            -SqlManifestPath $sqlPath `
+            -RdfManifestPath $rdfPath `
+            -BlobManifestPath $blobPath `
+            -IriSqlVerifyReportPath $reportPath } |
+            Should Not Throw
+    }
+}
+
 # ---------------------------------------------------------------------
 # Helper: build a synthetic SQL/RDF/blob manifest triple + the
 # matching cutover record. The tests below construct manifests with

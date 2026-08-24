@@ -339,6 +339,11 @@ function Invoke-IriShardRewrite {
 $script:DefaultSqlManifestPath  = 'migrations/SqlAlchemyToEfCore/migration-log.json'
 $script:DefaultRdfManifestPath  = '.artifacts/rdf-manifest.json'
 $script:DefaultBlobManifestPath = '.artifacts/blob-manifest.json'
+# IRI SQL smoke-check report (gate 6.55). Path must mirror
+# Invoke-ProductionCutover.ps1's -IriSqlVerifyReportOut default so
+# the cutover record's expected-iri-sql-verify-sha256 pin points at
+# the exact file the smoke-check wrote.
+$script:DefaultIriSqlVerifyReportPath = '.artifacts/iri-sql-verify-report.json'
 
 # JSON Schema paths (draft 2020-12). The blob schema is shipped by
 # Task 3; the SQL + RDF schemas are introduced by Stage 6 Task 4
@@ -355,11 +360,13 @@ function Get-ManifestRecordFields {
         content-validation gates can compare against them.
     .DESCRIPTION
         Recognised sections (all under "Expected ..."):
-          - expected-sql-checksums        : table = sha256 lines
-          - expected-rdf-query-hashes     : query-name = sha256 lines
-          - expected-sql-manifest-sha256  : single 64-char hex
-          - expected-rdf-manifest-sha256  : single 64-char hex
-          - expected-blob-manifest-sha256 : single 64-char hex
+          - expected-sql-checksums              : table = sha256 lines
+          - expected-rdf-query-hashes           : query-name = sha256 lines
+          - expected-sql-manifest-sha256        : single 64-char hex
+          - expected-rdf-manifest-sha256        : single 64-char hex
+          - expected-blob-manifest-sha256       : single 64-char hex
+          - expected-iri-sql-verify-sha256      : single 64-char hex
+                                                 (gate 6.55 IriSqlVerifyReport JSON)
     #>
     [CmdletBinding()]
     param(
@@ -367,11 +374,12 @@ function Get-ManifestRecordFields {
         [string]$Record
     )
     $result = @{
-        SqlChecksums   = @{}
-        RdfQueryHashes = @{}
-        SqlSha         = $null
-        RdfSha         = $null
-        BlobSha        = $null
+        SqlChecksums       = @{}
+        RdfQueryHashes     = @{}
+        SqlSha             = $null
+        RdfSha             = $null
+        BlobSha            = $null
+        IriSqlVerifySha    = $null
     }
     if (-not (Test-Path -LiteralPath $Record)) { return $result }
     $lines = Get-Content -LiteralPath $Record -ErrorAction SilentlyContinue
@@ -391,6 +399,9 @@ function Get-ManifestRecordFields {
         }
         if ($line -match '^- expected-blob-manifest-sha256:\s*([0-9a-fA-F]{64})\s*$') {
             $result.BlobSha = $matches[1].ToLowerInvariant(); continue
+        }
+        if ($line -match '^- expected-iri-sql-verify-sha256:\s*([0-9a-fA-F]{64})\s*$') {
+            $result.IriSqlVerifySha = $matches[1].ToLowerInvariant(); continue
         }
         if ($line -match '^\s*-\s+([A-Za-z0-9_]+)\s*=\s*([0-9a-fA-F]+)\s*$') {
             $key = $matches[1]
@@ -630,6 +641,7 @@ function Assert-AllMigrationManifests {
         [string]$SqlManifestPath = $script:DefaultSqlManifestPath,
         [string]$RdfManifestPath = $script:DefaultRdfManifestPath,
         [string]$BlobManifestPath = $script:DefaultBlobManifestPath,
+        [string]$IriSqlVerifyReportPath = $script:DefaultIriSqlVerifyReportPath,
         [string]$ManifestsDir,
         [string]$SqlManifestSchema  = $script:SqlManifestSchema,
         [string]$RdfManifestSchema  = $script:RdfManifestSchema,
@@ -777,6 +789,35 @@ function Assert-AllMigrationManifests {
                     $failures.Add("Blob manifest SHA-256 computation failed: $($_.Exception.Message)")
                 }
             }
+        }
+    }
+
+    # -----------------------------------------------------------------
+    # IRI SQL verify report (gate 6.55). No JSON schema: the report is
+    # a single nested object {steps, residualTotal, ...} that is fully
+    # described by IriSqlVerifyReport.cs in the OnToPilot.Migration
+    # assembly; we only need its canonical SHA-256 to chain it to the
+    # operator's cutover record. The smoke-check only writes the file
+    # under -Apply mode (skipped under -IriDryRun) so the report is
+    # optional in rehearsals: when it is absent AND the operator did
+    # not pin a SHA, we silently skip; when the operator DID pin a SHA
+    # the file must be present.
+    # -----------------------------------------------------------------
+    $wantIriSha = $expected.IriSqlVerifySha
+    if (-not (Test-Path -LiteralPath $IriSqlVerifyReportPath)) {
+        if ($wantIriSha) {
+            $failures.Add("IRI SQL verify report missing: '$IriSqlVerifyReportPath' (operator pinned expected-iri-sql-verify-sha256 but the file is absent).")
+        }
+        # else: rehearsal / dry-run skipped the gate 6.55 write, no SHA
+        # pinned by the operator → no SHA-chain check.
+    } else {
+        try {
+            $iriActualSha = Get-CanonicalManifestSha -Path $IriSqlVerifyReportPath
+            if ($wantIriSha -and $wantIriSha -ne $iriActualSha) {
+                $failures.Add("IRI SQL verify report SHA-256 mismatch. expected=$wantIriSha actual=$iriActualSha")
+            }
+        } catch {
+            $failures.Add("IRI SQL verify report SHA-256 computation failed: $($_.Exception.Message)")
         }
     }
 

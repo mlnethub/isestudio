@@ -55,6 +55,7 @@
 - expected-iri-rdf-quad-count: <int>
 - expected-iri-rdf-manifest-sha256: <64-char lowercase hex>
 - expected-iri-shard-count: <int>
+- expected-iri-sql-verify-sha256: <64-char lowercase hex>
 ```
 
 > ⚠️ Every line above is parsed by the cutover script. Do not change
@@ -128,11 +129,22 @@ Example:
 3. **Copy the SQL/RDF/blob canonical SHA-256s** from the rehearsal
    report into the three `expected-<type>-manifest-sha256` lines.
 
-4. **Sign.** Replace `<full name + change ticket id>` with the
+4. **Copy the IRI SQL verify report SHA-256** from
+   `.artifacts/iri-sql-verify-report.json` (gate 6.55 output) into
+   the `expected-iri-sql-verify-sha256` line. Use the canonical
+   SHA-256 (`Get-FileHash -Algorithm SHA256` after re-serializing
+   with `ConvertTo-Json -Depth 100 -Compress`, mirroring the
+   `Get-CanonicalManifestSha` helper in
+   `migration/scripts/gates/CutoverGates.ps1`). The gate refuses
+   to proceed if the report is absent or the SHA does not match —
+   leave this line blank only if -IriDryRun was used (rehearsal
+   path, where gate 6.55 is intentionally skipped).
+
+5. **Sign.** Replace `<full name + change ticket id>` with the
    operator's full legal name and the change ticket id. The
    signature is part of the post-mortem evidence.
 
-5. **Save** as `migration/runbooks/production-cutover-record.md` and
+6. **Save** as `migration/runbooks/production-cutover-record.md` and
    commit it to the change-ticket branch (the file is intentionally
    excluded from `.gitignore` so the record is part of the audit
    trail).
