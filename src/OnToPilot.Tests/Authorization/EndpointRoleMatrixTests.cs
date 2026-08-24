@@ -54,6 +54,8 @@ public sealed class EndpointRoleMatrixTests
     private static readonly string? DumpPath =
         Environment.GetEnvironmentVariable("RBAC_MATRIX_DUMP");
 
+    private static int s_recordModeBannerShown;
+
     // ---- shared seed state (guarded: xUnit runs a class's tests serially,
     // but the guard also keeps the dump file consistent) -------------------
 
@@ -150,6 +152,12 @@ public sealed class EndpointRoleMatrixTests
             var actual = (int)resp.StatusCode;
             if (DumpPath is not null)
             {
+                // Record mode must never silently disable the 515 assertions:
+                // print a once-per-run banner so CI logs show the no-op.
+                if (Interlocked.Exchange(ref s_recordModeBannerShown, 1) == 0)
+                {
+                    Console.WriteLine("!! RBAC_MATRIX_DUMP is set — RECORD MODE: matrix assertions are DISABLED, writing actuals to: " + DumpPath);
+                }
                 RecordActual(key, actor, actual);
                 return;
             }
@@ -343,12 +351,21 @@ public sealed class EndpointRoleMatrixTests
         using var stream = asm.GetManifestResourceStream(resourceName)!;
         var doc = JsonDocument.Parse(stream);
         var result = new Dictionary<string, IReadOnlyDictionary<string, int>>(StringComparer.Ordinal);
+        var canonicalActors = new[] { "anonymous", "viewer", "editor", "owner", "admin" };
         foreach (var prop in doc.RootElement.EnumerateObject())
         {
             if (prop.Name.StartsWith('_')) continue; // _meta
             var actors = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (var actor in prop.Value.EnumerateObject())
             {
+                // The JSON is the contract authority: a misspelled actor key
+                // would otherwise be silently ignored forever (ActorExpectations
+                // only reads the 5 canonical keys). Fail discovery loud instead.
+                if (!canonicalActors.Contains(actor.Name, StringComparer.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        $"Unknown actor '{actor.Name}' in matrix row '{prop.Name}'. Canonical actors: anonymous/viewer/editor/owner/admin");
+                }
                 actors[actor.Name] = actor.Value.GetInt32();
             }
             result[prop.Name] = actors;
