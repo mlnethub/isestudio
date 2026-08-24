@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using OnToPilot.Application.Integration;
+using OnToPilot.Authorization;
 
 namespace OnToPilot.Controllers;
 
@@ -10,7 +11,7 @@ namespace OnToPilot.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/providers")]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = Policies.AdminOnly)]
 public sealed class ProvidersController : InternalControllerBase
 {
     public ProvidersController(IIntegrationApiFacade facade) : base(facade) { }

@@ -541,7 +541,16 @@ builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, ExternalTokenAuthenticationHandler>(
         ExternalTokenAuthenticationHandler.SchemeName,
         _ => { });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(Policies.AdminOnly, policy =>
+        policy.RequireAuthenticatedUser()
+              .RequireRole("Admin"));
+
+    options.AddPolicy(Policies.KSOwnerOnly, policy =>
+        policy.RequireAuthenticatedUser()
+              .RequireAssertion(ctx => ctx.User.IsInRole("Admin"))); // hook for Step 4
+});
 
 // ASP.NET Core 10 ships the OpenAPI document at /openapi/v1.json when both
 // the transformer services and the endpoint mapping are registered. The

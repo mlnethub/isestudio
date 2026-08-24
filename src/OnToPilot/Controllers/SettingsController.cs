@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using OnToPilot.Application.Integration;
+using OnToPilot.Authorization;
 
 namespace OnToPilot.Controllers;
 
@@ -10,7 +11,7 @@ namespace OnToPilot.Controllers;
 /// listing used by the admin UI.
 /// </summary>
 [ApiController]
-[Authorize(Roles = "Admin")]
+[Authorize(Policy = Policies.AdminOnly)]
 public sealed class SettingsController : InternalControllerBase
 {
     public SettingsController(IIntegrationApiFacade facade) : base(facade) { }

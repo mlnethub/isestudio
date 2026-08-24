@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
@@ -7,11 +8,13 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using OnToPilot.Authentication;
 using OnToPilot.Documents;
 using OnToPilot.Infrastructure.Persistence;
+using OnToPilot.Infrastructure.Persistence.Entities;
 using OnToPilot.Llm;
 using OnToPilot.Parsing;
 using OnToPilot.Storage;
 using OnToPilot.Tests.Documents;
 using OnToPilot.Tests.Extraction;
+using OnToPilot.Tests.Persistence;
 
 namespace OnToPilot.Tests.Authentication;
 
@@ -28,6 +31,7 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
     public const string AdminDisplayName = "Test Admin";
     public const string OtherUsername = "alice";
     public const string OtherPassword = "alice12345strong";
+    public const string SessionCookieName = "ontopilot_session";
 
     private readonly string _sqlitePath;
     private readonly string _blobRoot;
@@ -161,6 +165,71 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
         var db = scope.ServiceProvider.GetRequiredService<OnToPilotDbContext>();
         db.Database.EnsureCreated();
         return db;
+    }
+
+    /// <summary>
+    /// Seeds the shared admin account (idempotent) so admin-gated tests
+    /// can authenticate via <see cref="AuthenticateAsAsync"/>.
+    /// </summary>
+    public async Task SeedAdminAsync()
+    {
+        var db = CreateDbContext();
+        if (db.Users.Any(u => u.Username == AdminUsername)) return;
+        db.Users.Add(new UserEntity
+        {
+            LegacyId = TestLegacyIds.Next("users"),
+            Username = AdminUsername,
+            DisplayName = AdminDisplayName,
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(AdminPassword, workFactor: 10),
+            IsAdmin = true,
+            Active = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Seeds a user (idempotent) with the shared
+    /// <see cref="OtherPassword"/> so role-gate tests can authenticate
+    /// via <see cref="AuthenticateAsAsync"/> as a non-admin caller.
+    /// </summary>
+    public async Task SeedUserAsync(string username, bool isAdmin = false)
+    {
+        var db = CreateDbContext();
+        if (db.Users.Any(u => u.Username == username)) return;
+        db.Users.Add(new UserEntity
+        {
+            LegacyId = TestLegacyIds.Next("users"),
+            Username = username,
+            DisplayName = username,
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword(OtherPassword, workFactor: 10),
+            IsAdmin = isAdmin,
+            Active = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Logs the given <paramref name="client"/> in via
+    /// <c>/api/auth/login</c> and attaches the session cookie so
+    /// subsequent requests carry the caller's identity. Defaults to the
+    /// shared admin account; pass a username seeded via
+    /// <see cref="SeedUserAsync"/> for non-admin callers.
+    /// </summary>
+    public async Task AuthenticateAsAsync(HttpClient client, string? username = null)
+    {
+        var uname = username ?? AdminUsername;
+        var password = username is null ? AdminPassword : OtherPassword;
+        var login = await client.PostAsJsonAsync("/api/auth/login", new
+        {
+            username = uname,
+            password,
+        });
+        login.EnsureSuccessStatusCode();
+        var cookie = login.Headers.GetValues("Set-Cookie").Single(
+            c => c.StartsWith(SessionCookieName + "=", StringComparison.OrdinalIgnoreCase));
+        client.DefaultRequestHeaders.Add("Cookie", cookie.Split(';')[0]);
     }
 
     /// <inheritdoc />

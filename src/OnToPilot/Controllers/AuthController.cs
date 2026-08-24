@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Application.Integration;
 using OnToPilot.Authentication;
+using OnToPilot.Authorization;
 using OnToPilot.Configuration;
 using OnToPilot.Infrastructure.Persistence;
 using OnToPilot.Infrastructure.Persistence.Entities;
@@ -208,7 +209,7 @@ public sealed class AuthController : ControllerBase
             ct));
 
     [HttpGet("users")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = Policies.AdminOnly)]
     public Task<IActionResult> ListUsersAsync(CancellationToken ct)
         => OkEnvelope(_facade.InvokeAsync(
             "auth.list_users",
@@ -216,7 +217,7 @@ public sealed class AuthController : ControllerBase
             ct));
 
     [HttpPost("users")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = Policies.AdminOnly)]
     public Task<IActionResult> CreateUserAsync([FromBody] object body, CancellationToken ct)
         => OkEnvelope(_facade.InvokeAsync(
             "auth.create_user",
@@ -224,7 +225,7 @@ public sealed class AuthController : ControllerBase
             ct));
 
     [HttpDelete("users/{uid}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = Policies.AdminOnly)]
     public Task<IActionResult> DeleteUserAsync(string uid, CancellationToken ct)
         => OkEnvelope(_facade.InvokeAsync(
             "auth.delete_user",
@@ -232,7 +233,7 @@ public sealed class AuthController : ControllerBase
             ct));
 
     [HttpPatch("users/{uid}")]
-    [Authorize(Roles = "Admin")]
+    [Authorize(Policy = Policies.AdminOnly)]
     public Task<IActionResult> UpdateUserAsync(string uid, [FromBody] object body, CancellationToken ct)
         => OkEnvelope(_facade.InvokeAsync(
             "auth.update_user",
