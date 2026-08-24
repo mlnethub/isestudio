@@ -29,6 +29,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Authorization/rbac_matrix_expected.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Update="Fixtures\tbox_abox_boundary.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
