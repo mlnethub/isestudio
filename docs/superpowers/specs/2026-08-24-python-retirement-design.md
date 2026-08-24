@@ -65,8 +65,6 @@ OnToPilot 的 wire-side 已 100% 迁移到 .NET(docker-compose 栈为 ".NET 10 b
 
 > 注:`docker-compose.yml`、`Dockerfile`、顶层 `.env.example` 已无 Python 引用(扫描确认),不动。
 
-
-
 ## 3. 可恢复性
 
 - 删除 commit 前打 tag:`git tag pre-python-retirement`(落在删除前最后一 commit 上)
