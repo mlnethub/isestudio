@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using OnToPilot.Application.Integration;
+using OnToPilot.Authorization;
 
 namespace OnToPilot.Controllers;
 
@@ -15,6 +16,7 @@ public sealed class RdfImportController : InternalControllerBase
     public RdfImportController(IIntegrationApiFacade facade) : base(facade) { }
 
     [HttpPost("api/knowledge/{id:guid}/rdf/import")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
     [Consumes("multipart/form-data")]
     [RequestSizeLimit(25 * 1024 * 1024)]
     public async Task<IActionResult> ImportAsync(

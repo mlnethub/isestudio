@@ -36,7 +36,12 @@ public sealed class KSRoleAuthorizeAttribute : Attribute, IAsyncAuthorizationFil
     /// <summary>HttpContext.Items key where <see cref="SessionAuthenticationHandler"/> stashes the user.</summary>
     private const string AuthUserItemKey = "auth.user";
 
-    public KSRole Minimum { get; }
+    /// <summary>Minimum effective role required. Settable via init-only
+    /// setter so the attribute supports the declarative
+    /// <c>[KSRoleAuthorize(Minimum = KSRole.Editor)]</c> named-argument
+    /// syntax (C# allows init-only properties in attribute named
+    /// arguments; a plain get-only property is rejected with CS0617).</summary>
+    public KSRole Minimum { get; init; }
 
     /// <summary>Route argument name holding the KS identifier. Default <c>"id"</c>.</summary>
     public string RouteArgument { get; init; } = "id";
@@ -51,6 +56,16 @@ public sealed class KSRoleAuthorizeAttribute : Attribute, IAsyncAuthorizationFil
     public KSRoleAuthorizeAttribute(KSRole minimum)
     {
         Minimum = minimum;
+    }
+
+    /// <summary>
+    /// Parameterless overload enabling the declarative
+    /// <c>[KSRoleAuthorize(Minimum = KSRole.Editor)]</c> named-argument
+    /// syntax; the init-only <see cref="Minimum"/> property is then set
+    /// by the attribute usage itself.
+    /// </summary>
+    public KSRoleAuthorizeAttribute() : this(KSRole.Viewer)
+    {
     }
 
     public async Task OnAuthorizationAsync(AuthorizationFilterContext context)

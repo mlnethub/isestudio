@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using OnToPilot.Application.Integration;
+using OnToPilot.Authorization;
 
 namespace OnToPilot.Controllers;
 
@@ -15,6 +16,7 @@ public sealed class PromptsController : InternalControllerBase
     public PromptsController(IIntegrationApiFacade facade) : base(facade) { }
 
     [HttpGet("api/knowledge/{id:guid}/prompts")]
+    [KSRoleAuthorize(Minimum = KSRole.Viewer)]
     public Task<IActionResult> ListAsync(Guid id, CancellationToken ct)
         => InvokeAsync("prompts.list", ReqGuid(id), ct);
 
@@ -23,6 +25,7 @@ public sealed class PromptsController : InternalControllerBase
     // the controller intentionally returns NoContent() so the wire shape
     // matches the documented envelope exactly.
     [HttpPost("api/knowledge/{id:guid}/prompts/restore-all")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
     public async Task<IActionResult> RestoreAllAsync(Guid id, CancellationToken ct)
     {
         await Facade.InvokeAsync("prompts.restore_all", ReqGuid(id), ct).ConfigureAwait(false);
@@ -30,10 +33,12 @@ public sealed class PromptsController : InternalControllerBase
     }
 
     [HttpDelete("api/knowledge/{id:guid}/prompts/{prompt_key}")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
     public Task<IActionResult> RestoreAsync(Guid id, string prompt_key, CancellationToken ct)
         => InvokeAsync("prompts.restore", ReqGuid(ks: id, res: prompt_key), ct);
 
     [HttpPut("api/knowledge/{id:guid}/prompts/{prompt_key}")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
     public Task<IActionResult> UpdateAsync(Guid id, string prompt_key, [FromBody] object body, CancellationToken ct)
         => InvokeAsync("prompts.update", ReqGuidWithBody(body, id, res: prompt_key), ct);
 }

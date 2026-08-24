@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using OnToPilot.Application.Foundation;
 using OnToPilot.Application.Integration;
+using OnToPilot.Authorization;
 using OnToPilot.Documents;
 
 namespace OnToPilot.Controllers;
@@ -35,14 +36,17 @@ public sealed class DocumentsController : InternalControllerBase
     }
 
     [HttpGet("api/knowledge/{id:guid}/documents")]
+    [KSRoleAuthorize(Minimum = KSRole.Viewer)]
     public Task<IActionResult> ListAsync(Guid id, CancellationToken ct)
         => InvokeAsync("documents.list", ReqGuid(id), ct);
 
     [HttpGet("api/knowledge/{id:guid}/documents/page")]
+    [KSRoleAuthorize(Minimum = KSRole.Viewer)]
     public Task<IActionResult> ListPageAsync(Guid id, CancellationToken ct)
         => InvokeAsync("documents.list_page", ReqGuid(id), ct);
 
     [HttpPost("api/knowledge/{id:guid}/documents/parse-batch")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
     public Task<IActionResult> ParseBatchAsync(Guid id, [FromBody] object body, CancellationToken ct)
         => InvokeAsync("documents.parse_batch", ReqGuidWithBody(body, id), ct);
 
@@ -53,6 +57,7 @@ public sealed class DocumentsController : InternalControllerBase
     /// blob write + audit directly.
     /// </summary>
     [HttpPost("api/knowledge/{id:guid}/documents/upload")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
     [RequestSizeLimit(200 * 1024 * 1024)]
     public async Task<IActionResult> UploadAsync(
         Guid id,
@@ -100,30 +105,40 @@ public sealed class DocumentsController : InternalControllerBase
     }
 
     [HttpGet("api/knowledge/{id:guid}/documents/{document_id:guid}")]
+    [KSRoleAuthorize(Minimum = KSRole.Viewer)]
     public Task<IActionResult> GetAsync(Guid id, Guid document_id, CancellationToken ct)
         => InvokeAsync("documents.get", ReqGuid(id, res: document_id.ToString()), ct);
 
     [HttpPatch("api/knowledge/{id:guid}/documents/{document_id:guid}")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
     public Task<IActionResult> MoveAsync(Guid id, Guid document_id, [FromBody] object body, CancellationToken ct)
         => InvokeAsync("documents.move", ReqGuidWithBody(body, id, res: document_id.ToString()), ct);
 
     [HttpGet("api/knowledge/{id:guid}/documents/{document_id:guid}/chunks")]
+    [KSRoleAuthorize(Minimum = KSRole.Viewer)]
     public Task<IActionResult> ListChunksAsync(Guid id, Guid document_id, CancellationToken ct)
         => InvokeAsync("documents.list_chunks", ReqGuid(id, res: document_id.ToString()), ct);
 
     [HttpGet("api/knowledge/{id:guid}/documents/{document_id:guid}/contribution")]
+    [KSRoleAuthorize(Minimum = KSRole.Viewer)]
     public Task<IActionResult> ContributionAsync(Guid id, Guid document_id, CancellationToken ct)
         => InvokeAsync("documents.contribution", ReqGuid(id, res: document_id.ToString()), ct);
 
+    // NOTE: no [KSRoleAuthorize] on DeleteAsync — the existing HTTP
+    // contract pins a role=None soft-fail (200 with {ok:false}) for this
+    // route, and the filter hard-403s role=None. See the RBAC coverage
+    // matrix task-2 report.
     [HttpPost("api/knowledge/{id:guid}/documents/{document_id:guid}/delete")]
     public Task<IActionResult> DeleteAsync(Guid id, Guid document_id, CancellationToken ct)
         => InvokeAsync("documents.delete", ReqGuid(id, res: document_id.ToString()), ct);
 
     [HttpGet("api/knowledge/{id:guid}/documents/{document_id:guid}/impact")]
+    [KSRoleAuthorize(Minimum = KSRole.Viewer)]
     public Task<IActionResult> ImpactAsync(Guid id, Guid document_id, CancellationToken ct)
         => InvokeAsync("documents.impact", ReqGuid(id, res: document_id.ToString()), ct);
 
     [HttpPost("api/knowledge/{id:guid}/documents/{document_id:guid}/parse")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
     public Task<IActionResult> ParseAsync(Guid id, Guid document_id, CancellationToken ct)
         => InvokeAsync("documents.parse", ReqGuid(id, res: document_id.ToString()), ct);
 }
