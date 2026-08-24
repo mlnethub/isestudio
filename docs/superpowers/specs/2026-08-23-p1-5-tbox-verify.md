@@ -80,7 +80,7 @@ Python 中 `_verify_tbox_candidates` 抛异常 → worker 记录 chunk error，j
 - **P1-5b corpus recovery**（`_recover_rejected_classes` + `_prepare_corpus_evidence` + `_apply_corpus_evidence_selections` + `_apply_corpus_role_decisions`；prompts `tbox.boundary.evidence_selector` / `tbox.boundary.corpus_recovery` 已落地待消费）：对 boundary/denotation 双拒的类做语料级证据恢复，两阶段接入（boundary 阶段 + denotation 后）。
 - **P1-5b hierarchy recovery**（`_recover_hierarchy_one` + `_verify_subclass_candidates`；prompts `tbox.hierarchy.critic` / `tbox.hierarchy.recovery` 已落地待消费）：对 subclass 决策全拒时的父类提取 + 层级补全。
 - **extractor evidence 扩 DTO**（§2.5）：若后续要严格对齐 Python critic 载荷可补 `ClassMutation.Evidence`。
-- **chunk-error 语义差异**（§2.7）：.NET fail-closed（job failed）vs Python chunk-error-continue；如产品要求对齐需改 `RunLayerAsync` 的 per-chunk 容错。
+- **chunk-error 语义差异**（§2.7）：.NET fail-closed（job failed）vs Python chunk-error-continue；如产品要求对齐需改 `RunLayerAsync` 的 per-chunk 容错。**Decision: LOCKED 2026-08-24** — see §7 D1。
 
 ## 6. 参考
 
@@ -88,3 +88,9 @@ Python 中 `_verify_tbox_candidates` 抛异常 → worker 记录 chunk error，j
 - [[2026-08-23-p0-prompt-localization]] — PromptLocales 消费模式（ResolveSystemPrompt 契约）
 - `backend/app/ontology/extract.py:966-1224` — Python verify 管线全段
 - `src/OnToPilot/Extraction/TBoxVerifyService.cs` / `src/OnToPilot.Tests/Extraction/TBoxVerifyServiceTests.cs`
+
+## 7. Decision Log
+
+产品决策的最终落点，避免后续切片被反复重新讨论。每一项格式：**代号 | 锁定日期 | 决议 | 理由**。
+
+- **D1 (chunk-error 语义差异)** | locked 2026-08-24 | .NET fail-closed（异常 → `RunLayerAsync` capture revert → job failed）；Python chunk-error-continue 是已知差异，**不计划对齐 Python** | (a) §2.7 已记录的 verify 是质量闸门，静默丢弃不如显式失败；(b) `RunLayerAsync` 的 atomic capture contract（commit 41e481b 的 B6b 阶段落地）是 TBox/ABox 两层原子性的根基，改 per-chunk 容错需打破该 contract，影响面过大；(c) combined run 里 ABox 第二层可 cover 部分单层失败（见 [[2026-08-23-p1-4-extraction-agent-chain]]）；(d) P1-5b §2.3 recovery pass 本身走 best-effort try/catch，与 verify 主链的 fail-closed 形成局部对冲——并不是每个失败都吃掉；(e) Python 端的 `extract.py` worker 异常 try/catch + chunk-error 累计语义若需 parity，需新增 per-chunk error 计数 + warning 而非 fail 的状态机，与现有 `ExtractionJobEntity` schema 不兼容，不在本切片范围。P1-5b §5 第 90 行沿用同一决策（参见 [2026-08-23-p1-5b-corpus-hierarchy-recovery](2026-08-23-p1-5b-corpus-hierarchy-recovery.md) §5）。

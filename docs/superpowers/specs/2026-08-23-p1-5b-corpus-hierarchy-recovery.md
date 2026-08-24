@@ -87,7 +87,7 @@ Python `extract.py:1629-1708`：TBox 完成后先 conflicts sync → conflict ag
 ## 5. 遗留 / 不在本次范围
 
 - **extractor evidence 扩 DTO**：P1-5a §5 沿用，与本切片无关。
-- **chunk-error 语义差异**：P1-5a §5 沿用。两个 recovery pass 走的是 best-effort try/catch（即使 Python 同款），与 verify 主链的 fail-closed 不同。
+- **chunk-error 语义差异**：P1-5a §5 沿用。两个 recovery pass 走的是 best-effort try/catch（即使 Python 同款），与 verify 主链的 fail-closed 不同。**Decision: LOCKED 2026-08-24 — see [P1-5a §7 D1](2026-08-23-p1-5-tbox-verify.md#7-decision-log)**。
 - **hierarchy recovery 中间类的 `_verify_tbox_candidates` 走完整 critic**：P1-5a 已落，新类没有独立 prompt，复用同主链。Python 同。
 - **TelemetryTests 与 background LLM 任务的并行 race**：xUnit 默认并行 + 既有 TelemetryTests 不在 collection，偶发 `Assert.Single` 失败（背景 LLM activity 漏到 listener）。re-run 即恢复。视为既有 race（任何 background-LLM 测试都易触发），不在本切片处理。
 
