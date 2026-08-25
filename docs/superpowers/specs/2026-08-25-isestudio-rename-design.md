@@ -29,7 +29,7 @@
 - **CI/CD**:`.github/workflows/ci.yml` 中的 service 名 + image tag + 路径引用
 - **Docker / Dockerfile label**:`Dockerfile`、`src/Dockerfile`、`frontend/Dockerfile`
 - **图片资源**:`docs/images/ontopilot-hero-title.webp` + `docs/images/ontopilot-web-demo.png`(重命名文件名 + docs 引用同步)
-- **INI sanity grep gate**:验证 `OnToPilot__IriRoot` / `OnToPilot__VocabNamespace` 在 `src/` 内 0 命中(IRI 已对齐)
+- **IRI sanity grep gate**:验证 `OnToPilot__IriRoot` / `OnToPilot__VocabNamespace` 在 `src/` 内 0 命中(env var 名前缀须对齐 `ISEStudio__`,IRI 值本身保留 `goodcrew.local`)
 
 ### 2.2 OUT(本次 rename 不触及)
 
@@ -43,7 +43,7 @@
 | `docs/superpowers/specs/2026-08-13-ontopilot-dotnet-migration-design.md` 等 16 份 spec/plan 文件名 | spec/plan 文件名 + 内容中"OntoPilot"是历史叙事;重命名会破坏 git log 链接与外部引用 |
 | `docs/migration/MIGRATION_REPORT.md` 等 4 份 | 迁移档案(spec §2.2 同 Python 退役分类) |
 | `migration/scripts/*.ps1` 内部变量名(`$OntoPilotDb` 等) | 工具内部命名,与代码 namespace 解耦;改写增加 risk 0 value |
-| 测试 fixture 中的 `BaseIri = "http://ontopilot.test/..."` | 测试隔离域,不影响生产 IRI minting |
+| 测试 fixture 中的 `BaseIri = "http://ontopilot.test/..."` | 在范围内:测试隔离域虽是 fake,但 brand 一致性要求改为 `isestudio.test` |
 | GitHub repo name(`e--GitHub-ontopilot`) | 仓库设置层面,需 follow-up 切片单独处理 |
 
 ## 3. 决策汇总
@@ -74,7 +74,6 @@
 | `src/OnToPilot/appsettings.json`(仅改 `OnToPilot` section 名为 `ISEStudio`) | ~1 |
 | `src/OnToPilot/Configuration/OnToPilotOptions.cs`(改 `SessionCookie` 默认值 + `SectionName` 常量) | ~1 |
 | 图片 `docs/images/ontopilot-hero-title.webp` → `docs/images/isestudio-hero-title.webp`(+ 引用更新) | ~2 files + 多处引用 |
-| `docs/superpowers/...` 16 份 spec/plan 中的 brand 引用(不改文件名,改内容里的 brand 表述) | 0 file rename,~16 files brand 文字替换 |
 | 测试 fixtures 中 `BaseIri = "http://ontopilot.test/..."` → `"http://isestudio.test/..."`(测试隔离域,非生产) | ~5 files |
 | **Stage 1 总文件数估算** | ~80-100 files |
 
@@ -108,7 +107,7 @@ Stage 1 完成后,顶层 docs / Docker / CI 全部 ISEStudio,但代码 namespace
 | .NET namespaces | `OnToPilot.{Configuration,Api,Application,Migration,Tests,IntegrationTests,ApiContract.Tests,OxigraphProbe}` | `ISEStudio.*`(1:1) | `namespace` 声明 + `using` 引用 |
 | Config section | `"OnToPilot"`(`OnToPilotOptions.SectionName`) | `"ISEStudio"` | ASP.NET Core config binding |
 | Env var prefix | `OnToPilot__*` | `ISEStudio__*` | 全 .env / docker-compose / docs |
-| `OnToPilot__IriRoot` / `OnToPilot__VocabNamespace` | `http://goodcrew.local/ks` + `http://goodcrew.local/vocab#` | **保留**(IRI 命名空间决策) | IRI sanity grep gate 验证 0 个 OnToPilot__IriRoot/OnToPilot__VocabNamespace 引用残留 |
+| `OnToPilot__IriRoot` / `OnToPilot__VocabNamespace` | env var 名:`OnToPilot__IriRoot` → `ISEStudio__IriRoot`;env var 值:`http://goodcrew.local/ks` 保留(IRI 命名空间决策) | env var 名随 prefix 重命名;env var 值保留 goodcrew.local 不变 | IRI sanity grep gate 验证 0 个 `OnToPilot__IriRoot`/`OnToPilot__VocabNamespace` 引用残留 |
 | Cookie default | `"ontopilot_session"` | `"isestudio_session"` | `OnToPilotOptions.SessionCookie` 默认值 |
 | DB name | `ontopilot` | `isestudio` | docker-compose `POSTGRES_DB` |
 | MinIO bucket | `ontopilot-blobs` | `isestudio-blobs` | `OnToPilot__Storage__Bucket` 默认 |
@@ -129,7 +128,7 @@ Stage 1 完成后,顶层 docs / Docker / CI 全部 ISEStudio,但代码 namespace
 | `iri-migration-runbook.md` | 工具 runbook |
 | `production-cutover-record.template.md` | cutover 记录模板 |
 | `migrations/SqlAlchemyToEfCore/*.sql` | 历史 SQL 迁移脚本 |
-| 16 份 spec/plan 文件名 + 内容 brand 引用(但内容里"OntoPilot"保留) | 历史叙事 |
+| 16 份 spec/plan 文件名 + 内容 brand 引用(内容里"OntoPilot"也保留) | 历史叙事,Python 退役切片(spec §2.2)同 pattern,保持历史档案不动 |
 | `docs/migration/*.md` | 迁移档案 |
 | `migration/scripts/*.ps1` 内部变量名 | 工具内部命名 |
 | 测试 fixture `BaseIri = "http://ontopilot.test/..."` | 测试隔离域(改为 isestudio.test 算 rename 一部分) |
