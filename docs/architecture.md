@@ -6,7 +6,7 @@
 flowchart TB
     HUMAN["Ontology engineer / domain reviewer"] --> UI["React workspace"]
     CLIENT["Downstream application"] --> EXT["Scoped external API"]
-    UI --> API["FastAPI governance API"]
+    UI --> API["ASP.NET Core governance API"]
     EXT --> API
     API --> PG["PostgreSQL"]
     API --> OXI["Oxigraph"]
@@ -54,7 +54,7 @@ The layers are intentionally separate:
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant API as FastAPI
+    participant API as ASP.NET Core
     participant J as Extraction job
     participant M as Model endpoint
     participant G as Oxigraph
@@ -89,7 +89,7 @@ The quality gate blocks review while unresolved error conflicts, entity-resoluti
 
 ## Export Design
 
-ABox export never materializes the complete graph in Python memory. Oxigraph quads are streamed into fixed-statement-count `.nq` shards. Each shard is uncompressed and independently checksummed.
+ABox export never materializes the complete graph in memory. Oxigraph quads are streamed into fixed-statement-count `.nq` shards. Each shard is uncompressed and independently checksummed.
 
 ```mermaid
 flowchart LR

@@ -12,7 +12,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-007595)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.1.0-2563eb)](CHANGELOG.md)
-![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
+![.NET](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
@@ -107,7 +107,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    WEB["React Web UI"] -->|"REST API"| API["FastAPI Backend"]
+    WEB["React Web UI"] -->|"REST API"| API["ASP.NET Core Backend"]
     MCP["MCP Agent"] -->|"/mcp"| API
     API <--> PG["PostgreSQL"]
     API <--> RDF["Oxigraph RDF"]
@@ -126,7 +126,7 @@ flowchart LR
 | 组件 | 职责 |
 | --- | --- |
 | React + TypeScript | 治理工作台、图谱浏览、审核、发布、设置和文档 |
-| FastAPI | 认证、权限、接入、抽取编排、审核、发布、REST 与 MCP |
+| ASP.NET Core 10 | 认证、权限、接入、抽取编排、审核、发布、REST 与 MCP |
 | PostgreSQL | 用户、角色、文档/任务元数据、提示词快照、溯源、审核状态、审计和发布记录 |
 | Oxigraph | 可变 TBox/SKOS/ABox 图，以及独立的已发布版本服务投影 |
 | 制品存储 | 源文件、不可变快照、清单、溯源 JSONL 和导出分片 |
@@ -148,10 +148,10 @@ SQLite 适用于单进程本地开发；共享环境和 Docker 部署使用 Post
 git clone https://github.com/deeplethe/ontopilot.git
 cd ontopilot
 cp .env.example .env
-cp backend/.env.example backend/.env
+cp src/.env.example src/.env
 ```
 
-至少修改以下内容：
+至少修改以下顶层 `.env`：
 
 ```dotenv
 # .env
@@ -162,16 +162,16 @@ ONTOPILOT_BIND_ADDRESS=0.0.0.0
 ONTOPILOT_PORT=8080
 ```
 
+以及 `src/.env`：
+
 ```dotenv
-# backend/.env
-OPENROUTER_API_KEY=sk-or-v1-your-key
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=替换为强密码
-COOKIE_SECURE=false
+# src/.env
+OnToPilot__LlmApiKey=sk-or-v1-your-key
+OnToPilot__CookieSecure=false
 ```
 
-全新安装必须设置这两个密码。若管理员密码为空、过短或仍是公开示例值，OntoPilot 会拒绝
-创建首个管理员；请使用至少 12 个字符的密码。
+全新安装必须设置管理员密码。若管理员密码为空、过短或仍是公开示例值，OntoPilot 会拒绝创建首个管理员；
+请通过 `docker compose --profile bootstrap run --rm seed-admin` 完成首次引导，并使用至少 12 个字符的密码。
 
 `SYSTEM_LANGUAGE` 控制内置模型提示词（`en` 或 `zh-CN`），与每个用户选择的前端语言无关；知识体系级提示词覆盖始终优先。
 
@@ -212,7 +212,7 @@ docker compose down
 7. 创建发布草稿，通过质量门禁，审核并正式发布。
 8. 部署发布投影，或导出完整制品供下游系统使用。
 
-首次启动后端前设置 `SEED_DEMO_DATA=true`，可以在不调用模型的情况下创建确定性的 Pump Operations 演示库。已有源码环境可在仓库根目录运行 `python backend/scripts/seed_demo.py`。
+首次启动后端前设置 `OnToPilot__SeedDemoData=true`，可以在不调用模型的情况下创建确定性的 Pump Operations 演示库。
 
 ## MCP 与 Agent 集成
 
@@ -281,7 +281,7 @@ release/
 
 ## 配置
 
-仓库中的 [.env.example](.env.example) 和 [backend/.env.example](backend/.env.example) 是配置参考。
+仓库中的 [.env.example](.env.example) 和 [src/.env.example](src/.env.example) 是配置参考。
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -289,40 +289,36 @@ release/
 | `SYSTEM_LANGUAGE` | `en` | 内置后端提示词语言（`en` / `zh-CN`），独立于前端语言 |
 | `ONTOPILOT_BIND_ADDRESS` | `0.0.0.0` | 前端容器映射到宿主机的监听地址 |
 | `ONTOPILOT_PORT` | `8080` | 前端容器映射到宿主机的端口 |
-| `DATABASE_URL` | 本地 SQLite | SQLAlchemy 地址；Compose 会自动注入 PostgreSQL |
-| `OPENROUTER_API_KEY` | 空 | 初始兼容模型凭据；也可在设置页管理端点 |
-| `LLM_EXTRACT_MODEL` | `deepseek/deepseek-chat` | 初始抽取/Agent 模型 |
-| `EMBEDDING_MODEL` | `baai/bge-m3` | 初始向量模型 |
-| `EXTRACTION_CONCURRENCY` | `10` | 旧配置/回退种子；运行时由每个模型端点分别限流 |
-| `MCP_PUBLIC_URL` | `http://localhost:8000/mcp` | 后端向客户端声明的 Streamable HTTP 地址 |
-| `MCP_TOKEN_TTL_MINUTES` | `60` | 委派 MCP Token 默认有效期 |
+| `OnToPilot__Persistence__ConnectionString` | Compose 管理 PostgreSQL | EF Core 连接串；Compose 会自动注入 PostgreSQL |
+| `OnToPilot__LlmApiKey` | 空 | 初始兼容模型凭据；也可在设置页管理端点 |
+| `OnToPilot__ExtractModel` | `deepseek/deepseek-chat` | 初始抽取/Agent 模型 |
+| `OnToPilot__EmbeddingModel` | `baai/bge-m3` | 初始向量模型 |
+| `MCP_PUBLIC_URL` | `http://localhost:8080/mcp` | 后端向客户端声明的 Streamable HTTP 地址 |
+| `OnToPilot__McpTokenTtlMinutes` | `60` | 委派 MCP Token 默认有效期 |
 | `TOKEN_ENCRYPTION_KEY` | 在数据卷中生成 | 可再次显示的 API Token 密钥加密材料，必须备份 |
-| `COOKIE_SECURE` | `false` | 是否要求浏览器 Session Cookie 只能通过 HTTPS 传输 |
-| `SEED_DEMO_DATA` | `false` | 是否向空数据库写入无模型调用的演示数据 |
-| `RDF_IMPORT_MAX_BYTES` | `26214400` | RDF 直接上传大小上限 |
-| `RDF_IMPORT_MAX_TRIPLES` | `250000` | RDF 解析语句数上限 |
+| `OnToPilot__CookieSecure` | `false` | 是否要求浏览器 Session Cookie 只能通过 HTTPS 传输 |
+| `OnToPilot__SeedDemoData` | `false` | 是否向空数据库写入无模型调用的演示数据 |
+| `OnToPilot__RdfImportMaxBytes` | `26214400` | RDF 直接上传大小上限 |
+| `OnToPilot__RdfImportMaxTriples` | `250000` | RDF 解析语句数上限 |
 
 ## 源码开发
 
 ### 环境要求
 
-- Python 3.12+
+- .NET SDK 10
 - Node.js 22+
 - Corepack 与 pnpm 10.2.1（已在 `frontend/package.json` 固定）
 
 ### 后端
 
 ```bash
-cd backend
-python -m venv .venv
-# POSIX: source .venv/bin/activate
-# PowerShell: .venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
-cp .env.example .env
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+cp src/.env.example src/.env
+dotnet run --project src/OnToPilot
 ```
 
-`DATABASE_URL` 为空时，后端使用 SQLite，并把 SQLite、Oxigraph 和其他开发数据写入 `backend/data/`。
+.NET 后端默认监听 `http://localhost:5072`（见 `src/OnToPilot/Properties/launchSettings.json`）。
+未设置 `OnToPilot__Persistence__Provider` / `OnToPilot__Persistence__SqliteConnection` 覆盖时，
+后端把本地开发数据写入 `./src/OnToPilot/data/`（SQLite + Oxigraph）。
 
 ### 前端
 
@@ -333,10 +329,10 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Vite 默认运行在 <http://localhost:5173>，并把 `/api` 和 `/mcp` 代理到 `http://127.0.0.1:8000`。隔离源码部署可以覆盖目标：
+Vite 默认运行在 <http://localhost:5173>，并把 `/api` 和 `/mcp` 代理到 `http://localhost:5072`。隔离源码部署可以覆盖目标：
 
 ```bash
-VITE_BACKEND_PROXY_TARGET=http://127.0.0.1:18000 pnpm dev --host 127.0.0.1 --port 15173
+VITE_BACKEND_PROXY_TARGET=http://127.0.0.1:18080 pnpm dev --host 127.0.0.1 --port 15173
 ```
 
 PowerShell 请先设置 `$env:VITE_BACKEND_PROXY_TARGET`，再执行 `pnpm dev`。
@@ -346,12 +342,10 @@ PowerShell 请先设置 `$env:VITE_BACKEND_PROXY_TARGET`，再执行 `pnpm dev`�
 运行核心测试、Lint、构建和契约检查：
 
 ```bash
-cd backend
-pytest -q
-python scripts/check_tbox_guard.py
-python scripts/check_ontolearner_regression.py tests/gold/ontolearner_reference_result.json
+dotnet test src/OnToPilot.Tests
+dotnet test src/OnToPilot.ApiContract.Tests
 
-cd ../frontend
+cd frontend
 pnpm lint
 pnpm build
 
@@ -359,7 +353,10 @@ cd ..
 docker compose config --quiet
 ```
 
-项目金标覆盖命名国家、地区、组织、准入插件、可复用 Kubernetes Kind、XSD 数据类型等常见 TBox/ABox 边界错误。Taxonomy 评测方法和复现说明统一维护在 [Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md) 中。
+集成测试位于 `tests/OnToPilot.Integration.Tests`，依赖运行中的 PostgreSQL 与 MinIO，在多数环境中被软跳过。
+本机可在 `docker compose up -d postgres minio` 之后执行 `dotnet test tests/OnToPilot.Integration.Tests`。
+
+Taxonomy 评测方法和复现说明统一维护在 [Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md) 中。
 
 完整人工端到端路径见 [docs/acceptance.md](docs/acceptance.md)。
 
@@ -400,7 +397,7 @@ curl --fail http://localhost:8080/api/health
 | 现象 | 检查项 |
 | --- | --- |
 | 前端启动但 API 请求失败 | `docker compose ps`、后端健康状态、Nginx 日志 |
-| 源码前端意外请求 8000 | 启动 Vite 前设置 `VITE_BACKEND_PROXY_TARGET` |
+| 源码前端意外请求 5072 | 启动 Vite 前设置 `VITE_BACKEND_PROXY_TARGET` |
 | 无法抽取 | 测试当前模型端点，检查凭据、模型名和端点并发限制 |
 | MCP 返回 `401` | 在 `Authorization: Bearer` Header 中使用未过期的 `opm_...` Token |
 | HTTPS 后重复登录 | 设置 `COOKIE_SECURE=true`，检查代理的协议和 Host 转发 |

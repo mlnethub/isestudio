@@ -4,8 +4,6 @@
 //
 // BACKEND = ASP.NET Core 10 (since the dotnet migration; see
 // `docs/superpowers/specs/2026-08-13-ontopilot-dotnet-migration-design.md`).
-// The legacy FastAPI Python implementation under `backend/` is frozen as
-// a contract baseline only and is no longer served in dev or prod.
 //
 // ID / URL CONVENTION (cross-link `lib/types.ts` header):
 //   - Every id passed into an `api.*` helper is a Guid string.

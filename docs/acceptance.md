@@ -19,10 +19,8 @@ A new user can complete **upload → extract → review → publish → export**
 ## Automated Gates
 
 ```bash
-cd backend
-pytest -q
-python scripts/check_tbox_guard.py
-python scripts/check_ontolearner_regression.py data/benchmarks/ontolearner-wine-official/result.json
+dotnet test src/OnToPilot.Tests
+dotnet test src/OnToPilot.ApiContract.Tests
 
 cd ../frontend
 pnpm build

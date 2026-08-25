@@ -12,7 +12,7 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-007595)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v0.1.0-2563eb)](CHANGELOG.md)
-![Python](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)
+![.NET](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
@@ -107,7 +107,7 @@ The release quality gate blocks approval while blocking conflicts, unresolved en
 
 ```mermaid
 flowchart LR
-    WEB["React Web UI"] -->|"REST API"| API["FastAPI Backend"]
+    WEB["React Web UI"] -->|"REST API"| API["ASP.NET Core Backend"]
     MCP["MCP Agent"] -->|"/mcp"| API
     API <--> PG["PostgreSQL"]
     API <--> RDF["Oxigraph RDF"]
@@ -126,7 +126,7 @@ flowchart LR
 | Component | Responsibility |
 | --- | --- |
 | React + TypeScript | Governance workspace, graph exploration, review, releases, settings, and documentation |
-| FastAPI | Authentication, project permissions, ingestion, extraction orchestration, review, release, REST, and MCP |
+| ASP.NET Core 10 | Authentication, project permissions, ingestion, extraction orchestration, review, release, REST, and MCP |
 | PostgreSQL | Users, roles, document/job metadata, prompt snapshots, provenance, review state, audit, and releases |
 | Oxigraph | Mutable TBox/SKOS/ABox graphs plus separate published-release projections |
 | Artifact storage | Source blobs, immutable release snapshots, manifests, provenance JSONL, and export shards |
@@ -148,10 +148,10 @@ SQLite is supported for single-process local development. PostgreSQL is the supp
 git clone https://github.com/deeplethe/ontopilot.git
 cd ontopilot
 cp .env.example .env
-cp backend/.env.example backend/.env
+cp src/.env.example src/.env
 ```
 
-Set at least these values:
+Set at least these values in the top-level `.env`:
 
 ```dotenv
 # .env
@@ -162,16 +162,17 @@ ONTOPILOT_BIND_ADDRESS=0.0.0.0
 ONTOPILOT_PORT=8080
 ```
 
+And in `src/.env`:
+
 ```dotenv
-# backend/.env
-OPENROUTER_API_KEY=sk-or-v1-your-key
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=replace-with-a-strong-password
-COOKIE_SECURE=false
+# src/.env
+OnToPilot__LlmApiKey=sk-or-v1-your-key
+OnToPilot__CookieSecure=false
 ```
 
-Both passwords are mandatory for a new installation. OntoPilot refuses to create the first
-administrator from an empty, common, or published example password; use at least 12 characters.
+The administrator password is mandatory for a new installation. OntoPilot refuses to create the first
+administrator from an empty, common, or published example password; seed the first admin via
+`docker compose --profile bootstrap run --rm seed-admin` and use at least 12 characters.
 
 `SYSTEM_LANGUAGE` controls built-in model prompts (`en` or `zh-CN`) and is independent of each user's frontend language. Project-specific prompt overrides continue to take precedence.
 
@@ -212,7 +213,7 @@ This preserves named volumes. `docker compose down -v` permanently deletes the d
 7. Create a release draft, pass the quality gate, approve, and publish it.
 8. Deploy the published projection or export the complete bundle for downstream use.
 
-Set `SEED_DEMO_DATA=true` before the first backend start to create a deterministic Pump Operations knowledge system without model calls. For an existing local source installation, run `python backend/scripts/seed_demo.py` from the repository root.
+Set `SEED_DEMO_DATA=true` before the first backend start to create a deterministic Pump Operations knowledge system without model calls.
 
 ## MCP and Agent Integration
 
@@ -281,7 +282,7 @@ Artifacts are uncompressed by design, enabling HTTP Range delivery, line-oriente
 
 ## Configuration
 
-The checked-in [.env.example](.env.example) and [backend/.env.example](backend/.env.example) files are the configuration reference. Important values include:
+The checked-in [.env.example](.env.example) and [src/.env.example](src/.env.example) files are the configuration reference. Important values include:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -289,40 +290,36 @@ The checked-in [.env.example](.env.example) and [backend/.env.example](backend/.
 | `SYSTEM_LANGUAGE` | `en` | Built-in backend prompt language (`en` or `zh-CN`), independent of UI locale |
 | `ONTOPILOT_BIND_ADDRESS` | `0.0.0.0` | Host interface exposed by the frontend container |
 | `ONTOPILOT_PORT` | `8080` | Host port exposed by the frontend container |
-| `DATABASE_URL` | local SQLite | SQLAlchemy URL; Compose injects PostgreSQL automatically |
-| `OPENROUTER_API_KEY` | empty | Initial compatible model credential; endpoints can also be managed in Settings |
-| `LLM_EXTRACT_MODEL` | `deepseek/deepseek-chat` | Initial extraction/agent model |
-| `EMBEDDING_MODEL` | `baai/bge-m3` | Initial embedding model |
-| `EXTRACTION_CONCURRENCY` | `10` | Legacy/fallback seed; each model endpoint has its own runtime limit |
-| `MCP_PUBLIC_URL` | `http://localhost:8000/mcp` | Public Streamable HTTP URL advertised by the backend |
-| `MCP_TOKEN_TTL_MINUTES` | `60` | Default delegated MCP-token lifetime |
+| `OnToPilot__Persistence__ConnectionString` | Compose-managed PostgreSQL | EF Core connection string; Compose injects PostgreSQL automatically |
+| `OnToPilot__LlmApiKey` | empty | Initial compatible model credential; endpoints can also be managed in Settings |
+| `OnToPilot__ExtractModel` | `deepseek/deepseek-chat` | Initial extraction/agent model |
+| `OnToPilot__EmbeddingModel` | `baai/bge-m3` | Initial embedding model |
+| `MCP_PUBLIC_URL` | `http://localhost:8080/mcp` | Public Streamable HTTP URL advertised by the backend |
+| `OnToPilot__McpTokenTtlMinutes` | `60` | Default delegated MCP-token lifetime |
 | `TOKEN_ENCRYPTION_KEY` | generated in data volume | Encryption key for revealable API-token secrets; back it up |
-| `COOKIE_SECURE` | `false` | Require HTTPS for browser-session cookies |
-| `SEED_DEMO_DATA` | `false` | Seed deterministic no-LLM demo data into an empty installation |
-| `RDF_IMPORT_MAX_BYTES` | `26214400` | Direct RDF upload ceiling |
-| `RDF_IMPORT_MAX_TRIPLES` | `250000` | Direct RDF parsed-statement ceiling |
+| `OnToPilot__CookieSecure` | `false` | Require HTTPS for browser-session cookies |
+| `OnToPilot__SeedDemoData` | `false` | Seed deterministic no-LLM demo data into an empty installation |
+| `OnToPilot__RdfImportMaxBytes` | `26214400` | Direct RDF upload ceiling |
+| `OnToPilot__RdfImportMaxTriples` | `250000` | Direct RDF parsed-statement ceiling |
 
 ## Source Development
 
 ### Requirements
 
-- Python 3.12+
+- .NET SDK 10
 - Node.js 22+
 - Corepack and pnpm 10.2.1 (pinned in `frontend/package.json`)
 
 ### Backend
 
 ```bash
-cd backend
-python -m venv .venv
-# POSIX: source .venv/bin/activate
-# PowerShell: .venv\Scripts\Activate.ps1
-pip install -r requirements-dev.txt
-cp .env.example .env
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+cp src/.env.example src/.env
+dotnet run --project src/OnToPilot
 ```
 
-When `DATABASE_URL` is empty, the backend stores local development data under `backend/data/` with SQLite and Oxigraph.
+The .NET backend listens on `http://localhost:5072` (see `src/OnToPilot/Properties/launchSettings.json`).
+Without `OnToPilot__Persistence__Provider` / `OnToPilot__Persistence__SqliteConnection` overrides, the
+backend stores local development data in `./src/OnToPilot/data/` with SQLite and Oxigraph.
 
 ### Frontend
 
@@ -333,10 +330,10 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Vite serves <http://localhost:5173> and proxies `/api` and `/mcp` to `http://127.0.0.1:8000`. Override the target for an isolated source deployment:
+Vite serves <http://localhost:5173> and proxies `/api` and `/mcp` to `http://localhost:5072`. Override the target for an isolated source deployment:
 
 ```bash
-VITE_BACKEND_PROXY_TARGET=http://127.0.0.1:18000 pnpm dev --host 127.0.0.1 --port 15173
+VITE_BACKEND_PROXY_TARGET=http://127.0.0.1:18080 pnpm dev --host 127.0.0.1 --port 15173
 ```
 
 On PowerShell, set `$env:VITE_BACKEND_PROXY_TARGET` first and then run `pnpm dev`.
@@ -346,12 +343,10 @@ On PowerShell, set `$env:VITE_BACKEND_PROXY_TARGET` first and then run `pnpm dev
 Run the core test, lint, build, and contract checks:
 
 ```bash
-cd backend
-pytest -q
-python scripts/check_tbox_guard.py
-python scripts/check_ontolearner_regression.py tests/gold/ontolearner_reference_result.json
+dotnet test src/OnToPilot.Tests
+dotnet test src/OnToPilot.ApiContract.Tests
 
-cd ../frontend
+cd frontend
 pnpm lint
 pnpm build
 
@@ -359,7 +354,11 @@ cd ..
 docker compose config --quiet
 ```
 
-The gold set covers recurring TBox/ABox boundary failures such as named countries, regions, organizations, admission plugins, reusable Kubernetes kinds, and XSD datatypes. Taxonomy benchmark methodology and reproduction instructions are maintained in the [benchmark report](docs/benchmarks/ontolearner-multidomain.md).
+Integration tests live under `tests/OnToPilot.Integration.Tests` and require a running PostgreSQL and
+MinIO instance; they are soft-skipped in many environments. Run them locally with
+`dotnet test tests/OnToPilot.Integration.Tests` after `docker compose up -d postgres minio`.
+
+Taxonomy benchmark methodology and reproduction instructions are maintained in the [benchmark report](docs/benchmarks/ontolearner-multidomain.md).
 
 See [docs/acceptance.md](docs/acceptance.md) for the manual end-to-end acceptance path.
 
@@ -400,7 +399,7 @@ Back up first, review changed example variables, and test pre-1.0 upgrades on a 
 | Symptom | Check |
 | --- | --- |
 | Frontend starts but API calls fail | `docker compose ps`, backend health, and Nginx logs |
-| Source frontend calls port 8000 unexpectedly | Set `VITE_BACKEND_PROXY_TARGET` before starting Vite |
+| Source frontend calls port 5072 unexpectedly | Set `VITE_BACKEND_PROXY_TARGET` before starting Vite |
 | Extraction is unavailable | Test the selected model endpoint and verify its credential/model/concurrency settings |
 | MCP returns `401` | Use a non-expired `opm_...` token in the `Authorization: Bearer` header |
 | Login loops behind HTTPS | Set `COOKIE_SECURE=true` and verify proxy scheme/host forwarding |

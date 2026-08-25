@@ -6,7 +6,7 @@ import tailwindcss from '@tailwindcss/vite'
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, import.meta.dirname, "")
-  const backendProxyTarget = env.VITE_BACKEND_PROXY_TARGET || "http://127.0.0.1:8000"
+  const backendProxyTarget = env.VITE_BACKEND_PROXY_TARGET || "http://localhost:5072"
 
   return {
     plugins: [react(), tailwindcss()],

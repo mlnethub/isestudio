@@ -23,7 +23,7 @@ Requirements:
 
 - Node.js 22+
 - pnpm
-- OntoPilot backend running at `http://127.0.0.1:8000`
+- OntoPilot backend running at `http://localhost:5072`
 
 ```powershell
 pnpm install
