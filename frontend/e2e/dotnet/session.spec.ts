@@ -10,7 +10,7 @@ import { isDotNetBackendReachable } from "./helpers/config"
  *   - log out (clear session cookie)
  *   - assert the login form is presented again on next navigation
  *
- * The .NET auth surface is `AuthController` (see `src/OnToPilot/Controllers/AuthController.cs`).
+ * The .NET auth surface is `AuthController` (see `src/ISEStudio/Controllers/AuthController.cs`).
  */
 
 test.describe("dotnet / session round-trip", () => {

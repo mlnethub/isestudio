@@ -1,9 +1,9 @@
-// Thin typed API client for the OntoPilot .NET backend.
+// Thin typed API client for the ISEStudio .NET backend.
 // All calls go to /api/* which Vite proxies to the ASP.NET Core service
 // (see `vite.config.ts` — `VITE_BACKEND_PROXY_TARGET`).
 //
-// BACKEND = ASP.NET Core 10 (since the dotnet migration; see
-// `docs/superpowers/specs/2026-08-13-ontopilot-dotnet-migration-design.md`).
+// BACKEND = ASP.NET Core 10 (since the dotnet migration; see the
+// historical dotnet-migration design spec under `docs/superpowers/specs/`).
 //
 // ID / URL CONVENTION (cross-link `lib/types.ts` header):
 //   - Every id passed into an `api.*` helper is a Guid string.

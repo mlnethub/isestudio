@@ -1,10 +1,10 @@
 # Product overview
 
-OntoPilot is a self-hosted ontology governance workbench. It turns PDF, Word, spreadsheet, Markdown, CSV, and text sources into knowledge systems that are **reviewable, traceable, versioned, and stable to consume**.
+ISEStudio is a self-hosted ontology governance workbench. It turns PDF, Word, spreadsheet, Markdown, CSV, and text sources into knowledge systems that are **reviewable, traceable, versioned, and stable to consume**.
 
-## Why OntoPilot exists
+## Why ISEStudio exists
 
-Language models can propose structure from text, but production ontologies still require boundary control, source evidence, human decisions, version semantics, and dependable delivery. OntoPilot treats model output as governed proposals rather than final truth.
+Language models can propose structure from text, but production ontologies still require boundary control, source evidence, human decisions, version semantics, and dependable delivery. ISEStudio treats model output as governed proposals rather than final truth.
 
 - **Governance first:** role critics, deterministic guards, and reviewers control admission.
 - **Three separate layers:** TBox, SKOS vocabulary, and ABox are stored separately and governed together.

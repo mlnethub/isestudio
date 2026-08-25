@@ -1,6 +1,6 @@
 # MCP and agent integration
 
-OntoPilot exposes Streamable HTTP MCP at `/mcp` in the backend lifecycle; no separate process is required. Each connection uses an MCP token bound to one user and one knowledge system. Every tool call re-evaluates that user's current role.
+ISEStudio exposes Streamable HTTP MCP at `/mcp` in the backend lifecycle; no separate process is required. Each connection uses an MCP token bound to one user and one knowledge system. Every tool call re-evaluates that user's current role.
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#dbeafe","primaryTextColor":"#172554","primaryBorderColor":"#2563eb","lineColor":"#3b82f6","secondaryColor":"#eff6ff","tertiaryColor":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui"}}}%%
@@ -60,11 +60,11 @@ Client configuration formats vary, but the essential values are:
 ```json
 {
   "mcpServers": {
-    "ontopilot": {
+      "isestudio": {
       "type": "streamable-http",
       "url": "http://localhost:8080/mcp",
       "headers": {
-        "Authorization": "Bearer ${ONTOPILOT_MCP_TOKEN}"
+        "Authorization": "Bearer ${ISESTUDIO_MCP_TOKEN}"
       }
     }
   }
@@ -115,7 +115,7 @@ The chat UI should not let a model compose arbitrary RDF or call arbitrary URLs.
 sequenceDiagram
     participant U as User
     participant A as Chat agent
-    participant M as OntoPilot MCP
+    participant M as ISEStudio MCP
     participant G as Workspace and governance
     U->>A: Describe a domain problem or desired change
     A->>M: Read ontology, instances, and evidence

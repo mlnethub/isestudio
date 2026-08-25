@@ -286,7 +286,7 @@ export default function ApiAccessPanel({
               <div className="rounded-md border p-3">
                 <p className="mb-2 flex items-center gap-1.5 text-xs font-medium"><Check className="h-3.5 w-3.5" /> {t("api.example")}</p>
                 <code className="block break-all text-xs text-muted-foreground">
-                  curl -H &quot;Authorization: Bearer $ONTOPILOT_TOKEN&quot; &quot;{baseUrl}/ontology&quot;
+                  curl -H &quot;Authorization: Bearer $ISESTUDIO_TOKEN&quot; &quot;{baseUrl}/ontology&quot;
                 </code>
               </div>
             </div>

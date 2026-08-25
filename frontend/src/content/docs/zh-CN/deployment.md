@@ -50,7 +50,7 @@ docker compose up -d backend
 
 ## 生产检查清单
 
-- 启用 HTTPS 与 `OnToPilot__CookieSecure=true`；
+- 启用 HTTPS 与 `ISEStudio__CookieSecure=true`；
 - 修改默认管理员与数据库密码；
 - 配置 PostgreSQL、Oxigraph 和制品卷备份；
 - 保存 Token 加密密钥并建立恢复流程；

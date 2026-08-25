@@ -3,7 +3,7 @@
 # BUILD CONTEXT: ./src (the .NET solution root). docker-compose.yml and
 # the shadow compose set `build.context` accordingly. The Dockerfile is
 # co-located with the .NET solution it builds, so `COPY . ./` lands the
-# whole `src/` tree in `/src/` and `dotnet publish OnToPilot/...` works
+# whole `src/` tree in `/src/` and `dotnet publish ISEStudio/...` works
 # without any path prefix gymnastics.
 #
 # This image is intentionally HEALTHCHECK-less: compose controls healthchecks
@@ -21,7 +21,7 @@ WORKDIR /src
 # the Linux container. The single-step form is what the integration-test
 # fixture (ContainerSmokeFixture.cs) relies on.
 COPY . ./
-RUN dotnet publish OnToPilot/OnToPilot.csproj \
+RUN dotnet publish ISEStudio/ISEStudio.csproj \
         -c Release -o /app/publish /p:UseAppHost=false
 
 # ---------- runtime ----------
@@ -46,4 +46,4 @@ VOLUME ["/app/data"]
 COPY --from=build /app/publish .
 ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
-ENTRYPOINT ["dotnet", "OnToPilot.dll"]
+ENTRYPOINT ["dotnet", "ISEStudio.dll"]

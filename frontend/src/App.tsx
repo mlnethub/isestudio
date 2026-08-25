@@ -53,7 +53,7 @@ export default function App() {
       {/* Fixed global nav — same across the whole app. */}
       <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-2 border-b bg-background/90 px-3 backdrop-blur sm:gap-4 md:px-6">
         <NavLink to="/" className="flex items-center">
-          <span className="text-sm font-medium tracking-tight">OntoPilot</span>
+          <span className="text-sm font-medium tracking-tight">ISEStudio</span>
         </NavLink>
         <nav className="flex min-w-0 flex-1 items-center gap-0 overflow-x-auto sm:gap-1">
           <TopLink to="/" active={onKnowledge}>{t("nav.knowledgeSystems")}</TopLink>

@@ -80,11 +80,11 @@ jobs:
           cache-dependency-path: "**/*.csproj"
       - name: Restore + build
         run: |
-          dotnet restore src/OnToPilot.sln
-          dotnet build src/OnToPilot.sln --no-restore -c Release
-      - name: Unit tests (OnToPilot.Tests)
-        run: dotnet test src/OnToPilot.Tests/OnToPilot.Tests.csproj --no-build -c Release --logger "console;verbosity=normal"
+          dotnet restore src/ISEStudio.sln
+          dotnet build src/ISEStudio.sln --no-restore -c Release
+      - name: Unit tests (ISEStudio.Tests)
+        run: dotnet test src/ISEStudio.Tests/ISEStudio.Tests.csproj --no-build -c Release --logger "console;verbosity=normal"
       - name: API contract tests
-        run: dotnet test src/OnToPilot.ApiContract.Tests/OnToPilot.ApiContract.Tests.csproj --no-build -c Release --logger "console;verbosity=normal"
+        run: dotnet test src/ISEStudio.ApiContract.Tests/ISEStudio.ApiContract.Tests.csproj --no-build -c Release --logger "console;verbosity=normal"
       - name: Integration tests (Postgres service)
-        run: dotnet test src/OnToPilot.IntegrationTests/OnToPilot.IntegrationTests.csproj --no-build -c Release --filter "Category!=Container" --logger "console;verbosity=normal"
+        run: dotnet test src/ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj --no-build -c Release --filter "Category!=Container" --logger "console;verbosity=normal"

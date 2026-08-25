@@ -3,7 +3,7 @@ import { expect, type Page } from "@playwright/test"
 /**
  * Workflow helpers for the upload → extract → publish E2E flow.
  *
- * Mirrors the contract the OnToPilot .NET controller layer exposes:
+ * Mirrors the contract the ISEStudio .NET controller layer exposes:
  *   POST /api/knowledge/{ks_id}/documents/upload
  *   POST /api/knowledge/{ks_id}/documents/{id}/parse
  *   POST /api/extraction/run        (extraction queue)

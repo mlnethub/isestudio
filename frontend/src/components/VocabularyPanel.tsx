@@ -141,8 +141,8 @@ export default function VocabularyPanel({
 
   useEffect(() => {
     const reload = () => { void refresh() }
-    window.addEventListener("ontopilot:vocabulary-changed", reload)
-    return () => window.removeEventListener("ontopilot:vocabulary-changed", reload)
+    window.addEventListener("isestudio:vocabulary-changed", reload)
+    return () => window.removeEventListener("isestudio:vocabulary-changed", reload)
   }, [refresh])
 
   const selectedScheme = data.schemes.find((scheme) => scheme.iri === selectedSchemeIri) ?? null

@@ -171,8 +171,8 @@ export default function InstancesPanel({
       if (job.terminology_error) {
         toast.warning(t("ontology.terminologyFailed", { error: job.terminology_error }))
       }
-      window.dispatchEvent(new Event("ontopilot:vocabulary-changed"))
-      window.dispatchEvent(new Event("ontopilot:review-counts-changed"))
+      window.dispatchEvent(new Event("isestudio:vocabulary-changed"))
+      window.dispatchEvent(new Event("isestudio:review-counts-changed"))
       setJob(null)
       refreshAll()
       return

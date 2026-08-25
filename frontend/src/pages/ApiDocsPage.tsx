@@ -8,7 +8,7 @@ type DocItem = { id: string; label: string }
 type DocGroup = { label: string; items: DocItem[] }
 
 const ZH_NAV: DocGroup[] = [
-  { label: "了解 OntoPilot", items: [
+  { label: "了解 ISEStudio", items: [
     { id: "overview", label: "产品概览" },
     { id: "concepts", label: "核心概念" },
     { id: "workflow", label: "推荐工作流" },
@@ -37,7 +37,7 @@ const ZH_NAV: DocGroup[] = [
 ]
 
 const EN_NAV: DocGroup[] = [
-  { label: "Understand OntoPilot", items: [
+  { label: "Understand ISEStudio", items: [
     { id: "overview", label: "Product overview" },
     { id: "concepts", label: "Core concepts" },
     { id: "workflow", label: "Recommended workflow" },

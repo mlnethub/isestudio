@@ -20,31 +20,31 @@
 ## REST 示例
 
 ```bash
-export ONTOPILOT_BASE="http://localhost:8080/api/v1/knowledge-systems/<public-id>/releases/v1"
-export ONTOPILOT_TOKEN="opk_..."
+export ISESTUDIO_BASE="http://localhost:8080/api/v1/knowledge-systems/<public-id>/releases/v1"
+export ISESTUDIO_TOKEN="opk_..."
 
 curl -sS \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/ontology"
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/ontology"
 ```
 
 ## 实例与术语查询
 
 ```bash
 curl -sS \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/individuals?q=泵&limit=20"
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/individuals?q=泵&limit=20"
 
 curl -sS \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/vocabulary/resolve?q=泵&language=zh-CN"
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/vocabulary/resolve?q=泵&language=zh-CN"
 ```
 
 ## SPARQL
 
 ```bash
-curl -sS "$ONTOPILOT_BASE/query" \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
+curl -sS "$ISESTUDIO_BASE/query" \
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "SELECT ?entity ?label WHERE { ?entity rdfs:label ?label } ORDER BY ?label",

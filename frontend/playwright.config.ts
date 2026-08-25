@@ -13,7 +13,7 @@ import { defineConfig, devices } from "@playwright/test"
  * `DOTNET_BASE_URL` is already in the environment (CI pre-started the
  * backend, or a developer is pointing at a remote instance), the
  * config leaves the server alone. Otherwise Playwright boots
- * `dotnet run` against `src/OnToPilot` on the pinned port and waits
+ * `dotnet run` against `src/ISEStudio` on the pinned port and waits
  * for `/api/health` to respond before letting specs run.
  *
  * `e2e/dotnet/helpers/config.ts` already reads `DOTNET_BASE_URL` (or
@@ -47,7 +47,7 @@ export default defineConfig({
     ? undefined
     : {
         command:
-          "dotnet run --project ../src/OnToPilot --urls=http://+:" +
+          "dotnet run --project ../src/ISEStudio --urls=http://+:" +
           DOTNET_PORT,
         url: `${DOTNET_BASE_URL}/api/health`,
         reuseExistingServer: true,

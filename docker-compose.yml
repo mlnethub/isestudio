@@ -66,12 +66,12 @@ services:
     image: isestudio-backend
     # Override the Dockerfile's ENTRYPOINT (not just CMD) — if we set
     # `command:` Docker would APPEND the values to the existing ENTRYPOINT,
-    # producing `dotnet OnToPilot.dll dotnet OnToPilot.dll --migrate`, which
+    # producing `dotnet ISEStudio.dll dotnet ISEStudio.dll --migrate`, which
     # means the application's `args[0]` is "dotnet" instead of "--migrate".
     # Setting `entrypoint:` replaces the Dockerfile's ENTRYPOINT outright
     # so the app sees `args = ["--migrate"]` and the `--migrate` branch in
     # Program.cs fires correctly.
-    entrypoint: ["dotnet", "OnToPilot.dll", "--migrate"]
+    entrypoint: ["dotnet", "ISEStudio.dll", "--migrate"]
     env_file: ./src/.env
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
@@ -100,7 +100,7 @@ services:
   isestudio-seed-admin:
     image: isestudio-backend
     profiles: ["bootstrap"]
-    entrypoint: ["dotnet", "OnToPilot.dll", "--seed-admin"]
+    entrypoint: ["dotnet", "ISEStudio.dll", "--seed-admin"]
     env_file: ./src/.env
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
@@ -124,7 +124,7 @@ services:
     # The .NET Dockerfile lives at `src/Dockerfile` (co-located with the
     # .NET solution it builds). Build context is `./src` so `COPY . ./`
     # lands the whole `src/` tree in `/src/` and `dotnet publish
-    # OnToPilot/OnToPilot.csproj` resolves cleanly. `src/.dockerignore`
+    # ISEStudio/ISEStudio.csproj` resolves cleanly. `src/.dockerignore`
     # keeps the build context lean (excludes bin/obj, IDE files,
     # test-only projects).
     build:

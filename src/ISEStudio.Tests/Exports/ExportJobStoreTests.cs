@@ -1,0 +1,261 @@
+using System.Text.Json;
+using ISEStudio.Exports;
+using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Tests.Extraction;
+using ISEStudio.Tests.Persistence;
+
+namespace ISEStudio.Tests.Exports;
+
+/// <summary>
+/// Fixture: shared SQLite <see cref="ISEStudioDbContext"/> factory +
+/// per-test <see cref="ExportJobStore"/>. Tests mint their own
+/// <see cref="KnowledgeSystemEntity"/> row via
+/// <see cref="ExportJobStoreFixture.SeedKnowledgeSystemAsync"/> so the
+/// per-test rows stay isolated (every test method runs against a
+/// brand-new KS row, so ListAsync order assertions are deterministic).
+/// </summary>
+public sealed class ExportJobStoreFixture : IDisposable
+{
+    public SqliteContextFactory Contexts { get; }
+    public ExportJobStore Jobs { get; }
+
+    public ExportJobStoreFixture()
+    {
+        Contexts = new SqliteContextFactory();
+        Jobs = new ExportJobStore(Contexts, TimeProvider.System);
+    }
+
+    /// <summary>
+    /// Seed a fresh <see cref="KnowledgeSystemEntity"/> and return its
+    /// PK. Each call mints a unique <c>LegacyId</c> so tests don't
+    /// collide on the unique index.
+    /// </summary>
+    public async Task<Guid> SeedKnowledgeSystemAsync()
+    {
+        var ksId = Guid.NewGuid();
+        await using var db = Contexts.CreateDbContext();
+        db.KnowledgeSystems.Add(new KnowledgeSystemEntity
+        {
+            Id = ksId,
+            LegacyId = TestLegacyIds.Next("knowledgesystem"),
+            PublicId = Guid.NewGuid().ToString("N"),
+            Name = "Export fixture",
+            GraphIri = "http://goodcrew.local/ks/export-fixture",
+            BaseIri = "http://goodcrew.local/ks/export-fixture/onto#",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+        return ksId;
+    }
+
+    public void Dispose() => Contexts.Dispose();
+}
+
+public class ExportJobStoreTests : IClassFixture<ExportJobStoreFixture>
+{
+    private readonly ExportJobStoreFixture _fx;
+
+    public ExportJobStoreTests(ExportJobStoreFixture fx) { _fx = fx; }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task CreateAsync_inserts_pending_row_with_unique_legacy_id()
+    {
+        var ksId = await _fx.SeedKnowledgeSystemAsync();
+        var first = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.TBox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+        Assert.Equal("pending", first.Status);
+        Assert.True(first.LegacyId > 0, "AllocateAndPersistAsync should mint a positive legacy id.");
+        Assert.Equal(ExportLayer.TBox, first.Layer);
+        Assert.Equal("nquads", first.Format);
+
+        var second = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.ABox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+        Assert.NotEqual(first.LegacyId, second.LegacyId);
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task GetAsync_returns_null_for_unknown_id()
+    {
+        var fetched = await _fx.Jobs.GetAsync(Guid.NewGuid(), CancellationToken.None);
+        Assert.Null(fetched);
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task ResolveAsync_matches_by_guid_first_then_legacy_id()
+    {
+        var ksId = await _fx.SeedKnowledgeSystemAsync();
+        var job = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.Bundle, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+
+        await using (var db = _fx.Contexts.CreateDbContext())
+        {
+            var byGuid = await _fx.Jobs.ResolveAsync(
+                db, ksId, job.Id.ToString(), CancellationToken.None);
+            Assert.NotNull(byGuid);
+            Assert.Equal(job.Id, byGuid!.Id);
+
+            var byLegacy = await _fx.Jobs.ResolveAsync(
+                db, ksId, job.LegacyId.ToString(), CancellationToken.None);
+            Assert.NotNull(byLegacy);
+            Assert.Equal(job.Id, byLegacy!.Id);
+
+            var junk = await _fx.Jobs.ResolveAsync(
+                db, ksId, "not-a-guid", CancellationToken.None);
+            Assert.Null(junk);
+
+            var empty = await _fx.Jobs.ResolveAsync(
+                db, ksId, "", CancellationToken.None);
+            Assert.Null(empty);
+        }
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task ListAsync_returns_newest_first_by_legacy_id_desc()
+    {
+        var ksId = await _fx.SeedKnowledgeSystemAsync();
+        var a = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.TBox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+        var b = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.ABox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+        var c = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.Vocabulary, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+
+        var rows = await _fx.Jobs.ListAsync(ksId, CancellationToken.None);
+        Assert.Equal(new[] { c.Id, b.Id, a.Id },
+            rows.Select(r => r.Id).ToArray());
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task MarkRunningAsync_sets_status_and_started_at()
+    {
+        var ksId = await _fx.SeedKnowledgeSystemAsync();
+        var job = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.TBox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+
+        await _fx.Jobs.MarkRunningAsync(job.Id, CancellationToken.None);
+        var fetched = await _fx.Jobs.GetAsync(job.Id, CancellationToken.None);
+        Assert.NotNull(fetched);
+        Assert.Equal("running", fetched!.Status);
+        Assert.NotNull(fetched.StartedAt);
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task UpdateProgressAsync_writes_counter()
+    {
+        var ksId = await _fx.SeedKnowledgeSystemAsync();
+        var job = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.TBox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+
+        await _fx.Jobs.UpdateProgressAsync(job.Id, 42, CancellationToken.None);
+        var fetched = await _fx.Jobs.GetAsync(job.Id, CancellationToken.None);
+        Assert.Equal(42, fetched!.ProcessedStatements);
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task RecordFilesAsync_persists_files_json()
+    {
+        var ksId = await _fx.SeedKnowledgeSystemAsync();
+        var job = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.TBox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+
+        var files = new List<ExportFileEntry>
+        {
+            new("tbox-0000.nq", ExportLayer.TBox, 10L, 256L, "deadbeef"),
+            new("manifest.json", "manifest", 0L, 128L, "feedface"),
+        };
+        await _fx.Jobs.RecordFilesAsync(job.Id, files, CancellationToken.None);
+
+        var fetched = await _fx.Jobs.GetAsync(job.Id, CancellationToken.None);
+        Assert.NotNull(fetched!.Files);
+        // ExportJobStore serialises with the SnakeCaseLower policy so the
+        // persisted JSON matches the wire shape ExportOut hands the
+        // frontend.
+        var names = fetched.Files!.RootElement.EnumerateArray()
+            .Select(e => e.GetProperty("name").GetString()).ToArray();
+        Assert.Equal(new[] { "tbox-0000.nq", "manifest.json" }, names);
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task MarkCompletedAsync_sets_terminal_state()
+    {
+        var ksId = await _fx.SeedKnowledgeSystemAsync();
+        var job = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.TBox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+
+        await _fx.Jobs.MarkCompletedAsync(job.Id, totalStatements: 123,
+            CancellationToken.None);
+        var fetched = await _fx.Jobs.GetAsync(job.Id, CancellationToken.None);
+        Assert.Equal("completed", fetched!.Status);
+        Assert.Equal(123, fetched.TotalStatements);
+        Assert.Equal(123, fetched.ProcessedStatements);
+        Assert.NotNull(fetched.FinishedAt);
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task MarkFailedAsync_captures_error()
+    {
+        var ksId = await _fx.SeedKnowledgeSystemAsync();
+        var job = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.TBox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+
+        await _fx.Jobs.MarkFailedAsync(job.Id, "boom", CancellationToken.None);
+        var fetched = await _fx.Jobs.GetAsync(job.Id, CancellationToken.None);
+        Assert.Equal("failed", fetched!.Status);
+        Assert.Equal("boom", fetched.Error);
+        Assert.NotNull(fetched.FinishedAt);
+    }
+
+    [Fact]
+    [Trait("Category", "Export")]
+    public async Task WaitAsync_returns_when_status_is_completed()
+    {
+        var ksId = await _fx.SeedKnowledgeSystemAsync();
+        var job = await _fx.Jobs.CreateAsync(
+            ksId, releaseId: null, layer: ExportLayer.TBox, shardSize: 100_000,
+            format: "nquads", createdById: null, createdByName: "tester",
+            CancellationToken.None);
+
+        // Kick off a fast mark-completed on the thread pool so the
+        // background waiter has something to race.
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(50);
+            await _fx.Jobs.MarkCompletedAsync(job.Id, 1, CancellationToken.None);
+        });
+
+        var finished = await _fx.Jobs.WaitAsync(job.Id, CancellationToken.None);
+        Assert.Equal("completed", finished.Status);
+    }
+}

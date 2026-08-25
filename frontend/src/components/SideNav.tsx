@@ -80,10 +80,10 @@ export default function SideNav() {
       api.reviewCounts(ksId).then((next) => { if (!cancelled) setCounts(next) }).catch(() => {})
     }
     loadCounts()
-    window.addEventListener("ontopilot:review-counts-changed", loadCounts)
+    window.addEventListener("isestudio:review-counts-changed", loadCounts)
     return () => {
       cancelled = true
-      window.removeEventListener("ontopilot:review-counts-changed", loadCounts)
+      window.removeEventListener("isestudio:review-counts-changed", loadCounts)
     }
   }, [ksId, pathname])
 

@@ -5,7 +5,7 @@ import { isDotNetBackendReachable } from "./helpers/config"
 import { publishCurrentDraft } from "./helpers/publish"
 
 /**
- * .NET end-to-end coverage for the canonical OnToPilot workflow:
+ * .NET end-to-end coverage for the canonical ISEStudio workflow:
  * upload a PDF → parse it → run extraction → review → publish the draft.
  *
  * These specs drive the existing UI verbatim — no `frontend/src/` files

@@ -1,6 +1,6 @@
 # MCP 与 Agent 集成
 
-OntoPilot 在 `/mcp` 提供 Streamable HTTP MCP。它与后端使用同一个启动周期，不需要部署额外进程。每个连接使用一个绑定到“用户 + 知识体系”的 MCP Token，Agent 的每次调用都以该用户身份重新检查当前角色。
+ISEStudio 在 `/mcp` 提供 Streamable HTTP MCP。它与后端使用同一个启动周期，不需要部署额外进程。每个连接使用一个绑定到“用户 + 知识体系”的 MCP Token，Agent 的每次调用都以该用户身份重新检查当前角色。
 
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#dbeafe","primaryTextColor":"#172554","primaryBorderColor":"#2563eb","lineColor":"#3b82f6","secondaryColor":"#eff6ff","tertiaryColor":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui"}}}%%
@@ -60,11 +60,11 @@ Authorization: Bearer opm_<public-id-prefix>_<secret>
 ```json
 {
   "mcpServers": {
-    "ontopilot": {
+      "isestudio": {
       "type": "streamable-http",
       "url": "http://localhost:8080/mcp",
       "headers": {
-        "Authorization": "Bearer ${ONTOPILOT_MCP_TOKEN}"
+        "Authorization": "Bearer ${ISESTUDIO_MCP_TOKEN}"
       }
     }
   }
@@ -115,7 +115,7 @@ Authorization: Bearer opm_<public-id-prefix>_<secret>
 sequenceDiagram
     participant U as 用户
     participant A as 对话 Agent
-    participant M as OntoPilot MCP
+    participant M as ISEStudio MCP
     participant G as 工作区与治理队列
     U->>A: 描述业务问题或修改目标
     A->>M: 读取本体、实例和来源证据

@@ -276,14 +276,14 @@ Owner 执行正式发布。系统校验不可变制品，并将版本装载到�
 至少验证以下请求：
 
 ```bash
-curl -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/ontology"
+curl -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/ontology"
 
-curl -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/vocabulary/resolve?q=<known-term>"
+curl -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/vocabulary/resolve?q=<known-term>"
 
-curl -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/manifest"
+curl -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/manifest"
 ```
 
 生产应用应使用 `/releases/<version>` 固定版本地址。只有明确接受“随最新发布移动”时才使用 `/published`。

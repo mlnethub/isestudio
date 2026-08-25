@@ -12,7 +12,7 @@ import { isDotNetBackendReachable } from "./helpers/config"
  *
  * The frontend exposes the vocabulary tab under `/knowledge/{ks_id}`
  * in the `Terminology` panel. The .NET controllers backing it are
- * `VocabularyController` (see `src/OnToPilot/Controllers/VocabularyController.cs`).
+ * `VocabularyController` (see `src/ISEStudio/Controllers/VocabularyController.cs`).
  */
 
 test.describe("dotnet / vocabulary (SKOS CRUD)", () => {

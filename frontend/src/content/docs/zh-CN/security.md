@@ -32,7 +32,7 @@
 
 ## 生产建议
 
-- 启用 HTTPS 与 `OnToPilot__CookieSecure=true`；
+- 启用 HTTPS 与 `ISEStudio__CookieSecure=true`；
 - 修改默认管理员密码和数据库密码；
 - 在反向代理配置请求大小、限流和访问日志；
 - 备份数据库、RDF 存储、制品和 Token 加密密钥；

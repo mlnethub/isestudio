@@ -166,8 +166,8 @@ export default function OntologyPage() {
       if (activeJob.terminology_error) {
         toast.warning(t("ontology.terminologyFailed", { error: activeJob.terminology_error }))
       }
-      window.dispatchEvent(new Event("ontopilot:vocabulary-changed"))
-      window.dispatchEvent(new Event("ontopilot:review-counts-changed"))
+      window.dispatchEvent(new Event("isestudio:vocabulary-changed"))
+      window.dispatchEvent(new Event("isestudio:review-counts-changed"))
       setActiveJob(null)
       refresh()
       return

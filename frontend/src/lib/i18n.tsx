@@ -691,7 +691,7 @@ const en = {
   "common.user": "User",
   "common.username": "Username",
   "common.viewer": "Viewer",
-  "login.title": "Sign in to OntoPilot",
+  "login.title": "Sign in to ISEStudio",
   "login.description": "Enter your username and password to continue",
   "login.password": "Password",
   "login.submit": "Sign in",
@@ -714,7 +714,7 @@ const en = {
   "appearance.dark": "Dark",
   "appearance.system": "System",
   "language.title": "Language",
-  "language.description": "Choose the language used by the OntoPilot interface.",
+  "language.description": "Choose the language used by the ISEStudio interface.",
   "language.english": "English",
   "language.chinese": "Simplified Chinese",
   "language.browserNote": "This preference is saved in this browser and takes effect immediately.",
@@ -822,7 +822,7 @@ const en = {
   "knowledge.created": "Created knowledge system “{name}”",
   "knowledge.deleteConfirm": "Delete knowledge system “{name}” and its ontology graph? This cannot be undone.",
   "knowledge.empty": "No knowledge systems yet. Click “New Knowledge System” to create your first ontology.",
-  "setup.title": "Set up OntoPilot",
+  "setup.title": "Set up ISEStudio",
   "setup.description": "Complete these steps to move from source documents to a governed release.",
   "setup.models": "Configure model endpoints",
   "setup.modelsDescription": "Add an OpenAI-compatible LLM and embedding endpoint, then test the connection.",
@@ -1778,7 +1778,7 @@ const zh: Record<MessageKey, string> = {
   "common.user": "用户",
   "common.username": "用户名",
   "common.viewer": "查看者",
-  "login.title": "登录 OntoPilot",
+  "login.title": "登录 ISEStudio",
   "login.description": "输入用户名和密码以继续",
   "login.password": "密码",
   "login.submit": "登录",
@@ -1801,7 +1801,7 @@ const zh: Record<MessageKey, string> = {
   "appearance.dark": "深色",
   "appearance.system": "跟随系统",
   "language.title": "语言",
-  "language.description": "选择 OntoPilot 界面使用的语言。",
+  "language.description": "选择 ISEStudio 界面使用的语言。",
   "language.english": "English",
   "language.chinese": "简体中文",
   "language.browserNote": "此偏好保存在当前浏览器中，并会立即生效。",
@@ -1909,7 +1909,7 @@ const zh: Record<MessageKey, string> = {
   "knowledge.created": "已创建知识体系“{name}”",
   "knowledge.deleteConfirm": "确定删除知识体系“{name}”及其本体图吗？此操作无法撤销。",
   "knowledge.empty": "暂无知识体系。点击“新建知识体系”创建第一个本体。",
-  "setup.title": "初始化 OntoPilot",
+  "setup.title": "初始化 ISEStudio",
   "setup.description": "完成以下步骤，从源文档生成经过治理的正式版本。",
   "setup.models": "配置模型端点",
   "setup.modelsDescription": "添加 OpenAI 兼容的 LLM 和向量端点，并测试连接。",
@@ -2174,7 +2174,7 @@ const zh: Record<MessageKey, string> = {
 }
 
 const dictionaries: Record<Locale, Record<MessageKey, string>> = { en, "zh-CN": zh }
-const STORAGE_KEY = "ontopilot.locale"
+const STORAGE_KEY = "isestudio.locale"
 
 function initialLocale(): Locale {
   const saved = localStorage.getItem(STORAGE_KEY)

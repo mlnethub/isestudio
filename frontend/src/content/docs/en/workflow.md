@@ -158,18 +158,18 @@ If review fails, return to the workspace and create or update the draft after co
 
 ## Phase 8: publish, authorize, and accept
 
-The Owner publishes the approved snapshot. OntoPilot verifies artifacts and loads a version-scoped projection into serving Oxigraph.
+The Owner publishes the approved snapshot. ISEStudio verifies artifacts and loads a version-scoped projection into serving Oxigraph.
 
 Issue a separate least-privilege token per client: `ontology:read`, `vocabulary:read`, `instances:read`, `query:read`, and optional `provenance:read` only as required.
 
 Verify at least ontology retrieval, a known-term resolution, the release manifest, and any application-critical SPARQL query. Production clients should use `/releases/<version>`; use `/published` only when following the latest release is intentional.
 
 ```bash
-curl -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/ontology"
+curl -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/ontology"
 
-curl -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/manifest"
+curl -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/manifest"
 ```
 
 ## Failure and fallback guide

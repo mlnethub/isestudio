@@ -1,6 +1,6 @@
 # Core concepts
 
-The three-layer knowledge model is OntoPilot's most important design boundary. Correct placement determines whether review, query, and release behavior remains reliable.
+The three-layer knowledge model is ISEStudio's most important design boundary. Correct placement determines whether review, query, and release behavior remains reliable.
 
 ## TBox
 

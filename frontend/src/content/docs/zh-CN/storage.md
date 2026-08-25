@@ -28,7 +28,7 @@ flowchart LR
 
 ## 本地与生产
 
-本地开发在未设置 `OnToPilot__Persistence__ConnectionString` 时可回退到 SQLite。多人共享或生产部署应使用 PostgreSQL，并同时备份：
+本地开发在未设置 `ISEStudio__Persistence__ConnectionString` 时可回退到 SQLite。多人共享或生产部署应使用 PostgreSQL，并同时备份：
 
 1. PostgreSQL；
 2. 工作区 Oxigraph；

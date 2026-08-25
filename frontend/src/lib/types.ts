@@ -1,12 +1,12 @@
-// Types mirroring the OntoPilot backend responses.
+// Types mirroring the ISEStudio backend responses.
 //
 // ID CONVENTION (do not change):
 //   Every `id:` field on every interface in this file is a `string`,
 //   because the backend primary keys are RFC-4122 `Guid` values that
 //   the JSON layer serializes as strings (e.g. "8f5e2a01-...").
 //
-//   This is the single reason the int → Guid wire migration (commit
-//   chain under `ontopilot-guid-migration-complete` in MEMORY.md)
+//   This is the single reason the int → Guid wire migration (see
+//   the Guid PK migration memory note in MEMORY.md)
 //   is transparent to the frontend: nothing here ever assumed `number`.
 //   If you are tempted to add a new `id: number` field, read the
 //   ADR `docs/superpowers/specs/2026-08-23-frontend-id-type-decision.md`

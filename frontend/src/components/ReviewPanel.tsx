@@ -38,7 +38,7 @@ export default function ReviewPanel({
 
   const reload = useCallback(() => {
     loadConflicts()
-    window.dispatchEvent(new Event("ontopilot:review-counts-changed"))
+    window.dispatchEvent(new Event("isestudio:review-counts-changed"))
     onChanged?.()
   }, [loadConflicts, onChanged])
 

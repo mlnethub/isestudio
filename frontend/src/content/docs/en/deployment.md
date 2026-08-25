@@ -37,7 +37,7 @@ Each connected service has its own URL, model, credential, and concurrency limit
 
 ## Production checklist
 
-- Enable HTTPS and `OnToPilot__CookieSecure=true`.
+- Enable HTTPS and `ISEStudio__CookieSecure=true`.
 - Replace default administrator and database credentials.
 - Back up PostgreSQL, both Oxigraph stores, artifacts, and encryption keys.
 - Configure reverse-proxy body limits, timeouts, rate limits, and access logs.
