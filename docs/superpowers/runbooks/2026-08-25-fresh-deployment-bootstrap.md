@@ -1,8 +1,18 @@
 # Fresh-deployment bootstrap(2026-08-25)
 
-> 当 `docker compose up` 完成后,后端容器反复重启,日志里看到 `Bootstrap required: the users table is empty... Process will exit with code 17.`,且容器持续 `Restarting (N)` —— 这意味着这是**全新部署**,没有 admin 用户,需要手动 seed。
+> 当 `docker compose up` 完成后,后端容器反复重启,日志里看到 `Bootstrap required: the users table is empty... Process will exit with code 17.`,且容器持续 `Restarting (N)` —— 这意味着 `users` 表空,**必须 seed 第一个 admin 后端才会退出 restart loop**。
 
-本文档是 .NET 后端 **ISEStudio** 的首次部署 runbook。Python 时代通过 `ADMIN_PASSWORD` 环境变量自动 seed admin; .NET 启动期 `BootstrapAdminService` **故意拒绝**自动 bootstrap(避免空装意外落入已知弱凭证),强制运维显式种子第一个管理员([src/ISEStudio/Infrastructure/Startup/BootstrapAdminService.cs:118-160](../ISEStudio/Infrastructure/Startup/BootstrapAdminService.cs))。
+本文档是 .NET 后端 **ISEStudio** 首次部署的兜底 runbook。**首选路径**是 docker-compose 自带的 `--profile bootstrap run --rm seed-admin`(详见 `docker-compose.yml:88-121`),它读 `SEED_ADMIN_USERNAME` / `SEED_ADMIN_PASSWORD` env var,写完 exit 0,**幂等**。本文档覆盖的是该首选路径**不可用**的极端场景 —— 比如只接触得到 postgres 容器、backend 镜像拉不到、或者 CLI argv/env 传不进容器。
+
+**首选 vs 兜底:**
+
+| 场景 | 用什么 |
+| --- | --- |
+| 正常首次部署 | `docker compose --profile bootstrap run --rm seed-admin`(首选,1 行命令) |
+| backend 镜像不可用,只能连 postgres 容器 | 本 runbook §3 的手工 SQL INSERT 流程 |
+| `seed-admin` CLI 报错且日志不明 | 先 §4 排查,再退化到 §3 手工 SQL |
+
+Python 时代通过 `ADMIN_PASSWORD` 环境变量自动 seed admin; .NET 启动期 `BootstrapAdminService` **故意拒绝**自动 bootstrap(避免空装意外落入已知弱凭证),强制运维显式种子第一个管理员([src/ISEStudio/Infrastructure/Startup/BootstrapAdminService.cs:118-160](../ISEStudio/Infrastructure/Startup/BootstrapAdminService.cs))。
 
 ---
 
