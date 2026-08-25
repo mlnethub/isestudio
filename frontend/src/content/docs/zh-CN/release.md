@@ -45,4 +45,4 @@ flowchart LR
 
 ## 导出设计
 
-ABox 不会一次性加载到 Python 内存，而是从 Oxigraph 流式写入固定语句数的未压缩 N-Quads 分片。未压缩格式支持逐行处理、HTTP Range、对象存储复制和分片重试；传输层仍可由反向代理启用压缩。
+ABox 不会一次性加载到 .NET 进程内存，而是从 Oxigraph 流式写入固定语句数的未压缩 N-Quads 分片。未压缩格式支持逐行处理、HTTP Range、对象存储复制和分片重试；传输层仍可由反向代理启用压缩。

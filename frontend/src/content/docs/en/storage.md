@@ -20,4 +20,4 @@ flowchart LR
 
 Source blobs are content-addressed. Identical bytes may share storage while knowledge systems keep separate document records and permissions.
 
-Local development falls back to SQLite when `DATABASE_URL` is unset. Shared and production environments should use PostgreSQL and back up both Oxigraph stores, PostgreSQL, source files, artifacts, token keys, and deployment configuration together.
+Local development falls back to SQLite when `OnToPilot__Persistence__ConnectionString` is unset. Shared and production environments should use PostgreSQL and back up both Oxigraph stores, PostgreSQL, source files, artifacts, token keys, and deployment configuration together.

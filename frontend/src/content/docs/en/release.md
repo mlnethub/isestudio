@@ -31,4 +31,4 @@ flowchart LR
 
 Pinned URLs use immutable cache semantics; `published` points to the latest release. Serving can stop and rebuild without changing the release record. Terminal deletion clears projections and artifacts while retaining tombstones and audit evidence.
 
-ABox export streams uncompressed, fixed-statement-count N-Quads shards rather than materializing the entire graph in Python memory.
+ABox export streams uncompressed, fixed-statement-count N-Quads shards rather than materializing the entire graph in process memory.
