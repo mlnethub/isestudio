@@ -1,6 +1,6 @@
 <div align="center">
 
-# OntoPilot
+# ISEStudio
 
 **从源文档构建由人治理、可追溯、可发布的本体。**
 
@@ -16,14 +16,14 @@
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
-![OntoPilot 将文档转化为经过审核的知识图谱和不可变发布版本](docs/images/ontopilot-hero-title.webp)
+![ISEStudio 将文档转化为经过审核的知识图谱和不可变发布版本](docs/images/isestudio-hero-title.webp)
 
 </div>
 
 <details>
 <summary><strong>目录</strong></summary>
 
-- [为什么选择 OntoPilot](#为什么选择-ontopilot)
+- [为什么选择 ISEStudio](#为什么选择-isestudio)
 - [Benchmark 亮点](#benchmark-亮点)
 - [核心能力](#核心能力)
 - [产品界面](#产品界面)
@@ -42,15 +42,15 @@
 
 </details>
 
-## 为什么选择 OntoPilot
+## 为什么选择 ISEStudio
 
-OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在制度、手册、产品资料、研究成果和业务文档中的知识，快速沉淀为结构化、可计算的本体数据。
+ISEStudio 是面向企业与业务团队的本体生产工作台：把散落在制度、手册、产品资料、研究成果和业务文档中的知识，快速沉淀为结构化、可计算的本体数据。
 
-它不只是让大模型“生成一份本体”。OntoPilot 把领域专家、审核者与 Agent 放进同一条知识生产线：**AI 负责规模化阅读与起草，人负责消除歧义、校准和决策，平台负责证据、权限、版本与发布治理。** 最终交付的不是一次性的模型回答，而是一套能够被审核、被发布、被系统调用，并持续演进的企业知识资产。
+它不只是让大模型“生成一份本体”。ISEStudio 把领域专家、审核者与 Agent 放进同一条知识生产线：**AI 负责规模化阅读与起草，人负责消除歧义、校准和决策，平台负责证据、权限、版本与发布治理。** 最终交付的不是一次性的模型回答，而是一套能够被审核、被发布、被系统调用，并持续演进的企业知识资产。
 
 - **从业务文档到可计算的领域知识。** 将分散的自然语言转化为相互关联的 TBox、SKOS 术语与 ABox，同时保留每条语句的原始依据。
 - **让人机协作真正可治理。** 模型规模化提出候选，专家在聚焦的审核队列中修正与裁决，不必从头返工，也不必盲信生成结果。
-- **每一次审核，都让智能体更懂你的业务。** 假设一份文档写“海洋探测器一号”，另一份写“海探1”。专家确认它们是同一设备并留下判断理由后，OntoPilot 会把这项决策沉淀为可复用的实体消歧记忆；下次再遇到“海探1”时，它会映射到正确实体，而不是重复创建。遇到新的叫法或冲突证据时，仍会回到人工审核。
+- **每一次审核，都让智能体更懂你的业务。** 假设一份文档写“海洋探测器一号”，另一份写“海探1”。专家确认它们是同一设备并留下判断理由后，ISEStudio 会把这项决策沉淀为可复用的实体消歧记忆；下次再遇到“海探1”时，它会映射到正确实体，而不是重复创建。遇到新的叫法或冲突证据时，仍会回到人工审核。
 - **从“看起来可用”走到生产可用。** 通过语义 Diff、不可变发布、回滚、REST API 与 MCP，把审核后的知识稳定交付给业务系统和 Agent。
 - **可追溯不是补丁，而是底座。** 每项决策都能回到文档 chunk、模型、提示词快照、操作者与完整审核历史。
 
@@ -61,7 +61,7 @@ OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在�
 | 协议 F1 | Wine<br>食品与饮料 | GeoNames<br>地理 | OWL-Time<br>单位与度量 |
 | --- | ---: | ---: | ---: |
 | OntoLearner 参照 · Qwen3-8B | 18.60% | 19.70% | 14.08% |
-| **OntoPilot 评测 · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
+| **ISEStudio 评测 · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
 | **提升** | **+10.35 个百分点 / +55.6%** | **+7.33 个百分点 / +37.2%** | **+2.58 个百分点 / +18.3%** |
 | 结论 | **新 SOTA** | 同模型领先 | 提示词提升 |
 
@@ -87,7 +87,7 @@ OntoPilot 是面向企业与业务团队的本体生产工作台：把散落在�
 
 ## 产品界面
 
-![OntoPilot 本体工作台，包含治理导航、类层级、图谱浏览和实体详情](docs/images/ontopilot-web-demo.png)
+![ISEStudio 本体工作台，包含治理导航、类层级、图谱浏览和实体详情](docs/images/isestudio-web-demo.png)
 
 本体工作台在同一视图中整合类导航、关系图谱和实体详情；项目侧边栏则将审核队列、发布、文档、历史、成员和 API 访问串联在统一的治理流程中。
 
@@ -158,19 +158,19 @@ cp src/.env.example src/.env
 POSTGRES_PASSWORD=替换为强随机密码
 SYSTEM_LANGUAGE=zh-CN
 MCP_PUBLIC_URL=http://localhost:8080/mcp
-ONTOPILOT_BIND_ADDRESS=0.0.0.0
-ONTOPILOT_PORT=8080
+ISESTUDIO_BIND_ADDRESS=0.0.0.0
+ISESTUDIO_PORT=8080
 ```
 
 以及 `src/.env`：
 
 ```dotenv
 # src/.env
-OnToPilot__LlmApiKey=sk-or-v1-your-key
-OnToPilot__CookieSecure=false
+ISEStudio__LlmApiKey=sk-or-v1-your-key
+ISEStudio__CookieSecure=false
 ```
 
-全新安装必须设置管理员密码。若管理员密码为空、过短或仍是公开示例值，OntoPilot 会拒绝创建首个管理员；
+全新安装必须设置管理员密码。若管理员密码为空、过短或仍是公开示例值，ISEStudio 会拒绝创建首个管理员；
 请通过 `docker compose --profile bootstrap run --rm seed-admin` 完成首次引导，并使用至少 12 个字符的密码。
 
 `SYSTEM_LANGUAGE` 控制内置模型提示词（`en` 或 `zh-CN`），与每个用户选择的前端语言无关；知识体系级提示词覆盖始终优先。
@@ -188,8 +188,8 @@ curl --fail http://localhost:8080/api/health
 如需仅本机可访问的隔离部署：
 
 ```dotenv
-ONTOPILOT_BIND_ADDRESS=127.0.0.1
-ONTOPILOT_PORT=18080
+ISESTUDIO_BIND_ADDRESS=127.0.0.1
+ISESTUDIO_PORT=18080
 MCP_PUBLIC_URL=http://127.0.0.1:18080/mcp
 ```
 
@@ -199,7 +199,7 @@ MCP_PUBLIC_URL=http://127.0.0.1:18080/mcp
 docker compose down
 ```
 
-该命令保留命名卷。`docker compose down -v` 会永久删除当前部署的 PostgreSQL 和 OntoPilot 数据卷，只有明确需要全新环境时才可使用。
+该命令保留命名卷。`docker compose down -v` 会永久删除当前部署的 PostgreSQL 和 ISEStudio 数据卷，只有明确需要全新环境时才可使用。
 
 ## 第一次完整治理流程
 
@@ -212,7 +212,7 @@ docker compose down
 7. 创建发布草稿，通过质量门禁，审核并正式发布。
 8. 部署发布投影，或导出完整制品供下游系统使用。
 
-首次启动后端前设置 `OnToPilot__SeedDemoData=true`，可以在不调用模型的情况下创建确定性的 Pump Operations 演示库。
+首次启动后端前设置 `ISEStudio__SeedDemoData=true`，可以在不调用模型的情况下创建确定性的 Pump Operations 演示库。
 
 ## MCP 与 Agent 集成
 
@@ -221,11 +221,11 @@ MCP 默认在 `/mcp` 提供服务，并与后端使用同一个生命周期自�
 ```json
 {
   "mcpServers": {
-    "ontopilot": {
+    "isestudio": {
       "type": "streamable-http",
       "url": "http://localhost:8080/mcp",
       "headers": {
-        "Authorization": "Bearer ${ONTOPILOT_MCP_TOKEN}"
+        "Authorization": "Bearer ${ISESTUDIO_MCP_TOKEN}"
       }
     }
   }
@@ -287,19 +287,19 @@ release/
 | --- | --- | --- |
 | `POSTGRES_PASSWORD` | 必填 | PostgreSQL 密码；为空时 Compose 会拒绝启动 |
 | `SYSTEM_LANGUAGE` | `en` | 内置后端提示词语言（`en` / `zh-CN`），独立于前端语言 |
-| `ONTOPILOT_BIND_ADDRESS` | `0.0.0.0` | 前端容器映射到宿主机的监听地址 |
-| `ONTOPILOT_PORT` | `8080` | 前端容器映射到宿主机的端口 |
-| `OnToPilot__Persistence__ConnectionString` | Compose 管理 PostgreSQL | EF Core 连接串；Compose 会自动注入 PostgreSQL |
-| `OnToPilot__LlmApiKey` | 空 | 初始兼容模型凭据；也可在设置页管理端点 |
-| `OnToPilot__ExtractModel` | `deepseek/deepseek-chat` | 初始抽取/Agent 模型 |
-| `OnToPilot__EmbeddingModel` | `baai/bge-m3` | 初始向量模型 |
+| `ISESTUDIO_BIND_ADDRESS` | `0.0.0.0` | 前端容器映射到宿主机的监听地址 |
+| `ISESTUDIO_PORT` | `8080` | 前端容器映射到宿主机的端口 |
+| `ISEStudio__Persistence__ConnectionString` | Compose 管理 PostgreSQL | EF Core 连接串；Compose 会自动注入 PostgreSQL |
+| `ISEStudio__LlmApiKey` | 空 | 初始兼容模型凭据；也可在设置页管理端点 |
+| `ISEStudio__ExtractModel` | `deepseek/deepseek-chat` | 初始抽取/Agent 模型 |
+| `ISEStudio__EmbeddingModel` | `baai/bge-m3` | 初始向量模型 |
 | `MCP_PUBLIC_URL` | `http://localhost:8080/mcp` | 后端向客户端声明的 Streamable HTTP 地址 |
-| `OnToPilot__McpTokenTtlMinutes` | `60` | 委派 MCP Token 默认有效期 |
+| `ISEStudio__McpTokenTtlMinutes` | `60` | 委派 MCP Token 默认有效期 |
 | `TOKEN_ENCRYPTION_KEY` | 在数据卷中生成 | 可再次显示的 API Token 密钥加密材料，必须备份 |
-| `OnToPilot__CookieSecure` | `false` | 是否要求浏览器 Session Cookie 只能通过 HTTPS 传输 |
-| `OnToPilot__SeedDemoData` | `false` | 是否向空数据库写入无模型调用的演示数据 |
-| `OnToPilot__RdfImportMaxBytes` | `26214400` | RDF 直接上传大小上限 |
-| `OnToPilot__RdfImportMaxTriples` | `250000` | RDF 解析语句数上限 |
+| `ISEStudio__CookieSecure` | `false` | 是否要求浏览器 Session Cookie 只能通过 HTTPS 传输 |
+| `ISEStudio__SeedDemoData` | `false` | 是否向空数据库写入无模型调用的演示数据 |
+| `ISEStudio__RdfImportMaxBytes` | `26214400` | RDF 直接上传大小上限 |
+| `ISEStudio__RdfImportMaxTriples` | `250000` | RDF 解析语句数上限 |
 
 ## 源码开发
 
@@ -313,12 +313,12 @@ release/
 
 ```bash
 cp src/.env.example src/.env
-dotnet run --project src/OnToPilot
+dotnet run --project src/ISEStudio
 ```
 
-.NET 后端默认监听 `http://localhost:5072`（见 `src/OnToPilot/Properties/launchSettings.json`）。
-未设置 `OnToPilot__Persistence__Provider` / `OnToPilot__Persistence__SqliteConnection` 覆盖时，
-后端把本地开发数据写入 `./src/OnToPilot/data/`（SQLite + Oxigraph）。
+.NET 后端默认监听 `http://localhost:5072`（见 `src/ISEStudio/Properties/launchSettings.json`）。
+未设置 `ISEStudio__Persistence__Provider` / `ISEStudio__Persistence__SqliteConnection` 覆盖时，
+后端把本地开发数据写入 `./src/ISEStudio/data/`（SQLite + Oxigraph）。
 
 ### 前端
 
@@ -342,8 +342,8 @@ PowerShell 请先设置 `$env:VITE_BACKEND_PROXY_TARGET`，再执行 `pnpm dev`�
 运行核心测试、Lint、构建和契约检查：
 
 ```bash
-dotnet test src/OnToPilot.Tests
-dotnet test src/OnToPilot.ApiContract.Tests
+dotnet test src/ISEStudio.Tests
+dotnet test src/ISEStudio.ApiContract.Tests
 
 cd frontend
 pnpm lint
@@ -353,8 +353,8 @@ cd ..
 docker compose config --quiet
 ```
 
-集成测试位于 `tests/OnToPilot.Integration.Tests`，依赖运行中的 PostgreSQL 与 MinIO，在多数环境中被软跳过。
-本机可在 `docker compose up -d postgres minio` 之后执行 `dotnet test tests/OnToPilot.Integration.Tests`。
+集成测试位于 `tests/ISEStudio.Integration.Tests`，依赖运行中的 PostgreSQL 与 MinIO，在多数环境中被软跳过。
+本机可在 `docker compose up -d postgres minio` 之后执行 `dotnet test tests/ISEStudio.Integration.Tests`。
 
 Taxonomy 评测方法和复现说明统一维护在 [Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md) 中。
 
@@ -366,8 +366,8 @@ Taxonomy 评测方法和复现说明统一维护在 [Benchmark 报告](docs/benc
 
 以下内容必须组成一套一致的恢复数据：
 
-- `ontopilot-postgres` 卷，或由 `pg_dump` 生成的备份；
-- `ontopilot-data` 卷，其中包含文档、Oxigraph、发布版本、导出和自动生成的 Token 密钥；
+- `isestudio-postgres` 卷，或由 `pg_dump` 生成的备份；
+- `isestudio-data` 卷，其中包含文档、Oxigraph、发布版本、导出和自动生成的 Token 密钥；
 - 通过密钥管理系统保存的部署 `.env`，不得提交到 Git。
 
 请定期进行恢复演练。仅恢复数据库是不完整的，因为 RDF 图和制品位于 PostgreSQL 之外。
@@ -386,7 +386,7 @@ curl --fail http://localhost:8080/api/health
 
 ### 反向代理检查项
 
-- 终止 TLS，并设置 `OnToPilot__CookieSecure=true`；
+- 终止 TLS，并设置 `ISEStudio__CookieSecure=true`；
 - 把 `MCP_PUBLIC_URL` 设置为外部可访问的 HTTPS `/mcp` 地址；
 - `/mcp` 需要保持流式传输并关闭响应缓冲；
 - 按文档接入需要设置上传大小、限流和超时；
@@ -400,7 +400,7 @@ curl --fail http://localhost:8080/api/health
 | 源码前端意外请求 5072 | 启动 Vite 前设置 `VITE_BACKEND_PROXY_TARGET` |
 | 无法抽取 | 测试当前模型端点，检查凭据、模型名和端点并发限制 |
 | MCP 返回 `401` | 在 `Authorization: Bearer` Header 中使用未过期的 `opm_...` Token |
-| HTTPS 后重复登录 | 设置 `OnToPilot__CookieSecure=true`，检查代理的协议和 Host 转发 |
+| HTTPS 后重复登录 | 设置 `ISEStudio__CookieSecure=true`，检查代理的协议和 Host 转发 |
 | 后端无法打开 Oxigraph | 确保同一数据目录只有一个后端进程，并检查数据卷权限 |
 
 ## 安全与隐私
@@ -438,6 +438,6 @@ curl --fail http://localhost:8080/api/health
 
 ## 开源协议
 
-Copyright 2026 DeepLethe and OntoPilot contributors.
+Copyright 2026 DeepLethe and ISEStudio contributors.
 
 本项目使用 [Apache License 2.0](LICENSE) 开源，并包含 [NOTICE](NOTICE)。除法律要求或书面约定外，本软件按**现状**提供，不附带任何明示或默示担保。

@@ -1,4 +1,4 @@
-# OntoPilot Architecture
+# ISEStudio Architecture
 
 ## System Context
 

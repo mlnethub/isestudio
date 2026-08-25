@@ -407,7 +407,7 @@ public static class IriMigrationCommand
     /// host does (env vars + appsettings) and prints the resolved
     /// <see cref="OnToPilotOptions.IriRoot"/> / <see cref="OnToPilotOptions.VocabNamespace"/>
     /// as JSON to stdout. The Python Settings side reads the same
-    /// <c>OnToPilot__IriRoot</c> / <c>OnToPilot__VocabNamespace</c>
+    /// <c>ISEStudio__IriRoot</c> / <c>ISEStudio__VocabNamespace</c>
     /// env vars via Pydantic, so <c>Test-CrossStackParity.ps1</c> can
     /// diff the two outputs and assert byte-identical IRI resolution.
     /// No side effects, no DB / store touched.

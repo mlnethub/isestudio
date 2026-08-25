@@ -39,7 +39,7 @@ public sealed class TelemetryTests
     // chunk) tuple the extraction services consume — same intent, same
     // payload, adapted to the existing API surface.
     private static (IChatClient chat, KsContext ks, ChunkSpan chunk) Request { get; } =
-        (CreateFakeChat(), new KsContext("http://ontopilot.test/ks/1", "http://ontopilot.test/base/"),
+        (CreateFakeChat(), new KsContext("http://isestudio.test/ks/1", "http://isestudio.test/base/"),
             new ChunkSpan(Idx: 0, Text: "Pump is a kind of device.", CharStart: 0, CharEnd: 26, TokenEstimate: 8));
 
     [Fact]

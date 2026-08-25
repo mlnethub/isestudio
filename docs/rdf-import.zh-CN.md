@@ -1,6 +1,6 @@
 # 直接导入 RDF
 
-OntoPilot 可以把已有 RDF 文档直接写入知识体系，不经过文档解析、分块、实体抽取或 LLM 请求。
+ISEStudio 可以把已有 RDF 文档直接写入知识体系，不经过文档解析、分块、实体抽取或 LLM 请求。
 
 ## 支持格式
 
@@ -14,7 +14,7 @@ OntoPilot 可以把已有 RDF 文档直接写入知识体系，不经过文档�
 `auto` 会结合扩展名和内容识别格式。由于 `.owl` 常见 Turtle 和 RDF/XML 两种编码，系统会读取
 内容后判断。
 
-当前不接收 TriG 和 N-Quads，因为一个 OntoPilot 知识体系已经固定拥有 TBox 与 ABox 两张 named graph。
+当前不接收 TriG 和 N-Quads，因为一个 ISEStudio 知识体系已经固定拥有 TBox 与 ABox 两张 named graph。
 
 ## 导入目标
 
@@ -71,7 +71,7 @@ Multipart 字段：
 | `RDF_IMPORT_MAX_BYTES` | `26214400`（25 MiB） |
 | `RDF_IMPORT_MAX_TRIPLES` | `250000` |
 
-OntoPilot 保存导入后的三元组、源文件名、SHA-256、导入选项和可逆图差异，不额外保存上传的 RDF
+ISEStudio 保存导入后的三元组、源文件名、SHA-256、导入选项和可逆图差异，不额外保存上传的 RDF
 原文件。文档/分块级溯源适用于 LLM 抽取结果；直接导入提供文件级审计溯源。
 
 本体工作台只展示其已理解的 OWL 子集。其他合法 RDF 三元组仍保存在 Oxigraph 中，可通过 RDF 导出

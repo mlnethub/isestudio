@@ -2,7 +2,7 @@
 
 [English](external-api.md) · [简体中文](external-api.zh-CN.md)
 
-OntoPilot exposes a versioned, read-only API for applications that consume a governed knowledge
+ISEStudio exposes a versioned, read-only API for applications that consume a governed knowledge
 system. It is intentionally separate from the Cookie-authenticated governance API used by the Web
 application.
 
@@ -11,7 +11,7 @@ application.
 - Every credential belongs to exactly one knowledge system.
 - A knowledge-system owner may create multiple named tokens for different consumers.
 - Tokens carry explicit read scopes, may expire, and can be revoked independently.
-- Authentication uses a SHA-256 hash. OntoPilot also stores an encrypted copy so the knowledge-system owner can explicitly reveal an active token again.
+- Authentication uses a SHA-256 hash. ISEStudio also stores an encrypted copy so the knowledge-system owner can explicitly reveal an active token again.
 - Revoking a token deletes its encrypted copy. Legacy hash-only tokens created before this feature cannot be recovered and must be replaced.
 - External routes never provide extraction, editing, review, history, membership, or token-management
   operations.
@@ -80,20 +80,20 @@ The **API Access** page displays the complete base URL.
 ## REST Examples
 
 ```bash
-export ONTOPILOT_BASE="http://localhost:8080/api/v1/knowledge-systems/<public-id>"
-export ONTOPILOT_TOKEN="opk_..."
+export ISESTUDIO_BASE="http://localhost:8080/api/v1/knowledge-systems/<public-id>"
+export ISESTUDIO_TOKEN="opk_..."
 
 curl -sS \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/ontology"
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/ontology"
 
 curl -sS \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/individuals?q=pump&limit=20"
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/individuals?q=pump&limit=20"
 
 curl -sS \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/vocabulary/resolve?q=pump&language=en"
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/vocabulary/resolve?q=pump&language=en"
 ```
 
 Supported RDF export formats are `turtle`, `rdfxml`, `ntriples`, and `jsonld`.
@@ -101,12 +101,12 @@ Supported RDF export formats are `turtle`, `rdfxml`, `ntriples`, and `jsonld`.
 ## SPARQL Queries
 
 The query endpoint treats the knowledge system's TBox, ABox, and SKOS vocabulary graphs as one default
-RDF graph. OntoPilot provides the `rdf`, `rdfs`, `owl`, `xsd`, `skos`, `dcterms`, and `onto` prefixes
+RDF graph. ISEStudio provides the `rdf`, `rdfs`, `owl`, `xsd`, `skos`, `dcterms`, and `onto` prefixes
 automatically.
 
 ```bash
-curl -sS "$ONTOPILOT_BASE/query" \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
+curl -sS "$ISESTUDIO_BASE/query" \
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "SELECT ?entity ?label WHERE { ?entity rdfs:label ?label } ORDER BY ?label",

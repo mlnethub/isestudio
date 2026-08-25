@@ -19,8 +19,8 @@ A new user can complete **upload → extract → review → publish → export**
 ## Automated Gates
 
 ```bash
-dotnet test src/OnToPilot.Tests
-dotnet test src/OnToPilot.ApiContract.Tests
+dotnet test src/ISEStudio.Tests
+dotnet test src/ISEStudio.ApiContract.Tests
 
 cd ../frontend
 pnpm build

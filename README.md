@@ -1,6 +1,6 @@
 <div align="center">
 
-# OntoPilot
+# ISEStudio
 
 **Human-governed ontology engineering from source documents.**
 
@@ -16,14 +16,14 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
-![OntoPilot turns documents into reviewed knowledge graphs and immutable releases](docs/images/ontopilot-hero-title.webp)
+![ISEStudio turns documents into reviewed knowledge graphs and immutable releases](docs/images/isestudio-hero-title.webp)
 
 </div>
 
 <details>
 <summary><strong>Contents</strong></summary>
 
-- [Why OntoPilot](#why-ontopilot)
+- [Why ISEStudio](#why-isestudio)
 - [Benchmark Highlight](#benchmark-highlight)
 - [Capabilities](#capabilities)
 - [Product Interface](#product-interface)
@@ -42,15 +42,15 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 
 </details>
 
-## Why OntoPilot
+## Why ISEStudio
 
-OntoPilot is an ontology production workspace for companies and domain teams that need to turn knowledge buried in policies, manuals, product specifications, research, and operational documents into structured ontology data—fast.
+ISEStudio is an ontology production workspace for companies and domain teams that need to turn knowledge buried in policies, manuals, product specifications, research, and operational documents into structured ontology data—fast.
 
-It goes beyond asking an LLM to “generate an ontology.” OntoPilot puts domain experts, reviewers, and agents on the same production line: **AI reads and drafts at scale, people resolve ambiguity and make accountable decisions, and the platform governs evidence, permissions, versions, and releases.** The result is not a one-off model response, but a living knowledge asset that can be reviewed, published, served, and continuously evolved.
+It goes beyond asking an LLM to “generate an ontology.” ISEStudio puts domain experts, reviewers, and agents on the same production line: **AI reads and drafts at scale, people resolve ambiguity and make accountable decisions, and the platform governs evidence, permissions, versions, and releases.** The result is not a one-off model response, but a living knowledge asset that can be reviewed, published, served, and continuously evolved.
 
 - **From documents to computable domain knowledge.** Convert scattered language into a connected TBox, SKOS terminology, and ABox while retaining the source behind every statement.
 - **Human–AI co-creation with governance built in.** Models propose; experts review, correct, and approve through focused queues instead of rebuilding machine output by hand.
-- **Every review makes the agent better.** Suppose one document says “Ocean Explorer One” and another says “OE-1.” Once an expert confirms they are the same vehicle—and records why—OntoPilot retains that decision as reusable resolution memory. The next occurrence can map to the right entity instead of creating a duplicate; new or conflicting variants still return to human review.
+- **Every review makes the agent better.** Suppose one document says “Ocean Explorer One” and another says “OE-1.” Once an expert confirms they are the same vehicle—and records why—ISEStudio retains that decision as reusable resolution memory. The next occurrence can map to the right entity instead of creating a duplicate; new or conflicting variants still return to human review.
 - **From a promising draft to a production asset.** Semantic Diff, immutable releases, rollback, REST APIs, and MCP carry approved knowledge into business systems and agent workflows.
 - **Traceable by design, not by afterthought.** Every decision can be traced to its document chunk, model, prompt snapshot, actor, and review history.
 
@@ -61,7 +61,7 @@ It goes beyond asking an LLM to “generate an ontology.” OntoPilot puts domai
 | Protocol F1 | Wine<br>Food & Beverage | GeoNames<br>Geography | OWL-Time<br>Units & Measurements |
 | --- | ---: | ---: | ---: |
 | OntoLearner reference · Qwen3-8B | 18.60% | 19.70% | 14.08% |
-| **OntoPilot evaluation · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
+| **ISEStudio evaluation · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
 | **Improvement** | **+10.35 pp / +55.6%** | **+7.33 pp / +37.2%** | **+2.58 pp / +18.3%** |
 | Result | **New SOTA** | Same-model lead | Prompt gain |
 
@@ -87,7 +87,7 @@ for evaluation scope, baselines, prompt profiles, and reproducibility details.
 
 ## Product Interface
 
-![OntoPilot ontology workspace showing the governance navigation, class hierarchy, graph explorer, and entity details](docs/images/ontopilot-web-demo.png)
+![ISEStudio ontology workspace showing the governance navigation, class hierarchy, graph explorer, and entity details](docs/images/isestudio-web-demo.png)
 
 The ontology workspace combines class navigation, an interactive relationship graph, and entity details in one view. The project sidebar keeps review queues, releases, documents, history, members, and API access within the same governed workflow.
 
@@ -158,19 +158,19 @@ Set at least these values in the top-level `.env`:
 POSTGRES_PASSWORD=replace-with-a-strong-random-password
 SYSTEM_LANGUAGE=en
 MCP_PUBLIC_URL=http://localhost:8080/mcp
-ONTOPILOT_BIND_ADDRESS=0.0.0.0
-ONTOPILOT_PORT=8080
+ISESTUDIO_BIND_ADDRESS=0.0.0.0
+ISESTUDIO_PORT=8080
 ```
 
 And in `src/.env`:
 
 ```dotenv
 # src/.env
-OnToPilot__LlmApiKey=sk-or-v1-your-key
-OnToPilot__CookieSecure=false
+ISEStudio__LlmApiKey=sk-or-v1-your-key
+ISEStudio__CookieSecure=false
 ```
 
-The administrator password is mandatory for a new installation. OntoPilot refuses to create the first
+The administrator password is mandatory for a new installation. ISEStudio refuses to create the first
 administrator from an empty, common, or published example password; seed the first admin via
 `docker compose --profile bootstrap run --rm seed-admin` and use at least 12 characters.
 
@@ -189,8 +189,8 @@ Open <http://localhost:8080> and sign in with the configured administrator accou
 For an isolated, loopback-only deployment:
 
 ```dotenv
-ONTOPILOT_BIND_ADDRESS=127.0.0.1
-ONTOPILOT_PORT=18080
+ISESTUDIO_BIND_ADDRESS=127.0.0.1
+ISESTUDIO_PORT=18080
 MCP_PUBLIC_URL=http://127.0.0.1:18080/mcp
 ```
 
@@ -200,7 +200,7 @@ MCP_PUBLIC_URL=http://127.0.0.1:18080/mcp
 docker compose down
 ```
 
-This preserves named volumes. `docker compose down -v` permanently deletes the deployment's PostgreSQL and OntoPilot data volumes; use it only when you explicitly want a clean reset.
+This preserves named volumes. `docker compose down -v` permanently deletes the deployment's PostgreSQL and ISEStudio data volumes; use it only when you explicitly want a clean reset.
 
 ## First Governed Workflow
 
@@ -213,7 +213,7 @@ This preserves named volumes. `docker compose down -v` permanently deletes the d
 7. Create a release draft, pass the quality gate, approve, and publish it.
 8. Deploy the published projection or export the complete bundle for downstream use.
 
-Set `OnToPilot__SeedDemoData=true` before the first backend start to create a deterministic Pump Operations knowledge system without model calls.
+Set `ISEStudio__SeedDemoData=true` before the first backend start to create a deterministic Pump Operations knowledge system without model calls.
 
 ## MCP and Agent Integration
 
@@ -222,11 +222,11 @@ MCP is available by default at `/mcp` and starts inside the normal backend lifec
 ```json
 {
   "mcpServers": {
-    "ontopilot": {
+    "isestudio": {
       "type": "streamable-http",
       "url": "http://localhost:8080/mcp",
       "headers": {
-        "Authorization": "Bearer ${ONTOPILOT_MCP_TOKEN}"
+        "Authorization": "Bearer ${ISESTUDIO_MCP_TOKEN}"
       }
     }
   }
@@ -288,19 +288,19 @@ The checked-in [.env.example](.env.example) and [src/.env.example](src/.env.exam
 | --- | --- | --- |
 | `POSTGRES_PASSWORD` | required | PostgreSQL password; Compose refuses to start when it is empty |
 | `SYSTEM_LANGUAGE` | `en` | Built-in backend prompt language (`en` or `zh-CN`), independent of UI locale |
-| `ONTOPILOT_BIND_ADDRESS` | `0.0.0.0` | Host interface exposed by the frontend container |
-| `ONTOPILOT_PORT` | `8080` | Host port exposed by the frontend container |
-| `OnToPilot__Persistence__ConnectionString` | Compose-managed PostgreSQL | EF Core connection string; Compose injects PostgreSQL automatically |
-| `OnToPilot__LlmApiKey` | empty | Initial compatible model credential; endpoints can also be managed in Settings |
-| `OnToPilot__ExtractModel` | `deepseek/deepseek-chat` | Initial extraction/agent model |
-| `OnToPilot__EmbeddingModel` | `baai/bge-m3` | Initial embedding model |
+| `ISESTUDIO_BIND_ADDRESS` | `0.0.0.0` | Host interface exposed by the frontend container |
+| `ISESTUDIO_PORT` | `8080` | Host port exposed by the frontend container |
+| `ISEStudio__Persistence__ConnectionString` | Compose-managed PostgreSQL | EF Core connection string; Compose injects PostgreSQL automatically |
+| `ISEStudio__LlmApiKey` | empty | Initial compatible model credential; endpoints can also be managed in Settings |
+| `ISEStudio__ExtractModel` | `deepseek/deepseek-chat` | Initial extraction/agent model |
+| `ISEStudio__EmbeddingModel` | `baai/bge-m3` | Initial embedding model |
 | `MCP_PUBLIC_URL` | `http://localhost:8080/mcp` | Public Streamable HTTP URL advertised by the backend |
-| `OnToPilot__McpTokenTtlMinutes` | `60` | Default delegated MCP-token lifetime |
+| `ISEStudio__McpTokenTtlMinutes` | `60` | Default delegated MCP-token lifetime |
 | `TOKEN_ENCRYPTION_KEY` | generated in data volume | Encryption key for revealable API-token secrets; back it up |
-| `OnToPilot__CookieSecure` | `false` | Require HTTPS for browser-session cookies |
-| `OnToPilot__SeedDemoData` | `false` | Seed deterministic no-LLM demo data into an empty installation |
-| `OnToPilot__RdfImportMaxBytes` | `26214400` | Direct RDF upload ceiling |
-| `OnToPilot__RdfImportMaxTriples` | `250000` | Direct RDF parsed-statement ceiling |
+| `ISEStudio__CookieSecure` | `false` | Require HTTPS for browser-session cookies |
+| `ISEStudio__SeedDemoData` | `false` | Seed deterministic no-LLM demo data into an empty installation |
+| `ISEStudio__RdfImportMaxBytes` | `26214400` | Direct RDF upload ceiling |
+| `ISEStudio__RdfImportMaxTriples` | `250000` | Direct RDF parsed-statement ceiling |
 
 ## Source Development
 
@@ -314,12 +314,12 @@ The checked-in [.env.example](.env.example) and [src/.env.example](src/.env.exam
 
 ```bash
 cp src/.env.example src/.env
-dotnet run --project src/OnToPilot
+dotnet run --project src/ISEStudio
 ```
 
-The .NET backend listens on `http://localhost:5072` (see `src/OnToPilot/Properties/launchSettings.json`).
-Without `OnToPilot__Persistence__Provider` / `OnToPilot__Persistence__SqliteConnection` overrides, the
-backend stores local development data in `./src/OnToPilot/data/` with SQLite and Oxigraph.
+The .NET backend listens on `http://localhost:5072` (see `src/ISEStudio/Properties/launchSettings.json`).
+Without `ISEStudio__Persistence__Provider` / `ISEStudio__Persistence__SqliteConnection` overrides, the
+backend stores local development data in `./src/ISEStudio/data/` with SQLite and Oxigraph.
 
 ### Frontend
 
@@ -343,8 +343,8 @@ On PowerShell, set `$env:VITE_BACKEND_PROXY_TARGET` first and then run `pnpm dev
 Run the core test, lint, build, and contract checks:
 
 ```bash
-dotnet test src/OnToPilot.Tests
-dotnet test src/OnToPilot.ApiContract.Tests
+dotnet test src/ISEStudio.Tests
+dotnet test src/ISEStudio.ApiContract.Tests
 
 cd frontend
 pnpm lint
@@ -354,9 +354,9 @@ cd ..
 docker compose config --quiet
 ```
 
-Integration tests live under `tests/OnToPilot.Integration.Tests` and require a running PostgreSQL and
+Integration tests live under `tests/ISEStudio.Integration.Tests` and require a running PostgreSQL and
 MinIO instance; they are soft-skipped in many environments. Run them locally with
-`dotnet test tests/OnToPilot.Integration.Tests` after `docker compose up -d postgres minio`.
+`dotnet test tests/ISEStudio.Integration.Tests` after `docker compose up -d postgres minio`.
 
 Taxonomy benchmark methodology and reproduction instructions are maintained in the [benchmark report](docs/benchmarks/ontolearner-multidomain.md).
 
@@ -368,8 +368,8 @@ See [docs/acceptance.md](docs/acceptance.md) for the manual end-to-end acceptanc
 
 Back up these as one consistent recovery set:
 
-- the `ontopilot-postgres` volume or a `pg_dump`;
-- the `ontopilot-data` volume containing documents, Oxigraph stores, releases, exports, and the generated token key;
+- the `isestudio-postgres` volume or a `pg_dump`;
+- the `isestudio-data` volume containing documents, Oxigraph stores, releases, exports, and the generated token key;
 - deployment `.env` files through your secret-management system, not through Git.
 
 Test restores regularly. A database-only restore is incomplete because RDF and artifacts live outside PostgreSQL.
@@ -388,7 +388,7 @@ Back up first, review changed example variables, and test pre-1.0 upgrades on a 
 
 ### Reverse proxy checklist
 
-- terminate TLS and set `OnToPilot__CookieSecure=true`;
+- terminate TLS and set `ISEStudio__CookieSecure=true`;
 - set `MCP_PUBLIC_URL` to the externally reachable HTTPS `/mcp` URL;
 - preserve streaming and disable response buffering for `/mcp`;
 - define upload/body-size, request-rate, and timeout limits appropriate for document ingestion;
@@ -402,7 +402,7 @@ Back up first, review changed example variables, and test pre-1.0 upgrades on a 
 | Source frontend calls port 5072 unexpectedly | Set `VITE_BACKEND_PROXY_TARGET` before starting Vite |
 | Extraction is unavailable | Test the selected model endpoint and verify its credential/model/concurrency settings |
 | MCP returns `401` | Use a non-expired `opm_...` token in the `Authorization: Bearer` header |
-| Login loops behind HTTPS | Set `OnToPilot__CookieSecure=true` and verify proxy scheme/host forwarding |
+| Login loops behind HTTPS | Set `ISEStudio__CookieSecure=true` and verify proxy scheme/host forwarding |
 | Backend cannot open Oxigraph | Ensure only one backend process uses the same data directory and check volume ownership |
 
 ## Security and Privacy
@@ -440,6 +440,6 @@ The roadmap is directional rather than a release promise. See [ROADMAP.md](ROADM
 
 ## License
 
-Copyright 2026 DeepLethe and OntoPilot contributors.
+Copyright 2026 DeepLethe and ISEStudio contributors.
 
 Licensed under the [Apache License 2.0](LICENSE). The repository includes a [NOTICE](NOTICE) file. Unless required by applicable law or agreed in writing, the software is provided **as is**, without warranties or conditions of any kind.

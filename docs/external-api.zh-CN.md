@@ -2,7 +2,7 @@
 
 [English](external-api.md) · [简体中文](external-api.zh-CN.md)
 
-OntoPilot 为消费受治理知识体系的应用提供版本化只读 API。该接口与 Web 管理端使用的 Cookie 会话
+ISEStudio 为消费受治理知识体系的应用提供版本化只读 API。该接口与 Web 管理端使用的 Cookie 会话
 治理 API 相互独立。
 
 ## 安全模型
@@ -77,20 +77,20 @@ https://<host>/api/v1/knowledge-systems/<public-id>/published
 ## REST 示例
 
 ```bash
-export ONTOPILOT_BASE="http://localhost:8080/api/v1/knowledge-systems/<public-id>"
-export ONTOPILOT_TOKEN="opk_..."
+export ISESTUDIO_BASE="http://localhost:8080/api/v1/knowledge-systems/<public-id>"
+export ISESTUDIO_TOKEN="opk_..."
 
 curl -sS \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/ontology"
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/ontology"
 
 curl -sS \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/individuals?q=泵&limit=20"
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/individuals?q=泵&limit=20"
 
 curl -sS \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
-  "$ONTOPILOT_BASE/vocabulary/resolve?q=泵&language=zh-CN"
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
+  "$ISESTUDIO_BASE/vocabulary/resolve?q=泵&language=zh-CN"
 ```
 
 RDF 导出格式包括 `turtle`、`rdfxml`、`ntriples` 和 `jsonld`。
@@ -101,8 +101,8 @@ RDF 导出格式包括 `turtle`、`rdfxml`、`ntriples` 和 `jsonld`。
 `owl`、`xsd`、`skos`、`dcterms` 和 `onto` 前缀。
 
 ```bash
-curl -sS "$ONTOPILOT_BASE/query" \
-  -H "Authorization: Bearer $ONTOPILOT_TOKEN" \
+curl -sS "$ISESTUDIO_BASE/query" \
+  -H "Authorization: Bearer $ISESTUDIO_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "SELECT ?entity ?label WHERE { ?entity rdfs:label ?label } ORDER BY ?label",

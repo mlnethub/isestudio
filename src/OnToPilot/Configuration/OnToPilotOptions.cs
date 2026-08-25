@@ -1,12 +1,12 @@
 namespace OnToPilot.Configuration;
 
 /// <summary>
-/// Top-level configuration for OnToPilot. Bound from the "OnToPilot" section of
+/// Top-level configuration for ISEStudio. Bound from the "ISEStudio" section of
 /// configuration sources (appsettings.json, environment variables, etc.).
 /// </summary>
 public sealed class OnToPilotOptions
 {
-    public const string SectionName = "OnToPilot";
+    public const string SectionName = "ISEStudio";
 
     /// <summary>
     /// BCP-47-ish language tag used for prompts and UI strings. Mirrors the
@@ -32,7 +32,7 @@ public sealed class OnToPilotOptions
     /// <c>session_cookie</c> setting so existing client tooling continues
     /// to work during the .NET migration.
     /// </summary>
-    public string SessionCookie { get; set; } = "ontopilot_session";
+    public string SessionCookie { get; set; } = "isestudio_session";
 
     /// <summary>
     /// Server-side session lifetime in hours. Matches the Python backend's

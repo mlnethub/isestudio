@@ -300,8 +300,8 @@ public sealed class StartupRecoveryTests
             Name = "ks-test",
             Description = "",
             OwnerId = null,
-            GraphIri = "http://ontopilot.test/ks/" + Guid.NewGuid().ToString("N"),
-            BaseIri = "http://ontopilot.test/ks/" + Guid.NewGuid().ToString("N") + "/onto#",
+            GraphIri = "http://isestudio.test/ks/" + Guid.NewGuid().ToString("N"),
+            BaseIri = "http://isestudio.test/ks/" + Guid.NewGuid().ToString("N") + "/onto#",
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         }).Entity;

@@ -1,4 +1,4 @@
-# OntoPilot frontend — build the Vite app, then serve the static bundle + proxy /api via nginx.
+# ISEStudio frontend — build the Vite app, then serve the static bundle + proxy /api via nginx.
 FROM node:22-alpine AS build
 WORKDIR /app
 RUN corepack enable

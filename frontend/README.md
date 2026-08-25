@@ -1,6 +1,6 @@
-# OntoPilot Frontend
+# ISEStudio Frontend
 
-The OntoPilot frontend is a React and TypeScript single-page application for managing documents,
+The ISEStudio frontend is a React and TypeScript single-page application for managing documents,
 reviewing extraction jobs, exploring RDF/OWL ontologies, resolving conflicts, and auditing changes.
 
 For the complete project overview and deployment instructions, see the repository
@@ -23,7 +23,7 @@ Requirements:
 
 - Node.js 22+
 - pnpm
-- OntoPilot backend running at `http://localhost:5072`
+- ISEStudio backend running at `http://localhost:5072`
 
 ```powershell
 pnpm install

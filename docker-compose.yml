@@ -1,4 +1,4 @@
-# OnToPilot self-hosted stack (.NET 10 backend + PostgreSQL + MinIO + Frontend).
+# ISEStudio self-hosted stack (.NET 10 backend + PostgreSQL + MinIO + Frontend).
 #   cp src/.env.example src/.env
 #   cp .env.example .env && edit .env to set POSTGRES_PASSWORD + MINIO_ACCESS_KEY + MINIO_SECRET_KEY
 #   docker compose up -d --build
@@ -13,13 +13,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_DB: ontopilot
-      POSTGRES_USER: ontopilot
+      POSTGRES_DB: isestudio
+      POSTGRES_USER: isestudio
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
     volumes:
-      - ontopilot-postgres:/var/lib/postgresql/data
+      - isestudio-postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ontopilot -d ontopilot"]
+      test: ["CMD-SHELL", "pg_isready -U isestudio -d isestudio"]
       interval: 5s
       timeout: 5s
       retries: 20
@@ -38,7 +38,7 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?Set MINIO_SECRET_KEY in the root .env file}
     command: server /data --console-address ":9001"
     volumes:
-      - ontopilot-minio:/data
+      - isestudio-minio:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 10s
@@ -62,8 +62,8 @@ services:
   # if migrations fail the operator must inspect logs and re-run. The
   # backend service below waits on `service_completed_successfully`,
   # so the API never starts against an un-migrated schema.
-  migrate:
-    image: ontopilot-backend
+  isestudio-migrate:
+    image: isestudio-backend
     # Override the Dockerfile's ENTRYPOINT (not just CMD) — if we set
     # `command:` Docker would APPEND the values to the existing ENTRYPOINT,
     # producing `dotnet OnToPilot.dll dotnet OnToPilot.dll --migrate`, which
@@ -76,10 +76,10 @@ services:
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       # Same provider/connection string as `backend` — EF Core binds
-      # `OnToPilot:Persistence:ConnectionString` via the double-underscore
+      # `ISEStudio:Persistence:ConnectionString` via the double-underscore
       # delimiter used by ASP.NET Core's EnvironmentVariables provider.
-      OnToPilot__Persistence__Provider: npgsql
-      OnToPilot__Persistence__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-ontopilot};Username=${POSTGRES_USER:-ontopilot};Password=${POSTGRES_PASSWORD}
+      ISEStudio__Persistence__Provider: npgsql
+      ISEStudio__Persistence__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-isestudio};Username=${POSTGRES_USER:-isestudio};Password=${POSTGRES_PASSWORD}
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,15 +97,15 @@ services:
   # `docker compose ps` or shell history. The `--seed-admin` branch in
   # Program.cs is idempotent — re-running after a successful seed is a
   # no-op exit 0.
-  seed-admin:
-    image: ontopilot-backend
+  isestudio-seed-admin:
+    image: isestudio-backend
     profiles: ["bootstrap"]
     entrypoint: ["dotnet", "OnToPilot.dll", "--seed-admin"]
     env_file: ./src/.env
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
-      OnToPilot__Persistence__Provider: npgsql
-      OnToPilot__Persistence__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-ontopilot};Username=${POSTGRES_USER:-ontopilot};Password=${POSTGRES_PASSWORD}
+      ISEStudio__Persistence__Provider: npgsql
+      ISEStudio__Persistence__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-isestudio};Username=${POSTGRES_USER:-isestudio};Password=${POSTGRES_PASSWORD}
       # SEED_ADMIN_USERNAME / SEED_ADMIN_PASSWORD are intentionally
       # interpolated with empty defaults (NOT `${VAR:?...}`) so compose
       # file parsing doesn't fail when the operator hasn't set them —
@@ -120,7 +120,7 @@ services:
         condition: service_healthy
     restart: "no"
 
-  backend:
+  isestudio:
     # The .NET Dockerfile lives at `src/Dockerfile` (co-located with the
     # .NET solution it builds). Build context is `./src` so `COPY . ./`
     # lands the whole `src/` tree in `/src/` and `dotnet publish
@@ -130,32 +130,32 @@ services:
     build:
       context: ./src
       dockerfile: Dockerfile
-    image: ontopilot-backend   # fixed name so the `migrate` / `seed-admin` init containers can reuse this image
+    image: isestudio-backend   # fixed name so the `migrate` / `seed-admin` init containers can reuse this image
     env_file: ./src/.env
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Production}
       ASPNETCORE_URLS: http://+:8080
-      # EF Core binds OnToPilot:Persistence:ConnectionString via the
+      # EF Core binds ISEStudio:Persistence:ConnectionString via the
       # double-underscore delimiter used by ASP.NET Core's
       # EnvironmentVariablesConfigurationProvider.
-      OnToPilot__Persistence__Provider: npgsql
-      OnToPilot__Persistence__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-ontopilot};Username=${POSTGRES_USER:-ontopilot};Password=${POSTGRES_PASSWORD}
-      OnToPilot__Storage__Endpoint: minio:9000
-      OnToPilot__Storage__AccessKey: ${MINIO_ACCESS_KEY}
-      OnToPilot__Storage__SecretKey: ${MINIO_SECRET_KEY}
-      OnToPilot__Storage__Bucket: ${MINIO_BUCKET:-ontopilot-blobs}
-      OnToPilot__Storage__UseSsl: "false"
-      OnToPilot__SystemLanguage: ${SYSTEM_LANGUAGE:-en}
-      OnToPilot__PublicHost: ${MCP_PUBLIC_HOST:-localhost}
+      ISEStudio__Persistence__Provider: npgsql
+      ISEStudio__Persistence__ConnectionString: Host=postgres;Port=5432;Database=${POSTGRES_DB:-isestudio};Username=${POSTGRES_USER:-isestudio};Password=${POSTGRES_PASSWORD}
+      ISEStudio__Storage__Endpoint: minio:9000
+      ISEStudio__Storage__AccessKey: ${MINIO_ACCESS_KEY}
+      ISEStudio__Storage__SecretKey: ${MINIO_SECRET_KEY}
+      ISEStudio__Storage__Bucket: ${MINIO_BUCKET:-isestudio-blobs}
+      ISEStudio__Storage__UseSsl: "false"
+      ISEStudio__SystemLanguage: ${SYSTEM_LANGUAGE:-en}
+      ISEStudio__PublicHost: ${MCP_PUBLIC_HOST:-localhost}
     depends_on:
       postgres:
         condition: service_healthy
       minio:
         condition: service_healthy
-      migrate:
+      isestudio-migrate:
         condition: service_completed_successfully
     volumes:
-      - ontopilot-data:/app/data
+      - isestudio-data:/app/data
     healthcheck:
       # /api/health is the only contract path; any other path returns
       # 404 from MapControllers and would fail the healthcheck. The
@@ -171,13 +171,13 @@ services:
   frontend:
     build: ./frontend
     depends_on:
-      backend:
+      isestudio:
         condition: service_healthy
     ports:
-      - "${ONTOPILOT_BIND_ADDRESS:-0.0.0.0}:${ONTOPILOT_PORT:-8080}:80"
+      - "${ISESTUDIO_BIND_ADDRESS:-0.0.0.0}:${ISESTUDIO_PORT:-8080}:80"
     restart: unless-stopped
 
 volumes:
-  ontopilot-data:
-  ontopilot-postgres:
-  ontopilot-minio:
+  isestudio-data:
+  isestudio-postgres:
+  isestudio-minio:

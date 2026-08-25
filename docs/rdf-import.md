@@ -1,6 +1,6 @@
 # Direct RDF Import
 
-OntoPilot can write an existing RDF document directly into a knowledge system without document
+ISEStudio can write an existing RDF document directly into a knowledge system without document
 parsing, chunking, entity extraction, or an LLM request.
 
 ## Supported Syntaxes
@@ -15,7 +15,7 @@ parsing, chunking, entity extraction, or an LLM request.
 `auto` detects the syntax from the extension and content. The `.owl` extension is content-sniffed
 because OWL documents commonly use either Turtle or RDF/XML.
 
-TriG and N-Quads are not accepted because one OntoPilot knowledge system already owns fixed TBox
+TriG and N-Quads are not accepted because one ISEStudio knowledge system already owns fixed TBox
 and ABox named graphs.
 
 ## Destination
@@ -78,7 +78,7 @@ refreshed ontology view, open conflicts, and ABox validation counts.
 | `RDF_IMPORT_MAX_BYTES` | `26214400` (25 MiB) |
 | `RDF_IMPORT_MAX_TRIPLES` | `250000` |
 
-OntoPilot stores the imported triples, source filename, SHA-256, import options, and reversible graph
+ISEStudio stores the imported triples, source filename, SHA-256, import options, and reversible graph
 diffs. It does not retain another copy of the uploaded RDF file. Document/chunk provenance applies to
 LLM-extracted knowledge; direct imports have file-level audit provenance instead.
 

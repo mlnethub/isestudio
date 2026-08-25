@@ -1,4 +1,4 @@
-# OnToPilot .NET 10 backend.
+# ISEStudio .NET 10 backend.
 #
 # BUILD CONTEXT: ./src (the .NET solution root). docker-compose.yml and
 # the shadow compose set `build.context` accordingly. The Dockerfile is
