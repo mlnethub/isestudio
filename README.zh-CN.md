@@ -386,7 +386,7 @@ curl --fail http://localhost:8080/api/health
 
 ### 反向代理检查项
 
-- 终止 TLS，并设置 `COOKIE_SECURE=true`；
+- 终止 TLS，并设置 `OnToPilot__CookieSecure=true`；
 - 把 `MCP_PUBLIC_URL` 设置为外部可访问的 HTTPS `/mcp` 地址；
 - `/mcp` 需要保持流式传输并关闭响应缓冲；
 - 按文档接入需要设置上传大小、限流和超时；
@@ -400,7 +400,7 @@ curl --fail http://localhost:8080/api/health
 | 源码前端意外请求 5072 | 启动 Vite 前设置 `VITE_BACKEND_PROXY_TARGET` |
 | 无法抽取 | 测试当前模型端点，检查凭据、模型名和端点并发限制 |
 | MCP 返回 `401` | 在 `Authorization: Bearer` Header 中使用未过期的 `opm_...` Token |
-| HTTPS 后重复登录 | 设置 `COOKIE_SECURE=true`，检查代理的协议和 Host 转发 |
+| HTTPS 后重复登录 | 设置 `OnToPilot__CookieSecure=true`，检查代理的协议和 Host 转发 |
 | 后端无法打开 Oxigraph | 确保同一数据目录只有一个后端进程，并检查数据卷权限 |
 
 ## 安全与隐私

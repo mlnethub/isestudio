@@ -3,14 +3,15 @@
 Docker Compose provides PostgreSQL, ASP.NET Core MiniApi, and React services. Model endpoints, prompts, and system language are configured independently.
 
 ```bash
-cp backend/.env.example backend/.env
+cp src/.env.example src/.env
 cp .env.example .env
 docker compose up -d --build
 ```
 
-Before the first start, set a strong `POSTGRES_PASSWORD` in `.env` and an
-`ADMIN_PASSWORD` of at least 12 characters in `backend/.env`. Empty or published example
-credentials intentionally stop initialization instead of creating a weak administrator.
+Before the first start, set a strong `POSTGRES_PASSWORD` in `.env` and seed the first
+admin via `docker compose --profile bootstrap run --rm seed-admin` (use at least 12 characters).
+Empty or published example credentials intentionally stop initialization instead of creating a
+weak administrator.
 
 ```mermaid
 flowchart LR
@@ -36,7 +37,7 @@ Each connected service has its own URL, model, credential, and concurrency limit
 
 ## Production checklist
 
-- Enable HTTPS and `COOKIE_SECURE=true`.
+- Enable HTTPS and `OnToPilot__CookieSecure=true`.
 - Replace default administrator and database credentials.
 - Back up PostgreSQL, both Oxigraph stores, artifacts, and encryption keys.
 - Configure reverse-proxy body limits, timeouts, rate limits, and access logs.

@@ -213,7 +213,7 @@ This preserves named volumes. `docker compose down -v` permanently deletes the d
 7. Create a release draft, pass the quality gate, approve, and publish it.
 8. Deploy the published projection or export the complete bundle for downstream use.
 
-Set `SEED_DEMO_DATA=true` before the first backend start to create a deterministic Pump Operations knowledge system without model calls.
+Set `OnToPilot__SeedDemoData=true` before the first backend start to create a deterministic Pump Operations knowledge system without model calls.
 
 ## MCP and Agent Integration
 
@@ -388,7 +388,7 @@ Back up first, review changed example variables, and test pre-1.0 upgrades on a 
 
 ### Reverse proxy checklist
 
-- terminate TLS and set `COOKIE_SECURE=true`;
+- terminate TLS and set `OnToPilot__CookieSecure=true`;
 - set `MCP_PUBLIC_URL` to the externally reachable HTTPS `/mcp` URL;
 - preserve streaming and disable response buffering for `/mcp`;
 - define upload/body-size, request-rate, and timeout limits appropriate for document ingestion;
@@ -402,7 +402,7 @@ Back up first, review changed example variables, and test pre-1.0 upgrades on a 
 | Source frontend calls port 5072 unexpectedly | Set `VITE_BACKEND_PROXY_TARGET` before starting Vite |
 | Extraction is unavailable | Test the selected model endpoint and verify its credential/model/concurrency settings |
 | MCP returns `401` | Use a non-expired `opm_...` token in the `Authorization: Bearer` header |
-| Login loops behind HTTPS | Set `COOKIE_SECURE=true` and verify proxy scheme/host forwarding |
+| Login loops behind HTTPS | Set `OnToPilot__CookieSecure=true` and verify proxy scheme/host forwarding |
 | Backend cannot open Oxigraph | Ensure only one backend process uses the same data directory and check volume ownership |
 
 ## Security and Privacy

@@ -5,13 +5,14 @@ Docker Compose 提供 PostgreSQL、ASP.NET Core MiniApi 后端和 React 前端�
 ## 启动
 
 ```bash
-cp backend/.env.example backend/.env
+cp src/.env.example src/.env
 cp .env.example .env
 docker compose up -d --build
 ```
 
-首次启动前，请在 `.env` 设置强 `POSTGRES_PASSWORD`，并在 `backend/.env` 设置至少 12 个
-字符的 `ADMIN_PASSWORD`。凭据为空或仍为公开示例值时，系统会主动终止初始化，不会创建弱口令管理员。
+首次启动前，请在 `.env` 设置强 `POSTGRES_PASSWORD`，并通过
+`docker compose --profile bootstrap run --rm seed-admin` 完成首次引导，密码至少 12 个字符。
+凭据为空或仍为公开示例值时，系统会主动终止初始化，不会创建弱口令管理员。
 
 还应配置至少一个可用的模型端点；未配置模型凭据时，界面与不依赖模型的功能仍可启动。
 
@@ -49,7 +50,7 @@ docker compose up -d backend
 
 ## 生产检查清单
 
-- 启用 HTTPS 与 `COOKIE_SECURE=true`；
+- 启用 HTTPS 与 `OnToPilot__CookieSecure=true`；
 - 修改默认管理员与数据库密码；
 - 配置 PostgreSQL、Oxigraph 和制品卷备份；
 - 保存 Token 加密密钥并建立恢复流程；
