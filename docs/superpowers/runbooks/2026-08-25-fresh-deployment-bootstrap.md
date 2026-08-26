@@ -1,5 +1,8 @@
 # Fresh-deployment bootstrap(2026-08-25)
 
+> **Phase 2 状态(2026-08-26+):** `LegacyIdAllocator` 已退役;新 row 的 `legacy_id` 由 DB `DEFAULT 0` 派发(非 `MAX+1`)。
+> 本 runbook §3.5 的 `COALESCE(MAX+1)` SQL INSERT 模板**保留不变** —— 它仍是合法的 bootstrap 路径,只是 MAX+1 不再是硬约束(UNIQUE 索引已删);保留 `MAX+1` 是为了历史 admin 序号习惯(admin 序号 = 1)。
+
 > 当 `docker compose up` 完成后,后端容器反复重启,日志里看到 `Bootstrap required: the users table is empty... Process will exit with code 17.`,且容器持续 `Restarting (N)` —— 这意味着 `users` 表空,**必须 seed 第一个 admin 后端才会退出 restart loop**。
 
 本文档是 .NET 后端 **ISEStudio** 首次部署的兜底 runbook。**首选路径**是 docker-compose 自带的 `--profile bootstrap run --rm seed-admin`(详见 `docker-compose.yml:88-121`),它读 `SEED_ADMIN_USERNAME` / `SEED_ADMIN_PASSWORD` env var,写完 exit 0,**幂等**。本文档覆盖的是该首选路径**不可用**的极端场景 —— 比如只接触得到 postgres 容器、backend 镜像拉不到、或者 CLI argv/env 传不进容器。
@@ -112,7 +115,7 @@ docker exec ontopilot-postgres-1 psql -U isestudio -d isestudio -c '\d users'
  legacy_id      | bigint                   | not null |           <-- snake_case
 ```
 
-如果你的表**全是 snake_case**(说明 schema 是手写的,不是 EF 迁移来的),把下文的双引号去掉直接写即可;但当前 ISEStudio schema 是混合,必须按本 runbook 的双引号写法。
+如果你的表**全是 snake_case**,把下文的双引号去掉直接写即可;但当前 ISEStudio schema 是混合,必须按本 runbook 的双引号写法。(post-Phase-2): `legacy_id` 列保留,新 row 默认 `0` (DB DEFAULT 0);`ux_*_legacy_id` UNIQUE 索引已删。本 runbook 假设的 `users` 表结构兼容此变化。
 
 ### 3.4 确认 postgres 凭据
 
