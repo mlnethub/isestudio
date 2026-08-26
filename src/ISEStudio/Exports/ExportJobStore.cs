@@ -37,10 +37,10 @@ public sealed class ExportJobStore
 
     /// <summary>
     /// Insert a fresh pending job row and return it. The
-    /// <see cref="LegacyAddressableEntity.LegacyId"/> is allocated through
-    /// <see cref="LegacyIdAllocator.AllocateAndPersistAsync{TEntity}"/> so
-    /// concurrent writers on the export_jobs table cannot collide on the
-    /// UNIQUE index (PostgreSQL advisory lock; SQLite single-writer).
+    /// <see cref="LegacyAddressableEntity.LegacyId"/> stays at its CLR
+    /// default (0) and the column DEFAULT 0 fills it in on INSERT — the
+    /// per-entity <c>ux_*_legacy_id</c> UNIQUE indexes were dropped in the
+    /// Guid PK Phase 2 migration, so concurrent rows may share 0.
     /// </summary>
     public async Task<ExportJobEntity> CreateAsync(
         Guid knowledgeSystemId,
