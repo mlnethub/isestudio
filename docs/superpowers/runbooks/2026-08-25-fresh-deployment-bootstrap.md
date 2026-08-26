@@ -169,7 +169,7 @@ SQL
 INSERT 0 1
 ```
 
-> `legacy_id` 必须由 allocator 派发(全栈唯一,后续 `LegacyIdAllocator.AllocateAndPersistAsync` 会从 `MAX(legacy_id) + 1` 读)。这里手动用 `COALESCE(MAX + 1)` 保证首次分配 = 1,后续 `LegacyIdAllocator` 顺接即可。**不要**自己写固定值(如 100 / 1000),会和 allocator 抢号。
+> `legacy_id` 现由 DB `DEFAULT 0` 派发(Phase 2 后 `LegacyIdAllocator` 已退役,`ux_*_legacy_id` UNIQUE 索引已删)。这里手动用 `COALESCE(MAX + 1)` 保留历史 admin 序号习惯(首个 admin 序号 = 1);已无 allocator 抢号风险,写固定值也合法,只是不建议打破序号习惯。
 
 ### 3.6 重启后端,看 bootstrap 通过
 
