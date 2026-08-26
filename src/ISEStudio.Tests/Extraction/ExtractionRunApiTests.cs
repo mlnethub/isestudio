@@ -131,7 +131,8 @@ public sealed class ExtractionRunApiTests
         Assert.Equal(2, body.GetProperty("total_chunks").GetInt32());
         var jobId = body.GetProperty("id").GetGuid();
         var persistedJob = app.CreateDbContext().ExtractionJobs.Single(job => job.Id == jobId);
-        Assert.True(persistedJob.LegacyId > 0);
+        // D1(c): new rows carry legacy_id 0 (DB DEFAULT; allocator retired).
+        Assert.Equal(0L, persistedJob.LegacyId);
     }
 
     [Fact]

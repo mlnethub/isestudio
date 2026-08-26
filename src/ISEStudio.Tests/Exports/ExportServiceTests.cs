@@ -320,9 +320,10 @@ public class ExportServiceTests : IClassFixture<ExportServiceFixture>
 
         // The wire DTO (ExportOut) drops LegacyId — read it back from the
         // store so we can exercise the int→Guid fallback lookup path.
+        // D1(c): the job row carries legacy_id 0 (DB DEFAULT; allocator retired).
         var entity = await _fx.Jobs.GetAsync(job!.Id, CancellationToken.None);
         Assert.NotNull(entity);
-        Assert.True(entity!.LegacyId > 0);
+        Assert.Equal(0L, entity!.LegacyId);
 
         var byGuid = await svc.GetAsync(ks.Id, job.Id.ToString(),
             CancellationToken.None);
@@ -353,6 +354,15 @@ public class ExportServiceTests : IClassFixture<ExportServiceFixture>
             TestActor(), CancellationToken.None);
         Assert.NotNull(a);
         Assert.NotNull(b);
+
+        // D1(c): new rows carry legacy_id 0 — give the ordering coverage
+        // explicit distinct legacy ids (historical-data style).
+        await using (var db = _fx.Contexts.CreateDbContext())
+        {
+            db.ExportJobs.Single(j => j.Id == a.Id).LegacyId = 1;
+            db.ExportJobs.Single(j => j.Id == b.Id).LegacyId = 2;
+            await db.SaveChangesAsync();
+        }
 
         var result = await svc.ListAsync(ks.Id, CancellationToken.None);
         Assert.NotNull(result);

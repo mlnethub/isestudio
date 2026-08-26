@@ -6,26 +6,25 @@ using Testcontainers.PostgreSql;
 namespace ISEStudio.IntegrationTests.Providers;
 
 /// <summary>
-/// Real-PostgreSQL guard against the
-/// <c>ux_provider_legacy_id</c> unique-constraint race that surfaced when
-/// two operators concurrently hit <see cref="ProviderService.CreateAsync"/>.
+/// Real-PostgreSQL guard for concurrent <see cref="ProviderService.CreateAsync"/>
+/// calls. Historically this exercised the <c>ux_provider_legacy_id</c>
+/// unique-constraint race; Guid PK Phase 2 (D1(c)) dropped the
+/// <c>ux_*_legacy_id</c> indexes and retired the allocator, so every new
+/// row now lands on <c>legacy_id = 0</c> by DB DEFAULT. The concurrent
+/// inserts must still all succeed and persist durably.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="ProviderService.CreateAsync"/> used to construct a new
-/// <c>ProviderEntity</c> with <c>LegacyId</c> left at its default
-/// <c>0</c>, call <c>_db.Providers.Add(entity)</c>, and let EF Core
-/// <c>SaveChangesAsync</c> INSERT it. Two concurrent calls therefore both
-/// tried to write <c>legacy_id = 0</c>; the second INSERT was rejected by
-/// the <c>ux_provider_legacy_id</c> UNIQUE index with
-/// <c>SqlState = 23505</c>. SQLite's single-writer model hides the race,
-/// so this test needs a real PostgreSQL backend to expose it.
+/// Two concurrent calls used to both try to write <c>legacy_id = 0</c>
+/// through the legacy path and the second INSERT was rejected by the
+/// <c>ux_provider_legacy_id</c> UNIQUE index with <c>SqlState = 23505</c>.
+/// SQLite's single-writer model hides the race, so this test needs a real
+/// PostgreSQL backend to expose it.
 /// </para>
 /// <para>
-/// The fix routes provider creation through a single
-/// <c>SaveChangesAsync</c> per call. After the fix, this test should
-/// pass: every contended call lands on a distinct, durably persisted
-/// row.
+/// Phase 2 removed the constraint itself: concurrent inserts of the same
+/// <c>legacy_id = 0</c> are now legal and must each land on a durable,
+/// individually-identifiable row (distinct Guid PKs).
 /// </para>
 /// </remarks>
 [Trait("Category", "Persistence")]
@@ -64,13 +63,13 @@ public sealed class ProviderServicePgIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Two or more concurrent <see cref="ProviderService.CreateAsync"/>
-    /// calls must each land on a distinct, durably-persisted row. Before
-    /// the fix this trips <c>ux_provider_legacy_id</c> with
-    /// <c>SqlState 23505</c> on the second INSERT.
+    /// Eight concurrent <see cref="ProviderService.CreateAsync"/> calls
+    /// must all land on a durably-persisted row even though every row now
+    /// shares <c>legacy_id = 0</c> (the <c>ux_provider_legacy_id</c>
+    /// UNIQUE index is gone — Phase 2 D1(c)).
     /// </summary>
     [Fact]
-    public async Task Pg_concurrent_provider_create_does_not_violate_legacy_id_unique()
+    public async Task Pg_concurrent_provider_create_allows_shared_zero_legacy_id()
     {
         // Bring the schema up once via a short-lived context.
         await using (var setup = OpenContext())
@@ -100,18 +99,20 @@ public sealed class ProviderServicePgIntegrationTests : IAsyncLifetime
             });
         }
 
-        // Before the fix: throws DbUpdateException with PostgreSqlException
-        // SqlState=23505, ConstraintName=ux_provider_legacy_id on the
-        // second concurrent SaveChanges. After the fix: completes cleanly.
+        // Historical failure mode: DbUpdateException with
+        // PostgreSqlException SqlState=23505, ConstraintName=ux_provider_legacy_id
+        // on the second concurrent SaveChanges. Phase 2 removed the
+        // constraint — the inserts must all complete cleanly.
         await Task.WhenAll(tasks);
 
-        // Every row has a distinct LegacyId — proves the allocator actually
-        // serialised the 8 concurrent inserts rather than papering over the
-        // race with a single sequential retry loop.
+        // All 8 rows persisted, each with legacy_id 0 (DB DEFAULT) and a
+        // distinct Guid PK — proving the shared zero is safe under real
+        // Postgres concurrency.
         await using var verify = OpenContext();
         var legacyIds = await verify.Providers
             .Select(p => p.LegacyId)
             .ToListAsync();
-        Assert.Equal(parallelism, legacyIds.Distinct().Count());
+        Assert.Equal(parallelism, legacyIds.Count);
+        Assert.All(legacyIds, id => Assert.Equal(0L, id));
     }
 }

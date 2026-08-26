@@ -27,8 +27,8 @@ public sealed class ExportJobStoreFixture : IDisposable
 
     /// <summary>
     /// Seed a fresh <see cref="KnowledgeSystemEntity"/> and return its
-    /// PK. Each call mints a unique <c>LegacyId</c> so tests don't
-    /// collide on the unique index.
+    /// PK. Explicit <c>LegacyId</c> values are still honored by the DB
+    /// (D1(c): only unset values default to 0).
     /// </summary>
     public async Task<Guid> SeedKnowledgeSystemAsync()
     {
@@ -60,7 +60,7 @@ public class ExportJobStoreTests : IClassFixture<ExportJobStoreFixture>
 
     [Fact]
     [Trait("Category", "Export")]
-    public async Task CreateAsync_inserts_pending_row_with_unique_legacy_id()
+    public async Task CreateAsync_inserts_pending_row_with_default_legacy_id_zero()
     {
         var ksId = await _fx.SeedKnowledgeSystemAsync();
         var first = await _fx.Jobs.CreateAsync(
@@ -68,7 +68,9 @@ public class ExportJobStoreTests : IClassFixture<ExportJobStoreFixture>
             format: "nquads", createdById: null, createdByName: "tester",
             CancellationToken.None);
         Assert.Equal("pending", first.Status);
-        Assert.True(first.LegacyId > 0, "AllocateAndPersistAsync should mint a positive legacy id.");
+        // D1(c): LegacyIdAllocator retired — the DB DEFAULT 0 fills the
+        // column; uniqueness now comes from the Guid PK.
+        Assert.Equal(0L, first.LegacyId);
         Assert.Equal(ExportLayer.TBox, first.Layer);
         Assert.Equal("nquads", first.Format);
 
@@ -76,7 +78,14 @@ public class ExportJobStoreTests : IClassFixture<ExportJobStoreFixture>
             ksId, releaseId: null, layer: ExportLayer.ABox, shardSize: 100_000,
             format: "nquads", createdById: null, createdByName: "tester",
             CancellationToken.None);
-        Assert.NotEqual(first.LegacyId, second.LegacyId);
+        Assert.Equal(0L, second.LegacyId);
+
+        // Prove the DB stored 0, not just the CLR default.
+        await using (var db = _fx.Contexts.CreateDbContext())
+        {
+            Assert.Equal(0L, db.ExportJobs.Single(j => j.Id == first.Id).LegacyId);
+            Assert.Equal(0L, db.ExportJobs.Single(j => j.Id == second.Id).LegacyId);
+        }
     }
 
     [Fact]
@@ -136,6 +145,16 @@ public class ExportJobStoreTests : IClassFixture<ExportJobStoreFixture>
             ksId, releaseId: null, layer: ExportLayer.Vocabulary, shardSize: 100_000,
             format: "nquads", createdById: null, createdByName: "tester",
             CancellationToken.None);
+
+        // D1(c): new rows all carry legacy_id 0, so give the ordering
+        // coverage explicit distinct legacy ids (historical-data style).
+        await using (var db = _fx.Contexts.CreateDbContext())
+        {
+            db.ExportJobs.Single(j => j.Id == a.Id).LegacyId = 1;
+            db.ExportJobs.Single(j => j.Id == b.Id).LegacyId = 2;
+            db.ExportJobs.Single(j => j.Id == c.Id).LegacyId = 3;
+            await db.SaveChangesAsync();
+        }
 
         var rows = await _fx.Jobs.ListAsync(ksId, CancellationToken.None);
         Assert.Equal(new[] { c.Id, b.Id, a.Id },

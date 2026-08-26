@@ -82,7 +82,8 @@ public sealed class AuthAdminApiTests
         Assert.True(body.GetProperty("active").GetBoolean());
 
         // DB-side: row persisted + has a BCrypt password hash (not the
-        // plaintext) + a LegacyId assigned by the allocator.
+        // plaintext) + legacy_id filled by the DB DEFAULT 0 (D1(c):
+        // LegacyIdAllocator retired).
         using var verifyScope = app.Services.CreateScope();
         var db = verifyScope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
         var row = db.Users.Single(u => u.Username == "bob");
@@ -90,7 +91,7 @@ public sealed class AuthAdminApiTests
         Assert.True(row.Active);
         Assert.NotEqual("bob12345strong", row.PasswordHash);
         Assert.StartsWith("$2", row.PasswordHash);
-        Assert.True(row.LegacyId > 0);
+        Assert.Equal(0L, row.LegacyId);
     }
 
     [Fact]

@@ -213,9 +213,13 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
         Assert.Contains(found, x => x.Table == "knowledgepromptoverride" && x.Name == "ux_kpo_knowledge_system_id_prompt_key");
     }
 
-    /// <summary>Every business table should have a unique index on legacy_id (compat key).</summary>
+    /// <summary>
+    /// No business table may carry a unique index on legacy_id — the
+    /// <c>ux_*_legacy_id</c> indexes were dropped in Guid PK Phase 2
+    /// (D1(c)) because new rows legitimately share <c>legacy_id = 0</c>.
+    /// </summary>
     [Fact]
-    public async Task Every_business_table_has_unique_legacy_id_index()
+    public async Task No_business_table_has_unique_legacy_id_index()
     {
         await using var connection = new NpgsqlConnection(_container.GetConnectionString());
         await connection.OpenAsync();
@@ -232,7 +236,7 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
                   AND indexdef LIKE '%UNIQUE%'";
             cmd.Parameters.AddWithValue("@t", table);
             var has = await cmd.ExecuteScalarAsync();
-            Assert.NotNull(has);
+            Assert.Null(has);
         }
     }
 

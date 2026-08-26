@@ -306,12 +306,9 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
             Assert.Equal("pending", row.Status);
 
             // PG persistence assertion: the row must be readable through
-            // a fresh context, with LegacyId allocated by the PG
-            // advisory-lock allocator (not the SQLite MAX-of-empty
-            // shortcut the SQLite fixture exercises). We use the factory
-            // directly so the verification context is independent of
-            // the agent's scoped context — disposing one does not
-            // affect the other.
+            // a fresh context. We use the factory directly so the
+            // verification context is independent of the agent's scoped
+            // context — disposing one does not affect the other.
             var factory = sp.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>();
             await using var verifyDb = factory.CreateDbContext();
             var persisted = await verifyDb.TermProposals
@@ -319,8 +316,9 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
                 .ToListAsync();
             var persistedRow = Assert.Single(persisted);
             Assert.Equal(row.Signature, persistedRow.Signature);
-            Assert.True(persistedRow.LegacyId > 0,
-                $"expected LegacyId > 0 from PG allocator, got {persistedRow.LegacyId}");
+            // D1(c): the allocator is retired — legacy_id is filled by the
+            // DB DEFAULT 0 on INSERT.
+            Assert.Equal(0L, persistedRow.LegacyId);
         }
         finally
         {

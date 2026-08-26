@@ -23,11 +23,13 @@ namespace ISEStudio.Tests.Conflicts;
 /// decisions at or above <see cref="ISEStudioOptions.AutoApplyFloor"/>
 /// auto-apply instead (product decision P3-11 — Python's
 /// <c>AUTO_APPLY_TYPES</c> stays empty, so the apply branch is a .NET
-/// extension). Tests exercise auto-apply by passing
-/// <c>autoApply: true</c> to <see cref="RunTriageAsync"/>; the default
-/// (no allocator) keeps the recommendation-only behaviour so the P1-1
-/// contract tests stay representative. Structural conflicts are untouched;
-/// every LLM hiccup leaves the conflict for a human instead of failing.
+/// extension). The agent auto-applies whenever the graph store is wired
+/// and the decision confidence is at or above the floor (Phase 2:
+/// <c>LegacyIdAllocator</c> retired — the store is the only gate);
+/// below-floor decisions keep the recommendation-only behaviour so the
+/// P1-1 contract tests stay representative. Structural conflicts are
+/// untouched; every LLM hiccup leaves the conflict for a human instead
+/// of failing.
 ///
 /// <para>Each test owns a <see cref="FakeChat"/> instance (fresh per test
 /// method via xUnit's per-test class construction), so the tests run in
@@ -71,7 +73,10 @@ public sealed class ConflictAgentTests : IDisposable
         var ksId = await SeedWorkspaceAsync("attach");
         await SeedConflictAsync(ksId, "predicate_specialization", PayloadWithResolutions("merge", "subprop"));
 
-        _chat.Enqueue("""{"action":"finish","resolution":"merge","confidence":0.92,"reason":"same relation, range noun baked in"}""");
+        // Below the AutoApplyFloor (0.85) so the decision lands in the
+        // recommendation-only path (Phase 2: the agent auto-applies
+        // whenever the graph store is wired and confidence >= floor).
+        _chat.Enqueue("""{"action":"finish","resolution":"merge","confidence":0.8,"reason":"same relation, range noun baked in"}""");
 
         var log = await RunTriageAsync(ksId, new ISEStudioOptions { SystemLanguage = "en" });
 
@@ -85,7 +90,7 @@ public sealed class ConflictAgentTests : IDisposable
         Assert.True(payload.TryGetProperty("resolutions", out _));
         var rec = payload.GetProperty("recommendation");
         Assert.Equal("merge", rec.GetProperty("resolution_id").GetString());
-        Assert.Equal(0.92, rec.GetProperty("confidence").GetDouble());
+        Assert.Equal(0.8, rec.GetProperty("confidence").GetDouble());
         Assert.Equal("same relation, range noun baked in", rec.GetProperty("reason").GetString());
     }
 
@@ -134,7 +139,10 @@ public sealed class ConflictAgentTests : IDisposable
         await SeedConflictAsync(ksId, "cycle", PayloadWithResolutions("rm-subclass"));
         await SeedConflictAsync(ksId, "predicate_specialization", PayloadWithResolutions("merge"));
 
-        _chat.Enqueue("""{"action":"finish","resolution":"merge","confidence":0.9,"reason":"clean merge"}""");
+        // Below the AutoApplyFloor (0.85): the predspec decision becomes a
+        // recommendation, the row stays open (Phase 2: auto-apply needs a
+        // wired graph store and confidence >= floor).
+        _chat.Enqueue("""{"action":"finish","resolution":"merge","confidence":0.8,"reason":"clean merge"}""");
 
         var log = await RunTriageAsync(ksId, new ISEStudioOptions());
 

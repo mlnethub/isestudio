@@ -93,8 +93,9 @@ public sealed class PromptServiceTests
         var rowAfterInsert = db.KnowledgePromptOverrides.AsNoTracking()
             .Single(o => o.KnowledgeSystemId == ks.Id && o.PromptKey == "extraction.system");
         Assert.Equal("FIRST", rowAfterInsert.Content);
+        // D1(c): the fresh row carries legacy_id 0 (DB DEFAULT; allocator retired).
         var firstLegacyId = rowAfterInsert.LegacyId;
-        Assert.True(firstLegacyId > 0);
+        Assert.Equal(0L, firstLegacyId);
 
         var second = await svc.UpdateAsync(ks.Id, "extraction.system", "SECOND", actor, CancellationToken.None);
         Assert.NotNull(second);
@@ -103,7 +104,13 @@ public sealed class PromptServiceTests
         var rowAfterUpdate = db.KnowledgePromptOverrides.AsNoTracking()
             .Single(o => o.KnowledgeSystemId == ks.Id && o.PromptKey == "extraction.system");
         Assert.Equal("SECOND", rowAfterUpdate.Content);
-        Assert.Equal(firstLegacyId, rowAfterUpdate.LegacyId); // upsert, not insert
+        // Upsert proof: the Guid PK must be stable across the update — a
+        // delete + reinsert would mint a new Id. Under D1(c) legacy_id can
+        // no longer discriminate (a reinserted row would also carry 0), so
+        // the Id equality is the discriminative assertion and the legacy_id
+        // equality is incidental.
+        Assert.Equal(rowAfterInsert.Id, rowAfterUpdate.Id);
+        Assert.Equal(firstLegacyId, rowAfterUpdate.LegacyId);
 
         var audits = db.AuditEvents.AsNoTracking()
             .Where(e => e.KnowledgeSystemId == ks.Id && e.Action == "system.prompt.override").ToList();
