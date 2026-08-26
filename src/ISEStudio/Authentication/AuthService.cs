@@ -60,18 +60,15 @@ public sealed class AuthService
     private readonly ISEStudioDbContext _db;
     private readonly IPasswordService _passwords;
     private readonly TimeProvider _clock;
-    private readonly LegacyIdAllocator _allocator;
 
     public AuthService(
         ISEStudioDbContext db,
         IPasswordService passwords,
-        TimeProvider clock,
-        LegacyIdAllocator allocator)
+        TimeProvider clock)
     {
         _db = db;
         _passwords = passwords;
         _clock = clock;
-        _allocator = allocator;
     }
 
     /// <summary>
@@ -152,11 +149,8 @@ public sealed class AuthService
             Active = true,
             CreatedAt = _clock.GetUtcNow(),
         };
-        // AllocateAndPersistAsync assigns LegacyId under the per-table
-        // advisory lock + writes the row; without it a second CreateUser
-        // in the same DbContext lifetime 500s with UNIQUE-constraint
-        // violation on ux_user_legacy_id.
-        await _allocator.AllocateAndPersistAsync(entity, ct).ConfigureAwait(false);
+        _db.Users.Add(entity);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return UserOut.From(entity);
     }
 

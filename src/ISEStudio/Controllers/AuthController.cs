@@ -59,22 +59,19 @@ public sealed class AuthController : ControllerBase
     private readonly IPasswordService _passwords;
     private readonly TimeProvider _clock;
     private readonly IIntegrationApiFacade _facade;
-    private readonly LegacyIdAllocator _allocator;
 
     public AuthController(
         ISEStudioDbContext db,
         IOptions<ISEStudioOptions> options,
         IPasswordService passwords,
         TimeProvider clock,
-        IIntegrationApiFacade facade,
-        LegacyIdAllocator allocator)
+        IIntegrationApiFacade facade)
     {
         _db = db;
         _options = options.Value;
         _passwords = passwords;
         _clock = clock;
         _facade = facade;
-        _allocator = allocator;
     }
 
     /// <summary>
@@ -118,16 +115,14 @@ public sealed class AuthController : ControllerBase
 
         var token = CreateToken();
         var now = _clock.GetUtcNow();
-        // Atomic alloc+save: holds the auth_session advisory lock until
-        // COMMIT so a concurrent login request can't observe the same
-        // MAX+1 and race on the UNIQUE(legacy_id) constraint.
-        await _allocator.AllocateAndPersistAsync(new AuthSessionEntity
+        _db.AuthSessions.Add(new AuthSessionEntity
         {
             Token = token,
             UserId = user!.Id,
             CreatedAt = now,
             ExpiresAt = now.AddHours(_options.SessionTtlHours),
-        }, ct).ConfigureAwait(false);
+        });
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         SetSessionCookie(token);
         return Ok(UserOut.From(user));

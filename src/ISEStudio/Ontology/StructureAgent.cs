@@ -49,7 +49,6 @@ public sealed class StructureAgent
     private readonly ISEStudioDbContext _db;
     private readonly StoreWrapper? _store;
     private readonly ExtractionJobStore? _jobs;
-    private readonly LegacyIdAllocator? _allocator;
     private readonly ISEStudioOptions _options;
 
     public StructureAgent(
@@ -57,7 +56,6 @@ public sealed class StructureAgent
         ISEStudioDbContext db,
         StoreWrapper? store = null,
         ExtractionJobStore? jobs = null,
-        LegacyIdAllocator? allocator = null,
         IOptions<ISEStudioOptions>? options = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
@@ -66,7 +64,6 @@ public sealed class StructureAgent
         _db = db;
         _store = store;
         _jobs = jobs;
-        _allocator = allocator;
         _options = options?.Value ?? new ISEStudioOptions();
     }
 
@@ -319,32 +316,30 @@ public sealed class StructureAgent
                 // reuses this parent.
                 idx[Vocabulary.NormLabel(parent)] = pIri!;
             }
-            if (_allocator is not null)
+            _db.AuditEvents.Add(new AuditEventEntity
             {
-                await _allocator.AllocateAndPersistAsync(new AuditEventEntity
+                Id = Guid.NewGuid(),
+                KnowledgeSystemId = ks.Id,
+                ActorId = null,
+                ActorName = "structure-agent",
+                Action = "tbox.attach_isolated",
+                Summary = $"Agent attached \"{c.Label}\" ⊑ \"{parent}\"{(createdNew ? " (new class)" : "")}",
+                Detail = JsonDocument.Parse(JsonSerializer.Serialize(new Dictionary<string, object?>
                 {
-                    Id = Guid.NewGuid(),
-                    KnowledgeSystemId = ks.Id,
-                    ActorId = null,
-                    ActorName = "structure-agent",
-                    Action = "tbox.attach_isolated",
-                    Summary = $"Agent attached \"{c.Label}\" ⊑ \"{parent}\"{(createdNew ? " (new class)" : "")}",
-                    Detail = JsonDocument.Parse(JsonSerializer.Serialize(new Dictionary<string, object?>
-                    {
-                        ["class"] = c.Iri,
-                        ["parent"] = parent,
-                        ["new"] = createdNew,
-                        ["reason"] = d.Reason,
-                        ["evidence"] = d.Evidence,
-                        ["confidence"] = conf,
-                        ["agent"] = true,
-                    })),
-                    Graph = null,
-                    Added = added.Length == 0 ? null : added,
-                    Removed = removed.Length == 0 ? null : removed,
-                    CreatedAt = DateTimeOffset.UtcNow,
-                }, ct).ConfigureAwait(false);
-            }
+                    ["class"] = c.Iri,
+                    ["parent"] = parent,
+                    ["new"] = createdNew,
+                    ["reason"] = d.Reason,
+                    ["evidence"] = d.Evidence,
+                    ["confidence"] = conf,
+                    ["agent"] = true,
+                })),
+                Graph = null,
+                Added = added.Length == 0 ? null : added,
+                Removed = removed.Length == 0 ? null : removed,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
             log.Add($"{c.Label} ⊑ {parent}{(createdNew ? " (new)" : "")} (auto {conf:F2})");
         }
         return log;

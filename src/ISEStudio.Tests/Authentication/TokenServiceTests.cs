@@ -208,7 +208,7 @@ public sealed class TokenServiceTests
     {
         using var db = NewDb(out var ks);
         var clock = new MutableClock(DateTimeOffset.Parse("2026-01-01T00:00:00Z"));
-        var service = new KnowledgeApiTokenService(db, clock, NewAllocator(db));
+        var service = new KnowledgeApiTokenService(db, clock);
 
         var minted = await service.CreateAsync(new KnowledgeApiTokenCreateRequest(
             ks.Id, null, "test",
@@ -293,7 +293,7 @@ public sealed class TokenServiceTests
     {
         using var db = NewDb(out var ks);
         var user = NewUser(db);
-        var service = new McpTokenService(db, TimeProvider.System, NewAllocator(db));
+        var service = new McpTokenService(db, TimeProvider.System);
 
         var minted = await service.CreateAsync(new McpTokenCreateRequest(
             KnowledgeSystemId: ks.Id,
@@ -315,7 +315,7 @@ public sealed class TokenServiceTests
     {
         using var db = NewDb(out var ks);
         var user = NewUser(db);
-        var service = new McpTokenService(db, TimeProvider.System, NewAllocator(db));
+        var service = new McpTokenService(db, TimeProvider.System);
 
         var minted = await service.CreateAsync(new McpTokenCreateRequest(
             ks.Id, user.Id, "mcp", new[] { "mcp:read" },
@@ -332,7 +332,7 @@ public sealed class TokenServiceTests
     {
         using var db = NewDb(out var ks);
         var user = NewUser(db, active: false);
-        var service = new McpTokenService(db, TimeProvider.System, NewAllocator(db));
+        var service = new McpTokenService(db, TimeProvider.System);
 
         var minted = await service.CreateAsync(new McpTokenCreateRequest(
             ks.Id, user.Id, "mcp", new[] { "mcp:read" },
@@ -347,7 +347,7 @@ public sealed class TokenServiceTests
     {
         using var db = NewDb(out var ks);
         var user = NewUser(db);
-        var service = new McpTokenService(db, TimeProvider.System, NewAllocator(db));
+        var service = new McpTokenService(db, TimeProvider.System);
 
         var minted = await service.CreateAsync(new McpTokenCreateRequest(
             ks.Id, user.Id, "mcp", new[] { "mcp:read" },
@@ -373,7 +373,7 @@ public sealed class TokenServiceTests
         _ = app.CreateDbContext();
         var db = app.CreateDbContext();
         var ks = NewKnowledgeSystem(db);
-        var service = new KnowledgeApiTokenService(db, TimeProvider.System, NewAllocator(db));
+        var service = new KnowledgeApiTokenService(db, TimeProvider.System);
 
         var minted = await service.CreateAsync(new KnowledgeApiTokenCreateRequest(
             ks.Id, null, "e2e",
@@ -408,13 +408,6 @@ public sealed class TokenServiceTests
         ks = NewKnowledgeSystem(db);
         return db;
     }
-
-    /// <summary>
-    /// Allocator with the same DbContext the service uses — so the
-    /// per-table MAX(LegacyId)+1 read sees the rows the test already
-    /// inserted and the new row's LegacyId doesn't collide.
-    /// </summary>
-    private static LegacyIdAllocator NewAllocator(ISEStudioDbContext db) => new(db);
 
     private static KnowledgeSystemEntity NewKnowledgeSystem(ISEStudioDbContext db)
     {
@@ -453,7 +446,7 @@ public sealed class TokenServiceTests
     }
 
     private static KnowledgeApiTokenService NewService(ISEStudioDbContext db) =>
-        new(db, TimeProvider.System, NewAllocator(db));
+        new(db, TimeProvider.System);
 
     private static byte[] Base64UrlDecode(string input)
     {

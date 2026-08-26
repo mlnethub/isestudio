@@ -69,7 +69,6 @@ public sealed class ConflictAgent
     private readonly ISEStudioDbContext _db;
     private readonly StoreWrapper? _store;
     private readonly ExtractionJobStore? _jobs;
-    private readonly LegacyIdAllocator? _allocator;
     private readonly ISEStudioOptions _options;
 
     public ConflictAgent(
@@ -77,8 +76,7 @@ public sealed class ConflictAgent
         ISEStudioDbContext db,
         StoreWrapper? store = null,
         ExtractionJobStore? jobs = null,
-        IOptions<ISEStudioOptions>? options = null,
-        LegacyIdAllocator? allocator = null)
+        IOptions<ISEStudioOptions>? options = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
         ArgumentNullException.ThrowIfNull(db);
@@ -87,7 +85,6 @@ public sealed class ConflictAgent
         _store = store;
         _jobs = jobs;
         _options = options?.Value ?? new ISEStudioOptions();
-        _allocator = allocator;
     }
 
     /// <summary>
@@ -199,10 +196,10 @@ public sealed class ConflictAgent
             }
 
             // P0 (product decision): decisions at or above the floor
-            // auto-apply. Auto-apply needs the graph store and the
-            // allocator (audit rows); without either (contract-test path)
-            // the loop degrades to the recommendation-only behaviour.
-            var canAutoApply = _store is not null && _allocator is not null;
+            // auto-apply. Auto-apply needs the graph store; without it
+            // (contract-test path) the loop degrades to the
+            // recommendation-only behaviour.
+            var canAutoApply = _store is not null;
             if (canAutoApply && decision.Confidence >= _options.AutoApplyFloor)
             {
                 if (await TryAutoApplyAsync(ks, conflict, chosen, decision, ct).ConfigureAwait(false))
@@ -523,7 +520,7 @@ public sealed class ConflictAgent
 
         // Python audit.record(action="conflict.resolve", actor_id=None,
         // actor_name="conflict-agent", detail={..., "agent": True}).
-        await _allocator!.AllocateAndPersistAsync(new AuditEventEntity
+        _db.AuditEvents.Add(new AuditEventEntity
         {
             Id = Guid.NewGuid(),
             KnowledgeSystemId = ks.Id,
@@ -537,11 +534,12 @@ public sealed class ConflictAgent
             Added = added.Length == 0 ? null : added,
             Removed = removed.Length == 0 ? null : removed,
             CreatedAt = DateTimeOffset.UtcNow,
-        }, ct).ConfigureAwait(false);
+        });
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         if (aAdded.Length > 0 || aRemoved.Length > 0)
         {
-            await _allocator.AllocateAndPersistAsync(new AuditEventEntity
+            _db.AuditEvents.Add(new AuditEventEntity
             {
                 Id = Guid.NewGuid(),
                 KnowledgeSystemId = ks.Id,
@@ -555,7 +553,8 @@ public sealed class ConflictAgent
                 Added = aAdded.Length == 0 ? null : aAdded,
                 Removed = aRemoved.Length == 0 ? null : aRemoved,
                 CreatedAt = DateTimeOffset.UtcNow,
-            }, ct).ConfigureAwait(false);
+            });
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
 
         conflict.Status = "resolved";

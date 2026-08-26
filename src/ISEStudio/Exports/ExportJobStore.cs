@@ -71,8 +71,8 @@ public sealed class ExportJobStore
             CreatedByName = string.IsNullOrEmpty(createdByName) ? "system" : createdByName,
             CreatedAt = _clock.GetUtcNow(),
         };
-        var allocator = new LegacyIdAllocator(db);
-        await allocator.AllocateAndPersistAsync(row, cancellationToken)
+        db.ExportJobs.Add(row);
+        await db.SaveChangesAsync(cancellationToken)
             .ConfigureAwait(false);
         return row;
     }

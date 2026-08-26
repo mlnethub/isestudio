@@ -46,7 +46,6 @@ public sealed class ABoxService
     private readonly ABoxValidator _validator;
     private readonly ValidationDecisionService _decisions;
     private readonly OntologyEditor _editor;
-    private readonly LegacyIdAllocator _allocator;
     private readonly KnowledgeStatsService _stats;
 
     public ABoxService(
@@ -59,7 +58,6 @@ public sealed class ABoxService
         ABoxValidator validator,
         ValidationDecisionService decisions,
         OntologyEditor editor,
-        LegacyIdAllocator allocator,
         KnowledgeStatsService stats)
     {
         _db = db;
@@ -71,7 +69,6 @@ public sealed class ABoxService
         _validator = validator;
         _decisions = decisions;
         _editor = editor;
-        _allocator = allocator;
         _stats = stats;
     }
 
@@ -535,13 +532,9 @@ public sealed class ABoxService
             Removed = removed.Length == 0 ? null : removed,
             CreatedAt = _clock.GetUtcNow(),
         };
-        // Atomic alloc+save: holds the audit_events advisory lock until
-        // COMMIT so concurrent WriteAuditAsync calls can't observe the
-        // same MAX+1 and race on the UNIQUE(legacy_id) constraint.
-        // AllocateAndPersistAsync assigns entity.LegacyId in place so the
-        // return value still carries the id for callers that need to log
-        // or reference it after the fact.
-        await _allocator.AllocateAndPersistAsync(entity, token).ConfigureAwait(false);
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        _db.AuditEvents.Add(entity);
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
         return entity;
     }
 

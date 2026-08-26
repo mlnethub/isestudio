@@ -299,7 +299,6 @@ public sealed class ExtractionAgentChainTests : IDisposable
         services.AddSingleton<IChatClientFactory>(FakeChatClientFactory.Default);
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton(Options.Create(new ISEStudioOptions()));
-        services.AddScoped<LegacyIdAllocator>();
         services.AddScoped<ConflictService>();
         services.AddScoped<ConflictAgent>();
         services.AddScoped<StructureAgent>();

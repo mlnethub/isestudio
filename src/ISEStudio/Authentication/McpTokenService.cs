@@ -100,14 +100,12 @@ public sealed class McpTokenService : IMcpTokenService
 
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
-    private readonly LegacyIdAllocator _allocator;
 
     /// <summary>DI constructor.</summary>
-    public McpTokenService(ISEStudioDbContext db, TimeProvider clock, LegacyIdAllocator allocator)
+    public McpTokenService(ISEStudioDbContext db, TimeProvider clock)
     {
         _db = db;
         _clock = clock;
-        _allocator = allocator;
     }
 
     /// <summary>
@@ -200,13 +198,8 @@ public sealed class McpTokenService : IMcpTokenService
             ExpiresAt = request.ExpiresAt,
         };
         _db.McpUserTokens.Add(entity);
-        // AllocateAndPersistAsync assigns LegacyId inside the per-table
-        // advisory lock + writes the row, so the LegacyId=0/23505 race
-        // described in ConflictService.DetectAsync can't bite here. The
-        // previous direct SaveChangesAsync left LegacyId=0 and a second
-        // mint in the same DbContext lifetime would 500 with a UNIQUE
-        // constraint violation.
-        await _allocator.AllocateAndPersistAsync(entity, cancellationToken).ConfigureAwait(false);
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return new MintedMcpToken(entity, plaintext);
     }
 

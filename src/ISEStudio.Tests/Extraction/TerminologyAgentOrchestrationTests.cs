@@ -488,7 +488,6 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
             TerminologySuggestionMaxChunks = 10,
             TerminologySuggestDuringExtraction = true,
         }));
-        services.AddScoped<LegacyIdAllocator>();
         services.AddScoped<ConflictService>();
         services.AddScoped<ConflictAgent>();
         services.AddScoped<StructureAgent>();

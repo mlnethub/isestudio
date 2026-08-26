@@ -330,10 +330,6 @@ builder.Services.AddScoped<ISEStudioDbContext>(sp =>
 // uses its own IDbContextFactory.
 builder.Services.AddSingleton<ExtractionJobStore>();
 
-// Scoped LegacyId allocator. PG path takes a per-table pg_advisory_xact_lock
-// so concurrent writers on the same table serialize; SQLite path falls back
-// to plain MAX+1 (single-writer DB). See LegacyIdAllocator.cs for rationale.
-builder.Services.AddScoped<LegacyIdAllocator>();
 builder.Services.AddScoped<ISEStudio.Audit.AuditLogService>();
 
 // ---- Auth services ----

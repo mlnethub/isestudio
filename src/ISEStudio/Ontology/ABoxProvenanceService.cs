@@ -23,16 +23,13 @@ public sealed class ABoxProvenanceService
 {
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
-    private readonly LegacyIdAllocator _allocator;
 
     public ABoxProvenanceService(
         ISEStudioDbContext db,
-        TimeProvider clock,
-        LegacyIdAllocator allocator)
+        TimeProvider clock)
     {
         _db = db;
         _clock = clock;
-        _allocator = allocator;
     }
 
     /// <summary>
@@ -68,13 +65,8 @@ public sealed class ABoxProvenanceService
         }
         else
         {
-            // Atomic alloc+save: holds the abox_provenance advisory lock
-            // until COMMIT so concurrent WriteAboxProvenanceAsync calls on
-            // distinct (ksId, factKey) pairs can't observe the same MAX+1
-            // and race on the UNIQUE(legacy_id) constraint. SQLite takes
-            // the autocommit path because single-writer mode already
-            // serialises INSERTs at the database layer.
-            await _allocator.AllocateAndPersistAsync(new AboxProvenanceEntity
+            // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+            _db.AboxProvenances.Add(new AboxProvenanceEntity
             {
                 KnowledgeSystemId = ksId,
                 FactKey = factKey,
@@ -82,7 +74,8 @@ public sealed class ABoxProvenanceService
                 ActorName = actorName,
                 AuditEventId = auditEventId,
                 CreatedAt = _clock.GetUtcNow(),
-            }, ct).ConfigureAwait(false);
+            });
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
     }
 

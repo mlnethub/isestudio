@@ -39,18 +39,15 @@ public sealed class ProviderService
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
     private readonly IHttpClientFactory _http;
-    private readonly LegacyIdAllocator _allocator;
 
     public ProviderService(
         ISEStudioDbContext db,
         TimeProvider clock,
-        IHttpClientFactory http,
-        LegacyIdAllocator allocator)
+        IHttpClientFactory http)
     {
         _db = db;
         _clock = clock;
         _http = http;
-        _allocator = allocator;
     }
 
     /// <summary>
@@ -98,10 +95,9 @@ public sealed class ProviderService
             ConcurrencyLimit = req.ConcurrencyLimit,
             CreatedAt = _clock.GetUtcNow(),
         };
-        // AllocateAndPersistAsync holds the per-table pg_advisory_xact_lock
-        // until COMMIT so two concurrent CreateAsync calls cannot both
-        // INSERT legacy_id=0 and collide on ux_provider_legacy_id.
-        await _allocator.AllocateAndPersistAsync(entity, ct).ConfigureAwait(false);
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        _db.Providers.Add(entity);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return ProviderDtos.From(entity);
     }
 

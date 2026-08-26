@@ -464,9 +464,8 @@ public sealed class StructureAgentTests : IDisposable
         ExtractionJobStore? jobs = null)
     {
         await using var agentDb = _dbFactory.CreateDbContext();
-        var allocator = new LegacyIdAllocator(agentDb);
         var agent = new StructureAgent(
-            _chatFactory, agentDb, _store, jobs, allocator, Options.Create(options));
+            _chatFactory, agentDb, _store, jobs, Options.Create(options));
         return await agent.AttachIsolatedAsync(ksId, model: null, CancellationToken.None);
     }
 

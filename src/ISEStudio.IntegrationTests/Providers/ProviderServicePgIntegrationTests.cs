@@ -22,12 +22,10 @@ namespace ISEStudio.IntegrationTests.Providers;
 /// so this test needs a real PostgreSQL backend to expose it.
 /// </para>
 /// <para>
-/// The fix is to route provider creation through
-/// <see cref="LegacyIdAllocator.AllocateAndPersistAsync{TEntity}"/>, which
-/// holds the per-table <c>pg_advisory_xact_lock</c> until COMMIT and
-/// assigns a distinct <c>LegacyId</c> per caller. After the fix, this
-/// test should pass: every contended call lands on a distinct, durably
-/// persisted row.
+/// The fix routes provider creation through a single
+/// <c>SaveChangesAsync</c> per call. After the fix, this test should
+/// pass: every contended call lands on a distinct, durably persisted
+/// row.
 /// </para>
 /// </remarks>
 [Trait("Category", "Persistence")]
@@ -91,8 +89,7 @@ public sealed class ProviderServicePgIntegrationTests : IAsyncLifetime
                 await using var ctx = OpenContext();
                 // ProviderService.CreateAsync does not touch IHttpClientFactory
                 // (only TestAsync does), so a null factory is safe here.
-                var allocator = new LegacyIdAllocator(ctx);
-                var svc = new ProviderService(ctx, TimeProvider.System, null!, allocator);
+                var svc = new ProviderService(ctx, TimeProvider.System, null!);
                 await svc.CreateAsync(new ProviderCreateRequest(
                     Name: $"p-{captured}-{Guid.NewGuid():N}",
                     Kind: ProviderService.KindLlm,

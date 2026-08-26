@@ -95,23 +95,19 @@ public sealed class TerminologyAgent
     private readonly IChatClientFactory _chatFactory;
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
-    private readonly LegacyIdAllocator _allocator;
     private readonly ISEStudioOptions _options;
 
     public TerminologyAgent(
         IChatClientFactory chatFactory,
         ISEStudioDbContext db,
-        LegacyIdAllocator allocator,
         IOptions<ISEStudioOptions> options,
         TimeProvider? clock = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
         ArgumentNullException.ThrowIfNull(db);
-        ArgumentNullException.ThrowIfNull(allocator);
         ArgumentNullException.ThrowIfNull(options);
         _chatFactory = chatFactory;
         _db = db;
-        _allocator = allocator;
         _options = options.Value;
         _clock = clock ?? TimeProvider.System;
     }
@@ -239,16 +235,8 @@ public sealed class TerminologyAgent
         var existingSignatures = await QueryExistingSignaturesAsync(ks, signatures, ct).ConfigureAwait(false);
 
         var rows = new List<TermProposalEntity>(pending.Count);
-        // Filter duplicates FIRST so the allocator reserves exactly the
-        // range it will persist. Per-row NextAsync would return the same
-        // id for every iteration because SELECT MAX runs in autocommit
-        // and doesn't see rows queued for SaveChanges — the original
-        // pre-refactor code worked by computing MAX once and incrementing
-        // in memory. AllocateManyAndPersistAsync preserves that semantic
-        // (one MAX read + contiguous range reserved + persisted in one
-        // transaction under the per-table advisory lock) without the
-        // pre-refactor race where two concurrent batches could both read
-        // the same MAX and collide on UNIQUE(legacy_id).
+        // Filter duplicates FIRST so the batch is exactly the rows we
+        // persist. LegacyId is filled by the column DEFAULT 0 at INSERT.
         foreach (var row in pending)
         {
             if (existingSignatures.Contains(row.Signature))
@@ -263,7 +251,8 @@ public sealed class TerminologyAgent
             return Array.Empty<TermProposalEntity>();
         }
 
-        await _allocator.AllocateManyAndPersistAsync(rows, ct).ConfigureAwait(false);
+        _db.TermProposals.AddRange(rows);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return rows;
     }
 

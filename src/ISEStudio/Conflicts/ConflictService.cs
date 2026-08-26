@@ -38,19 +38,16 @@ public sealed class ConflictService
 
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
-    private readonly LegacyIdAllocator _allocator;
 
     public ConflictService(
         ISEStudioDbContext db,
         TimeProvider clock,
-        LegacyIdAllocator allocator,
         ExtractionJobStore? jobs = null,
         StoreWrapper? store = null,
         DuplicateJudge? duplicateJudge = null)
     {
         _db = db;
         _clock = clock;
-        _allocator = allocator;
         _jobs = jobs;
         _store = store;
         _duplicateJudge = duplicateJudge;
@@ -145,13 +142,7 @@ public sealed class ConflictService
             var payload = ToPayloadJson(d.Entities, d.Resolutions);
             if (!existingBySig.TryGetValue(sig, out var row))
             {
-                // AllocateManyAndPersistAsync adds to the change-tracker
-                // internally; we collect un-keyed entities here so the
-                // allocator can assign distinct LegacyIds under the
-                // per-table pg_advisory_xact_lock. Without this hop, two
-                // detected conflicts in a single batch would both write
-                // LegacyId=0 and the second SaveChanges would trip
-                // ux_conflict_legacy_id with SqlState=23505.
+                // LegacyId is filled by the column DEFAULT 0 at INSERT time.
                 newOnes.Add(new ConflictEntity
                 {
                     Id = Guid.NewGuid(),
@@ -195,7 +186,8 @@ public sealed class ConflictService
 
         if (newOnes.Count > 0)
         {
-            await _allocator.AllocateManyAndPersistAsync(newOnes, ct).ConfigureAwait(false);
+            _db.Conflicts.AddRange(newOnes);
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return await ListAsync(ksId, "open", ctype: null, ct).ConfigureAwait(false);
@@ -576,9 +568,8 @@ public sealed class ConflictService
             var payload = ToPayloadJson(d.Entities, d.Resolutions);
             if (!existingBySig.TryGetValue(sig, out var row))
             {
-                // See DetectAsync: collect un-keyed entities into a list
-                // so AllocateManyAndPersistAsync can assign distinct
-                // LegacyIds under the per-table pg_advisory_xact_lock.
+                // See DetectAsync: LegacyId is filled by the column
+                // DEFAULT 0 at INSERT time.
                 newOnes.Add(new ConflictEntity
                 {
                     Id = Guid.NewGuid(),
@@ -619,7 +610,8 @@ public sealed class ConflictService
         }
         if (newOnes.Count > 0)
         {
-            await _allocator.AllocateManyAndPersistAsync(newOnes, ct).ConfigureAwait(false);
+            _db.Conflicts.AddRange(newOnes);
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return await ListAsync(ks.Id, "open", ctype: null, ct).ConfigureAwait(false);
@@ -662,11 +654,7 @@ public sealed class ConflictService
             }
         }
 
-        // AllocateAndPersistAsync holds the per-table pg_advisory_xact_lock
-        // until COMMIT so a concurrent reconciliation recorded on the
-        // same knowledge system cannot both INSERT legacy_id=0 and
-        // collide on ux_tboxreconciliation_legacy_id.
-        await _allocator.AllocateAndPersistAsync(new TboxReconciliationEntity
+        _db.TboxReconciliations.Add(new TboxReconciliationEntity
         {
             Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId,
@@ -678,7 +666,8 @@ public sealed class ConflictService
             ChosenLabel = chosenLabel,
             ResolvedBy = string.IsNullOrEmpty(actor) ? null : actor,
             CreatedAt = _clock.GetUtcNow(),
-        }, ct).ConfigureAwait(false);
+        });
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
     private static ConflictOut ToOut(ConflictEntity c, Guid ksId) =>

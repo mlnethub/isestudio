@@ -21,20 +21,17 @@ public sealed class PromptService
     private readonly ISEStudioDbContext _db;
     private readonly KnowledgeSystemAccessService _access;
     private readonly AuditLogService _audit;
-    private readonly LegacyIdAllocator _allocator;
     private readonly TimeProvider _clock;
 
     public PromptService(
         ISEStudioDbContext db,
         KnowledgeSystemAccessService access,
         AuditLogService audit,
-        LegacyIdAllocator allocator,
         TimeProvider clock)
     {
         _db = db;
         _access = access;
         _audit = audit;
-        _allocator = allocator;
         _clock = clock;
     }
 
@@ -120,8 +117,9 @@ public sealed class PromptService
                 CreatedAt = now,
                 UpdatedAt = now,
             };
-            // AllocateAndPersistAsync assigns LegacyId + Add + SaveChanges atomically.
-            await _allocator.AllocateAndPersistAsync(row, ct).ConfigureAwait(false);
+            // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+            _db.KnowledgePromptOverrides.Add(row);
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
         else
         {

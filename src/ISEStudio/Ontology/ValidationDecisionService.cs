@@ -27,16 +27,13 @@ public sealed class ValidationDecisionService
 {
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
-    private readonly LegacyIdAllocator _allocator;
 
     public ValidationDecisionService(
         ISEStudioDbContext db,
-        TimeProvider clock,
-        LegacyIdAllocator allocator)
+        TimeProvider clock)
     {
         _db = db;
         _clock = clock;
-        _allocator = allocator;
     }
 
     /// <summary>
@@ -89,13 +86,8 @@ public sealed class ValidationDecisionService
         }
         else
         {
-            // Atomic alloc+save: holds the validation_decision advisory
-            // lock until COMMIT so concurrent WriteValidationDecisionAsync
-            // calls on distinct propertyIris can't observe the same MAX+1
-            // and race on the UNIQUE(legacy_id) constraint. SQLite takes
-            // the autocommit path because single-writer mode already
-            // serialises INSERTs at the database layer.
-            await _allocator.AllocateAndPersistAsync(new ValidationDecisionEntity
+            // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+            _db.ValidationDecisions.Add(new ValidationDecisionEntity
             {
                 KnowledgeSystemId = ksId,
                 PropertyIri = propertyIri,
@@ -105,7 +97,8 @@ public sealed class ValidationDecisionService
                 Reason = reason,
                 ResolvedBy = resolvedBy,
                 CreatedAt = now,
-            }, ct).ConfigureAwait(false);
+            });
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
     }
 

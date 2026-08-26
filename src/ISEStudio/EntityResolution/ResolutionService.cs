@@ -23,7 +23,6 @@ public sealed class ResolutionService
 {
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
-    private readonly LegacyIdAllocator _allocator;
     private readonly KnowledgeSystemAccessService _access;
     private readonly AuditLogService _audit;
     private readonly ABoxManager? _abox;
@@ -32,7 +31,6 @@ public sealed class ResolutionService
     public ResolutionService(
         ISEStudioDbContext db,
         TimeProvider clock,
-        LegacyIdAllocator allocator,
         KnowledgeSystemAccessService access,
         AuditLogService audit,
         ABoxManager? abox = null,
@@ -40,7 +38,6 @@ public sealed class ResolutionService
     {
         _db = db;
         _clock = clock;
-        _allocator = allocator;
         _access = access;
         _audit = audit;
         _abox = abox;

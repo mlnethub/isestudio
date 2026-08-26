@@ -35,7 +35,6 @@ public sealed class VocabularyService
     private readonly KnowledgeSystemAccessService _access;
     private readonly ExtractionJobStore _jobStore;
     private readonly ITerminologySync _terminology;
-    private readonly LegacyIdAllocator _allocator;
 
     public VocabularyService(
         SkosManager skos,
@@ -44,8 +43,7 @@ public sealed class VocabularyService
         TimeProvider clock,
         KnowledgeSystemAccessService access,
         ExtractionJobStore jobStore,
-        ITerminologySync terminology,
-        LegacyIdAllocator allocator)
+        ITerminologySync terminology)
     {
         _skos = skos;
         _store = store;
@@ -54,7 +52,6 @@ public sealed class VocabularyService
         _access = access;
         _jobStore = jobStore;
         _terminology = terminology;
-        _allocator = allocator;
     }
 
     // ----------------------------------------------------------------------
@@ -681,13 +678,8 @@ public sealed class VocabularyService
         byte[] added, byte[] removed,
         CancellationToken token)
     {
-        // Atomic alloc+save: holds the audit_events advisory lock until
-        // COMMIT so concurrent WriteAuditAsync callers (across ABox,
-        // Ontology, Vocabulary, VocabularyProposal) can't observe the
-        // same MAX+1 and race on the UNIQUE(legacy_id) constraint.
-        // AllocateAndPersistAsync handles Add + SaveChanges inside the
-        // single transaction so the trailing SaveChanges is unnecessary.
-        await _allocator.AllocateAndPersistAsync(new AuditEventEntity
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        _db.AuditEvents.Add(new AuditEventEntity
         {
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
@@ -699,7 +691,8 @@ public sealed class VocabularyService
             Added = added.Length == 0 ? null : added,
             Removed = removed.Length == 0 ? null : removed,
             CreatedAt = _clock.GetUtcNow(),
-        }, token).ConfigureAwait(false);
+        });
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
     }
 }
 

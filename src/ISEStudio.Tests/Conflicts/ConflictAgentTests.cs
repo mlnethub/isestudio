@@ -611,11 +611,8 @@ public sealed class ConflictAgentTests : IDisposable
         }
 
         await using var agentDb = _dbFactory.CreateDbContext();
-        // Auto-apply needs the allocator (audit rows); tests that don't
-        // opt in keep the recommendation-only path of the P1-1 contract.
-        var allocator = autoApply ? new LegacyIdAllocator(agentDb) : null;
         var agent = new ConflictAgent(
-            _chatFactory, agentDb, _store, jobs, Options.Create(options), allocator);
+            _chatFactory, agentDb, _store, jobs, Options.Create(options));
         return await agent.TriageAsync(ksId, CancellationToken.None);
     }
 

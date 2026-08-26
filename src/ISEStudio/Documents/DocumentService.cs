@@ -56,7 +56,6 @@ public sealed class DocumentService
     private readonly IDocumentParser _parser;
     private readonly Chunker _chunker;
     private readonly ExtractionJobStore _extractionJobs;
-    private readonly LegacyIdAllocator _allocator;
     private readonly ILogger<DocumentService>? _logger;
 
     public DocumentService(
@@ -67,7 +66,6 @@ public sealed class DocumentService
         IDocumentParser parser,
         Chunker chunker,
         ExtractionJobStore extractionJobs,
-        LegacyIdAllocator allocator,
         ILogger<DocumentService>? logger = null)
     {
         _db = db;
@@ -77,7 +75,6 @@ public sealed class DocumentService
         _parser = parser;
         _chunker = chunker;
         _extractionJobs = extractionJobs;
-        _allocator = allocator;
         _logger = logger;
     }
 
@@ -222,10 +219,9 @@ public sealed class DocumentService
             ParseStatus = "pending",
             ChunkCount = 0,
         };
-        // Atomic alloc+save: holds the documents advisory lock until
-        // COMMIT so concurrent upload requests can't observe the same
-        // MAX+1 and race on the UNIQUE(legacy_id) constraint.
-        await _allocator.AllocateAndPersistAsync(doc, ct).ConfigureAwait(false);
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        _db.Documents.Add(doc);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         await WriteAuditAsync(ks.Id, user, "document.upload",
             $"Uploaded \"{doc.OriginalFilename}\"",
@@ -806,12 +802,9 @@ public sealed class DocumentService
                 CreatedAt = now,
             });
         }
-        // Atomic batch alloc+save: reserves a contiguous LegacyId range
-        // under the chunks advisory lock, then commits the whole batch.
-        // A concurrent chunk insert waits on the lock and reads the new
-        // MAX after our COMMIT, so no two batches can interleave between
-        // individual allocations.
-        await _allocator.AllocateManyAndPersistAsync(chunks, ct).ConfigureAwait(false);
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        _db.Chunks.AddRange(chunks);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
     private static DocumentOut Project(DocumentEntity d) => new(
@@ -847,7 +840,7 @@ public sealed class DocumentService
         Guid ksId, UserEntity actor, string action, string summary,
         JsonElement? detail, CancellationToken token)
     {
-        await _allocator.AllocateAndPersistAsync(new AuditEventEntity
+        _db.AuditEvents.Add(new AuditEventEntity
         {
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
@@ -858,7 +851,8 @@ public sealed class DocumentService
                 ? null
                 : JsonDocument.Parse(detail.Value.GetRawText()),
             CreatedAt = _clock.GetUtcNow(),
-        }, token).ConfigureAwait(false);
+        });
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
     }
 
     private static JsonElement? BuildDocumentDetail(Guid documentId, object payload, bool? dedup = null)

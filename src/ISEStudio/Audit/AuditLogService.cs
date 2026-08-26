@@ -15,12 +15,12 @@ namespace ISEStudio.Audit;
 /// </summary>
 public sealed class AuditLogService
 {
-    private readonly LegacyIdAllocator _allocator;
+    private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
 
-    public AuditLogService(LegacyIdAllocator allocator, TimeProvider clock)
+    public AuditLogService(ISEStudioDbContext db, TimeProvider clock)
     {
-        _allocator = allocator;
+        _db = db;
         _clock = clock;
     }
 
@@ -29,10 +29,8 @@ public sealed class AuditLogService
     /// <c>Added</c> / <c>Removed</c> blobs round-trip as-is — empty
     /// byte arrays are stored as <c>null</c> so the SQL row matches the
     /// existing <c>ontology.edit</c> / <c>ontology.reset</c> contract
-    /// (no-changes rows never materialise an empty byte[]). The
-    /// allocator assigns <see cref="LegacyAddressableEntity.LegacyId"/>
-    /// inside its per-table advisory lock so two concurrent writers
-    /// can't both insert <c>LegacyId = 0</c>.
+    /// (no-changes rows never materialise an empty byte[]). <c>LegacyId</c>
+    /// is filled by the column DEFAULT 0 at INSERT time.
     /// </summary>
     public async Task RecordAsync(
         Guid ksId,
@@ -54,7 +52,7 @@ public sealed class AuditLogService
             detailDoc = JsonDocument.Parse(JsonSerializer.Serialize(detail));
         }
 
-        await _allocator.AllocateAndPersistAsync(new AuditEventEntity
+        _db.AuditEvents.Add(new AuditEventEntity
         {
             Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId,
@@ -68,6 +66,7 @@ public sealed class AuditLogService
             Added = added.Length == 0 ? null : added,
             Removed = removed.Length == 0 ? null : removed,
             CreatedAt = _clock.GetUtcNow(),
-        }, ct).ConfigureAwait(false);
+        });
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 }

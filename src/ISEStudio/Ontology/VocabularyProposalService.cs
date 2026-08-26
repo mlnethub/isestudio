@@ -34,7 +34,6 @@ public sealed class VocabularyProposalService
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
     private readonly ExtractionJobStore _jobStore;
-    private readonly LegacyIdAllocator _allocator;
 
     public VocabularyProposalService(
         ISEStudioDbContext db,
@@ -42,8 +41,7 @@ public sealed class VocabularyProposalService
         StoreWrapper store,
         TimeProvider clock,
         KnowledgeSystemAccessService access,
-        ExtractionJobStore jobStore,
-        LegacyIdAllocator allocator)
+        ExtractionJobStore jobStore)
     {
         _db = db;
         _skos = skos;
@@ -51,7 +49,6 @@ public sealed class VocabularyProposalService
         _clock = clock;
         _access = access;
         _jobStore = jobStore;
-        _allocator = allocator;
     }
 
     // ----------------------------------------------------------------------
@@ -470,13 +467,8 @@ public sealed class VocabularyProposalService
         byte[] added, byte[] removed,
         CancellationToken token)
     {
-        // Atomic alloc+save: holds the audit_events advisory lock until
-        // COMMIT so concurrent WriteAuditAsync callers (across ABox,
-        // Ontology, Vocabulary, VocabularyProposal) can't observe the
-        // same MAX+1 and race on the UNIQUE(legacy_id) constraint.
-        // AllocateAndPersistAsync handles Add + SaveChanges inside the
-        // single transaction so the trailing SaveChanges is unnecessary.
-        await _allocator.AllocateAndPersistAsync(new AuditEventEntity
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        _db.AuditEvents.Add(new AuditEventEntity
         {
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
@@ -488,7 +480,8 @@ public sealed class VocabularyProposalService
             Added = added.Length == 0 ? null : added,
             Removed = removed.Length == 0 ? null : removed,
             CreatedAt = _clock.GetUtcNow(),
-        }, token).ConfigureAwait(false);
+        });
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
     }
 }
 

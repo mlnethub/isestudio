@@ -24,10 +24,6 @@ namespace ISEStudio.IntegrationTests.Extraction;
 /// <para>
 /// What this catches that the SQLite path cannot:
 /// <list type="bullet">
-///   <item><c>LegacyIdAllocator.AllocateAndPersistAsync</c> uses
-///   <c>pg_advisory_xact_lock</c> semantics — PG-only. SQLite is
-///   single-writer so the concurrency branch is never exercised.
-///   </item>
 ///   <item>EF Core's Npgsql provider formats SQL differently from
 ///   SQLite (case-sensitive string contains, bytea handling, JSON
 ///   column types). The grounding check + payload JSON serialization
@@ -138,7 +134,6 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
             TerminologySuggestionMaxChunks = 50,
             TerminologySuggestDuringExtraction = true,
         }));
-        services.AddScoped<LegacyIdAllocator>();
         services.AddScoped<TerminologyAgent>();
         return services.BuildServiceProvider();
     }
@@ -279,10 +274,7 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
         // End-to-end PG smoke: spin up Testcontainers PG, seed a
         // minimal fixture, resolve a real TerminologyAgent from DI,
         // run SuggestAsync, and assert one pending row landed in the
-        // term_proposals table on the PG backend. This is the path
-        // the SQLite orchestration test cannot exercise because
-        // LegacyIdAllocator's pg_advisory_xact_lock branch is
-        // unreachable on SQLite (single-writer).
+        // term_proposals table on the PG backend.
         if (DockerRequired()) return;
 
         var chat = new CannedReplyChat(ProposeReply(0));

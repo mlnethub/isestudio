@@ -509,9 +509,9 @@ public sealed class ExtractionOrchestrator
             // and never queued any. Now that the deterministic pass has
             // stamped the concept scheme, ask the scoped LLM-driven
             // TerminologyAgent to suggest pending TermProposal rows. The
-            // agent is Scoped (own DbContext + LegacyIdAllocator), so we
-            // resolve it from a fresh scope the same way the post-TBox
-            // agent chain (RunAgentChainAsync) does.
+            // agent is Scoped (own DbContext), so we resolve it from a
+            // fresh scope the same way the post-TBox agent chain
+            // (RunAgentChainAsync) does.
             //
             // Skipped when:
             //   * the operator opted out via ISEStudioOptions

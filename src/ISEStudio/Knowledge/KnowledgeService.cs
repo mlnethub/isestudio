@@ -38,7 +38,6 @@ public sealed class KnowledgeService
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
-    private readonly LegacyIdAllocator _allocator;
     private readonly KnowledgeStatsService _stats;
     private readonly ISEStudioOptions _options;
 
@@ -46,14 +45,12 @@ public sealed class KnowledgeService
         ISEStudioDbContext db,
         TimeProvider clock,
         KnowledgeSystemAccessService access,
-        LegacyIdAllocator allocator,
         KnowledgeStatsService stats,
         IOptions<ISEStudioOptions> options)
     {
         _db = db;
         _clock = clock;
         _access = access;
-        _allocator = allocator;
         _stats = stats;
         _options = options.Value;
     }
@@ -180,12 +177,10 @@ public sealed class KnowledgeService
             EmbeddingProviderId = req.EmbeddingProviderId,
             EmbeddingModel = NullIfBlank(req.EmbeddingModel),
         };
-        // Atomic alloc+save: holds the knowledge_systems advisory lock
-        // until COMMIT so concurrent CreateAsync calls can't observe the
-        // same MAX+1 and race on the UNIQUE(legacy_id) constraint. The
-        // GraphIri/BaseIri embed the assigned LegacyId, so they are
+        // The GraphIri/BaseIri embed the row's LegacyId, so they are
         // patched in by a second SaveChanges below.
-        await _allocator.AllocateAndPersistAsync(ks, ct).ConfigureAwait(false);
+        _db.KnowledgeSystems.Add(ks);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         // Stamp the knowledge system's IRI root + base from the configured
         // IriRoot so a future migration is a config change rather than a
         // code change. Mirrors Python `GRAPH_ROOT` (`backend/app/api/
@@ -413,11 +408,9 @@ public sealed class KnowledgeService
                 Role = roleNorm,
                 CreatedAt = _clock.GetUtcNow(),
             };
-            // AllocateAndPersistAsync holds the per-table
-            // pg_advisory_xact_lock until COMMIT so two concurrent
-            // add-member calls cannot both INSERT legacy_id=0 and
-            // collide on ux_ksgrant_legacy_id.
-            await _allocator.AllocateAndPersistAsync(grant, ct).ConfigureAwait(false);
+            // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+            _db.KSGrants.Add(grant);
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
         else
         {
@@ -726,13 +719,8 @@ public sealed class KnowledgeService
         Guid ksId, UserEntity actor, string action, string summary,
         JsonElement? detail, CancellationToken token)
     {
-        // auditevent.legacy_id has a UNIQUE index — every row needs a fresh
-        // integer. AllocateAndPersistAsync wraps the alloc + INSERT in a
-        // single transaction under the audit_events advisory lock so
-        // concurrent WriteAuditAsync calls cannot observe the same
-        // MAX+1 and race on the UNIQUE constraint. SQLite is single-writer
-        // and falls back to the autocommit path inside the allocator.
-        await _allocator.AllocateAndPersistAsync(new AuditEventEntity
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        _db.AuditEvents.Add(new AuditEventEntity
         {
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
@@ -743,7 +731,8 @@ public sealed class KnowledgeService
                 ? null
                 : JsonDocument.Parse(detail.Value.GetRawText()),
             CreatedAt = _clock.GetUtcNow(),
-        }, token).ConfigureAwait(false);
+        });
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
     }
 
     private static JsonElement? BuildDetail(Guid userId, string? role)

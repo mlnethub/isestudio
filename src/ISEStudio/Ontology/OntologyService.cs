@@ -39,7 +39,6 @@ public sealed class OntologyService
     private readonly KnowledgeSystemAccessService _access;
     private readonly OntologyEditor _editor;
     private readonly StoreWrapper _store;
-    private readonly LegacyIdAllocator _allocator;
     private readonly OntologyViewBuilder _builder;
     private readonly KnowledgeStatsService _stats;
 
@@ -49,7 +48,6 @@ public sealed class OntologyService
         KnowledgeSystemAccessService access,
         OntologyEditor editor,
         StoreWrapper store,
-        LegacyIdAllocator allocator,
         OntologyViewBuilder builder,
         KnowledgeStatsService stats)
     {
@@ -58,7 +56,6 @@ public sealed class OntologyService
         _access = access;
         _editor = editor;
         _store = store;
-        _allocator = allocator;
         _builder = builder;
         _stats = stats;
     }
@@ -252,12 +249,8 @@ public sealed class OntologyService
             var json = JsonSerializer.Serialize(detail);
             detailDoc = JsonDocument.Parse(json);
         }
-        // Atomic alloc+save: holds the audit_events advisory lock until
-        // COMMIT so concurrent WriteAuditAsync callers can't observe the
-        // same MAX+1 and race on the UNIQUE(legacy_id) constraint.
-        // AllocateAndPersistAsync handles Add + SaveChanges inside the
-        // single transaction so the trailing SaveChanges is unnecessary.
-        await _allocator.AllocateAndPersistAsync(new AuditEventEntity
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        _db.AuditEvents.Add(new AuditEventEntity
         {
             KnowledgeSystemId = ksId,
             ActorId = actor.Id,
@@ -269,7 +262,8 @@ public sealed class OntologyService
             Added = added.Length == 0 ? null : added,
             Removed = removed.Length == 0 ? null : removed,
             CreatedAt = _clock.GetUtcNow(),
-        }, token).ConfigureAwait(false);
+        });
+        await _db.SaveChangesAsync(token).ConfigureAwait(false);
     }
 
     /// <summary>The instance graph paired with a TBox graph (mirrors Python <c>_abox_iri</c>).</summary>

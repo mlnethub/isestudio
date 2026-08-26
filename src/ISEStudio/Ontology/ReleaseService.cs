@@ -29,7 +29,6 @@ namespace ISEStudio.Ontology;
 public sealed class ReleaseService
 {
     private readonly ISEStudioDbContext _db;
-    private readonly LegacyIdAllocator _allocator;
     private readonly AuditLogService _audit;
     private readonly TimeProvider _clock;
     private readonly ReleaseManager _releases;
@@ -40,7 +39,6 @@ public sealed class ReleaseService
 
     public ReleaseService(
         ISEStudioDbContext db,
-        LegacyIdAllocator allocator,
         AuditLogService audit,
         TimeProvider clock,
         ReleaseManager releases,
@@ -50,7 +48,6 @@ public sealed class ReleaseService
         StoreWrapper? store)
     {
         _db = db;
-        _allocator = allocator;
         _audit = audit;
         _clock = clock;
         _releases = releases;
@@ -85,7 +82,8 @@ public sealed class ReleaseService
             CreatedByName = string.IsNullOrEmpty(actor.DisplayName) ? "system" : actor.DisplayName!,
             CreatedAt = now,
         };
-        await _allocator.AllocateAndPersistAsync(row, ct).ConfigureAwait(false);
+        _db.OntologyReleases.Add(row);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         row.Version = $"draft-{row.Id.ToString("N")[..12]}";
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         await TryAuditAsync(ks.Id, actor, "release.draft",
@@ -460,7 +458,8 @@ public sealed class ReleaseService
             CreatedAt = _clock.GetUtcNow(),
             ActivatedAt = _clock.GetUtcNow(),
         };
-        await _allocator.AllocateAndPersistAsync(deployment, ct).ConfigureAwait(false);
+        _db.ReleaseDeployments.Add(deployment);
+        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return deployment;
     }
 
