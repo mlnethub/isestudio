@@ -50,18 +50,61 @@ public sealed class KnowledgeApiTests
         Assert.Equal("Test KS", created.GetProperty("name").GetString());
         Assert.Equal("smoke test", created.GetProperty("description").GetString());
         Assert.Equal("owner", created.GetProperty("my_role").GetString());
-        // graph_iri / base_iri still derive from the allocator-assigned
-        // LegacyId (Ruling 1), NOT the wire PK Guid. Stamp uses the
-        // configured IriRoot (default http://goodcrew.local/ks) — see
-        // ISEStudioOptions.IriRoot.
-        var legacyId = LookupKsLegacyId(app, id);
-        Assert.Equal($"http://goodcrew.local/ks/{legacyId}", created.GetProperty("graph_iri").GetString());
+        // Phase 2: graph_iri / base_iri are stamped from the row's PublicId
+        // (the wire-stable hex Guid), NOT the allocator-assigned LegacyId
+        // (which now defaults to 0 for every new row and would collide every
+        // KS on IriRoot/0). Stamp uses the configured IriRoot (default
+        // http://goodcrew.local/ks) — see ISEStudioOptions.IriRoot.
+        var publicId = LookupKsPublicId(app, id);
+        Assert.Equal($"http://goodcrew.local/ks/{publicId}", created.GetProperty("graph_iri").GetString());
+        Assert.Equal($"http://goodcrew.local/ks/{publicId}/onto#", created.GetProperty("base_iri").GetString());
 
         var get = await client.GetAsync($"/api/knowledge/{id}");
         Assert.Equal(HttpStatusCode.OK, get.StatusCode);
         var fetched = await get.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(id, fetched.GetProperty("id").GetGuid());
         Assert.Equal("Test KS", fetched.GetProperty("name").GetString());
+    }
+
+    /// <summary>
+    /// Phase 2 regression (C1): every newly-created KS must derive a
+    /// distinct <c>graph_iri</c> and <c>base_iri</c>. The pre-fix code
+    /// stamped both from <c>LegacyId</c>, which defaults to 0 post-Phase 2
+    /// — so two new KSes silently collided on the same RDF graph and
+    /// cross-contaminated TBox / ABox / Vocabulary data downstream.
+    /// </summary>
+    [Fact]
+    public async Task CreateAsync_twice_yields_distinct_graph_and_base_iris()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+
+        var firstId = await CreateKsAsync(client, "first");
+        var secondId = await CreateKsAsync(client, "second");
+        Assert.NotEqual(firstId, secondId);
+
+        var first = await GetKsAsync(client, firstId);
+        var second = await GetKsAsync(client, secondId);
+
+        var firstGraph = first.GetProperty("graph_iri").GetString();
+        var firstBase = first.GetProperty("base_iri").GetString();
+        var secondGraph = second.GetProperty("graph_iri").GetString();
+        var secondBase = second.GetProperty("base_iri").GetString();
+
+        Assert.NotNull(firstGraph);
+        Assert.NotNull(secondGraph);
+        Assert.NotNull(firstBase);
+        Assert.NotNull(secondBase);
+        Assert.NotEqual(firstGraph, secondGraph);
+        Assert.NotEqual(firstBase, secondBase);
+        // Sanity: the IRIs should embed each row's distinct PublicId.
+        var firstPublicId = LookupKsPublicId(app, firstId);
+        var secondPublicId = LookupKsPublicId(app, secondId);
+        Assert.NotEqual(firstPublicId, secondPublicId);
+        Assert.Equal($"http://goodcrew.local/ks/{firstPublicId}", firstGraph);
+        Assert.Equal($"http://goodcrew.local/ks/{firstPublicId}/onto#", firstBase);
+        Assert.Equal($"http://goodcrew.local/ks/{secondPublicId}", secondGraph);
+        Assert.Equal($"http://goodcrew.local/ks/{secondPublicId}/onto#", secondBase);
     }
 
     [Fact]
@@ -249,14 +292,22 @@ public sealed class KnowledgeApiTests
         return body.GetProperty("id").GetGuid();
     }
 
-    /// <summary>Resolve a KS allocator-assigned LegacyId from its PK Guid.</summary>
-    private static long LookupKsLegacyId(AuthTestWebApplicationFactory app, Guid ksId)
+    /// <summary>Resolve a KS PublicId (the wire-stable hex Guid) from its PK Guid.</summary>
+    private static string LookupKsPublicId(AuthTestWebApplicationFactory app, Guid ksId)
     {
         var db = app.CreateDbContext();
         return db.KnowledgeSystems
             .Where(k => k.Id == ksId)
-            .Select(k => k.LegacyId)
+            .Select(k => k.PublicId)
             .Single();
+    }
+
+    /// <summary>GET a KS and return its parsed JSON body.</summary>
+    private static async Task<System.Text.Json.JsonElement> GetKsAsync(HttpClient client, Guid ksId)
+    {
+        var response = await client.GetAsync($"/api/knowledge/{ksId}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        return await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
     }
 
     private static async Task AddMemberAsync(HttpClient client, Guid ksId, string username, string role)

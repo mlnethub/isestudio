@@ -147,9 +147,10 @@ public sealed class KnowledgeService
 
     /// <summary>
     /// Create a new KS, owned by the calling user. The graph_iri /
-    /// base_iri are derived from the assigned <c>LegacyId</c> so the
-    /// first row gets id=1, the next gets id=2, etc. — the wire contract
-    /// from Python.
+    /// base_iri embed the row's <c>PublicId</c> (the wire-stable hex Guid,
+    /// <see cref="Guid.NewGuid"/> at construction time) so each new KS
+    /// gets a distinct RDF graph regardless of how many rows share the
+    /// DB-default <c>legacy_id = 0</c> post-Phase 2.
     /// </summary>
     public async Task<KnowledgeSystemOut> CreateAsync(CreateKnowledgeSystemRequest req, Actor actor, CancellationToken ct)
     {
@@ -177,7 +178,7 @@ public sealed class KnowledgeService
             EmbeddingProviderId = req.EmbeddingProviderId,
             EmbeddingModel = NullIfBlank(req.EmbeddingModel),
         };
-        // The GraphIri/BaseIri embed the row's LegacyId, so they are
+        // The GraphIri/BaseIri embed the row's PublicId, so they are
         // patched in by a second SaveChanges below.
         _db.KnowledgeSystems.Add(ks);
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -185,9 +186,11 @@ public sealed class KnowledgeService
         // IriRoot so a future migration is a config change rather than a
         // code change. Mirrors Python `GRAPH_ROOT` (`backend/app/api/
         // knowledge.py:25`) — the two stacks must agree byte-for-byte
-        // for the same KS id.
-        ks.GraphIri = $"{_options.IriRoot}/{ks.LegacyId}";
-        ks.BaseIri = $"{_options.IriRoot}/{ks.LegacyId}/onto#";
+        // for the same KS id. Phase 2: stamp from PublicId (Guid hex) not
+        // LegacyId, because LegacyId defaults to 0 post-Phase 2 and would
+        // collide every new KS on the same IriRoot/0.
+        ks.GraphIri = $"{_options.IriRoot}/{ks.PublicId}";
+        ks.BaseIri = $"{_options.IriRoot}/{ks.PublicId}/onto#";
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         var projection = await ProjectAsync(new[] { ks }, user, ct).ConfigureAwait(false);

@@ -21,9 +21,15 @@ public abstract class LegacyAddressableEntity
     public Guid Id { get; init; } = Guid.NewGuid();
 
     /// <summary>
-    /// The Python-era integer identifier. Persisted with a unique index per
-    /// table so existing REST routes that still reference the legacy
-    /// integer <c>id</c> resolve through it.
+    /// The Python-era integer identifier. Persisted as a non-unique column
+    /// default <c>0L</c> post-Phase 2 — the <c>LegacyIdAllocator</c> service
+    /// and the <c>ux_*_legacy_id</c> UNIQUE indexes have been retired, so
+    /// new rows share the same default value without conflict. REST routes
+    /// resolve through <see cref="Id"/> (Guid) for new callers; legacy
+    /// integer callers still see the column but must not depend on its
+    /// uniqueness. The single intentional non-zero production write is
+    /// <c>SettingsService.cs:114</c> (singleton SystemConfig seeds with
+    /// <c>SystemConfigEntity.SingletonLegacyId</c>).
     /// </summary>
     public long LegacyId { get; set; }
 }
