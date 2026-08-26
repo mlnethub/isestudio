@@ -524,6 +524,11 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                 oldType: "bigint",
                 oldDefaultValue: 0L);
 
+            // WARNING: this Down() will fail to recreate the ux_*_legacy_id UNIQUE indexes
+            // if any rows were inserted with legacy_id = 0 post-Phase 2 (the new default).
+            // Manual data cleanup is required before rollback: e.g.
+            //   UPDATE <table> SET legacy_id = -abs(hashtext(id::text)) WHERE legacy_id = 0;
+            // then restore on the way back up.
             migrationBuilder.CreateIndex(
                 name: "ux_vd_legacy_id",
                 table: "validationdecision",

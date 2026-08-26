@@ -19,7 +19,7 @@
 - **Scope:** Phase A.1 (entity base + EntityConfigurations + alloc file delete) + Phase A.2 (30 call sites + DI) + Phase A.3 (runbook §3.2/§3.3) + Phase B (EF migration `LegacyIdDefaultZero`) + Phase C (test cleanup) + Phase D (review) + Phase E (smoke — **NO** `docker compose down -v`,数据保留).
 - **22 services × 30 call sites:** 25 × `AllocateAndPersistAsync` + 3 × `AllocateManyAndPersistAsync` across 22 service classes(per spec §4.2 table).`ResolutionService.cs:26` field declared but never called — also delete.
 - **24 entity configurations:** `EntityConfigurations.cs` has 24 `HasColumnName("legacy_id")` blocks. Each gets `HasDefaultValue(0L)` added; `HasIndex(...).IsUnique() HasDatabaseName("ux_*_legacy_id")` removed(否则多 row 同为 0 撞 UNIQUE)。`SystemConfigEntity` 已 `HasDefaultValue(SingletonLegacyId)`,仅删 index。
-- **LegacyId setter private:** `LegacyAddressableEntity.LegacyId { get; set; }` → `{ get; private set; }`。
+- **LegacyId setter:** `LegacyAddressableEntity.LegacyId` remains `public long LegacyId { get; set; }` — see spec §4.1 Ruling 1; `SettingsService.cs:114` writes `LegacyId = SystemConfigEntity.SingletonLegacyId` (verified as the only production write). The private setter design was abandoned.
 - **EF migration `LegacyIdDefaultZero`:** 仅 `migrationBuilder.DropIndex("ux_*_legacy_id", table)` + `migrationBuilder.AlterColumn(..., defaultValue: 0L, oldDefaultValue: null)`。若 EF 输出含 `CreateTable` / `InsertData`,**人工 patch**。
 - **DI:** `Program.cs:336` `builder.Services.AddScoped<LegacyIdAllocator>();` 删除。
 - **No IriSqlMigrator changes:** `legacy_id` 本来不在 `ColumnsToRewrite`(`long` 不是 `uniqueidentifier`),verifier baseline 不动。
@@ -165,7 +165,9 @@ grep -n "LegacyId" src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddre
 # Expected: shows "public long LegacyId { get; set; }" (or similar)
 ```
 
-- [ ] **Step 2: Edit LegacyAddressableEntity.cs (setter → private)**
+- [ ] **Step 2: Verify LegacyId setter access pattern (D4 ABANDONED — public setter preserved)**
+
+> **Correction (post-execution, 2026-08-26):** D4 was abandoned during execution (see spec §8.1 Ruling 1). The setter remains `public long LegacyId { get; set; }` because `SettingsService.cs:114` is the production code's only non-zero LegacyId write site (`LegacyId = SystemConfigEntity.SingletonLegacyId`) and depends on the public setter. The "defense in depth" motivation is now provided by the DB layer (no UNIQUE index, DEFAULT 0) rather than the property setter. The original `private set` plan below is retained here for historical reference only — DO NOT execute it.
 
 ```diff
 - public long LegacyId { get; set; }
@@ -176,6 +178,8 @@ grep -n "LegacyId" src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddre
 + /// </summary>
 + public long LegacyId { get; private set; }
 ```
+
+> (Historical plan — not executed)
 
 File: `src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs`
 
@@ -633,7 +637,7 @@ Capture commit SHA as `<B_SHA>`.
 
 **Files:**
 - Delete: `src/ISEStudio.Tests/Persistence/LegacyIdAllocatorTests.cs` (~280 lines, 12 Fact)
-- Delete: `src/ISEStudio.IntegrationTests/Persistence/PostgresLegacyIdAllocatorTests.cs` (per [[ontopilot-allocator-atomic]])
+- Delete: `src/ISEStudio.IntegrationTests/Persistence/LegacyIdAllocatorAdvisoryLockTests.cs` (506 lines, per [[ontopilot-allocator-atomic]]; plan originally misnamed this as `PostgresLegacyIdAllocatorTests.cs`)
 - Modify: 6 test files (sed to remove `LegacyIdAllocator` references): `TokenServiceTests.cs` / `ConflictAgentTests.cs` / `ExportJobStoreTests.cs` / `ExtractionAgentChainTests.cs` / `TerminologyAgentOrchestrationTests.cs` / `StructureAgentTests.cs`
 - Create: `src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs` (4-5 Fact tests)
 
@@ -649,10 +653,12 @@ git rm src/ISEStudio.Tests/Persistence/LegacyIdAllocatorTests.cs
 
 - [ ] **Step 2: Delete PG integration test for allocator**
 
+> **Correction (post-execution, 2026-08-26):** The actual filename deleted in commit `617e21d` was `LegacyIdAllocatorAdvisoryLockTests.cs` (506 lines), not `PostgresLegacyIdAllocatorTests.cs` as the original plan stated. The file captures the PG concurrency tests for the advisory-lock allocator from [[ontopilot-allocator-atomic]].
+
 ```bash
 ls src/ISEStudio.IntegrationTests/Persistence/ | grep -i allocator
-# Capture exact filename
-git rm src/ISEStudio.IntegrationTests/Persistence/<exact-name>.cs
+# Expected: LegacyIdAllocatorAdvisoryLockTests.cs (actual filename, 506 lines)
+git rm src/ISEStudio.IntegrationTests/Persistence/LegacyIdAllocatorAdvisoryLockTests.cs
 ```
 
 - [ ] **Step 3: Verify all remaining test references to LegacyIdAllocator**
@@ -843,7 +849,7 @@ If any failures, STOP. Investigate before committing.
 ```bash
 git add src/ISEStudio.Tests/Persistence/LegacyIdAllocatorTests.cs \
         src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs \
-        src/ISEStudio.IntegrationTests/Persistence/PostgresLegacyIdAllocatorTests.cs \
+        src/ISEStudio.IntegrationTests/Persistence/LegacyIdAllocatorAdvisoryLockTests.cs \
         $(git diff --name-only HEAD~1 | grep -E "src/ISEStudio.Tests/.*\.cs$|src/ISEStudio.IntegrationTests/.*\.cs$")
 
 git commit -m "test(phase2): drop allocator tests, add LegacyIdDefaultTests
@@ -852,7 +858,7 @@ Phase C of Guid PK Phase 2.
 
 Deleted:
 - src/ISEStudio.Tests/Persistence/LegacyIdAllocatorTests.cs (12 Fact, ~280 lines)
-- src/ISEStudio.IntegrationTests/Persistence/PostgresLegacyIdAllocatorTests.cs
+- src/ISEStudio.IntegrationTests/Persistence/LegacyIdAllocatorAdvisoryLockTests.cs (506 lines)
 
 Modified (6 test files): removed LegacyIdAllocator field / DI registration /
 NewAllocator helper, replaced with direct dbContext.Add + SaveChangesAsync.

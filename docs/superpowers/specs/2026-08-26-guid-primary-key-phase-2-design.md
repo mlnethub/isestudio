@@ -149,6 +149,11 @@ public abstract class LegacyAddressableEntity
 
 另外:`ResolutionService.cs:26` 字段注入但无直接调用(死引用),同删。
 
+**Surface changes beyond the 30 mechanical call-site rewrites (recorded post-execution for review audit, 2026-08-26):**
+
+- **`ConflictAgent.canAutoApply` conjunct dropped** (`Conflicts/ConflictAgent.cs:202`). The pre-Phase-2 gate `_store is not null && _allocator is not null` was simplified to `_store is not null`. The allocator conjunct was a relic — the allocator had no effect on auto-apply correctness — so the conjunct collapsed to a constant after the constructor parameter was removed. Behaviour-preserving.
+- **`AuditLogService` constructor DI signature widened** (`Audit/AuditLogService.cs:21`). Pre-Phase-2 took `(LegacyIdAllocator allocator, TimeProvider clock)`; post-Phase-2 takes `(ISEStudioDbContext db, TimeProvider clock)`. The service now injects `DbContext` directly because the `LegacyIdAllocator` parameter was the only reason to thread that dependency into the constructor. Semantically equivalent (the audit write path was already writing through the same `DbContext`).
+
 ### 4.3 EF migration 自动生成
 
 ```bash
