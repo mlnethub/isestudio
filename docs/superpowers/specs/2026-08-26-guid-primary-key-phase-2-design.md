@@ -26,7 +26,7 @@ Phase 2 原本设计为"删 `legacy_id` 列 + 删 `LegacyIdAllocator` 整体退�
 - `src/ISEStudio/Infrastructure/Persistence/LegacyIdAllocator.cs`:**整文件删除**(310 行)
 - 22 个 service 类(详见 §4.2):删除 `LegacyIdAllocator _allocator` 字段 + 构造函数参数 + `_allocator.AllocateAndPersistAsync(x)` 调用 → 替换为 `dbContext.Add(x); await dbContext.SaveChangesAsync(ct)`
 - `src/ISEStudio/Program.cs:336` 删 `builder.Services.AddScoped<LegacyIdAllocator>();`
-- `src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs`:改 `LegacyId { get; set; }` → `LegacyId { get; private set; }`(EF 仍可通过 backing field 物化,生产代码不能写)
+- `src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs`:setter **保持** `public long LegacyId { get; set; }`(D4 被执行期 Ruling 1 否决,见 §4.1 + §8.1;生产唯一非零写点 `SettingsService.cs:114` 依赖 public setter)
 - `src/ISEStudio/Infrastructure/Persistence/Configurations/EntityConfigurations.cs` 24 处:对 `HasColumnName("legacy_id")` 改 `IsRequired()` → `IsRequired().HasDefaultValue(0L)` + 移除 `HasIndex(...).IsUnique() HasDatabaseName("ux_*_legacy_id")`(否则多 row 同为 0 撞 UNIQUE)
 - `src/ISEStudio/Exports/ExportJobStore.cs:40-41` doc comment:`LegacyIdAllocator` 引用删除
 
@@ -40,7 +40,7 @@ Phase 2 原本设计为"删 `legacy_id` 列 + 删 `LegacyIdAllocator` 整体退�
 - 删 `src/ISEStudio.Tests/Persistence/LegacyIdAllocatorTests.cs`(整文件,~280 行,12 个 `[Fact]`)
 - 删 PG 集成测试引用 allocator(per [[ontopilot-allocator-atomic]] §"PG concurrency tests")
 - 改 6 个 test 文件去掉 `LegacyIdAllocator` 引用(`TokenServiceTests` / `ConflictAgentTests` / `ExportJobStoreTests` / `ExtractionAgentChainTests` / `TerminologyAgentOrchestrationTests` / `StructureAgentTests`)
-- 新增 `src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs`(5 个 `[Fact]`):新 row 默认 0 / 多次 insert 不撞 unique(因为已删) / parallel insert / 集成 PG roundtrip / 旧 row 不变
+- 新增 `src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs`(4 个 `[Fact]`):新 row 默认 0(含 DB 重物化证明)/ 多次 insert 全 0 / 旧 row 更新不变 / 显式 LegacyId 被 honor(public setter 直写)
 
 **Runbook(只限 `docs/superpowers/runbooks/` 范围):**
 
@@ -87,23 +87,19 @@ Phase 2 原本设计为"删 `legacy_id` 列 + 删 `LegacyIdAllocator` 整体退�
 
 ## 4. 实现策略
 
-### 4.1 Entity 基类(改 1 个 setter)
+### 4.1 Entity 基类(setter 保持 public —— D4 执行期被否决)
 
-```diff
+**Ruling 1(执行期,2026-08-26):D4(`LegacyId { get; private set; }`)ABANDONED。** 原设计动机是防御性(阻止生产代码意外写入,EF 通过 backing field 物化)。但 preflight 核查发现**生产代码有真实写入点**:`SettingsService.cs:114` 在 seed singleton SystemConfig 时执行 `LegacyId = SystemConfigEntity.SingletonLegacyId`(这是生产代码里唯一的 LegacyId 赋值;`grep -rn "LegacyId = " src/ISEStudio` 除该行外无其他写入)。改成 `private set` 会让该行直接编译失败。因此 setter 保持原样:
+
+```csharp
 public abstract class LegacyAddressableEntity
 {
     public Guid Id { get; init; } = Guid.NewGuid();
--   public long LegacyId { get; set; }
-+   /// <summary>
-+   /// Legacy compatibility field. New rows default to 0 (DB DEFAULT 0).
-+   /// Production code MUST NOT write to this property — it's reserved for
-+   /// EF materialization and historical cross-table correlation only.
-+   /// </summary>
-+   public long LegacyId { get; private set; }
+    public long LegacyId { get; set; }   // 保持 public(执行期 ruling)
 }
 ```
 
-`private set` + 显式无构造函数赋值 → EF Core 仍可通过 backing field(`<LegacyId>k__BackingField`)物化旧 row;新 row 由 `HasDefaultValue(0L)` 在 DB 层派发。
+"防止意外写入" 的安全动机改由 **DB 层** 承担:删 UNIQUE 索引 `ux_*_legacy_id` + 新 row `legacy_id = 0`(DB DEFAULT 0)—— 任何 `dbContext.Add(x)` 而忘记显式赋值的 row 都是 0,不会撞唯一性(索引已删),也不会产生伪序列号。`SettingsService` 是唯一刻意写非零值的生产站点(singleton 序号约定 1),行为不变。
 
 ### 4.2 22 个 service 类的 30 个 call site 替换
 
@@ -210,20 +206,20 @@ migrationBuilder.AlterColumn<long>(
 - PG 集成测试 `PostgresLegacyIdAllocatorTests`(per [[ontopilot-allocator-atomic]])
 - 6 个 test 文件中 `LegacyIdAllocator` 引用 → sed 替换为 `null` 或删
 
-**新增** `src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs`:
+**新增** `src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs`(4 个 `[Fact]`,commit `b172cff`):
 
 ```csharp
 [Fact]
-public async Task NewRow_LegacyIdIsZero_WhenNotExplicitlySet() { /* SaveChanges + 断言 0 */ }
+public async Task NewRow_LegacyIdIsZero_WhenNotExplicitlySet() { /* SaveChanges + detach 重物化,证明 DB 存的是 0(DEFAULT)而非 CLR 默认 */ }
 
 [Fact]
-public async Task MultipleNewRows_AllHaveLegacyIdZero() { /* AddRange 2 个,SaveChanges,断言都是 0 */ }
+public async Task MultipleNewRows_AllHaveLegacyIdZero() { /* AddRange 2 个,SaveChanges,重物化断言都是 0 */ }
 
 [Fact]
-public async Task ExistingRow_LegacyIdUnchanged() { /* 已有 LegacyId=5 的 row,update 其他字段,断言 LegacyId 仍是 5 */ }
+public async Task ExistingRow_LegacyIdUnchanged_OnUpdate() { /* 已有 LegacyId=42 的 row,update 其他字段,断言 LegacyId 仍是 42 */ }
 
 [Fact]
-public async Task ExplicitLegacyId_HonoredByEF() { /* 显式 entity.LegacyId = 42,SaveChanges,断言 42(因为 private set 实际是 backing field,测试反射可达) */ }
+public async Task ExplicitLegacyId_HonoredWhenSetBeforeAdd() { /* setter 是 public:显式 LegacyId = 999,SaveChanges,断言 999(DB 层 honor) */ }
 ```
 
 ## 5. 验证 gates
@@ -233,10 +229,10 @@ public async Task ExplicitLegacyId_HonoredByEF() { /* 显式 entity.LegacyId = 4
 | Gate | 命令 | 期望 |
 | --- | --- | --- |
 | 1. 代码无 allocator 引用 | `grep -rn "LegacyIdAllocator\|AllocateAndPersistAsync\|AllocateManyAndPersistAsync" src/ISEStudio/ src/ISEStudio.Tests/ src/ISEStudio.IntegrationTests/ src/ISEStudio.ApiContract.Tests/`(排除 bin/obj + 已 deleted 的 LegacyIdAllocator.cs) | 0 命中 |
-| 2. LegacyId setter private | `grep "LegacyId {" src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs` | `private set` |
+| 2. LegacyId setter 保持 public + SettingsService 写点 intact | `grep "LegacyId {" src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs` 且 `grep -n "SingletonLegacyId" src/ISEStudio/Settings/SettingsService.cs` | `public long LegacyId { get; set; }` 且 `SettingsService.cs:114` 的 `LegacyId = SystemConfigEntity.SingletonLegacyId` 写点在(Ruling 1:D4 abandoned) |
 | 3. EF migration 只 ALTER+DROP INDEX | `grep -E "CreateTable\|InsertData" src/ISEStudio/Infrastructure/Persistence/Migrations/20260826HHMMSS_LegacyIdDefaultZero.cs` | 0 命中(只有 DropIndex + AlterColumn) |
 | 4. dotnet build 干净 | `dotnet build src/ISEStudio.sln` | 0 error / 0 warning |
-| 5. 测试全绿 | `dotnet test src/ISEStudio.sln` | 858 + 167 + 63 - 12 LegacyIdAllocatorTests + 5 new ≈ 1088 全绿 |
+| 5. 测试全绿 | `dotnet test src/ISEStudio.sln` | **850 unit + 167 contract + 57 integration = 1074 全绿**(实际执行值 = 858 - 12 删 LegacyIdAllocatorTests + 4 新 LegacyIdDefaultTests) |
 | 6. EF migration 应用 | `docker compose up -d isestudio-migrate && docker compose ps isestudio-migrate` | Exited (0) |
 | 7. runtime smoke | `docker compose up -d isestudio && sleep 10 && curl -s http://127.0.0.1:8080/api/health` | 200 |
 
@@ -286,7 +282,7 @@ docker compose up -d --build
 | --- | --- | --- |
 | D1(c) | **保留 `LegacyId` 为只读字段;新 row = 0(DB DEFAULT)** | 109 个生产访问点不能用,改 blast radius 太大;只删 allocator 是更小更安全的手术 |
 | D2 | **保留 `LegacyAddressableEntity` 类名** | 仍有 LegacyId 字段,叫 Entity 名不副实;将来真退役 LegacyId 再 rename |
-| D4 | **`LegacyId { get; private set; }`** | 防御性:阻止生产代码意外写入;EF 仍可物化(私有 setter + backing field) |
+| D4 | ~~**`LegacyId { get; private set; }`**~~ → **ABANDONED(执行期 Ruling 1);setter 保持 `public long LegacyId { get; set; }`** | 原动机是防御性,但生产写入点 `SettingsService.cs:114`(`LegacyId = SystemConfigEntity.SingletonLegacyId`)依赖 public setter,private set 会编译失败;安全动机改由删 UNIQUE 索引 + DB DEFAULT 0 承担(见 §8.1) |
 | D5' | **删 UNIQUE 索引 `ux_*_legacy_id`,加 DB DEFAULT 0** | 不删 index 多 row 同为 0 撞 UNIQUE;删 index + 保留 NOT NULL + DEFAULT 0 = 多个 0 合法共存 |
 | D6 | **22 service × 30 call site 替换保留 SAVE atomic** | `Add + SaveChanges` vs 旧的 `SELECT MAX+1 + Add + SaveChanges` 在 advisory lock 下等价(只是 MAX 步骤消失),生产行为一致 |
 | D7 | **生产 109 读访问点不动** | 读路径与 allocator 退役正交;这些访问的是 EF 物化后的 `entity.LegacyId`,allocator 是否存在无关 |
@@ -294,6 +290,20 @@ docker compose up -d --build
 | D9 | **保留 runbook §3.5 MAX+1 模板** | 历史 admin 序号约定(legacy_id = 1 是 admin)便于运维记忆;Phase 2 后 UNIQUE 已删,MAX+1 不是硬约束但仍是良好实践 |
 | D10 | **历史 EF migration `InitialCompatibility` 保留** | append-only migration history 是 EF Core 硬约束;Phase 2 的 drop 是新 migration,不删旧 |
 | D11 | **`pre-isestudio-rename` tag 保留** | 与之前 slice 一致;Phase 2 完成后不需要新 tag |
+| D12 | **执行期 Rulings(2026-08-26)**:D4 abandoned + gate/计数修订 + smoke PASS | 见 §8.1 详情 |
+
+### 8.1 执行期 Rulings(D12,2026-08-26)
+
+- **Ruling 1 — D4 ABANDONED**:`LegacyId` setter 保持 `public long LegacyId { get; set; }`。生产唯一非零写入点 `SettingsService.cs:114`(`LegacyId = SystemConfigEntity.SingletonLegacyId`,seed singleton SystemConfig)依赖 public setter;private set 直接编译失败。"防止意外写入" 的安全动机改由 DB 层承担:删 UNIQUE 索引 + DB DEFAULT 0(任何未显式赋值的 Add 都是 0,不再撞唯一性)。
+- **Commit chain(实际执行,均在 `pre-isestudio-rename` = `fc06a73` 之后)**:
+  - Phase A.0(rename):`aa5f89d`
+  - Phase A.1(configs + doc):`08db7ae`
+  - Phase A.2(30 call sites + DI + allocator 删除):`617e21d`
+  - Phase A.3(runbook):`f267908` + fix `f1683e9`
+  - Phase B(EF migration `LegacyIdDefaultZero`):`4cf72b0`
+  - Phase C(tests):`b172cff`
+- **Smoke**:PASS via `isestudio-migrate`(migration 应用 + 历史 row 保留 + smoke row legacy_id=0 + 清理)。
+- **Lesson(compose build trap)**:`docker compose build isestudio-migrate` 是 **silent no-op** —— compose 中 `isestudio-migrate` service 没有 `build:` key,`docker compose build` 只重建有 build key 的 service,对无 key 者静默跳过。必须重建共享镜像 `docker compose build isestudio`,migrate service 才会拿到新 migration;stale 镜像会令 migrate **exit 0 但什么都没应用**(`MigrateAsync` 在旧镜像里找不到新迁移文件时静默通过)。
 
 ## 9. 链接
 
