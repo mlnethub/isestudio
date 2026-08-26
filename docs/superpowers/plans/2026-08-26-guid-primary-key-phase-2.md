@@ -1,14 +1,14 @@
-# Guid 主键 Phase 2 — Legacy 字段退役 Implementation Plan
+# Guid 主键 Phase 2 — LegacyIdAllocator 退役 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Delete the `legacy_id` column from all 24 tables + retire `LegacyIdAllocator` + simplify the `LegacyAddressableEntity` base class + remove `legacy_id` from `IriSqlMigrator.ColumnsToRewrite` + drop the corresponding `ux_*_legacy_id` indexes. Hard cutover — postgres / minio volumes are wiped.
+**Goal:** Retire `LegacyIdAllocator` and write path. Keep `LegacyId` as a read-only compatibility field — new rows default to `0` (DB DEFAULT), drop UNIQUE indexes, leave the 24 `legacy_id` columns + 109 production read sites untouched. No data loss.
 
-**Architecture:** 5 atomic commits sequenced as Phase A (code cleanup) → Phase B (EF migration) → Phase C (IriSqlMigrator cleanup) → Phase D (review) → Phase E (runtime smoke). Phase A itself is 3 atomic commits: A.0 (6 file renames) → A.1 (entity base) → A.2 (allocator + call sites + DI + EntityConfigurations). Each commit is independently revertable BEFORE `docker compose down -v` runs.
+**Architecture:** 4 atomic commits sequenced as Phase A.1 (entity base + EntityConfigurations + LegacyIdAllocator file delete) → Phase A.2 (30 call site replacements + DI delete) → Phase A.3 (runbook) → Phase B (EF migration `LegacyIdDefaultZero`: DROP INDEX + ALTER COLUMN DEFAULT 0). Then Phase C (test cleanup + new tests) → Phase D (review) → Phase E (smoke). Phase A.0 (6 file renames → 7 actually) is **already done** as commit `aa5f89d` — no rebuild.
 
-**Tech Stack:** .NET 10 + ASP.NET Core + EF Core 10 + Npgsql 10 + PostgreSQL 16 + MinIO + Docker Compose. EF Core `dotnet ef migrations add` for migration generation. GNU sed for bulk text rewrite (Windows git-bash). IriSqlMigrator 同步更新 baseline SHA-256。
+**Tech Stack:** .NET 10 + ASP.NET Core + EF Core 10 + Npgsql 10 + PostgreSQL 16 + MinIO + Docker Compose. EF Core `dotnet ef migrations add` for migration generation. GNU sed for bulk text rewrite.
 
-**Spec:** `docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md` (commit `d9a3d1b`, 318 lines)
+**Spec:** `docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md` (current revision: 2026-08-26 halt → option B + D1c + D2 + D5')
 
 ---
 
@@ -16,23 +16,19 @@
 
 (Verbatim from spec §2 / §5 / Decision Log §8 — every task implicitly inherits these.)
 
-- **Scope:** Phase A (代码清理) + Phase B (EF 配置) + Phase C (IriSqlMigrator) + Phase D (测试 + 评审) + Phase E (runtime smoke)。包含 `docs/superpowers/runbooks/` 下 bootstrap runbook 的 §0 / §3.3 / §3.5 / §4.6 更新。
-- **24 entity 基类迁移:** 全部 entity 当前 `: LegacyAddressableEntity`,Phase 2 改 `: Entity`(verified by `grep -rhE "^public.+: LegacyAddressableEntity" src/ISEStudio/Infrastructure/Persistence/Entities/ | sort -u` 应返 24 个 entity)。`LegacyAddressableEntity` 类直接删除。
-- **13+5 allocator call sites:** 13 个(per `LegacyIdAllocator.cs` doc-comment)+ 5 个历史补漏点(per [[ontopilot-allocator-missed-sites]],含 `ProviderService` + 3× `ConflictService` + `KnowledgeService grant`)全部替换为 `Id = Guid.NewGuid()` + 既有 `_db.SaveChangesAsync()`。
-- **6 file renames(git mv,class body 不动):**
-  - `src/ISEStudio/Infrastructure/Persistence/OnToPilotDbContext.cs` → `ISEStudioDbContext.cs`
-  - `src/ISEStudio/Infrastructure/Persistence/OnToPilotDbContextFactory.cs` → `ISEStudioDbContextFactory.cs`
-  - `src/ISEStudio/Mcp/OnToPilotMcpPrompts.cs` → `ISEStudioMcpPrompts.cs`
-  - `src/ISEStudio/Mcp/OnToPilotMcpResources.cs` → `ISEStudioMcpResources.cs`
-  - `src/ISEStudio/Mcp/OnToPilotMcpTools.cs` → `ISEStudioMcpTools.cs`
-  - `src/ISEStudio/Serialization/OnToPilotJsonContext.cs` → `ISEStudioJsonContext.cs`
-- **EF migration `DropLegacyId`:** 仅 `migrationBuilder.DropColumn("legacy_id", table)` + `migrationBuilder.DropIndex("ux_*_legacy_id", table)`。若 EF 输出含 `CreateTable` / `InsertData`,**人工 patch**。
-- **IriSqlMigrator:** `ColumnsToRewrite` 移除 `legacy_id` 项 + `IriSqlVerifier` baseline 同步删 `legacy_id` row + SHA-256 重生成(`iri sql-smoke-check --update-baseline`)。
-- **Runbook 更新范围:** **仅限 `docs/superpowers/runbooks/`**。`docs/migration/` / `migration/scripts/` / `docs/superpowers/specs/2026-08-25-isestudio-rename-design.md` 等历史 spec **不动**。
-- **历史 EF migration:** `20260816140916_InitialCompatibility.cs`(含 legacy_id DDL)+ Designer **保留**作为历史快照。Phase 2 的 `DropLegacyId` 是 **append-only**,不删旧 migration。
-- **Tag:** `pre-isestudio-rename` (at `fc06a73`) + `pre-python-retirement` 都保留,Phase 2 不打新 tag。
-- **Branch:** 全 work on `dotnet` branch(currently `05516e0`)。
-- **数据:** Postgres / MinIO volume 全清(运维已同意)。生产 / staging 必须先 `docker exec ... pg_dump`(详见 spec §3.1)。
+- **Scope:** Phase A.1 (entity base + EntityConfigurations + alloc file delete) + Phase A.2 (30 call sites + DI) + Phase A.3 (runbook §3.2/§3.3) + Phase B (EF migration `LegacyIdDefaultZero`) + Phase C (test cleanup) + Phase D (review) + Phase E (smoke — **NO** `docker compose down -v`,数据保留).
+- **22 services × 30 call sites:** 25 × `AllocateAndPersistAsync` + 3 × `AllocateManyAndPersistAsync` across 22 service classes(per spec §4.2 table).`ResolutionService.cs:26` field declared but never called — also delete.
+- **24 entity configurations:** `EntityConfigurations.cs` has 24 `HasColumnName("legacy_id")` blocks. Each gets `HasDefaultValue(0L)` added; `HasIndex(...).IsUnique() HasDatabaseName("ux_*_legacy_id")` removed(否则多 row 同为 0 撞 UNIQUE)。`SystemConfigEntity` 已 `HasDefaultValue(SingletonLegacyId)`,仅删 index。
+- **LegacyId setter private:** `LegacyAddressableEntity.LegacyId { get; set; }` → `{ get; private set; }`。
+- **EF migration `LegacyIdDefaultZero`:** 仅 `migrationBuilder.DropIndex("ux_*_legacy_id", table)` + `migrationBuilder.AlterColumn(..., defaultValue: 0L, oldDefaultValue: null)`。若 EF 输出含 `CreateTable` / `InsertData`,**人工 patch**。
+- **DI:** `Program.cs:336` `builder.Services.AddScoped<LegacyIdAllocator>();` 删除。
+- **No IriSqlMigrator changes:** `legacy_id` 本来不在 `ColumnsToRewrite`(`long` 不是 `uniqueidentifier`),verifier baseline 不动。
+- **Runbook 更新范围:** 仅限 `docs/superpowers/runbooks/2026-08-25-fresh-deployment-bootstrap.md` §0 / §3.2 / §3.3。§3.5 SQL INSERT 模板**保留原样**(`legacy_id` 列仍写,`COALESCE(MAX+1)` 是历史 admin 序号约定)。
+- **历史 EF migration:** `20260816140916_InitialCompatibility.cs` 保留不动;Phase 2 的 migration 是 append-only。
+- **Tag:** `pre-isestudio-rename` (at `fc06a73`) + `pre-python-retirement` 保留,Phase 2 不打新 tag。
+- **Branch:** 全 work on `dotnet` branch(currently at `aa5f89d` = Phase A.0 7 file renames already done)。
+- **数据:** **不丢**。现有 volume 数据完整保留,新 row `legacy_id = 0`。
+- **Production 109 `.LegacyId` 访问点:** 全部 DO-NOT-TOUCH,行为不变。
 
 ---
 
@@ -43,15 +39,15 @@
 
 **Interfaces:**
 - Consumes: nothing
-- Produces: baseline verified; pre-isestudio-rename tag at `fc06a73`; count of 24 entity + 6 OnToPilot files + 13+5 call sites verified
+- Produces: baseline verified; pre-isestudio-rename tag at `fc06a73`; count of 22 services × 30 call sites + 24 entity configurations + 6 test files verified
 
-- [ ] **Step 1: Verify on `dotnet` branch and HEAD is `05516e0`**
+- [ ] **Step 1: Verify on `dotnet` branch and HEAD is `aa5f89d`**
 
 ```bash
 git rev-parse --abbrev-ref HEAD
 # Expected: dotnet
 git log --oneline -1
-# Expected: 05516e0 docs(phase2): design spec for Guid PK Phase 2 (LegacyId retirement)
+# Expected: aa5f89d chore(phase2): finish Stage 3 territory — 7 OnToPilot* filenames to ISEStudio*
 ```
 
 - [ ] **Step 2: Verify pre-isestudio-rename tag at fc06a73**
@@ -83,1177 +79,1045 @@ dotnet test ISEStudio.Tests/ISEStudio.Tests.csproj -c Release --nologo --no-buil
 dotnet test ISEStudio.ApiContract.Tests/ISEStudio.ApiContract.Tests.csproj -c Release --nologo --no-build
 # Expected: Passed! - Failed: 0, Passed: 167
 dotnet test ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj -c Release --nologo --no-build
-# Expected: Passed! - Failed: 0, Passed: 63
+# Expected: Passed! - Failed: 0, Passed: ~63
 cd ..
 ```
 
 Record exact pre-Phase-2 counts as `<UNIT_BEFORE>`, `<CONTRACT_BEFORE>`, `<INTEGRATION_BEFORE>` for use in Task 7 (Phase D) gate verification.
 
-- [ ] **Step 5: Verify scope matches spec (24 entity + 6 OnToPilot files + 13+5 call sites)**
+- [ ] **Step 5: Verify scope matches spec (22 services × 30 call sites + 24 entity configurations)**
 
 ```bash
-# Should be 24 (or close; verify list matches spec §2.1):
-grep -rln ": LegacyAddressableEntity" src/ISEStudio/Infrastructure/Persistence/Entities/ | wc -l
+# Should be 30 (25 AllocateAndPersistAsync + 3 AllocateManyAndPersistAsync + some in test files):
+grep -rn "AllocateAndPersistAsync\|AllocateManyAndPersistAsync" src/ISEStudio/ \
+  --include="*.cs" | grep -v "LegacyIdAllocator.cs:" | wc -l
+# Expected: 30 production call sites (production only; test files have more)
+
+# Should be 22 service classes that inject LegacyIdAllocator:
+grep -rln "LegacyIdAllocator" src/ISEStudio/ --include="*.cs" \
+  | grep -v "LegacyIdAllocator.cs:" | grep -v "/bin/" | wc -l
+# Expected: 22 production classes + 0 (Program.cs DI counts as 23rd, capture list)
+
+# Should be 24 HasColumnName("legacy_id") blocks in EntityConfigurations.cs:
+grep -c "HasColumnName.*legacy_id\|HasColumnName(\"legacy_id\")" \
+  src/ISEStudio/Infrastructure/Persistence/Configurations/EntityConfigurations.cs
 # Expected: 24
 
-# Should be 6:
-git ls-files 'src/**/*.cs' | grep -E "OnToPilot[A-Z][a-zA-Z]*\.cs$"
-# Expected: 6 files (the territory miss list)
-
-# Should be 13+ (plus historical 5 leaks per memory):
-grep -rln "AllocateAndPersistAsync\|AllocateManyAndPersistAsync" src/ \
-  --include="*.cs" --exclude-dir=bin --exclude-dir=obj
-# Expected: 18+ service files (capture list for Phase A.2 task brief)
+# Should be 6 test files referencing LegacyIdAllocator (per spec §2.1 test layer):
+grep -rln "LegacyIdAllocator" src/ISEStudio.Tests/ src/ISEStudio.IntegrationTests/ \
+  --include="*.cs" | sort
+# Expected: 6-8 files (TokenServiceTests / ConflictAgentTests / ExportJobStoreTests /
+# ExtractionAgentChainTests / TerminologyAgentOrchestrationTests / StructureAgentTests +
+# LegacyIdAllocatorTests + possibly 1-2 PG integration tests)
 ```
 
-If counts diverge from spec, STOP. Investigate.
-
-- [ ] **Step 6: Verify docker compose config clean (pre-Phase 2 baseline)**
+- [ ] **Step 6: Verify spec/plan/discussion set is current**
 
 ```bash
-docker compose config --quiet
-echo "Exit code: $?"
-# Expected: 0
+# Spec should reference option B + D1c (default 0)
+grep -E "option B|D1\(c\)|DEFAULT 0" \
+  docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md | head -3
+# Expected: at least 3 matches
+
+# Plan header should NOT mention 6 file renames in active phase
+grep -E "6 file renames via git mv" \
+  docs/superpowers/plans/2026-08-26-guid-primary-key-phase-2.md
+# Expected: 0 matches (A.0 already done as aa5f89d)
 ```
 
----
-
-## Task 2: Phase A.0 — Finish Stage 3 territory (6 file renames via git mv)
-
-**Files:**
-- Rename (6): see Global Constraints above
-- Touch: `.csproj` files that reference these (via file path references)
-
-**Interfaces:**
-- Consumes: baseline verified (Task 1)
-- Produces: 6 `OnToPilot*` filenames renamed to `ISEStudio*`; class bodies untouched; build green
-
-- [ ] **Step 1: git mv the 6 files (keep class bodies unchanged)**
+- [ ] **Step 7: Commit no-op if working tree is clean**
 
 ```bash
-git mv src/ISEStudio/Infrastructure/Persistence/OnToPilotDbContext.cs            src/ISEStudio/Infrastructure/Persistence/ISEStudioDbContext.cs
-git mv src/ISEStudio/Infrastructure/Persistence/OnToPilotDbContextFactory.cs     src/ISEStudio/Infrastructure/Persistence/ISEStudioDbContextFactory.cs
-git mv src/ISEStudio/Mcp/OnToPilotMcpPrompts.cs                                   src/ISEStudio/Mcp/ISEStudioMcpPrompts.cs
-git mv src/ISEStudio/Mcp/OnToPilotMcpResources.cs                                 src/ISEStudio/Mcp/ISEStudioMcpResources.cs
-git mv src/ISEStudio/Mcp/OnToPilotMcpTools.cs                                     src/ISEStudio/Mcp/ISEStudioMcpTools.cs
-git mv src/ISEStudio/Serialization/OnToPilotJsonContext.cs                       src/ISEStudio/Serialization/ISEStudioJsonContext.cs
-
-# Verify:
-git status --short | grep "^R  "
-# Expected: 6 lines starting with "R  " (rename in stage)
-```
-
-- [ ] **Step 2: Verify no `.csproj` / `.sln` references the old filenames**
-
-```bash
-git grep -l "OnToPilotDbContext\.cs\|OnToPilotMcp.*\.cs\|OnToPilotJsonContext\.cs" -- 'src/**/*.csproj' 'src/**/*.props' 'src/**/*.targets' src/ISEStudio.sln 2>/dev/null
-# Expected: empty (sln/csproj reference by Project GUID, not by filename)
-```
-
-If any matches appear, edit manually to use new filenames.
-
-- [ ] **Step 3: Verify build still green (class bodies unchanged)**
-
-```bash
-cd src
-dotnet build ISEStudio.sln -c Release --nologo
-# Expected: Build succeeded. 0 Error(s). 0 Warning(s)
-cd ..
-```
-
-If build fails, STOP. Investigate.
-
-- [ ] **Step 4: Commit Phase A.0**
-
-```bash
-git add -A
 git status
-# Verify: only 6 file renames are staged
-git diff --cached --stat
-# Expected: 6 files renamed (R), no content changes
-git commit -m "chore(phase2): finish Stage 3 territory — 6 OnToPilot* filenames to ISEStudio*
-
-Phase A.0 of Guid PK Phase 2 spec (commit d9a3d1b).
-
-The brand rename slice (commit fc06a73 + e8c8d02) renamed all class
-identifiers + namespaces but left 6 filenames with the old brand.
-This commit completes that sweep via git mv (class bodies unchanged):
-
-- OnToPilotDbContext.cs         -> ISEStudioDbContext.cs
-- OnToPilotDbContextFactory.cs  -> ISEStudioDbContextFactory.cs
-- OnToPilotMcpPrompts.cs        -> ISEStudioMcpPrompts.cs
-- OnToPilotMcpResources.cs      -> ISEStudioMcpResources.cs
-- OnToPilotMcpTools.cs          -> ISEStudioMcpTools.cs
-- OnToPilotJsonContext.cs       -> ISEStudioJsonContext.cs
-
-Verifies: dotnet build src/ISEStudio.sln -c Release: 0 error / 0 warning.
-
-Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §2.1
-Tag: pre-isestudio-rename -> fc06a73 (unchanged)"
+# Expected: working tree clean (only docs/superpowers/plans/2026-08-25-isestudio-rename.md untracked is OK)
 ```
 
-Capture SHA: `<A0_SHA>`
+If working tree has unexpected modifications, STOP. Investigate.
 
 ---
 
-## Task 3: Phase A.1 — Entity base class migration (24 files)
+## Task 2: Phase A.1 — Entity base class setter + EntityConfigurations + LegacyIdAllocator file delete
 
 **Files:**
-- Modify: 24 entity files in `src/ISEStudio/Infrastructure/Persistence/Entities/*.cs`
-- Delete: `src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs` (if exists; per spec §4.1 the file lives here)
-- Test: existing unit tests should pass without changes (no API surface change)
+- Modify: `src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs` (1 setter change)
+- Modify: `src/ISEStudio/Infrastructure/Persistence/Configurations/EntityConfigurations.cs` (24 HasColumnName + 24 HasIndex changes)
+- Delete: `src/ISEStudio/Infrastructure/Persistence/LegacyIdAllocator.cs` (310 lines)
+- Modify: `src/ISEStudio/Exports/ExportJobStore.cs:40-41` (doc comment update)
 
 **Interfaces:**
-- Consumes: Phase A.0 applied (Task 2)
-- Produces: 24 entities now `: Entity` directly; `LegacyAddressableEntity` class removed; build green
+- Consumes: baseline verified (Task 1); HEAD at `aa5f89d`
+- Produces: `LegacyId { get; private set; }` + 24 entity configs `HasDefaultValue(0L)` + 24 `HasIndex` deleted + `LegacyIdAllocator.cs` removed + ExportJobStore doc fix
 
-- [ ] **Step 1: List all 24 entity inheritance sites**
-
-```bash
-grep -rln ": LegacyAddressableEntity" src/ISEStudio/Infrastructure/Persistence/Entities/ \
-  --include="*.cs" --exclude-dir=bin --exclude-dir=obj
-# Expected: 24 files
-```
-
-If count differs from spec, STOP and report.
-
-- [ ] **Step 2: Locate the `LegacyAddressableEntity` definition file**
+> **Sub-task 2.0 (interface contract pre-flight):**
+>
+> Before editing, confirm with grep that LegacyAddressableEntity is the actual base (per [[ontopilot-phase2-halt]] §"Lessons learned"):
 
 ```bash
-grep -rln "class LegacyAddressableEntity" src/ISEStudio/
-# Expected: 1 file (likely Entities/LegacyAddressableEntity.cs)
+# MUST show LegacyAddressableEntity.cs contains ONLY the base class
+grep -n "abstract class" src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs
+# Expected: 1 line, "public abstract class LegacyAddressableEntity"
 ```
 
-- [ ] **Step 3: Bulk rewrite `: LegacyAddressableEntity` → `: Entity`**
+- [ ] **Step 1: Verify LegacyId setter access pattern**
 
 ```bash
-# Find all 24 files and sed-replace:
-grep -rln ": LegacyAddressableEntity" src/ISEStudio/Infrastructure/Persistence/Entities/ \
-  --include="*.cs" | xargs sed -i 's/: LegacyAddressableEntity/: Entity/g'
-
-# Verify zero hits:
-grep -rln ": LegacyAddressableEntity" src/ISEStudio/
-# Expected: empty (excluding the definition file being deleted next)
+grep -n "LegacyId" src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs
+# Expected: shows "public long LegacyId { get; set; }" (or similar)
 ```
 
-- [ ] **Step 4: Delete the `LegacyAddressableEntity` definition file**
+- [ ] **Step 2: Edit LegacyAddressableEntity.cs (setter → private)**
+
+```diff
+- public long LegacyId { get; set; }
++ /// <summary>
++ /// Legacy compatibility field. New rows default to 0 (DB DEFAULT 0).
++ /// Production code MUST NOT write to this property — it's reserved for
++ /// EF materialization and historical cross-table correlation only.
++ /// </summary>
++ public long LegacyId { get; private set; }
+```
+
+File: `src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs`
+
+- [ ] **Step 3: Verify EntityConfigurations.cs has 24 HasColumnName sites**
 
 ```bash
-LEGACY_ENTITY_FILE=$(grep -rln "class LegacyAddressableEntity" src/ISEStudio/)
-if [ -n "$LEGACY_ENTITY_FILE" ]; then
-  git rm "$LEGACY_ENTITY_FILE"
-fi
-
-# Verify:
-grep -rln "class LegacyAddressableEntity" src/ISEStudio/
-# Expected: empty
-```
-
-- [ ] **Step 5: Verify build green (after entity base change)**
-
-```bash
-cd src
-dotnet build ISEStudio.sln -c Release --nologo
-# Expected: Build succeeded. 0 Error(s). 0 Warning(s)
-cd ..
-```
-
-If build fails (likely an entity that uses `LegacyAddressableEntity`-specific members), inspect and fix inline. `LegacyAddressableEntity` was just a thin wrapper around `Entity` + `LegacyId` property — most entities should inherit cleanly.
-
-- [ ] **Step 6: Verify unit tests pass (no test changes needed)**
-
-```bash
-cd src
-dotnet test ISEStudio.Tests/ISEStudio.Tests.csproj -c Release --nologo --no-build
-# Expected: <UNIT_BEFORE> passed, 0 failed
-cd ..
-```
-
-If test count drops or new failures appear, STOP. Investigate — likely a test references the deleted class.
-
-- [ ] **Step 7: Commit Phase A.1**
-
-```bash
-git add -A
-git status
-# Verify: 24 entity files modified + LegacyAddressableEntity.cs deleted
-git diff --cached --stat | tail -30
-git commit -m "refactor(phase2): migrate 24 entities from LegacyAddressableEntity to Entity
-
-Phase A.1 of Guid PK Phase 2 spec (commit d9a3d1b).
-
-Phase 1 already moved the wire-side primary key from long LegacyId to
-Guid Id, leaving LegacyAddressableEntity as a thin compatibility shim:
-\`\`\`csharp
-public abstract class LegacyAddressableEntity : Entity
-{
-    public long LegacyId { get; set; }
-}
-\`\`\`
-
-Phase 2 deletes the shim. All 24 entity classes that previously inherited
-LegacyAddressableEntity now inherit Entity directly. The LegacyId property
-goes away (column drop happens in Phase B's EF migration).
-
-Migration:
-- grep + sed ': LegacyAddressableEntity' -> ': Entity' across 24 entity files
-- git rm LegacyAddressableEntity.cs
-- All 24 entity classes still pass existing tests (no API surface change)
-
-Verifies:
-- dotnet build src/ISEStudio.sln: 0 error / 0 warning
-- dotnet test ISEStudio.Tests: <UNIT_BEFORE> passed, 0 failed
-
-Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §4.1
-Predecessor: Phase A.0 commit <A0_SHA>
-Tag: pre-isestudio-rename -> fc06a73 (unchanged)"
-```
-
-Capture SHA: `<A1_SHA>`
-
----
-
-## Task 4: Phase A.2 — LegacyIdAllocator retirement (call sites + DI + EntityConfigurations)
-
-**Files:**
-- Modify: ~18 service files that call `AllocateAndPersistAsync` / `AllocateManyAndPersistAsync`
-- Modify: `src/ISEStudio/Infrastructure/Persistence/Configurations/EntityConfigurations.cs`
-- Modify: DI registration (likely in `src/ISEStudio/Program.cs` or DI extension class)
-- Delete: `src/ISEStudio/Infrastructure/Persistence/LegacyIdAllocator.cs`
-- Delete: `src/ISEStudio.Tests/Infrastructure/LegacyIdAllocatorTests.cs`
-
-**Interfaces:**
-- Consumes: Phase A.1 applied (Task 3); entity base no longer references `LegacyId`
-- Produces: `LegacyIdAllocator` class deleted; DI registration removed; `EntityConfigurations.cs` no longer configures `legacy_id` column or `ux_*_legacy_id` index; all 13+5 call sites use `Id = Guid.NewGuid()` + `_db.SaveChangesAsync()`; build green + tests green
-
-- [ ] **Step 1: List all call sites of allocator methods**
-
-```bash
-grep -rn "AllocateAndPersistAsync\|AllocateManyAndPersistAsync" src/ \
-  --include="*.cs" --exclude-dir=bin --exclude-dir=obj
-# Expected: 18+ matches (13 documented + 5 historical leaks per allocator memory)
-```
-
-Record the list. The 5 historical leaks per [[ontopilot-allocator-missed-sites]] include:
-- `ProviderService`
-- 3× `ConflictService` (different methods)
-- `KnowledgeService grant`
-
-For each call site, the migration pattern is:
-
-**Before** (per spec §4.2):
-```csharp
-var entity = new UserEntity { ... };
-await _allocator.AllocateAndPersistAsync(entity, ct);
-```
-
-**After**:
-```csharp
-var entity = new UserEntity { Id = Guid.NewGuid(), ... };
-await _db.SaveChangesAsync(ct);
-```
-
-Or for batch:
-```csharp
-var entities = new[] { new UserEntity { ... }, new UserEntity { ... } };
-foreach (var e in entities) e.Id = Guid.NewGuid();
-await _db.SaveChangesAsync(ct);
-```
-
-- [ ] **Step 2: Replace all call sites**
-
-For each file from Step 1's grep output:
-- Remove the `_allocator` / `LegacyIdAllocator` field/ctor injection if no other usage in the file
-- Replace `await _allocator.AllocateAndPersistAsync(entity, ct)` with `entity.Id = Guid.NewGuid(); await _db.SaveChangesAsync(ct);`
-- Replace `await _allocator.AllocateManyAndPersistAsync(entities, ct)` with the foreach pattern
-
-Manual edit (sed is risky here because of generics + variable names). Use editor or scripted refactor. Verify each replacement compiles.
-
-- [ ] **Step 3: Drop `legacy_id` column / index config from `EntityConfigurations.cs`**
-
-```bash
-# Find the config:
-grep -nE 'HasColumnName\("legacy_id"\)|HasIndex.*legacy_id|ux_.*_legacy_id' \
+grep -cE 'HasColumnName\("legacy_id"\)' \
   src/ISEStudio/Infrastructure/Persistence/Configurations/EntityConfigurations.cs
-# Expected: 24 HasColumnName + 24 HasIndex entries (one per entity)
+# Expected: 24
 ```
 
-Remove all 48 lines. Each entry looks roughly like:
-```csharp
-builder.Property(e => e.LegacyId).HasColumnName("legacy_id");
-builder.HasIndex(e => e.LegacyId).IsUnique().HasDatabaseName("ux_users_legacy_id");
+- [ ] **Step 4: Bulk-update EntityConfigurations.cs (24 sites × 2 changes each)**
+
+Use sed to transform the 24 sites. Pattern:
+
+```diff
+- builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired();
+- builder.HasIndex(x => x.LegacyId).IsUnique().HasDatabaseName("ux_users_legacy_id");
++ builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
 ```
-
-After deletion, verify build.
-
-- [ ] **Step 4: Remove DI registration `AddScoped<LegacyIdAllocator>`**
 
 ```bash
-grep -rn "AddScoped<LegacyIdAllocator\|AddSingleton<LegacyIdAllocator\|AddTransient<LegacyIdAllocator" src/ISEStudio/ \
-  --include="*.cs"
-# Expected: 1+ matches
+cd src/ISEStudio/Infrastructure/Persistence/Configurations/
+
+# 1) HasColumnName blocks: append .HasDefaultValue(0L) before .IsRequired()
+# For non-SystemConfig blocks (SystemConfig already has its own default — handle separately)
+sed -i 's/HasColumnName("legacy_id").IsRequired();$/HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);/' EntityConfigurations.cs
+
+# 2) Drop the HasIndex blocks (24 sites) — these are lines immediately following HasColumnName legacy_id
+sed -i '/builder\.HasIndex(x => x\.LegacyId)\.IsUnique()\.HasDatabaseName("ux_.*legacy_id");$/d' EntityConfigurations.cs
+
+# Verify count of HasColumnName("legacy_id")+HasDefaultValue(0L):
+grep -c 'HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L)' EntityConfigurations.cs
+# Expected: 23 (24 minus 1 for SystemConfigEntity which already has its own default)
+
+# Verify count of HasIndex lines remaining:
+grep -c 'HasIndex(x => x.LegacyId).IsUnique().HasDatabaseName("ux_.*legacy_id")' EntityConfigurations.cs
+# Expected: 0
+
+cd ../../../
 ```
 
-Delete each match.
-
-- [ ] **Step 5: Verify build green**
+- [ ] **Step 5: Handle SystemConfigEntity's special default**
 
 ```bash
-cd src
-dotnet build ISEStudio.sln -c Release --nologo
-# Expected: Build succeeded. 0 Error(s). 0 Warning(s)
-cd ..
+grep -B 1 -A 1 "ux_systemconfig_legacy_id" \
+  src/ISEStudio/Infrastructure/Persistence/Configurations/EntityConfigurations.cs
+# Expected (post sed): should show HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L).
+# But SystemConfigEntity needs HasDefaultValue(SystemConfigEntity.SingletonLegacyId), NOT 0L.
+# Manually edit:
+#   HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);  (line 382 area)
+# → HasColumnName("legacy_id").IsRequired().HasDefaultValue(SystemConfigEntity.SingletonLegacyId);
 ```
 
-If build fails, inspect:
-- Missed call site (build error like `'LegacyIdAllocator' could not be found` or `'AllocateAndPersistAsync' does not exist`)
-- DI removal missed an edge case
-- EntityConfigurations had a typo
+Use Read to find the line, then Edit to revert it.
 
-Fix inline + re-build.
-
-- [ ] **Step 6: Delete `LegacyIdAllocator.cs` + tests**
+- [ ] **Step 6: Delete LegacyIdAllocator.cs**
 
 ```bash
 git rm src/ISEStudio/Infrastructure/Persistence/LegacyIdAllocator.cs
-git rm src/ISEStudio.Tests/Infrastructure/LegacyIdAllocatorTests.cs
+# Expected: rm 'src/ISEStudio/Infrastructure/Persistence/LegacyIdAllocator.cs'
 ```
 
-- [ ] **Step 7: Verify zero `LegacyId` / `LegacyIdAllocator` references remain (besides exempt historical spec files)**
+- [ ] **Step 7: Update ExportJobStore.cs doc comment**
 
 ```bash
-grep -rln "LegacyId\b\|LegacyIdAllocator\|AllocateAndPersistAsync\|AllocateManyAndPersistAsync\|AllocateAndPersist" src/ \
-  --include="*.cs" --exclude-dir=bin --exclude-dir=obj
-# Expected: empty
+grep -n "LegacyIdAllocator" src/ISEStudio/Exports/ExportJobStore.cs
+# Expected: lines 40-41 doc comment
 ```
 
-If matches remain, inspect each:
-- A service file with a partial replacement (re-apply Step 2)
-- An XML doc comment (delete the sentence or rewrite to remove `LegacyId` reference)
-- A test file using `entity.LegacyId` accessor (delete the test or rewrite)
+Read lines 38-44 and replace the `<see cref="LegacyIdAllocator.AllocateAndPersistAsync{TEntity}"/>` reference with text matching new behavior (e.g., "(`legacy_id` is auto-assigned to 0 by DB DEFAULT in post-Phase-2 schemas; this row was inserted with explicit value)").
 
-- [ ] **Step 8: Verify unit tests pass**
+- [ ] **Step 8: Build and confirm ONLY expected compile errors**
+
+```bash
+cd src
+dotnet build ISEStudio.sln -c Release --nologo
+# Expected: ~22 errors all of form "CS0103: name 'LegacyIdAllocator' does not exist" or
+# "CS1061: '_allocator' does not contain a definition for 'AllocateAndPersistAsync'"
+# (These are EXPECTED — call sites haven't been migrated yet; this is Phase A.2's job.)
+cd ..
+```
+
+If build has other errors (e.g., unrelated to allocator), STOP. Investigate.
+
+- [ ] **Step 9: Commit Phase A.1**
+
+```bash
+git add src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs \
+        src/ISEStudio/Infrastructure/Persistence/Configurations/EntityConfigurations.cs \
+        src/ISEStudio/Infrastructure/Persistence/LegacyIdAllocator.cs \
+        src/ISEStudio/Exports/ExportJobStore.cs
+
+git commit -m "refactor(phase2): LegacyId { private set } + 24 entity configs HasDefaultValue(0L)
+
+Phase A.1 of Guid PK Phase 2 (spec d9a3d1b revised, option B + D1c + D5').
+
+- LegacyAddressableEntity.LegacyId setter made private — production code
+  cannot accidentally write; EF still materializes via backing field.
+- EntityConfigurations.cs (24 sites): .HasColumnName(\"legacy_id\").IsRequired()
+  → .HasDefaultValue(0L); .HasIndex(...ux_*_legacy_id) deleted (otherwise
+  multiple new rows with legacy_id=0 would collide on UNIQUE).
+- LegacyIdAllocator.cs deleted (310 lines) — call sites not yet migrated,
+  so build will be red until Phase A.2.
+- ExportJobStore.cs doc comment updated to reference new behavior.
+
+Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §4.1 + §4.4
+Predecessor: aa5f89d (Phase A.0 7 file renames)
+Tag: pre-isestudio-rename -> fc06a73 (unchanged)"
+```
+
+Capture commit SHA as `<A1_SHA>`.
+
+---
+
+## Task 3: Phase A.2 — 30 call site replacements + DI delete
+
+**Files:**
+- Modify: 22 production service classes (per spec §4.2 table)
+- Modify: `src/ISEStudio/Program.cs:335-336` (delete DI + comment)
+
+**Interfaces:**
+- Consumes: `<A1_SHA>` (Phase A.1 applied)
+- Produces: `_allocator.AllocateAndPersistAsync(x)` → `dbContext.Add(x); SaveChangesAsync(ct)` across 25 sites; `_allocator.AllocateManyAndPersistAsync(rows)` → `dbContext.AddRange(rows); SaveChangesAsync(ct)` across 3 sites; DI registration deleted
+
+> **Sub-task 3.0 (decide on batch strategy):**
+>
+> 22 services × 30 call sites — 3 mechanical patterns:
+> 1. Constructor + field + single call: 18 services (one-liner-ish refactor)
+> 2. Constructor + field + multi-call: 4 services (ConflictService / DocumentService / KnowledgeService / ReleaseService)
+> 3. Direct `new LegacyIdAllocator(db).AllocateAndPersistAsync()` (no DI field): 2 services (ExportJobStore / ExtractionJobStore)
+>
+> All 22 services can be migrated in one subagent dispatch as one big mechanical edit. The patterns are uniform and the diff per file is small.
+
+- [ ] **Step 1: Verify 22 call site files match spec §4.2 table**
+
+```bash
+# Capture full list for the dispatch brief
+grep -rln "LegacyIdAllocator" src/ISEStudio/ --include="*.cs" \
+  | grep -v "LegacyIdAllocator.cs:" | sort
+# Expected: 22 files matching spec §4.2 table
+```
+
+- [ ] **Step 2: Migrate AuthService.cs as a smoke test (verify pattern)**
+
+```bash
+grep -n "LegacyIdAllocator\|AllocateAndPersistAsync\|_allocator" \
+  src/ISEStudio/Authentication/AuthService.cs
+```
+
+Edit AuthService.cs (per spec §4.2 pattern):
+- Remove `private readonly LegacyIdAllocator _allocator;` field
+- Remove `LegacyIdAllocator allocator` constructor param + assignment
+- Replace `await _allocator.AllocateAndPersistAsync(entity, ct).ConfigureAwait(false);` with:
+  ```csharp
+  _dbContext.Users.Add(entity);
+  await _dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+  ```
+
+Build to verify AuthService.cs alone compiles cleanly:
+
+```bash
+cd src
+dotnet build ISEStudio/ISEStudio.csproj -c Release --nologo
+# Expected: 1 fewer error than after Phase A.1 (AuthService.cs migrated)
+cd ..
+```
+
+- [ ] **Step 3: Migrate remaining 21 services via subagent dispatch**
+
+Dispatch a single subagent with:
+- All 22 service file paths
+- The 30 call site table from spec §4.2
+- The AuthService.cs migration as the canonical pattern
+- Requirement: each service must compile individually after migration
+- Verification: `dotnet build src/ISEStudio/ISEStudio.sln -c Release` should report 0 errors after all 22 migrated
+
+Capture subagent result. Confirm 22 files migrated, 0 build errors.
+
+- [ ] **Step 4: Migrate ExportJobStore.cs and ExtractionJobStore.cs (direct `new LegacyIdAllocator` pattern)**
+
+These 2 services use `var allocator = new LegacyIdAllocator(db); await allocator.AllocateAndPersistAsync(...)` without constructor injection. Pattern:
+
+```diff
+- var allocator = new LegacyIdAllocator(db);
+- await allocator.AllocateAndPersistAsync(row, cancellationToken)
+-     .ConfigureAwait(false);
++ _dbContext.<Set>.Add(row);
++ await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+```
+
+For ExtractionJobStore.cs:266 (`AllocateManyAndPersistAsync`):
+
+```diff
+- await _allocator.AllocateManyAndPersistAsync(rows, ct).ConfigureAwait(false);
++ _dbContext.<Set>.AddRange(rows);
++ await _dbContext.SaveChangesAsync(ct).ConfigureAwait(false);
+```
+
+```bash
+cd src
+dotnet build ISEStudio.sln -c Release --nologo
+# Expected: 0 errors
+cd ..
+```
+
+- [ ] **Step 5: Delete DI registration in Program.cs**
+
+```diff
+- // to plain MAX+1 (single-writer DB). See LegacyIdAllocator.cs for rationale.
+- builder.Services.AddScoped<LegacyIdAllocator>();
+```
+
+File: `src/ISEStudio/Program.cs:335-336`
+
+- [ ] **Step 6: Verify clean build**
+
+```bash
+cd src
+dotnet build ISEStudio.sln -c Release --nologo
+# Expected: 0 Error(s)
+cd ..
+```
+
+If any errors remain, STOP. Investigate before committing.
+
+- [ ] **Step 7: Commit Phase A.2**
+
+```bash
+git add src/ISEStudio/Program.cs \
+        $(git diff --name-only HEAD~1 | grep -E "src/ISEStudio/.*\.cs$")
+
+git commit -m "refactor(phase2): retire LegacyIdAllocator — 30 call sites + DI
+
+Phase A.2 of Guid PK Phase 2 (option B + D1c).
+
+22 production service classes migrated (per spec §4.2 table):
+- AuditLogService / AuthService / KnowledgeApiTokenService / McpTokenService
+- ConflictAgent / ConflictService
+- AuthController / DocumentService
+- ExportJobStore / ExtractionJobStore
+- TerminologyAgent / KnowledgeService
+- ABoxProvenanceService / ABoxService / OntologyService / ReleaseService
+- StructureAgent / ValidationDecisionService
+- VocabularyProposalService / VocabularyService
+- PromptService / ProviderService
+
+Pattern: _allocator.AllocateAndPersistAsync(x) →
+  dbContext.Add(x); await dbContext.SaveChangesAsync(ct);
+Pattern: _allocator.AllocateManyAndPersistAsync(rows) →
+  dbContext.AddRange(rows); await dbContext.SaveChangesAsync(ct);
+
+ResolutionService.cs:26 field declaration removed (was injected but never called).
+
+Program.cs:336 builder.Services.AddScoped<LegacyIdAllocator>() removed.
+LegacyIdAllocator.cs (Phase A.1) is the orphaned class — only its deletion
+in git remains.
+
+Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §4.2
+Predecessor: <A1_SHA>
+Tag: pre-isestudio-rename -> fc06a73 (unchanged)"
+```
+
+Capture commit SHA as `<A2_SHA>`.
+
+---
+
+## Task 4: Phase A.3 — Bootstrap runbook update
+
+**Files:**
+- Modify: `docs/superpowers/runbooks/2026-08-25-fresh-deployment-bootstrap.md` (§0 + §3.2 + §3.3 only)
+
+**Interfaces:**
+- Consumes: `<A2_SHA>` (Phase A.2 applied)
+- Produces: Runbook reflects post-Phase-2 `legacy_id = 0` semantics for new rows; §3.5 SQL INSERT 保留 `COALESCE(MAX+1)` 模板不变
+
+> **Sub-task 4.0 (scope confirmation per spec §2.2):**
+> Spec explicit DO-NOT-TOUCH: 历史 spec / Python baseline / 已 retired 文档 — **不动**。仅 `docs/superpowers/runbooks/` 范围。
+
+- [ ] **Step 1: Read current runbook §3.2 / §3.3 / §0 to identify text**
+
+```bash
+grep -n "LegacyIdAllocator\|allocator\|allocated\|allocate" \
+  docs/superpowers/runbooks/2026-08-25-fresh-deployment-bootstrap.md
+# Expected: ~3-5 mentions in §3.2 / §3.3 / §4.6
+```
+
+- [ ] **Step 2: Edit §0 (add Phase 2 context banner)**
+
+Read §0 (intro section), prepend a paragraph noting Phase 2 status:
+
+```markdown
+> **Phase 2 状态(2026-08-26+):** `LegacyIdAllocator` 已退役;新 row 的 `legacy_id` 由 DB `DEFAULT 0` 派发(非 `MAX+1`)。
+> 本 runbook §3.5 的 `COALESCE(MAX+1)` SQL INSERT 模板**保留不变** —— 它仍是合法的 bootstrap 路径,只是 MAX+1 不再是硬约束(UNIQUE 索引已删);保留 `MAX+1` 是为了历史 admin 序号习惯(admin 序号 = 1)。
+```
+
+- [ ] **Step 3: Edit §3.2 (password hash generation)**
+
+Find any `LegacyIdAllocator` mention. If present, remove.
+
+- [ ] **Step 4: Edit §3.3 (schema columns)**
+
+Update §3.3 schema table commentary (not the column list — column stays):
+
+```diff
+- If your table is all snake_case (说明 schema 是手写的,不是 EF 迁移来的)
++ (post-Phase-2): `legacy_id` 列保留,新 row 默认 `0` (DB DEFAULT 0);`ux_*_legacy_id` UNIQUE 索引已删。
++ 本 runbook 假设的 `users` 表结构兼容此变化。
+```
+
+- [ ] **Step 5: Leave §3.5 SQL INSERT template unchanged**
+
+Per spec §2.1 runbook + D9: `legacy_id` 列仍写,`COALESCE(MAX+1)` 保留为 admin 序号约定。
+
+- [ ] **Step 6: Verify no other spec / Python baseline docs were touched**
+
+```bash
+git status
+# Expected: only runbook file modified
+```
+
+- [ ] **Step 7: Commit Phase A.3**
+
+```bash
+git add docs/superpowers/runbooks/2026-08-25-fresh-deployment-bootstrap.md
+
+git commit -m "docs(phase2): runbook §0/§3.2/§3.3 reflects LegacyIdAllocator retirement
+
+Phase A.3 of Guid PK Phase 2 (option B + D1c).
+
+- §0 banner: post-Phase-2 status (DB DEFAULT 0 + UNIQUE index deleted)
+- §3.2 / §3.3: removed stale 'LegacyIdAllocator.AllocateAndPersistAsync' references
+- §3.5 SQL INSERT template: UNCHANGED — COALESCE(MAX+1) kept for admin
+  ordinal habit (D9 decision)
+
+Scope: docs/superpowers/runbooks/ only. Historical specs /
+Python baseline / retired docs left untouched.
+
+Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §2.1
+Predecessor: <A2_SHA>
+Tag: pre-isestudio-rename -> fc06a73 (unchanged)"
+```
+
+Capture commit SHA as `<A3_SHA>`.
+
+---
+
+## Task 5: Phase B — EF migration `LegacyIdDefaultZero`
+
+**Files:**
+- Create: `src/ISEStudio/Infrastructure/Persistence/Migrations/20260826HHMMSS_LegacyIdDefaultZero.cs` (EF auto-generated)
+- Modify: `src/ISEStudio/Infrastructure/Persistence/Migrations/ISEStudioDbContextModelSnapshot.cs` (EF auto-updated)
+
+**Interfaces:**
+- Consumes: `<A3_SHA>` (Phase A complete)
+- Produces: 24 tables × `DropIndex("ux_*_legacy_id")` + `AlterColumn(..., defaultValue: 0L)` migration; snapshot updated
+
+> **Sub-task 5.0 (EF migration constraints per spec §4.3):**
+> Migration MUST only contain `DropIndex` + `AlterColumn`. If EF outputs `CreateTable` / `InsertData`, **manually patch**. `SystemConfigEntity` default is `SingletonLegacyId` (not 0L) — already handled in Task 2 Step 5 via HasDefaultValue(SingletonLegacyId), so EF will emit `defaultValue: SingletonLegacyId` (a long constant).
+
+- [ ] **Step 1: Confirm build green before migration**
+
+```bash
+cd src
+dotnet build ISEStudio/ISEStudio.csproj -c Release --nologo
+# Expected: 0 Error(s)
+cd ..
+```
+
+- [ ] **Step 2: Generate migration via dotnet ef**
+
+```bash
+cd src
+dotnet ef migrations add LegacyIdDefaultZero \
+  --project ISEStudio/ISEStudio.csproj \
+  --startup-project ISEStudio/ISEStudio.csproj \
+  --context ISEStudioDbContext
+cd ..
+```
+
+Expected: file `src/ISEStudio/Infrastructure/Persistence/Migrations/<timestamp>_LegacyIdDefaultZero.cs` created.
+
+- [ ] **Step 3: Audit generated migration content**
+
+```bash
+# MUST contain DropIndex + AlterColumn only, no CreateTable / InsertData:
+cat src/ISEStudio/Infrastructure/Persistence/Migrations/*_LegacyIdDefaultZero.cs \
+  | grep -E "CreateTable|InsertData"
+# Expected: 0 matches
+
+# MUST contain 24 DropIndex + 24 AlterColumn:
+grep -c "DropIndex" src/ISEStudio/Infrastructure/Persistence/Migrations/*_LegacyIdDefaultZero.cs
+# Expected: 24
+grep -c "AlterColumn.*legacy_id" src/ISEStudio/Infrastructure/Persistence/Migrations/*_LegacyIdDefaultZero.cs
+# Expected: 24 (or 23 if EF inlines SystemConfigEntity differently)
+```
+
+If migration contains `CreateTable` or `InsertData`, manually patch (replace `CreateTable` block with the inlined `DropIndex + AlterColumn` calls).
+
+- [ ] **Step 4: Apply migration locally (SQLite dev DB)**
+
+```bash
+cd src
+dotnet ef database update \
+  --project ISEStudio/ISEStudio.csproj \
+  --startup-project ISEStudio/ISEStudio.csproj \
+  --context ISEStudioDbContext
+cd ..
+```
+
+Expected: migration applied successfully. SQLite dev DB now has `legacy_id` DEFAULT 0 + no `ux_*_legacy_id` indexes.
+
+- [ ] **Step 5: Run unit tests to confirm migration didn't break anything**
 
 ```bash
 cd src
 dotnet test ISEStudio.Tests/ISEStudio.Tests.csproj -c Release --nologo --no-build
-# Expected: <UNIT_BEFORE> - LegacyIdAllocator tests passed, 0 failed
+# Expected: failures from deleted LegacyIdAllocatorTests (per Phase C) — capture count
 cd ..
 ```
 
-Record exact count after deletion: `<UNIT_AFTER>`. Should equal `<UNIT_BEFORE> - <count of LegacyIdAllocatorTests>`.
-
-- [ ] **Step 9: Verify contract tests pass (Phase 1 wire stability guarantee)**
-
-```bash
-cd src
-dotnet test ISEStudio.ApiContract.Tests/ISEStudio.ApiContract.Tests.csproj -c Release --nologo --no-build
-# Expected: <CONTRACT_BEFORE> passed, 0 failed
-cd ..
-```
-
-If contract tests regress, STOP. Phase 2 is supposed to NOT touch wire shape — investigate which ApiContract scenario references LegacyId.
-
-- [ ] **Step 10: Commit Phase A.2**
-
-```bash
-git add -A
-git status
-# Verify: ~18 service files + EntityConfigurations.cs + Program.cs + DI extension modified,
-#         LegacyIdAllocator.cs + LegacyIdAllocatorTests.cs deleted
-git diff --cached --stat | tail -40
-git commit -m "refactor(phase2): retire LegacyIdAllocator + drop legacy_id column config
-
-Phase A.2 of Guid PK Phase 2 spec (commit d9a3d1b).
-
-Wire-side primary key switched to Guid.Id in Phase 1; this commit retires
-the DB-side compatibility shim:
-
-- 13 documented call sites + 5 historical leaks (ProviderService +
-  3x ConflictService + KnowledgeService grant) replaced with
-  'entity.Id = Guid.NewGuid(); await _db.SaveChangesAsync(ct);'
-- EntityConfigurations.cs: 24 HasColumnName(\"legacy_id\") +
-  24 HasIndex(...ux_*_legacy_id) entries removed
-- DI: AddScoped<LegacyIdAllocator> removed from Program.cs / DI extensions
-- git rm LegacyIdAllocator.cs + LegacyIdAllocatorTests.cs
-
-The legacy_id column itself stays until Phase B's EF migration drops it;
-this commit only removes the code that *generates* and *configures* it.
-
-Verifies:
-- Gate 1 grep 'LegacyId|LegacyIdAllocator|AllocateAndPersistAsync':
-  0 hits in src/ISEStudio/ (excluding bin/obj/.dll)
-- dotnet build src/ISEStudio.sln: 0 error / 0 warning
-- dotnet test ISEStudio.Tests: <UNIT_AFTER> passed, 0 failed
-  (delta from <UNIT_BEFORE>: <N> LegacyIdAllocator tests removed)
-- dotnet test ISEStudio.ApiContract.Tests: <CONTRACT_BEFORE> passed, 0 failed
-  (Phase 1 wire shape unchanged — Phase 2 doesn't touch wire)
-
-Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §4.2 §4.1
-Predecessor: Phase A.1 commit <A1_SHA>
-Tag: pre-isestudio-rename -> fc06a73 (unchanged)"
-```
-
-Capture SHA: `<A2_SHA>`
-
----
-
-## Task 5: Phase A.3 — Bootstrap runbook update
-
-**Files:**
-- Modify: `docs/superpowers/runbooks/2026-08-25-fresh-deployment-bootstrap.md`
-
-**Interfaces:**
-- Consumes: Phase A.2 applied (Task 4)
-- Produces: runbook §0 / §3.3 / §3.5 / §4.6 reflect that `legacy_id` no longer exists
-
-- [ ] **Step 1: Update runbook §0 (banner note)**
-
-```bash
-# File: docs/superpowers/runbooks/2026-08-25-fresh-deployment-bootstrap.md
-# Line 3-5 area: add a banner note below the existing 触发条件 description
-```
-
-Add after line 5 (or after the existing 触发条件 list):
-
-```markdown
-> **Phase 2 已部署(2026-08-26+):** 本 runbook 的 §3.3 schema 表与 §3.5 INSERT 模板中 `legacy_id` 列在 ISEStudio Phase 2 之后已不再存在。运维跑本 runbook 时,**不需要** 给 INSERT 写 `legacy_id` 列(EF migration `DropLegacyId` 已经把它删了)。
-```
-
-- [ ] **Step 2: Update §3.3 (drop `legacy_id` row from schema listing)**
-
-In section 3.3, the schema listing currently shows:
-```
- id             | uuid                     | not null |
- Username       | character varying(255)   | not null |           <-- PascalCase!
- DisplayName    | character varying(255)   |          |
- PasswordHash   | character varying(255)   | not null |
- IsAdmin        | boolean                  | not null | false
- Active         | boolean                  | not null | true
- CreatedAt      | timestamp with time zone | not null |
- legacy_id      | bigint                   | not null |           <-- snake_case
-```
-
-Delete the `legacy_id | bigint | not null |` line + the `<-- snake_case` annotation.
-
-- [ ] **Step 3: Update §3.5 (drop `legacy_id` column from INSERT template)**
-
-In the INSERT statement block (current ~line 134-156), remove:
-- From the column list: `legacy_id,`
-- From the VALUES list: `COALESCE((SELECT MAX(legacy_id) FROM users), 0) + 1`
-- From the RETURNING list: `legacy_id,`
-
-Add a brief comment after the SQL block:
-
-```markdown
-> Phase 2 之前 INSERT 还需要 `legacy_id`(由 `LegacyIdAllocator` 派发 `MAX+1`);Phase 2 已退役该列,直接省略即可。
-```
-
-- [ ] **Step 4: Update §4.6 (legacy volume discussion)**
-
-In §4.6, find the line:
-> 如果 `isestudio-postgres` volume 是空的但 `ontopilot_ontopilot-postgres`(rename 前的 volume)还在...
-
-Append a new line at the end of §4.6:
-
-```markdown
-> **Phase 2 已部署:** `legacy_id` 列已删除,§3.5 的 INSERT 不再需要它;如果运维是从 pre-Phase 2 的 volume 还原数据,需要先跑 `iri sql-migrate` 把 legacy_id 列脱掉再走 §3.5。
-```
-
-- [ ] **Step 5: Verify markdownlint clean**
-
-```bash
-# Verify no compact tables (|---|), no trailing whitespace, all sections have blank lines
-# (same warnings as Phase 2 spec — use padded | --- | separators)
-```
-
-- [ ] **Step 6: Commit Phase A.3**
-
-```bash
-git add docs/superpowers/runbooks/2026-08-25-fresh-deployment-bootstrap.md
-git diff --cached --stat
-git commit -m "docs(phase2): bootstrap runbook reflects legacy_id retirement
-
-Phase A.3 of Guid PK Phase 2 spec (commit d9a3d1b).
-
-The fresh-deployment bootstrap runbook describes the manual-SQL-INSERT
-fallback path (when the docker-compose seed-admin profile is unavailable).
-After Phase 2, the legacy_id column no longer exists in the users table,
-so the INSERT template + schema listing would mislead operators.
-
-Updates:
-- §0: add banner note 'Phase 2 已部署 — legacy_id 已不再存在'
-- §3.3: drop legacy_id row from users table schema listing
-- §3.5: drop legacy_id from INSERT column list / VALUES / RETURNING,
-        add Phase 2 comment explaining the historical context
-- §4.6: add note about restoring from pre-Phase 2 volume via iri sql-migrate
-
-Other runbook sections (触发条件 / 密码约束 / 踩坑 / Lesson learned)
-unchanged — they describe fail-closed behavior that doesn't depend on
-legacy_id.
-
-Scope limited to docs/superpowers/runbooks/ per user direction in spec
-review; historical spec files (docs/superpowers/specs/2026-08-25-...)
-and Python baseline (docs/migration/, migration/scripts/) preserved.
-
-Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §2.1
-Predecessor: Phase A.2 commit <A2_SHA>
-Tag: pre-isestudio-rename -> fc06a73 (unchanged)"
-```
-
-Capture SHA: `<A3_SHA>`
-
----
-
-## Task 6: Phase B — EF migration `DropLegacyId`
-
-**Files:**
-- Create: `src/ISEStudio/Infrastructure/Persistence/Migrations/20260826HHMMSS_DropLegacyId.cs`
-- Create: `src/ISEStudio/Infrastructure/Persistence/Migrations/20260826HHMMSS_DropLegacyId.Designer.cs`
-- Modify: `src/ISEStudio/Infrastructure/Persistence/Migrations/ISEStudioDbContextModelSnapshot.cs`
-
-**Interfaces:**
-- Consumes: Phase A complete (Tasks 2-5)
-- Produces: EF migration that drops `legacy_id` column + `ux_*_legacy_id` index from all 24 tables; migration applies cleanly; contract tests still green
-
-- [ ] **Step 1: Regenerate the model snapshot**
-
-```bash
-cd src
-# (rebuild first to ensure EntityConfigurations.cs changes are baked)
-dotnet build ISEStudio.sln -c Release --nologo
-
-# Optional: confirm snapshot delta
-diff <(git show HEAD:src/ISEStudio/Infrastructure/Persistence/Migrations/ISEStudioDbContextModelSnapshot.cs) \
-     src/ISEStudio/Infrastructure/Persistence/Migrations/ISEStudioDbContextModelSnapshot.cs | head -50
-# Expected: snapshot now lacks LegacyId property references across 24 entities
-cd ..
-```
-
-If snapshot didn't auto-update, manually re-generate via:
-```bash
-cd src
-dotnet ef migrations remove --force  # only if there's a stale pending migration
-# (otherwise snapshot is auto-updated on `migrations add` next step)
-cd ..
-```
-
-- [ ] **Step 2: Add the `DropLegacyId` migration**
-
-```bash
-cd src
-dotnet ef migrations add DropLegacyId \
-  --project src/ISEStudio \
-  --startup-project src/ISEStudio \
-  --context ISEStudioDbContext
-
-# Verify file created:
-ls -la src/ISEStudio/Infrastructure/Persistence/Migrations/ | grep -i "droplegacyid"
-# Expected: 20260826HHMMSS_DropLegacyId.cs + 20260826HHMMSS_DropLegacyId.Designer.cs
-
-# Read the generated Up() body:
-cat src/ISEStudio/Infrastructure/Persistence/Migrations/20260826HHMMSS_DropLegacyId.cs
-cd ..
-```
-
-- [ ] **Step 3: Audit the generated migration (Gate 6)**
-
-Per spec §4.3 + Gate 6, the migration must contain **only** `DropColumn` + `DropIndex`, no `CreateTable` / `InsertData`:
-
-```bash
-grep -E "CreateTable|InsertData|AddColumn|RenameColumn" \
-  src/ISEStudio/Infrastructure/Persistence/Migrations/20260826HHMMSS_DropLegacyId.cs
-# Expected: empty (only DropColumn + DropIndex)
-```
-
-If `CreateTable` / `InsertData` appears (EF detected schema drift beyond just dropping legacy_id), apply the manual patch per spec §4.3:
-
-```csharp
-// Patch Up() to only contain:
-foreach (var table in new[] { "users", "chunks", /* ... 22 more table names ... */ })
-{
-    migrationBuilder.DropIndex(name: $"ux_{table}_legacy_id", table: table);
-    migrationBuilder.DropColumn(name: "legacy_id", table: table);
-}
-```
-
-Use a script to enumerate the 24 tables:
-
-```bash
-# Tables that had legacy_id (verify by looking at the snapshot before Phase A):
-grep -E 'Table\(.*"' src/ISEStudio/Infrastructure/Persistence/Migrations/ISEStudioDbContextModelSnapshot.cs \
-  | grep -v "MigrationsHistory" \
-  | sed -E 's/.*Table\("(.*)",.*/\1/' \
-  | sort -u
-# Expected: 24 table names
-```
-
-- [ ] **Step 4: Verify migration applies cleanly (against a fresh DB)**
-
-```bash
-cd src
-# Drop the existing dev DB if any
-dotnet ef database drop --project src/ISEStudio --startup-project src/ISEStudio --force --no-build
-
-# Apply all migrations (including the new DropLegacyId)
-dotnet ef database update --project src/ISEStudio --startup-project src/ISEStudio --no-build
-# Expected: "Done." with no errors
-
-# Verify legacy_id is GONE from all 24 tables:
-dotnet ef migrations script --project src/ISEStudio --startup-project src/ISEStudio --no-build \
-  | grep -c "DROP COLUMN.*legacy_id"
-# Expected: 24 (one per table)
-
-dotnet ef migrations script --project src/ISEStudio --startup-project src/ISEStudio --no-build \
-  | grep -c "DROP INDEX.*legacy_id"
-# Expected: 24 (one per table)
-cd ..
-```
-
-- [ ] **Step 5: Verify contract tests still green (Phase 2 is invisible at wire layer)**
-
-```bash
-cd src
-dotnet test ISEStudio.ApiContract.Tests/ISEStudio.ApiContract.Tests.csproj -c Release --nologo --no-build
-# Expected: <CONTRACT_BEFORE> passed, 0 failed
-cd ..
-```
-
-If contract tests regress, investigate — likely a fixture referencing `legacy_id` literal:
-
-```bash
-grep -rn "legacy_id" src/ISEStudio.ApiContract.Tests/ --include="*.cs"
-# Should be empty (Phase 1 already removed wire references)
-```
+Phase B's expected state: tests fail because `LegacyIdAllocatorTests.cs` still references the deleted class. **This is OK** — Phase C fixes it.
 
 - [ ] **Step 6: Commit Phase B**
 
 ```bash
-git add -A
-git status
-git diff --cached --stat | tail -10
-git commit -m "feat(phase2): DropLegacyId EF migration + model snapshot regen
+git add src/ISEStudio/Infrastructure/Persistence/Migrations/*_LegacyIdDefaultZero.cs \
+        src/ISEStudio/Infrastructure/Persistence/Migrations/ISEStudioDbContextModelSnapshot.cs
 
-Phase B of Guid PK Phase 2 spec (commit d9a3d1b).
+git commit -m "feat(phase2): EF migration LegacyIdDefaultZero
 
-Adds EF Core migration 20260826HHMMSS_DropLegacyId that drops the
-legacy_id bigint column + ux_*_legacy_id unique index from all 24
-tables. Migration body audited to contain only DropColumn + DropIndex
-per spec Gate 6 — manual patch applied if EF generated CreateTable /
-InsertData due to schema drift detection.
+Phase B of Guid PK Phase 2.
 
-Model snapshot regenerated: ISEStudioDbContextModelSnapshot.cs no longer
-references LegacyId property across 24 entities.
+24 tables:
+- DROP INDEX ux_*_legacy_id (UNIQUE constraint removed per D5')
+- ALTER COLUMN legacy_id SET DEFAULT 0L
 
-Verifies:
-- dotnet ef database update applies cleanly: 'Done.' with 0 errors
-- Migration script: 24 DROP COLUMN legacy_id + 24 DROP INDEX ux_*_legacy_id
-- Gate 6 grep CreateTable|InsertData: 0 hits in DropLegacyId.cs
-- dotnet test ApiContract.Tests: <CONTRACT_BEFORE> passed (wire shape unchanged)
+SystemConfigEntity gets defaultValue: SystemConfigEntity.SingletonLegacyId (not 0L).
+
+Migration is in-place alter (no CREATE TABLE / INSERT DATA). SQLite dev DB applied
+locally to verify migration is clean.
+
+Pre-existing LegacyIdAllocatorTests will fail in this commit — fixed in Phase C.
 
 Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §4.3
-Predecessor: Phase A.3 commit <A3_SHA>
+Predecessor: <A3_SHA>
 Tag: pre-isestudio-rename -> fc06a73 (unchanged)"
 ```
 
-Capture SHA: `<B_SHA>`
+Capture commit SHA as `<B_SHA>`.
 
 ---
 
-## Task 7: Phase C — IriSqlMigrator cleanup + verifier baseline regen
+## Task 6: Phase C — Test cleanup + new LegacyIdDefaultTests
 
 **Files:**
-- Modify: `src/ISEStudio.Migration/Iri/IriSqlMigrator.cs`
-- Modify: `src/ISEStudio.Migration/Iri/IriSqlVerifier.cs`
-- Modify: baseline file (likely `src/ISEStudio.Migration/Iri/baseline.json` or similar — verify by reading IriSqlVerifier.cs)
-- Delete: corresponding tests in `src/ISEStudio.Tests/Migration/` + `src/ISEStudio.IntegrationTests/Migration/`
+- Delete: `src/ISEStudio.Tests/Persistence/LegacyIdAllocatorTests.cs` (~280 lines, 12 Fact)
+- Delete: `src/ISEStudio.IntegrationTests/Persistence/PostgresLegacyIdAllocatorTests.cs` (per [[ontopilot-allocator-atomic]])
+- Modify: 6 test files (sed to remove `LegacyIdAllocator` references): `TokenServiceTests.cs` / `ConflictAgentTests.cs` / `ExportJobStoreTests.cs` / `ExtractionAgentChainTests.cs` / `TerminologyAgentOrchestrationTests.cs` / `StructureAgentTests.cs`
+- Create: `src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs` (4-5 Fact tests)
 
 **Interfaces:**
-- Consumes: Phase B applied (Task 6)
-- Produces: `ColumnsToRewrite` no longer contains `legacy_id`; `IriSqlVerifier` baseline SHA-256 regenerated without `legacy_id` row; ~5-10 `It("legacy_id_*")` test blocks deleted; IRI migrator integration tests pass
+- Consumes: `<B_SHA>` (Phase B applied)
+- Produces: 0 allocator references in tests; new tests verify `legacy_id = 0` for new rows; full unit + contract + integration suite green
 
-- [ ] **Step 1: Inspect current `IriSqlMigrator.cs` ColumnsToRewrite list**
-
-```bash
-grep -n "ColumnsToRewrite\|legacy_id" src/ISEStudio.Migration/Iri/IriSqlMigrator.cs | head -30
-# Should show ColumnsToRewrite list containing "legacy_id" entry
-```
-
-- [ ] **Step 2: Remove `legacy_id` from ColumnsToRewrite**
-
-In `src/ISEStudio.Migration/Iri/IriSqlMigrator.cs`:
-
-```csharp
-// Before:
-private static readonly IReadOnlyList<string> ColumnsToRewrite = new[]
-{
-    "legacy_id",  // ← Phase 2: delete this line
-    "username",
-    "displayname",
-    // ...
-};
-
-// After:
-private static readonly IReadOnlyList<string> ColumnsToRewrite = new[]
-{
-    "username",
-    "displayname",
-    // ...
-};
-```
-
-- [ ] **Step 3: Inspect `IriSqlVerifier.cs` for baseline structure**
+- [ ] **Step 1: Delete LegacyIdAllocatorTests.cs (SQLite unit test, 12 Fact)**
 
 ```bash
-grep -n "legacy_id\|baseline\|sha256\|SHA256" src/ISEStudio.Migration/Iri/IriSqlVerifier.cs | head -20
+git rm src/ISEStudio.Tests/Persistence/LegacyIdAllocatorTests.cs
 ```
 
-The baseline is likely either:
-- An embedded `expected` dictionary with per-column SHA-256 rows
-- A JSON file path read at runtime (e.g. `IriBaseline.json`)
-
-Identify which and proceed accordingly.
-
-- [ ] **Step 4: Remove `legacy_id` row from baseline**
-
-If embedded in code: delete the `"legacy_id" -> <sha256>` entry.
-
-If in a JSON file: edit the JSON to remove the `legacy_id` key.
-
-- [ ] **Step 5: Regenerate baseline SHA-256**
-
-Per spec §4.4 + Gate 5 mitigation in §7.1, run:
+- [ ] **Step 2: Delete PG integration test for allocator**
 
 ```bash
-cd src
-dotnet run --project ISEStudio.Migration -- sql-smoke-check --update-baseline
-# (or equivalent — read IriSqlVerifier.cs main to find the CLI entry point)
-cd ..
+ls src/ISEStudio.IntegrationTests/Persistence/ | grep -i allocator
+# Capture exact filename
+git rm src/ISEStudio.IntegrationTests/Persistence/<exact-name>.cs
 ```
 
-The `--update-baseline` flag writes a new SHA-256 based on the current state (post-Phase-2 schema). Verify the file/embedded JSON changed.
-
-- [ ] **Step 6: Delete legacy_id-specific tests**
+- [ ] **Step 3: Verify all remaining test references to LegacyIdAllocator**
 
 ```bash
-# Find all tests that reference legacy_id:
-grep -rln "legacy_id" src/ISEStudio.Tests/Migration/ src/ISEStudio.IntegrationTests/Migration/ \
+grep -rln "LegacyIdAllocator\|AllocateAndPersistAsync\|AllocateManyAndPersistAsync" \
+  src/ISEStudio.Tests/ src/ISEStudio.IntegrationTests/ src/ISEStudio.ApiContract.Tests/ \
   --include="*.cs"
-# Expected: 5-10 test files (each likely has It("legacy_id_rewrites", ...))
+# Expected: 6 files (TokenServiceTests, ConflictAgentTests, ExportJobStoreTests,
+# ExtractionAgentChainTests, TerminologyAgentOrchestrationTests, StructureAgentTests)
 ```
 
-For each file:
-- Open it
-- Remove the `It("legacy_id_*", ...)` blocks (whole `It(...)` invocation including the body)
-- Keep any setup / helpers (they may be used by other tests)
-- If the file ONLY has legacy_id tests + setup that's not used elsewhere, delete the whole file with `git rm`
+- [ ] **Step 4: Bulk-remove LegacyIdAllocator references in 6 test files**
 
-```bash
-# Example for a file that ONLY has legacy_id tests:
-git rm src/ISEStudio.Tests/Migration/IriLegacyIdRewriteTests.cs
+Each test file has 1-2 lines referencing `LegacyIdAllocator` (typically in `NewAllocator` helper, service registration, or constructor arg). Pattern per file:
+
+```diff
+- private static LegacyIdAllocator NewAllocator(ISEStudioDbContext db) => new(db);
++ // allocator removed in Phase 2; new rows default to legacy_id = 0 via DB DEFAULT
 ```
 
-- [ ] **Step 7: Verify IriSqlMigrator builds + tests pass**
+```diff
+- services.AddScoped<LegacyIdAllocator>();
++ // (LegacyIdAllocator retired; legacy_id assigned by DB DEFAULT 0)
+```
+
+```diff
+- var allocator = new LegacyIdAllocator(agentDb);
+- allocator.AllocateAndPersistAsync(...)
++ dbContext.<Set>.Add(...);
++ await dbContext.SaveChangesAsync();
+```
+
+For each of the 6 files, read the affected lines and Edit to remove allocator reference. Verify each file compiles individually after edit.
+
+- [ ] **Step 5: Verify clean build (tests included)**
 
 ```bash
 cd src
 dotnet build ISEStudio.sln -c Release --nologo
-# Expected: Build succeeded. 0 Error(s). 0 Warning(s)
-
-dotnet test ISEStudio.Tests/ISEStudio.Tests.csproj -c Release --nologo --no-build
-# Expected: <UNIT_AFTER> - <MIGRATION_TESTS_DELETED> passed, 0 failed
-
-dotnet test ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj -c Release --nologo --no-build
-# Expected: <INTEGRATION_BEFORE> - <MIGRATION_INTEGRATION_TESTS_DELETED> passed, 0 failed
+# Expected: 0 Error(s)
 cd ..
 ```
 
-- [ ] **Step 8: Verify Gate 3 (`"legacy_id"` quoted string zero hits)**
+If errors, STOP. Most likely a missed reference.
 
-```bash
-grep -rn '"legacy_id"' src/ISEStudio/ src/ISEStudio.Migration/ \
-  --include="*.cs" --exclude-dir=bin --exclude-dir=obj
-# Expected: empty
-# (Only allowed: src/ISEStudio/Infrastructure/Persistence/Migrations/20260816140916_InitialCompatibility.cs historical migration)
+- [ ] **Step 6: Create LegacyIdDefaultTests.cs**
+
+File: `src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs`
+
+```csharp
+using ISEStudio.Infrastructure.Persistence;
+using ISEStudio.Infrastructure.Persistence.Entities;
+using Microsoft.EntityFrameworkCore;
+using Xunit;
+
+namespace ISEStudio.Tests.Persistence;
+
+/// <summary>
+/// Verifies Phase 2 behavior: new rows default legacy_id to 0 (DB DEFAULT 0).
+/// LegacyIdAllocator retired; allocator-related tests moved here.
+/// </summary>
+public sealed class LegacyIdDefaultTests
+{
+    [Fact]
+    public async Task NewRow_LegacyIdIsZero_WhenNotExplicitlySet()
+    {
+        using var db = TestDbContextFactory.Create();
+        var user = new UserEntity
+        {
+            Id = Guid.NewGuid(),
+            Username = $"u-{Guid.NewGuid():N}",
+            PasswordHash = "x",
+            IsAdmin = true,
+            Active = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        Assert.Equal(0L, user.LegacyId);
+    }
+
+    [Fact]
+    public async Task MultipleNewRows_AllHaveLegacyIdZero()
+    {
+        using var db = TestDbContextFactory.Create();
+        db.Users.AddRange(
+            new UserEntity { Id = Guid.NewGuid(), Username = "u1", PasswordHash = "x", IsAdmin = true, Active = true, CreatedAt = DateTimeOffset.UtcNow },
+            new UserEntity { Id = Guid.NewGuid(), Username = "u2", PasswordHash = "x", IsAdmin = true, Active = true, CreatedAt = DateTimeOffset.UtcNow }
+        );
+        await db.SaveChangesAsync();
+
+        Assert.Equal(0L, db.Users.Single(u => u.Username == "u1").LegacyId);
+        Assert.Equal(0L, db.Users.Single(u => u.Username == "u2").LegacyId);
+    }
+
+    [Fact]
+    public async Task ExistingRow_LegacyIdUnchanged_OnUpdate()
+    {
+        using var db = TestDbContextFactory.Create();
+        // Seed a row with explicit non-zero LegacyId (simulating historical data)
+        var user = new UserEntity
+        {
+            Id = Guid.NewGuid(),
+            Username = "u-hist",
+            PasswordHash = "x",
+            IsAdmin = true,
+            Active = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+            // Bypass private setter via reflection (or via backing field):
+        };
+        typeof(UserEntity).GetProperty(nameof(UserEntity.LegacyId))!
+            .SetValue(user, 42L);
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        // Detach + re-query to get a fresh materialization
+        db.ChangeTracker.Clear();
+
+        var reloaded = await db.Users.SingleAsync(u => u.Username == "u-hist");
+        Assert.Equal(42L, reloaded.LegacyId);
+
+        // Update unrelated field
+        reloaded.Active = false;
+        await db.SaveChangesAsync();
+
+        db.ChangeTracker.Clear();
+        var reloaded2 = await db.Users.SingleAsync(u => u.Username == "u-hist");
+        Assert.Equal(42L, reloaded2.LegacyId);
+        Assert.False(reloaded2.Active);
+    }
+
+    [Fact]
+    public async Task ExplicitLegacyId_HonoredWhenSetBeforeAdd()
+    {
+        using var db = TestDbContextFactory.Create();
+        var user = new UserEntity
+        {
+            Id = Guid.NewGuid(),
+            Username = "u-explicit",
+            PasswordHash = "x",
+            IsAdmin = true,
+            Active = true,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        // Backdoor setter via reflection (private set)
+        typeof(UserEntity).GetProperty(nameof(UserEntity.LegacyId))!
+            .SetValue(user, 999L);
+
+        db.Users.Add(user);
+        await db.SaveChangesAsync();
+
+        Assert.Equal(999L, user.LegacyId);
+    }
+}
 ```
 
-If a non-historical hit remains, fix.
+(Adjust `TestDbContextFactory` if the actual factory class differs — match the existing pattern in `LegacyIdAllocatorTests.cs`.)
+
+- [ ] **Step 7: Run new tests in isolation**
+
+```bash
+cd src
+dotnet test ISEStudio.Tests/ISEStudio.Tests.csproj -c Release --nologo \
+  --filter "FullyQualifiedName~LegacyIdDefaultTests"
+# Expected: 4/4 Passed
+cd ..
+```
+
+- [ ] **Step 8: Run full unit + contract test suite**
+
+```bash
+cd src
+dotnet test ISEStudio.Tests/ISEStudio.Tests.csproj -c Release --nologo --no-build
+# Expected: Passed! - Failed: 0, Passed: <UNIT_BEFORE> - 12 (alloc tests deleted) + 4 (new tests) = <UNIT_BEFORE - 8>
+dotnet test ISEStudio.ApiContract.Tests/ISEStudio.ApiContract.Tests.csproj -c Release --nologo --no-build
+# Expected: Passed! - Failed: 0, Passed: 167 (unchanged)
+dotnet test ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj -c Release --nologo --no-build
+# Expected: Passed! - Failed: 0, Passed: <INTEGRATION_BEFORE> - N (PG allocator tests deleted)
+cd ..
+```
+
+If any failures, STOP. Investigate before committing.
 
 - [ ] **Step 9: Commit Phase C**
 
 ```bash
-git add -A
-git status
-git diff --cached --stat
-git commit -m "refactor(phase2): retire legacy_id from IriSqlMigrator + verifier baseline
+git add src/ISEStudio.Tests/Persistence/LegacyIdAllocatorTests.cs \
+        src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs \
+        src/ISEStudio.IntegrationTests/Persistence/PostgresLegacyIdAllocatorTests.cs \
+        $(git diff --name-only HEAD~1 | grep -E "src/ISEStudio.Tests/.*\.cs$|src/ISEStudio.IntegrationTests/.*\.cs$")
 
-Phase C of Guid PK Phase 2 spec (commit d9a3d1b).
+git commit -m "test(phase2): drop allocator tests, add LegacyIdDefaultTests
 
-IriSqlMigrator.ColumnsToRewrite used to include legacy_id for IRI-driven
-column rewrites during the brand rename slice. With the legacy_id column
-itself gone (Phase B), the rewrite entry is dead code.
+Phase C of Guid PK Phase 2.
 
-Changes:
-- IriSqlMigrator.cs: drop 'legacy_id' line from ColumnsToRewrite
-- IriSqlVerifier.cs + baseline file: drop legacy_id row + regenerate
-  SHA-256 baseline via 'iri sql-smoke-check --update-baseline'
-- 5-10 'It(\"legacy_id_*\", ...)' test blocks deleted from
-  src/ISEStudio.Tests/Migration/ + IntegrationTests/Migration/
+Deleted:
+- src/ISEStudio.Tests/Persistence/LegacyIdAllocatorTests.cs (12 Fact, ~280 lines)
+- src/ISEStudio.IntegrationTests/Persistence/PostgresLegacyIdAllocatorTests.cs
 
-The remaining ColumnsToRewrite entries (username / displayname / ...)
-are unchanged — they correspond to live DB columns.
+Modified (6 test files): removed LegacyIdAllocator field / DI registration /
+NewAllocator helper, replaced with direct dbContext.Add + SaveChangesAsync.
 
-Verifies:
-- Gate 3 grep '\"legacy_id\"': 0 hits in non-historical cs files
-  (InitialCompatibility migration is exempt)
-- dotnet build src/ISEStudio.sln: 0 error / 0 warning
-- dotnet test Tests: <UNIT_AFTER - MIGRATION_TESTS_DELETED> passed
-- dotnet test IntegrationTests: <INTEGRATION_BEFORE - MIGRATION_INTEGRATION_TESTS_DELETED> passed
+Added:
+- src/ISEStudio.Tests/Persistence/LegacyIdDefaultTests.cs (4 Fact):
+  - NewRow_LegacyIdIsZero_WhenNotExplicitlySet
+  - MultipleNewRows_AllHaveLegacyIdZero
+  - ExistingRow_LegacyIdUnchanged_OnUpdate
+  - ExplicitLegacyId_HonoredWhenSetBeforeAdd
 
-Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §4.4
-Predecessor: Phase B commit <B_SHA>
+Test counts: unit 858 - 12 + 4 = 850; contract 167 (unchanged);
+integration 63 - N (PG allocator).
+
+Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md §4.6
+Predecessor: <B_SHA>
 Tag: pre-isestudio-rename -> fc06a73 (unchanged)"
 ```
 
-Capture SHA: `<C_SHA>`
+Capture commit SHA as `<C_SHA>`.
 
 ---
 
-## Task 8: Phase D — Full test suite + branch review
+## Task 7: Phase D — Full test suite + branch review
 
 **Files:**
-- Touch: none (review + test only)
+- Touch: none (verification only)
 
 **Interfaces:**
-- Consumes: Phase A + B + C applied (Tasks 2-7)
-- Produces: full test suite green; branch review approved
+- Consumes: `<C_SHA>` (Phase C complete)
+- Produces: branch review verdict; full test gate green
 
-- [ ] **Step 1: Run the full test suite**
+- [ ] **Step 1: Run full test suite from clean build**
 
 ```bash
 cd src
 dotnet build ISEStudio.sln -c Release --nologo
-# Expected: 0 error / 0 warning (Gate 4)
-
-dotnet test ISEStudio.Tests/ISEStudio.Tests.csproj -c Release --nologo --no-build
-# Expected: <FINAL_UNIT_COUNT> passed (Gate 5 partial)
-dotnet test ISEStudio.ApiContract.Tests/ISEStudio.ApiContract.Tests.csproj -c Release --nologo --no-build
-# Expected: <FINAL_CONTRACT_COUNT> passed (Gate 5 partial)
-dotnet test ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj -c Release --nologo --no-build
-# Expected: <FINAL_INTEGRATION_COUNT> passed (Gate 5 partial)
+dotnet test ISEStudio.sln -c Release --nologo --no-build
 cd ..
 ```
 
-Where:
-- `<FINAL_UNIT_COUNT>` = `<UNIT_BEFORE> - <LegacyIdAllocatorTests deleted in A.2>`
-- `<FINAL_CONTRACT_COUNT>` = `<CONTRACT_BEFORE>` (no contract tests should change)
-- `<FINAL_INTEGRATION_COUNT>` = `<INTEGRATION_BEFORE> - <legacy_id It() blocks deleted in C>`
+Expected counts (per spec §5 gate 5):
+- Unit: <UNIT_BEFORE - 8> ≈ 850
+- Contract: <CONTRACT_BEFORE> = 167 (unchanged)
+- Integration: <INTEGRATION_BEFORE> - N (PG allocator deleted)
 
-If any fail, STOP. Investigate + fix + amend the relevant Phase commit (no new commits for fixups).
+If any failures, STOP.
 
-- [ ] **Step 2: Dispatch a branch reviewer (opus)**
+- [ ] **Step 2: Verify spec §5 gates 1, 2, 3**
 
-Use `superpowers:requesting-code-review` skill. Hand the reviewer:
-- Full diff: `git diff pre-isestudio-rename..HEAD`
-- Spec: `docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md`
-- Plan: this file
-- Memory pointers: [[ontopilot-allocator-missed-sites]] for the 5 leak sites
+```bash
+# Gate 1: no allocator references
+grep -rn "LegacyIdAllocator\|AllocateAndPersistAsync\|AllocateManyAndPersistAsync" \
+  src/ISEStudio/ src/ISEStudio.Tests/ src/ISEStudio.IntegrationTests/ src/ISEStudio.ApiContract.Tests/ \
+  --include="*.cs" | grep -v "/bin/" | grep -v "/obj/"
+# Expected: 0 matches
 
-Wait for review verdict. Address load-bearing findings inline (amend Phase commits, no new commits). Park non-load-bearing observations in the SDD ledger.
+# Gate 2: LegacyId setter private
+grep "LegacyId {" src/ISEStudio/Infrastructure/Persistence/Entities/LegacyAddressableEntity.cs
+# Expected: line with "private set"
 
-- [ ] **Step 3: Capture reviewer verdict in spec §8 Decision Log**
+# Gate 3: migration only AlterColumn + DropIndex
+grep -E "CreateTable|InsertData" \
+  src/ISEStudio/Infrastructure/Persistence/Migrations/*_LegacyIdDefaultZero.cs
+# Expected: 0 matches
+```
 
-If the reviewer added a Decision, append to spec §8 (separate commit `docs(phase2): log reviewer decisions`).
+If any gate fails, STOP.
+
+- [ ] **Step 3: Branch review (subagent)**
+
+Dispatch a fresh subagent (opus tier) with:
+- The diff: `git diff pre-isestudio-rename..HEAD --stat`
+- The spec: `docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md`
+- The plan: this file
+- The review rubric: spec compliance + code quality + blast radius assessment
+
+Capture subagent verdict. If load-bearing findings, address them and re-review.
 
 ---
 
-## Task 9: Phase E — Runtime smoke test
+## Task 8: Phase E — Runtime smoke test
 
 **Files:**
-- Touch: none (smoke only)
+- Touch: none (runtime verification only)
 
 **Interfaces:**
-- Consumes: Phase A + B + C applied + Phase D review passed
-- Produces: docker compose stack starts fresh against empty volumes; admin seed succeeds; `/api/health` returns 200; login works; `isestudio_session` cookie set
+- Consumes: `<C_SHA>` (or final post-review HEAD)
+- Produces: smoke test verdict; **NO** `docker compose down -v` (data preserved)
 
-- [ ] **Step 1: (Optional but recommended for staging/prod) snapshot the current DB**
+> **Sub-task 8.0 (critical data preservation per spec §3):**
+> Phase 2 does NOT drop or wipe data. Existing volume is intact. Smoke test runs against existing volume with the migration applied on top.
 
-```bash
-docker compose stop isestudio isestudio-migrate
-docker exec ontopilot-postgres-1 pg_dump -U isestudio -d isestudio \
-  --no-owner --no-acl -Fc > ontopilot-pre-phase2-$(date +%Y%m%d).dump
-# Confirm file size > 0
-ls -lh ontopilot-pre-phase2-*.dump
-```
-
-Skip this step on local dev if data loss is acceptable (per spec §3.1).
-
-- [ ] **Step 2: Tear down + wipe volumes (Gate 7 prerequisite)**
+- [ ] **Step 1: Apply migration to running database**
 
 ```bash
-docker compose down
-docker volume rm ontopilot_isestudio-postgres ontopilot_isestudio-data ontopilot_isestudio-minio
-docker volume ls | grep -E "isestudio-(postgres|data|minio)"
-# Expected: empty (volumes removed)
-```
-
-- [ ] **Step 3: Build images + start the stack**
-
-```bash
-docker compose build
-docker compose up -d
-
-# Wait for migrate container to finish + backend to become healthy
-docker compose ps
-# Expected within ~60s:
-#   postgres           Up (healthy)
-#   minio              Up (healthy)
-#   isestudio-migrate  Exited (0)
-#   isestudio          Up (healthy)
-#   frontend           Up
-```
-
-If `isestudio` is `Restarting`, check `docker compose logs isestudio --tail=30`:
-- If `Bootstrap required: the users table is empty`: proceed to Step 4 (expected pre-seed)
-- If anything else: STOP and investigate
-
-- [ ] **Step 4: Seed the first admin (per bootstrap runbook)**
-
-```bash
-# Use the seed-admin profile (PRIMARY path per runbook §0):
-docker compose --profile bootstrap run --rm seed-admin
-# Expected: logs 'admin user created' (or 'already exists' if idempotent retry)
-# Exit code: 0
-
-# Verify user exists:
-docker exec ontopilot-postgres-1 psql -U isestudio -d isestudio -c \
-  'SELECT "Username", "IsAdmin", "Active" FROM users;'
-# Expected: 1 row (admin | t | t)
-```
-
-- [ ] **Step 5: Health check**
-
-```bash
-curl -sS -i http://127.0.0.1:8080/api/health
-# Expected: HTTP/1.1 200 OK with JSON body {"status":"healthy",...}
-```
-
-- [ ] **Step 6: Login + session cookie check**
-
-```bash
-curl -sS -i -X POST http://127.0.0.1:8080/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"<seed-admin-password-from-.env>"}'
-# Expected:
-#   HTTP/1.1 200 OK
-#   Set-Cookie: isestudio_session=<...>; path=/; httponly
-#   {"id":"<uuid>","username":"admin",...}
-```
-
-- [ ] **Step 7: Verify Gate 7 (full smoke sequence)**
-
-```bash
-docker compose down -v && \
-  docker compose --profile bootstrap run --rm seed-admin && \
-  docker compose up -d --build && \
-  sleep 10 && \
-  curl -s http://127.0.0.1:8080/api/health
-# Expected: HTTP 200 + JSON body
-```
-
-- [ ] **Step 8: Tear down smoke environment**
-
-```bash
-docker compose down -v
-# Leave volumes wiped; clean environment for next phase / handoff
-```
-
----
-
-## Task 10: Final verification + memory + handoff
-
-**Files:**
-- Create: `C:\Users\geffz\.claude\projects\e--GitHub-ontopilot\memory\ontopilot-phase2-guid-pk-retirement.md`
-- Modify: `C:\Users\geffz\.claude\projects\e--GitHub-ontopilot\memory\MEMORY.md`
-
-**Interfaces:**
-- Consumes: Phase A-E complete (Tasks 2-9)
-- Produces: all 7 gates re-verified; memory file documenting the slice; MEMORY.md updated; ready for `superpowers:finishing-a-development-branch`
-
-- [ ] **Step 1: Re-run all 7 gates one final time**
-
-```bash
-echo "=== Gate 1: 代码无 LegacyId 残留 ==="
-grep -rln "LegacyId\b\|LegacyIdAllocator\|AllocateAndPersistAsync\|AllocateManyAndPersistAsync" \
-  src/ --include="*.cs" --exclude-dir=bin --exclude-dir=obj
-# Expected: empty
-
-echo "=== Gate 2: 实体无 legacy_id 列名引用 ==="
-grep -rln '"legacy_id"' src/ISEStudio/ src/ISEStudio.Migration/ \
-  --include="*.cs" --exclude-dir=bin --exclude-dir=obj
-# Expected: empty (only allowed: InitialCompatibility historical migration)
-
-echo "=== Gate 3: dotnet build 干净 ==="
-cd src && dotnet build ISEStudio.sln -c Release --nologo && cd ..
-# Expected: 0 error / 0 warning
-
-echo "=== Gate 4: 测试全绿 ==="
 cd src
-dotnet test ISEStudio.Tests/ISEStudio.Tests.csproj -c Release --nologo --no-build
-dotnet test ISEStudio.ApiContract.Tests/ISEStudio.ApiContract.Tests.csproj -c Release --nologo --no-build
-dotnet test ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj -c Release --nologo --no-build
+dotnet ef database update \
+  --project ISEStudio/ISEStudio.csproj \
+  --startup-project ISEStudio/ISEStudio.csproj \
+  --context ISEStudioDbContext
 cd ..
-
-echo "=== Gate 5: EF migration 只 DROP 不 CREATE ==="
-grep -E "CreateTable|InsertData|AddColumn|RenameColumn" \
-  src/ISEStudio/Infrastructure/Persistence/Migrations/20260826HHMMSS_DropLegacyId.cs
-# Expected: empty
-
-echo "=== Gate 6: docker compose config 干净 ==="
-docker compose config --quiet
-
-echo "=== Gate 7: pre-isestudio-rename tag 保留 ==="
-git rev-parse pre-isestudio-rename
-# Expected: <fc06a73-hash> (NOT current HEAD)
 ```
 
-- [ ] **Step 2: Verify all Phase A/B/C commit SHAs in git log**
+Expected: migration applied; existing rows have unchanged `legacy_id` values; new rows would default to 0 (but we don't insert in smoke).
+
+- [ ] **Step 2: Verify DB schema post-migration**
 
 ```bash
-git log --oneline pre-isestudio-rename..HEAD
-# Expected: <A0_SHA> <A1_SHA> <A2_SHA> <A3_SHA> <B_SHA> <C_SHA> (+ optional reviewer-decisions commit)
+docker exec ontopilot-postgres-1 psql -U isestudio -d isestudio -c '\d users'
 ```
 
-- [ ] **Step 3: Write memory file documenting the slice**
+Expected output:
+```
+     Column     |           Type           | Nullable | Default
+----------------+--------------------------+----------+---------
+ legacy_id      | bigint                   | not null | 0
+```
 
-Create `C:\Users\geffz\.claude\projects\e--GitHub-ontopilot\memory\ontopilot-phase2-guid-pk-retirement.md` with this structure:
+No `ux_users_legacy_id` index listed in indexes section.
+
+- [ ] **Step 3: Start backend and verify health**
+
+```bash
+docker compose up -d isestudio
+sleep 10
+curl -s http://127.0.0.1:8080/api/health
+# Expected: 200 OK
+docker compose logs isestudio --tail=20 | grep -iE "error|fatal|exception"
+# Expected: no errors
+```
+
+- [ ] **Step 4: Smoke test legacy behavior (optional)**
+
+```bash
+# Insert a new row directly via SQL and verify legacy_id = 0 default
+docker exec ontopilot-postgres-1 psql -U isestudio -d isestudio -c \
+  "INSERT INTO users (id, \"Username\", \"PasswordHash\", \"IsAdmin\", \"Active\", \"CreatedAt\") VALUES (gen_random_uuid(), 'smoke-test', 'x', false, true, NOW()) RETURNING id, \"Username\", legacy_id;"
+# Expected: legacy_id = 0
+
+# Cleanup the smoke-test row
+docker exec ontopilot-postgres-1 psql -U isestudio -d isestudio -c \
+  "DELETE FROM users WHERE \"Username\" = 'smoke-test';"
+```
+
+- [ ] **Step 5: Document smoke result**
+
+```bash
+echo "Phase 2 smoke result: PASS at $(date -Iseconds)" >> /tmp/phase2-smoke.log
+```
+
+---
+
+## Task 9: Final verification + memory + handoff
+
+**Files:**
+- Touch: memory file `~/.claude/projects/e--GitHub-ontopilot/memory/ontopilot-phase2-complete.md` (NEW)
+
+- [ ] **Step 1: Verify spec §5 gates 4, 5, 6, 7**
+
+```bash
+# Gate 4: dotnet build clean
+dotnet build src/ISEStudio.sln -c Release --nologo
+# Expected: 0 Error(s) / 0 Warning(s)
+
+# Gate 5: tests green (re-run with --no-build)
+cd src
+dotnet test ISEStudio.sln -c Release --nologo --no-build
+cd ..
+# Expected: per Task 7 Step 1 counts
+
+# Gate 6: migration applied via isestudio-migrate container
+docker compose up -d isestudio-migrate
+docker compose ps isestudio-migrate
+# Expected: Exited (0)
+
+# Gate 7: runtime health
+curl -s http://127.0.0.1:8080/api/health
+# Expected: 200 OK
+```
+
+- [ ] **Step 2: Tag verification**
+
+```bash
+git rev-parse pre-isestudio-rename
+# Expected: <fc06a73-hash> (NOT the current HEAD — tag still at rename point)
+git rev-parse pre-python-retirement
+# Expected: <pre-python-retirement-hash>
+```
+
+- [ ] **Step 3: Write memory file**
+
+File: `~/.claude/projects/e--GitHub-ontopilot/memory/ontopilot-phase2-complete.md`
 
 ```markdown
 ---
-name: ontopilot-phase2-guid-pk-retirement
-description: "Guid PK Phase 2 — Legacy 字段退役 (2026-08-26):删 legacy_id 列 + 退役 LegacyIdAllocator + 简化 Entity 基类 + IriSqlMigrator 同步 + 6 file renames + bootstrap runbook 更新,~5 atomic commits on dotnet branch"
+name: ontopilot-phase2-complete
+description: Guid PK Phase 2 (LegacyIdAllocator 退役) 完成 — option B + D1c + D5' 设计
 metadata:
   type: project
-  modified: 2026-08-26T...
 ---
 
-# Guid PK Phase 2 — Legacy 字段退役 (2026-08-26)
+# Guid PK Phase 2 完成 (2026-08-26)
 
-## Commits (5 atomic)
-- Phase A.0 (chore): 6 OnToPilot* filenames → ISEStudio* (git mv)
-- Phase A.1 (refactor): 24 entities LegacyAddressableEntity → Entity
-- Phase A.2 (refactor): LegacyIdAllocator + 13+5 call sites + DI + EntityConfigurations
-- Phase A.3 (docs): bootstrap runbook §0/§3.3/§3.5/§4.6 legacy_id removal
-- Phase B (feat): DropLegacyId EF migration + model snapshot regen
-- Phase C (refactor): IriSqlMigrator ColumnsToRewrite + IriSqlVerifier baseline SHA-256 regen
+**Why:** Phase 2 退役 `LegacyIdAllocator` 服务 + DB UNIQUE 索引。生产 109 个 `.LegacyId` 读访问点全部保留(行为不变);写入路径不再依赖 allocator,新 row `legacy_id = 0` (DB DEFAULT)。
 
-## Decisions
-- D1: 清 volume,接受数据丢失(staging/prod 需 pg_dump 先行)
-- D2: IriSqlMigrator legacy_id 重写分支同步退役
-- D3: EF DropLegacyId 只 DROP,不重建(若 EF 输出 CREATE TABLE 人工 patch)
-- D4: 历史 EF migration InitialCompatibility 保留(append-only)
-- D5: pre-isestudio-rename + pre-python-retirement tag 都保留,不打新 tag
+**How to apply:** 任何后续 slice 想"再用 LegacyId 做 correlation / sort / FK"时,记住 LegacyId 是 **只读 + 大部分为 0**(只有历史 data 是非零)。新代码应该用 `Guid Id`。EF 改 HasDefaultValue 是 D5' 决定(删 UNIQUE),不要重新加 HasIndex(...).IsUnique()。
 
-## Boundaries (per spec §2.2)
-- Runbook scope: 仅 docs/superpowers/runbooks/
-- 历史 spec / Python baseline: docs/migration/, migration/scripts/, docs/superpowers/specs/2026-08-25-* 全部不动
+## Commits
 
-## Verification gates (all 7 passed)
-1. 代码无 LegacyId 残留
-2. 实体无 legacy_id 列名引用(InitialCompatibility 例外)
-3. dotnet build 干净
-4. 测试全绿(<FINAL_UNIT> + <FINAL_CONTRACT> + <FINAL_INTEGRATION>)
-5. EF migration 只 DROP 不 CREATE
-6. docker compose config 干净
-7. pre-isestudio-rename tag 保留在 fc06a73
+- Phase A.0 (7 file renames): `aa5f89d`
+- Phase A.1 (entity base + EntityConfigs + alloc file delete): `<A1_SHA>`
+- Phase A.2 (30 call sites + DI): `<A2_SHA>`
+- Phase A.3 (runbook): `<A3_SHA>`
+- Phase B (EF migration `LegacyIdDefaultZero`): `<B_SHA>`
+- Phase C (test cleanup + LegacyIdDefaultTests): `<C_SHA>`
 
-## File rename (Phase A.0)
-- 6 OnToPilot* filenames → ISEStudio*:
-  - DbContext / DbContextFactory
-  - Mcp{Prompts,Resources,Tools}
-  - Serialization/JsonContext
+## 关联
 
-## Unlock / next steps
-- Brand rename 在所有层 clean(包括数据层)
-- GitHub repo rename follow-up(只剩仓库设置层面)
+- 上游:[[ontopilot-isestudio-rename]] + [Phase1 spec](2026-08-20-guid-primary-key-design.md)
+- 修订:[[ontopilot-phase2-halt]](option B + D1c + D5' 设计依据)
+- 平行:[[ontopilot-allocator-atomic]] + [[ontopilot-allocator-missed-sites]]
 
-## Link
-- [[ontopilot-isestudio-rename]] (上游:brand rename 解锁 Phase 2)
-- [[ontopilot-allocator-missed-sites]] (5 个补漏点是 Phase A.2 清单)
-- [[ontopilot-apicontract-prebaseline-fix]] (Phase 0.5 baseline 锁定延续)
-- spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md
-- plan: docs/superpowers/plans/2026-08-26-guid-primary-key-phase-2.md
+## 后续
+
+- GitHub repo rename follow-up: 解锁(allocator 引用层 clean)
+- Guid PK Phase 3: 可推进(若还需要)
+- 删 `legacy_id` 列:需另开 slice(类似 D1-D5' 决策流程,但更激进)
 ```
 
-- [ ] **Step 4: Add entry to MEMORY.md index**
+- [ ] **Step 4: Add pointer to MEMORY.md index**
 
-Append a new bullet at the bottom of `C:\Users\geffz\.claude\projects\e--GitHub-ontopilot\memory\MEMORY.md`:
+Edit `~/.claude/projects/e--GitHub-ontopilot/memory/MEMORY.md`:
 
 ```markdown
-- [ontopilot-phase2-guid-pk-retirement](ontopilot-phase2-guid-pk-retirement.md) — Guid PK Phase 2:删 legacy_id 列 + 退役 LegacyIdAllocator + 简化 Entity 基类 + IriSqlMigrator 同步 + 6 file renames + bootstrap runbook 更新 (2026-08-26,~5 atomic commits,24 entity 退役 LegacyAddressableEntity,13+5 call sites 替换为 Guid.NewGuid,Gate 7 全过)
+- [ontopilot-phase2-complete](ontopilot-phase2-complete.md) — Guid PK Phase 2 完成(2026-08-26):option B + D1c + D5',LegacyIdAllocator 退役,新 row legacy_id=0
 ```
 
-- [ ] **Step 5: Report slice complete + handoff**
+- [ ] **Step 5: Final commit (if memory file added to repo)**
 
-Report to user:
-- 5 commit SHAs (`<A0_SHA>` / `<A1_SHA>` / `<A2_SHA>` / `<A3_SHA>` / `<B_SHA>` / `<C_SHA>`) + reviewer-decisions commit (if any)
-- Pre/post test counts: `<UNIT_BEFORE>` → `<FINAL_UNIT_COUNT>` etc.
-- All 7 gates passed
-- Memory file written + MEMORY.md updated
-- Ready for `superpowers:finishing-a-development-branch`
+Memory file is in user-global location, not in repo. No commit needed for memory.
 
-DO NOT invoke `finishing-a-development-branch` automatically — wait for user instruction.
+```bash
+git status
+# Expected: working tree clean (all Phase 2 commits in place)
+git log --oneline pre-isestudio-rename..HEAD
+# Expected: ~6 commits (A.1, A.2, A.3, B, C, optionally D if review made changes)
+```
 
----
+- [ ] **Step 6: Report completion**
 
-## Self-Review (per writing-plans skill §"Self-Review")
+Print summary:
 
-### Spec coverage check
+```
+Phase 2 complete:
+- <A1_SHA>: LegacyId private set + EntityConfigs HasDefaultValue(0L) + alloc file delete
+- <A2_SHA>: 30 call site replacements + DI delete
+- <A3_SHA>: runbook §0/§3.2/§3.3
+- <B_SHA>: EF migration LegacyIdDefaultZero
+- <C_SHA>: test cleanup + LegacyIdDefaultTests
 
-| Spec § | Requirement | Plan coverage |
-|---|---|---|
-| §2.1 代码层 | LegacyIdAllocator.cs 删除 | Task 4 Steps 6-7 |
-| §2.1 代码层 | LegacyAddressableEntity.cs 删除 | Task 3 Step 4 |
-| §2.1 代码层 | 24 entity 基类简化 | Task 3 Step 3 |
-| §2.1 代码层 | 13+5 allocator call sites | Task 4 Steps 1-2 |
-| §2.1 代码层 | EntityConfigurations legacy_id 列 / 索引删除 | Task 4 Step 3 |
-| §2.1 代码层 | DI 移除 | Task 4 Step 4 |
-| §2.1 Stage 3 territory | 6 file renames | Task 2 Steps 1-2 |
-| §2.1 EF 迁移 | DropLegacyId migration | Task 6 Steps 1-3 |
-| §2.1 IriSqlMigrator | ColumnsToRewrite + verifier baseline | Task 7 Steps 2-5 |
-| §2.1 测试 | LegacyId allocator tests 删除 | Task 4 Step 6 + Step 8 |
-| §2.1 Runbook | bootstrap runbook §0/§3.3/§3.5/§4.6 | Task 5 Steps 1-4 |
-| §2.1 Compose | docker compose down -v | Task 9 Step 2 |
-| §2.2 OUT | EF migration InitialCompatibility 保留 | implicit (excluded from `migrations add`) |
-| §2.2 OUT | Python baseline / historical spec | implicit (sed exclusions + manual) |
-| §2.2 OUT | pre-isestudio-rename tag | implicit (not moved) |
-| §3 数据迁移 | 清 volume + cutover + smoke | Task 9 Steps 1-7 |
-| §4.1 Entity 简化 | sed + delete | Task 3 |
-| §4.2 Allocator 调用点移除 | 13+5 sites | Task 4 |
-| §4.3 EF migration 生成 + audit | only DROP | Task 6 Step 3 |
-| §4.4 IriSqlMigrator | ColumnsToRewrite + verifier | Task 7 |
-| §5 验证 gates | 7 gates | Task 10 Step 1 |
-| §6 任务分解 | 5 phases | Tasks 2-9 |
-| §7 风险 | EF CREATE TABLE patch | Task 6 Step 3 |
-| §7 风险 | IRI baseline SHA 漂移 | Task 7 Step 5 |
-| §7 风险 | ApiContract 回归 | Task 6 Step 5 + Task 8 Step 1 |
-| §7 风险 | Docker volume 误删 | Task 9 Step 1 (snapshot) + Step 2 (verify ls) |
-| §8 Decision Log | D1-D5 | captured in Global Constraints |
+Tests: unit=850 contract=167 integration=<N>
+Smoke: PASS (data preserved, no down -v)
+Spec: docs/superpowers/specs/2026-08-26-guid-primary-key-phase-2-design.md (revised option B)
+Plan: docs/superpowers/plans/2026-08-26-guid-primary-key-phase-2.md (this file)
+```
 
-**Coverage gap:** none. Every spec requirement maps to a Step.
-
-### Placeholder scan
-
-- No "TBD", "TODO", "implement later", "fill in details", "add appropriate error handling", "similar to Task N" markers.
-- All code blocks contain real commands, real sed patterns, real expected outputs.
-- Where a step requires judgment (e.g. "find all 24 HasColumnName lines and delete them"), the step provides the grep + the expected count.
-
-### Type consistency
-
-- `LegacyAddressableEntity` consistent across: Global Constraints (target of retirement), Task 3 (deletion site), Task 4 (no further references).
-- `LegacyIdAllocator` consistent across: Global Constraints, Task 4 (deletion site), Task 7 (no further references).
-- `ISEStudioDbContext` consistent across: Task 1 (build target), Task 2 (file rename target), Task 6 (EF migration context name).
-- `OnToPilotDbContext.cs` consistent across: Global Constraints (rename source), Task 2 (rename source), Task 4 (no further references after A.0 commit).
-- File paths in `src/ISEStudio/...` consistent across all tasks.
-
-Plan complete and self-reviewed.
+End of plan.
