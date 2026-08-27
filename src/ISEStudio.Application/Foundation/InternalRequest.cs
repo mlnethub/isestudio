@@ -12,11 +12,9 @@ namespace ISEStudio.Application.Foundation;
 /// no inputs is a single <c>new InternalRequest(...)</c> with all-null
 /// fields.</para>
 ///
-/// <para><see cref="KnowledgeSystemId"/> remains the legacy integer id while
-/// not-yet-migrated slices still resolve their KS by <c>LegacyId</c>.
-/// <see cref="KnowledgeSystemGuid"/> carries the PK <c>Guid</c> for slices
-/// whose routes already bind <c>{id:guid}</c>; it is removed once the
-/// migration reaches the remaining slices.</para>
+/// <para><see cref="KnowledgeSystemId"/> is the Guid PK (back-compat for
+/// legacy callers that still pass a <c>long</c>); prefer
+/// <see cref="KnowledgeSystemGuid"/> for new code paths.</para>
 /// </summary>
 public sealed record InternalRequest(
     long? KnowledgeSystemId,
