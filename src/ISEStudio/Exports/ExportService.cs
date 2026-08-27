@@ -213,7 +213,13 @@ public sealed class ExportService : IDisposable
             throw new KeyNotFoundException("Export file not found.");
         }
 
-        var bytes = _artifacts.ReadFile(ks.PublicId, filename);
+        // Read via the layout-fallback overload: Phase 3 flattened the
+        // on-disk path (dropping the per-job `legacy_id` subdirectory), so
+        // jobs completed before the cutover still have their shards one
+        // numeric subdir deep. The store retries there when the flat path
+        // misses and exactly one such subdir exists; ambiguous cases keep
+        // the 404 below. Silent to clients either way.
+        var bytes = _artifacts.ReadFileWithLegacyLayoutFallback(ks.PublicId, filename);
         if (bytes is null)
         {
             throw new KeyNotFoundException("Export file not found.");

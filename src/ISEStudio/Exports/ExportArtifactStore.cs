@@ -137,9 +137,7 @@ public sealed class ExportArtifactStore
         // guard (Path.GetFileName(filename) != filename) rejects trailing
         // slashes / NULs / multi-segment names that survived the first
         // two.
-        if (Path.IsPathRooted(filename)
-            || filename.Contains("..", StringComparison.Ordinal)
-            || Path.GetFileName(filename) != filename)
+        if (!IsSafeFileName(filename))
         {
             return null;
         }
@@ -147,6 +145,68 @@ public sealed class ExportArtifactStore
         var path = Path.Combine(JobPath(publicId), filename);
         return File.Exists(path) ? File.ReadAllBytes(path) : null;
     }
+
+    /// <summary>
+    /// Read a previously-written shard, falling back to the pre-Phase-3
+    /// on-disk layout when the current flat path misses.
+    ///
+    /// <para>Before Phase 3 the shard path carried a per-job subdirectory
+    /// — <c>{root}/{publicId}/{jobLegacyId}/{layer}-NNNN.nq</c> — and since
+    /// Phase 2 every job row carried <c>legacy_id = 0</c>, so historic data
+    /// sits under a single <c>0/</c> subdir. Phase 3 dropped the column and
+    /// with it the subdirectory, which would have made those completed jobs
+    /// silently 404 on download.</para>
+    ///
+    /// <para>The fallback is deliberately narrow: it triggers only when the
+    /// flat read misses, and only when <em>exactly one</em> numeric-named
+    /// subdirectory exists under <c>{root}/{publicId}/</c>. Zero or two-plus
+    /// numeric subdirs are ambiguous, so the caller keeps its 404 —
+    /// guessing between candidate job directories would risk serving one
+    /// job's artefact under another job's id. No <c>legacy_id</c> column is
+    /// consulted (it no longer exists); the disk is the only source.</para>
+    ///
+    /// <para>Writes are unaffected: new jobs continue to use the flat
+    /// layout via <see cref="WriteShard"/> / <see cref="WriteManifest"/>.
+    /// Keeping this method here (rather than inlining disk probing in
+    /// <see cref="ExportService"/>) preserves the invariant that exactly one
+    /// type owns on-disk layout knowledge.</para>
+    /// </summary>
+    public byte[]? ReadFileWithLegacyLayoutFallback(string publicId, string filename)
+    {
+        var primary = ReadFile(publicId, filename);
+        if (primary is not null) return primary;
+
+        // Re-apply the traversal guard: the fallback path joins the same
+        // untrusted filename onto a deeper directory.
+        if (!IsSafeFileName(filename)) return null;
+
+        var ksDir = JobPath(publicId);
+        if (!Directory.Exists(ksDir)) return null;
+
+        string? candidate = null;
+        foreach (var dir in Directory.EnumerateDirectories(ksDir))
+        {
+            var name = Path.GetFileName(dir);
+            if (name.Length == 0 || !name.All(char.IsAsciiDigit)) continue;
+            // Two or more numeric subdirs → ambiguous, stay on 404.
+            if (candidate is not null) return null;
+            candidate = dir;
+        }
+        if (candidate is null) return null;
+
+        var path = Path.Combine(candidate, filename);
+        return File.Exists(path) ? File.ReadAllBytes(path) : null;
+    }
+
+    /// <summary>
+    /// Path-traversal guard shared by every disk read. Rejects absolute
+    /// paths, parent traversal, and multi-segment / trailing-separator
+    /// names that survived the first two checks.
+    /// </summary>
+    private static bool IsSafeFileName(string filename) =>
+        !Path.IsPathRooted(filename)
+        && !filename.Contains("..", StringComparison.Ordinal)
+        && Path.GetFileName(filename) == filename;
 
     /// <summary>
     /// Statement count encoded in an N-Quads shard. Mirrors
