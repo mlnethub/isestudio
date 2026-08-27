@@ -87,7 +87,6 @@ ISEStudio 是面向企业与业务团队的本体生产工作台：把散落在�
 
 ## 产品界面
 
-![ISEStudio 本体工作台，包含治理导航、类层级、图谱浏览和实体详情](docs/images/isestudio-web-demo.png)
 
 本体工作台在同一视图中整合类导航、关系图谱和实体详情；项目侧边栏则将审核队列、发布、文档、历史、成员和 API 访问串联在统一的治理流程中。
 
@@ -145,8 +144,8 @@ SQLite 适用于单进程本地开发；共享环境和 Docker 部署使用 Post
 ### 1. 配置
 
 ```bash
-git clone https://github.com/deeplethe/ontopilot.git
-cd ontopilot
+git clone https://github.com/mlnethub/isestudio.git
+cd isestudio
 cp .env.example .env
 cp src/.env.example src/.env
 ```

@@ -145,8 +145,8 @@ SQLite is supported for single-process local development. PostgreSQL is the supp
 ### 1. Configure
 
 ```bash
-git clone https://github.com/deeplethe/ontopilot.git
-cd ontopilot
+git clone https://github.com/mlnethub/isestudio.git
+cd isestudio
 cp .env.example .env
 cp src/.env.example src/.env
 ```
