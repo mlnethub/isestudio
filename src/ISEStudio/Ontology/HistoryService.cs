@@ -89,7 +89,7 @@ public sealed class HistoryService
                 && (e.Added != null || e.Removed != null))
             .ToListAsync(ct).ConfigureAwait(false))
             .Where(e => e.CreatedAt >= cutoffAt)
-            .OrderByDescending(e => e.CreatedAt).ToList();
+            .OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.Id).ToList();
 
         var graphs = events.Select(e => e.Graph ?? ks.GraphIri).Distinct().ToList();
         var rbGid = graphs.Count > 1 ? Guid.NewGuid().ToString("N") : null;

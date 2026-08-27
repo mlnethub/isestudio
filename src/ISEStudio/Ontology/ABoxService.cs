@@ -532,7 +532,6 @@ public sealed class ABoxService
             Removed = removed.Length == 0 ? null : removed,
             CreatedAt = _clock.GetUtcNow(),
         };
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
         _db.AuditEvents.Add(entity);
         await _db.SaveChangesAsync(token).ConfigureAwait(false);
         return entity;

@@ -219,7 +219,6 @@ public sealed class DocumentService
             ParseStatus = "pending",
             ChunkCount = 0,
         };
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
         _db.Documents.Add(doc);
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
@@ -802,7 +801,6 @@ public sealed class DocumentService
                 CreatedAt = now,
             });
         }
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
         _db.Chunks.AddRange(chunks);
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
     }

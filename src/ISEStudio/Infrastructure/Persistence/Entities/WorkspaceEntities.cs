@@ -180,7 +180,7 @@ public sealed class ProviderEntity : EntityBase
 }
 
 /// <summary>
-/// Singleton (<c>LegacyId == 1</c>) runtime config an admin can change WITHOUT
+/// Singleton (<c>IsSingleton = true</c>) runtime config an admin can change WITHOUT
 /// a restart, overlaying the .env defaults. Holds the system default
 /// provider/model for chat + embeddings; a KS may override either.
 /// </summary>

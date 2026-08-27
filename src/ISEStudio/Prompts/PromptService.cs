@@ -117,7 +117,6 @@ public sealed class PromptService
                 CreatedAt = now,
                 UpdatedAt = now,
             };
-            // LegacyId is filled by the column DEFAULT 0 at INSERT time.
             _db.KnowledgePromptOverrides.Add(row);
             await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }

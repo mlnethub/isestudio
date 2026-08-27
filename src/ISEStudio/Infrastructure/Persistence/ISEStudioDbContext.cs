@@ -67,7 +67,7 @@ public sealed class ISEStudioDbContext : DbContext
     /// <summary>Model endpoint entries (LLM or embedding).</summary>
     public DbSet<ProviderEntity> Providers => Set<ProviderEntity>();
 
-    /// <summary>Singleton runtime configuration (LegacyId == 1).</summary>
+    /// <summary>Singleton runtime configuration (IsSingleton = true).</summary>
     public DbSet<SystemConfigEntity> SystemConfigs => Set<SystemConfigEntity>();
 
     // ---------------------------------------------------------------------

@@ -142,7 +142,6 @@ public sealed class ConflictService
             var payload = ToPayloadJson(d.Entities, d.Resolutions);
             if (!existingBySig.TryGetValue(sig, out var row))
             {
-                // LegacyId is filled by the column DEFAULT 0 at INSERT time. (Phase 3: legacy_id 列已退役.)
                 newOnes.Add(new ConflictEntity
                 {
                     Id = Guid.NewGuid(),
@@ -568,8 +567,6 @@ public sealed class ConflictService
             var payload = ToPayloadJson(d.Entities, d.Resolutions);
             if (!existingBySig.TryGetValue(sig, out var row))
             {
-                // See DetectAsync: LegacyId is filled by the column
-                // DEFAULT 0 at INSERT time. (Phase 3: legacy_id 列已退役.)
                 newOnes.Add(new ConflictEntity
                 {
                     Id = Guid.NewGuid(),

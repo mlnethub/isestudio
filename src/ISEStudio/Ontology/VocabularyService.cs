@@ -667,9 +667,8 @@ public sealed class VocabularyService
     /// Append the audit row that records the change. Mirrors
     /// <see cref="ABoxService.WriteAuditAsync"/>: pre/post N-Quads byte
     /// blobs round-trip through <see cref="StoreWrapper.DumpNQuads"/> and
-    /// <see cref="StoreWrapper.DiffNQuads"/>. The <c>LegacyId</c> column
-    /// is monotonically incremented from the audit table's current max so
-    /// future rollback tooling can replay events in order.
+    /// <see cref="StoreWrapper.DiffNQuads"/>. Rollback ordering rides on
+    /// <see cref="AuditEventEntity.CreatedAt"/> (newest-first).
     /// </summary>
     private async Task WriteAuditAsync(
         Guid ksId, UserEntity actor, string action, string summary,
@@ -678,7 +677,6 @@ public sealed class VocabularyService
         byte[] added, byte[] removed,
         CancellationToken token)
     {
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
         _db.AuditEvents.Add(new AuditEventEntity
         {
             KnowledgeSystemId = ksId,

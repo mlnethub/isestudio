@@ -249,7 +249,6 @@ public sealed class OntologyService
             var json = JsonSerializer.Serialize(detail);
             detailDoc = JsonDocument.Parse(json);
         }
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
         _db.AuditEvents.Add(new AuditEventEntity
         {
             KnowledgeSystemId = ksId,

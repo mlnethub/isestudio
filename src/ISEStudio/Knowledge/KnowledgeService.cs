@@ -149,8 +149,7 @@ public sealed class KnowledgeService
     /// Create a new KS, owned by the calling user. The graph_iri /
     /// base_iri embed the row's <c>PublicId</c> (the wire-stable hex Guid,
     /// <see cref="Guid.NewGuid"/> at construction time) so each new KS
-    /// gets a distinct RDF graph regardless of how many rows share the
-    /// DB-default <c>legacy_id = 0</c> post-Phase 2.
+    /// gets a distinct RDF graph.
     /// </summary>
     public async Task<KnowledgeSystemOut> CreateAsync(CreateKnowledgeSystemRequest req, Actor actor, CancellationToken ct)
     {
@@ -186,9 +185,8 @@ public sealed class KnowledgeService
         // IriRoot so a future migration is a config change rather than a
         // code change. Mirrors Python `GRAPH_ROOT` (`backend/app/api/
         // knowledge.py:25`) — the two stacks must agree byte-for-byte
-        // for the same KS id. Phase 2: stamp from PublicId (Guid hex) not
-        // LegacyId, because LegacyId defaults to 0 post-Phase 2 and would
-        // collide every new KS on the same IriRoot/0.
+        // for the same KS id. Phase 3: stamped from PublicId (Guid hex),
+        // the wire-stable unique identifier.
         ks.GraphIri = $"{_options.IriRoot}/{ks.PublicId}";
         ks.BaseIri = $"{_options.IriRoot}/{ks.PublicId}/onto#";
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
@@ -411,7 +409,6 @@ public sealed class KnowledgeService
                 Role = roleNorm,
                 CreatedAt = _clock.GetUtcNow(),
             };
-            // LegacyId is filled by the column DEFAULT 0 at INSERT time.
             _db.KSGrants.Add(grant);
             await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         }
@@ -722,7 +719,6 @@ public sealed class KnowledgeService
         Guid ksId, UserEntity actor, string action, string summary,
         JsonElement? detail, CancellationToken token)
     {
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
         _db.AuditEvents.Add(new AuditEventEntity
         {
             KnowledgeSystemId = ksId,

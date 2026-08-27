@@ -86,7 +86,6 @@ public sealed class ValidationDecisionService
         }
         else
         {
-            // LegacyId is filled by the column DEFAULT 0 at INSERT time. (Phase 3: legacy_id 列已退役.)
             _db.ValidationDecisions.Add(new ValidationDecisionEntity
             {
                 KnowledgeSystemId = ksId,

@@ -65,7 +65,6 @@ public sealed class ABoxProvenanceService
         }
         else
         {
-            // LegacyId is filled by the column DEFAULT 0 at INSERT time.
             _db.AboxProvenances.Add(new AboxProvenanceEntity
             {
                 KnowledgeSystemId = ksId,

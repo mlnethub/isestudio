@@ -6,8 +6,7 @@ namespace ISEStudio.Infrastructure.Persistence.Entities;
 
 /// <summary>
 /// EF Core entity for the Python backend's <c>User</c> SQLModel. The actual
-/// primary key is <see cref="LegacyAddressableEntity.Id"/> (Guid); the
-/// Python integer identifier is preserved in <see cref="LegacyId"/>.
+/// primary key is <see cref="EntityBase.Id"/> (Guid).
 /// </summary>
 public sealed class UserEntity : EntityBase
 {
@@ -33,7 +32,7 @@ public sealed class UserEntity : EntityBase
 /// <summary>
 /// Server-side session: opaque token stored in an <c>HttpOnly</c> cookie.
 /// In Python the token is the primary key; in the EF model the Guid
-/// <see cref="LegacyAddressableEntity.Id"/> is the primary key and the token
+/// <see cref="EntityBase.Id"/> is the primary key and the token
 /// is a separately indexed unique column.
 /// </summary>
 public sealed class AuthSessionEntity : EntityBase

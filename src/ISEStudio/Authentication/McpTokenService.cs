@@ -198,7 +198,6 @@ public sealed class McpTokenService : IMcpTokenService
             ExpiresAt = request.ExpiresAt,
         };
         _db.McpUserTokens.Add(entity);
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return new MintedMcpToken(entity, plaintext);
     }

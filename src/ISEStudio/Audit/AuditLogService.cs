@@ -29,8 +29,7 @@ public sealed class AuditLogService
     /// <c>Added</c> / <c>Removed</c> blobs round-trip as-is — empty
     /// byte arrays are stored as <c>null</c> so the SQL row matches the
     /// existing <c>ontology.edit</c> / <c>ontology.reset</c> contract
-    /// (no-changes rows never materialise an empty byte[]). <c>LegacyId</c>
-    /// is filled by the column DEFAULT 0 at INSERT time.
+    /// (no-changes rows never materialise an empty byte[]).
     /// </summary>
     public async Task RecordAsync(
         Guid ksId,

@@ -214,7 +214,6 @@ public sealed class KnowledgeApiTokenService : IKnowledgeApiTokenService
             ExpiresAt = request.ExpiresAt,
         };
         _db.KnowledgeApiTokens.Add(entity);
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         return new MintedKnowledgeApiToken(entity, plaintext);
     }

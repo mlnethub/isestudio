@@ -517,7 +517,7 @@ builder.Services.AddVocabularyServices();
 
 // ---- Releases exports (slice 7b) ----
 // ExportArtifactStore writes per-job N-Quads shards under
-// `{ExportRoot}/{publicId}/{jobLegacyId}/…`. The root is independent of
+// `{ExportRoot}/{publicId}/{jobId}/…`. The root is independent of
 // the RDF workspace root so a future swap to object storage (MinIO) only
 // touches the store implementation. The contract-test factory overrides
 // the path via configuration (per-test temp dir).

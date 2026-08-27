@@ -95,7 +95,6 @@ public sealed class ProviderService
             ConcurrencyLimit = req.ConcurrencyLimit,
             CreatedAt = _clock.GetUtcNow(),
         };
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
         _db.Providers.Add(entity);
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         return ProviderDtos.From(entity);
