@@ -12,9 +12,9 @@ namespace ISEStudio.Application.Foundation;
 /// no inputs is a single <c>new InternalRequest(...)</c> with all-null
 /// fields.</para>
 ///
-/// <para><see cref="KnowledgeSystemId"/> is the Guid PK (back-compat for
-/// legacy callers that still pass a <c>long</c>); prefer
-/// <see cref="KnowledgeSystemGuid"/> for new code paths.</para>
+/// <para><see cref="KnowledgeSystemGuid"/> is the Guid PK. <see cref="KnowledgeSystemId"/>
+/// is the legacy <c>long</c> back-compat field for callers that still pass a
+/// numeric id; prefer <see cref="KnowledgeSystemGuid"/> for new code paths.</para>
 /// </summary>
 public sealed record InternalRequest(
     long? KnowledgeSystemId,
