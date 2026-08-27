@@ -247,7 +247,6 @@ grep -n 'LegacyId' src/ISEStudio/Infrastructure/Persistence/Configurations/Entit
 
 ```csharp
 builder.Property(x => x.IsSingleton)
-    .HasColumnName("is_singleton")
     .IsRequired()
     .HasDefaultValue(false);
 
@@ -514,10 +513,10 @@ cat src/ISEStudio/Infrastructure/Persistence/Migrations/*_DropLegacyIdColumn.cs 
 ```
 
 预期内容(按顺序):
-1. `migrationBuilder.AddColumn<bool>(name: "is_singleton", table: "systemconfig", type: "boolean", nullable: false, defaultValue: false)`
-2. `migrationBuilder.CreateIndex(name: "ux_systemconfig_singleton", table: "systemconfig", column: "is_singleton", unique: true, filter: "\"IsSingleton\" = TRUE")`
+1. `migrationBuilder.AddColumn<bool>(name: "IsSingleton", table: "systemconfig", type: "boolean", nullable: false, defaultValue: false)`
+2. `migrationBuilder.CreateIndex(name: "ux_systemconfig_singleton", table: "systemconfig", column: "IsSingleton", unique: true, filter: "\"IsSingleton\" = TRUE")`
 3. `migrationBuilder.Sql("UPDATE systemconfig SET \"IsSingleton\" = TRUE WHERE id = (SELECT id FROM systemconfig LIMIT 1);")`
-4. `migrationBuilder.AlterColumn<bool>(name: "is_singleton", table: "systemconfig", ... defaultValue: false)`
+4. `migrationBuilder.AlterColumn<bool>(name: "IsSingleton", table: "systemconfig", ... defaultValue: false)`
 5. `migrationBuilder.DropColumn(name: "legacy_id", table: <each of 24 tables>)` × 24
 
 如果 EF 输出的顺序不同,手动调整;但操作不能增减。

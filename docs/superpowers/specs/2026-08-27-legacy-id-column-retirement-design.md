@@ -167,19 +167,19 @@ builder.HasIndex(x => x.IsSingleton)
 ```csharp
 protected override void Up(MigrationBuilder migrationBuilder)
 {
-    // 1. AddColumn is_singleton on systemconfig
+    // 1. AddColumn IsSingleton on systemconfig
     migrationBuilder.AddColumn<bool>(
-        name: "is_singleton",
+        name: "IsSingleton",
         table: "systemconfig",
         type: "boolean",
         nullable: false,
         defaultValue: false);
 
-    // 2. CreateIndex partial unique on systemconfig(is_singleton)
+    // 2. CreateIndex partial unique on systemconfig(IsSingleton)
     migrationBuilder.CreateIndex(
         name: "ux_systemconfig_singleton",
         table: "systemconfig",
-        column: "is_singleton",
+        column: "IsSingleton",
         unique: true,
         filter: "\"IsSingleton\" = TRUE");
 

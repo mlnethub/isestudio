@@ -360,7 +360,6 @@ public sealed class SystemConfigEntityConfiguration : IEntityTypeConfiguration<S
         builder.Property(x => x.Id).HasColumnName("id");
 
         builder.Property(x => x.IsSingleton)
-            .HasColumnName("is_singleton")
             .IsRequired()
             .HasDefaultValue(false);
 
