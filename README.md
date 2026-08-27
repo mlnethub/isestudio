@@ -15,9 +15,7 @@ Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data
 ![.NET](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
-
-![ISEStudio turns documents into reviewed knowledge graphs and immutable releases](docs/images/isestudio-hero-title.webp)
-
+ 
 </div>
 
 <details>
@@ -86,8 +84,6 @@ for evaluation scope, baselines, prompt profiles, and reproducibility details.
 | Internationalization | English and Simplified Chinese UI/docs; independently configurable backend prompt language |
 
 ## Product Interface
-
-![ISEStudio ontology workspace showing the governance navigation, class hierarchy, graph explorer, and entity details](docs/images/isestudio-web-demo.png)
 
 The ontology workspace combines class navigation, an interactive relationship graph, and entity details in one view. The project sidebar keeps review queues, releases, documents, history, members, and API access within the same governed workflow.
 

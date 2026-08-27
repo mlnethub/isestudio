@@ -16,8 +16,6 @@
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
 
-![ISEStudio 将文档转化为经过审核的知识图谱和不可变发布版本](docs/images/isestudio-hero-title.webp)
-
 </div>
 
 <details>
