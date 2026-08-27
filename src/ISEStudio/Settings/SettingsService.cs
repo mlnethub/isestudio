@@ -99,19 +99,23 @@ public sealed class SettingsService
     public async Task<SystemConfigEntity> GetOrCreateSystemConfigAsync(
         CancellationToken ct)
     {
-        // The C# schema keeps the singleton under LegacyId == 1 (matches
-        // Python SystemConfig.id == 1) so the two implementations agree on
-        // the row identity even though the C# side uses a Guid primary
-        // key + LegacyAddressableEntity.LegacyId.
+        // Phase 3: the singleton is identified by the
+        // <see cref="SystemConfigEntity.IsSingleton"/> partial index (TRUE
+        // unique) rather than a long LegacyId. The row's PK is the
+        // well-known <see cref="SystemConfigEntity.SingletonId"/> Guid
+        // so any code that wants the row by reference has a stable
+        // identifier; <see cref="SystemConfigEntity.SingletonMarker"/>
+        // is the constant set on creation so callers can flag the
+        // singleton without consulting the DB.
         var cfg = await _db.SystemConfigs
-            .FirstOrDefaultAsync(s => s.LegacyId == SystemConfigEntity.SingletonLegacyId, ct)
+            .FirstOrDefaultAsync(s => s.IsSingleton, ct)
             .ConfigureAwait(false);
         if (cfg is null)
         {
             cfg = new SystemConfigEntity
             {
-                Id = Guid.NewGuid(),
-                LegacyId = SystemConfigEntity.SingletonLegacyId,
+                Id = SystemConfigEntity.SingletonId,
+                IsSingleton = SystemConfigEntity.SingletonMarker,
                 UpdatedAt = _clock.GetUtcNow(),
             };
             _db.SystemConfigs.Add(cfg);

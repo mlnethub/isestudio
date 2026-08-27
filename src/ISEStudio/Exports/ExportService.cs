@@ -213,7 +213,7 @@ public sealed class ExportService : IDisposable
             throw new KeyNotFoundException("Export file not found.");
         }
 
-        var bytes = _artifacts.ReadFile(ks.PublicId, row.LegacyId, filename);
+        var bytes = _artifacts.ReadFile(ks.PublicId, filename);
         if (bytes is null)
         {
             throw new KeyNotFoundException("Export file not found.");

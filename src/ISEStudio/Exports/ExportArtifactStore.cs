@@ -5,8 +5,8 @@ using System.Text.Json;
 namespace ISEStudio.Exports;
 
 /// <summary>
-/// On-disk layout for export job shards. One subdirectory per job under
-/// <see cref="RootPath"/> containing:
+/// On-disk layout for export job shards. One subdirectory per knowledge
+/// system under <see cref="RootPath"/> containing:
 /// <list type="bullet">
 ///   <item>One N-Quads shard per layer (<c>tbox-0000.nq</c>,
 ///   <c>vocabulary-0000.nq</c>, <c>abox-0000.nq</c>) — MVP simplification:
@@ -17,10 +17,11 @@ namespace ISEStudio.Exports;
 ///   <item>A <c>manifest.json</c> summarising the bundle + per-shard
 ///   descriptor so the frontend can render a download picker.</item>
 /// </list>
-/// <para>Layout: <c>{ExportRoot}/{publicId}/{jobLegacyId}/...</c>. The
-/// <see cref="KnowledgeSystemEntity.PublicId"/> namespace avoids cross-KS
-/// collisions on the same host; <see cref="ExportJobEntity.LegacyId"/>
-/// disambiguates multiple jobs of the same KS.</para>
+/// <para>Layout: <c>{ExportRoot}/{publicId}/...</c>. The
+/// <see cref="KnowledgeSystemEntity.PublicId"/> namespace avoids
+/// cross-KS collisions on the same host. Phase 3 dropped the
+/// per-job subdirectory so the path no longer depends on
+/// <see cref="ExportJobEntity"/> identity.</para>
 /// </summary>
 public sealed class ExportArtifactStore
 {
@@ -47,22 +48,22 @@ public sealed class ExportArtifactStore
 
     public string RootPath => _rootPath;
 
-    /// <summary>Directory holding <paramref name="jobLegacyId"/>'s shards.</summary>
-    public string JobPath(string publicId, long jobLegacyId)
+    /// <summary>Directory holding <paramref name="publicId"/>'s shards.</summary>
+    public string JobPath(string publicId)
     {
         ArgumentException.ThrowIfNullOrEmpty(publicId);
-        return Path.Combine(_rootPath, Sanitize(publicId), jobLegacyId.ToString());
+        return Path.Combine(_rootPath, Sanitize(publicId));
     }
 
     /// <summary>
-    /// Ensure <paramref name="jobLegacyId"/>'s output directory exists
-    /// and is empty (delete any previous shards). Called once at the
-    /// start of <see cref="ExportRunner.RunAsync"/> so a re-run of the
-    /// same job never mixes stale + new content.
+    /// Ensure <paramref name="publicId"/>'s output directory exists and
+    /// is empty (delete any previous shards). Called once at the start of
+    /// <see cref="ExportRunner.RunAsync"/> so a re-run of the same job
+    /// never mixes stale + new content.
     /// </summary>
-    public string PrepareOutputDir(string publicId, long jobLegacyId)
+    public string PrepareOutputDir(string publicId)
     {
-        var path = JobPath(publicId, jobLegacyId);
+        var path = JobPath(publicId);
         if (Directory.Exists(path))
         {
             Directory.Delete(path, recursive: true);
@@ -77,12 +78,12 @@ public sealed class ExportArtifactStore
     /// index per <c>shard_size</c>-bounded chunk.
     /// </summary>
     public ExportFileEntry WriteShard(
-        string publicId, long jobLegacyId, string layer, int shardIndex, byte[] nQuads)
+        string publicId, string layer, int shardIndex, byte[] nQuads)
     {
         ArgumentException.ThrowIfNullOrEmpty(layer);
         ArgumentNullException.ThrowIfNull(nQuads);
-        var dir = JobPath(publicId, jobLegacyId);
-        // Mirror ReleaseArtifactStore.Write: ensure the per-job directory
+        var dir = JobPath(publicId);
+        // Mirror ReleaseArtifactStore.Write: ensure the per-KS directory
         // exists so tests and one-off writers don't have to call
         // PrepareOutputDir first.
         Directory.CreateDirectory(dir);
@@ -104,10 +105,10 @@ public sealed class ExportArtifactStore
     /// shard files.
     /// </summary>
     public ExportFileEntry WriteManifest(
-        string publicId, long jobLegacyId, object manifest)
+        string publicId, object manifest)
     {
         ArgumentNullException.ThrowIfNull(manifest);
-        var dir = JobPath(publicId, jobLegacyId);
+        var dir = JobPath(publicId);
         Directory.CreateDirectory(dir);
         var json = JsonSerializer.SerializeToUtf8Bytes(manifest, JsonOpts);
         var name = "manifest.json";
@@ -123,10 +124,10 @@ public sealed class ExportArtifactStore
     /// <summary>
     /// Read a previously-written shard back. Returns <c>null</c> for any
     /// unsafe path (absolute, contains parent traversal, or escapes the
-    /// job directory) so the caller can surface a stable 404 instead of
+    /// KS directory) so the caller can surface a stable 404 instead of
     /// crashing on a <see cref="FileNotFoundException"/>.
     /// </summary>
-    public byte[]? ReadFile(string publicId, long jobLegacyId, string filename)
+    public byte[]? ReadFile(string publicId, string filename)
     {
         ArgumentException.ThrowIfNullOrEmpty(filename);
 
@@ -143,7 +144,7 @@ public sealed class ExportArtifactStore
             return null;
         }
 
-        var path = Path.Combine(JobPath(publicId, jobLegacyId), filename);
+        var path = Path.Combine(JobPath(publicId), filename);
         return File.Exists(path) ? File.ReadAllBytes(path) : null;
     }
 

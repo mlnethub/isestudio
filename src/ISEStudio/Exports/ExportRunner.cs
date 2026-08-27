@@ -94,7 +94,7 @@ public sealed class ExportRunner
             }
 
             var ksc = KsContext.FromEntity(ks);
-            _artifacts.PrepareOutputDir(ks.PublicId, job.LegacyId);
+            _artifacts.PrepareOutputDir(ks.PublicId);
 
             var layers = ExportLayer.Expand(job.Layer);
             var files = new List<ExportFileEntry>(layers.Count + 1);
@@ -123,7 +123,7 @@ public sealed class ExportRunner
                     nQuads = _store.DumpNQuads(graphIri);
                 }
                 var entry = _artifacts.WriteShard(
-                    ks.PublicId, job.LegacyId, layer, shardIndex: 0, nQuads);
+                    ks.PublicId, layer, shardIndex: 0, nQuads);
                 files.Add(entry);
                 total += entry.Statements;
                 await _jobs.UpdateProgressAsync(job.Id, (int)total, CancellationToken.None)
@@ -151,7 +151,7 @@ public sealed class ExportRunner
                 }),
             };
             var manifestEntry = _artifacts.WriteManifest(
-                ks.PublicId, job.LegacyId, manifest);
+                ks.PublicId, manifest);
             files.Add(manifestEntry);
 
             await _jobs.RecordFilesAsync(job.Id, files, CancellationToken.None)
