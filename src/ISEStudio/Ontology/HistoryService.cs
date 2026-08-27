@@ -41,9 +41,10 @@ public sealed class HistoryService
             query = query.Where(e => EF.Functions.Like(e.Summary.ToLower(), like) || EF.Functions.Like(e.ActorName.ToLower(), like));
         }
         var total = await query.CountAsync(ct).ConfigureAwait(false);
-        // SQLite 不支持 DateTimeOffset 在 ORDER BY;LegacyId(long)单调递增,
-        // 等价 Python 的 `created_at desc, id desc` tiebreak,且跨 provider 可翻译。
-        var items = await query.OrderByDescending(e => e.LegacyId)
+        // Phase 3: legacy_id 列已退役. Python orders by `created_at desc,
+        // id desc`; mirror that with CreatedAt + Id tiebreak (SQLite
+        // DateTimeOffset ORDER BY works since the slice 7a fix).
+        var items = await query.OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.Id)
             .Skip(offset).Take(limit).ToListAsync(ct).ConfigureAwait(false);
         return new HistoryResponseOut(
             items.Select(e => new HistoryItemOut(
@@ -65,26 +66,28 @@ public sealed class HistoryService
         if ((target.Added is null || target.Added.Length == 0) && (target.Removed is null || target.Removed.Length == 0))
             throw new InvalidOperationException("This event did not change the ontology, nothing to roll back");
 
-        // group cutoff = group 内最小 LegacyId,否则事件自身 LegacyId
-        long cutoffLegacy;
+        // group cutoff = group 内最早 CreatedAt,否则事件自身 CreatedAt.
+        // Phase 3: legacy_id 已退役; rollback semantics now rides on
+        // CreatedAt (== Python `created_at` cutoff) since Guid PK is non-monotonic.
+        DateTimeOffset cutoffAt;
         if (!string.IsNullOrEmpty(target.GroupId))
         {
             var grp = await _db.AuditEvents.AsNoTracking()
                 .Where(e => e.KnowledgeSystemId == ksId && e.GroupId == target.GroupId).ToListAsync(ct).ConfigureAwait(false);
-            cutoffLegacy = grp.Count == 0 ? target.LegacyId : grp.Min(e => e.LegacyId);
+            cutoffAt = grp.Count == 0 ? target.CreatedAt : grp.Min(e => e.CreatedAt);
         }
-        else cutoffLegacy = target.LegacyId;
+        else cutoffAt = target.CreatedAt;
 
         var events = await _db.AuditEvents.AsNoTracking()
-            .Where(e => e.KnowledgeSystemId == ksId && e.LegacyId >= cutoffLegacy
+            .Where(e => e.KnowledgeSystemId == ksId && e.CreatedAt >= cutoffAt
                 && (e.Added != null || e.Removed != null))
-            .OrderByDescending(e => e.LegacyId).ToListAsync(ct).ConfigureAwait(false);
+            .OrderByDescending(e => e.CreatedAt).ToListAsync(ct).ConfigureAwait(false);
 
         var graphs = events.Select(e => e.Graph ?? ks.GraphIri).Distinct().ToList();
         var rbGid = graphs.Count > 1 ? Guid.NewGuid().ToString("N") : null;
         int undone = 0; bool tboxChanged = false;
-        var detail = new Dictionary<string, object?> { ["target_event_id"] = eventId.ToString(), ["cutoff"] = cutoffLegacy };
-        var summary = $"Rolled back to before #{cutoffLegacy}" + (target.GroupId is not null ? " (incl. cascaded instances)" : "");
+        var detail = new Dictionary<string, object?> { ["target_event_id"] = eventId.ToString(), ["cutoff"] = cutoffAt };
+        var summary = $"Rolled back to before {cutoffAt:O}" + (target.GroupId is not null ? " (incl. cascaded instances)" : "");
 
         foreach (var g in graphs)
         {

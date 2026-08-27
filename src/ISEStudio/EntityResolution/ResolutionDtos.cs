@@ -16,7 +16,7 @@ public sealed record ResolutionCandidateOut(
 /// Mirrors <c>ResolutionQueueItem</c> in <c>frontend/src/lib/types.ts:682-697</c>.
 /// </summary>
 public sealed record ResolutionQueueItemOut(
-    [property: JsonPropertyName("id")] long Id,
+    [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("surface_form")] string SurfaceForm,
     [property: JsonPropertyName("class_iri")] string? ClassIri,
     [property: JsonPropertyName("class_label")] string? ClassLabel,
@@ -30,7 +30,7 @@ public sealed record ResolutionQueueItemOut(
 /// Mirrors <c>ResolutionDecision</c> in <c>frontend/src/lib/types.ts:699-714</c>.
 /// </summary>
 public sealed record ResolutionDecisionOut(
-    [property: JsonPropertyName("id")] long Id,
+    [property: JsonPropertyName("id")] Guid Id,
     [property: JsonPropertyName("surface_form")] string SurfaceForm,
     [property: JsonPropertyName("class_label")] string? ClassLabel,
     [property: JsonPropertyName("status")] string Status,

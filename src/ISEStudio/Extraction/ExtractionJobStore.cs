@@ -126,27 +126,6 @@ public sealed class ExtractionJobStore
     }
 
     /// <summary>
-    /// Long-id convenience overload of <see cref="ListAsync(Guid, CancellationToken)"/>:
-    /// looks up the knowledge system's Guid primary key from its legacy
-    /// route id, then delegates. Returns an empty list when the legacy
-    /// id is unknown so the dispatcher can surface a stable empty
-    /// response without crashing the test factory.
-    /// </summary>
-    public async Task<IReadOnlyList<ExtractionJobEntity>> ListAsync(
-        long knowledgeSystemLegacyId,
-        CancellationToken cancellationToken = default)
-    {
-        await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
-        var ksGuid = await db.KnowledgeSystems.AsNoTracking()
-            .Where(k => k.LegacyId == knowledgeSystemLegacyId)
-            .Select(k => (Guid?)k.Id)
-            .FirstOrDefaultAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (ksGuid is null) return Array.Empty<ExtractionJobEntity>();
-        return await ListAsync(ksGuid.Value, cancellationToken).ConfigureAwait(false);
-    }
-
-    /// <summary>
     /// Return the id of any extraction job for the supplied knowledge
     /// system whose status is currently <c>pending</c> or <c>running</c>,
     /// or <c>null</c> when no in-flight job exists. Used by the

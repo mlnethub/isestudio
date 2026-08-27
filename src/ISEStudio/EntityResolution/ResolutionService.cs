@@ -67,11 +67,10 @@ public sealed class ResolutionService
             q = q.Where(r => EF.Functions.Like(r.SurfaceForm, $"%{query}%"));
 
         var total = await q.CountAsync(ct).ConfigureAwait(false);
-        // SQLite does not support DateTimeOffset in ORDER BY (slice 2 history
-        // pattern); LegacyId(long) is monotonically increasing per insert
-        // and is provider-portable.
+        // Phase 3: legacy_id 列已退役. Guid PK is sortable; tiebreak by Id
+        // directly. Python parity preserved.
         var rows = await q
-            .OrderBy(r => r.LegacyId).ThenBy(r => r.Id)
+            .OrderBy(r => r.CreatedAt).ThenBy(r => r.Id)
             .Skip(Math.Max(offset, 0)).Take(Math.Clamp(limit, 1, 200))
             .ToListAsync(ct).ConfigureAwait(false);
 
@@ -102,10 +101,10 @@ public sealed class ResolutionService
 
         var total = await q.CountAsync(ct).ConfigureAwait(false);
         // Resolved rows are scoped to status ∈ {matched, new, distinct}, so
-        // every row has ResolvedAt != null. LegacyId desc is monotonic across
-        // the whole insert order and is portable across SQLite / Postgres.
+        // every row has ResolvedAt != null. Phase 3 ordering rides on
+        // ResolvedAt (when set) + Id tiebreak; portable across SQLite/PG.
         var rows = await q
-            .OrderByDescending(r => r.LegacyId).ThenBy(r => r.Id)
+            .OrderByDescending(r => r.ResolvedAt).ThenBy(r => r.Id)
             .Skip(Math.Max(offset, 0)).Take(Math.Clamp(limit, 1, 200))
             .ToListAsync(ct).ConfigureAwait(false);
 
@@ -126,7 +125,7 @@ public sealed class ResolutionService
     /// <see cref="StoreWrapper.CaptureAsync"/>; <c>match</c> emits empty diffs.
     /// </summary>
     public async Task<ResolutionDecisionOut?> ResolveAsync(
-        Guid ksId, long rowLegacyId, string action, string? individualIri,
+        Guid ksId, Guid rowId, string action, string? individualIri,
         Actor actor, CancellationToken ct)
     {
         if (action != "match" && action != "new")
@@ -141,7 +140,7 @@ public sealed class ResolutionService
             throw new ValidationException("Editor access required to resolve.");
 
         var row = await _db.EntityResolutions
-            .FirstOrDefaultAsync(r => r.KnowledgeSystemId == ks.Id && r.LegacyId == rowLegacyId, ct)
+            .FirstOrDefaultAsync(r => r.KnowledgeSystemId == ks.Id && r.Id == rowId, ct)
             .ConfigureAwait(false);
         if (row is null) return null;
         if (row.Status != "pending")
@@ -220,7 +219,7 @@ public sealed class ResolutionService
     /// Delete the row; audit <c>resolution.revoke</c> with the surface form.
     /// </summary>
     public async Task<bool> RevokeAsync(
-        Guid ksId, long rowLegacyId, Actor actor, CancellationToken ct)
+        Guid ksId, Guid rowId, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await LoadActorAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return false;
@@ -229,7 +228,7 @@ public sealed class ResolutionService
             throw new ValidationException("Editor access required to revoke resolution.");
 
         var row = await _db.EntityResolutions
-            .FirstOrDefaultAsync(r => r.KnowledgeSystemId == ks.Id && r.LegacyId == rowLegacyId, ct)
+            .FirstOrDefaultAsync(r => r.KnowledgeSystemId == ks.Id && r.Id == rowId, ct)
             .ConfigureAwait(false);
         if (row is null) return false;
 
@@ -253,7 +252,7 @@ public sealed class ResolutionService
     /// 200 chars to match the convention in <c>ConflictService.EditReconciliationReasonAsync</c>.
     /// </summary>
     public async Task<ResolutionDecisionOut?> EditReasonAsync(
-        Guid ksId, long rowLegacyId, string? reason, Actor actor, CancellationToken ct)
+        Guid ksId, Guid rowId, string? reason, Actor actor, CancellationToken ct)
     {
         var (user, ks) = await LoadActorAndKsAsync(ksId, actor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -262,7 +261,7 @@ public sealed class ResolutionService
             throw new ValidationException("Editor access required to edit reason.");
 
         var row = await _db.EntityResolutions
-            .FirstOrDefaultAsync(r => r.KnowledgeSystemId == ks.Id && r.LegacyId == rowLegacyId, ct)
+            .FirstOrDefaultAsync(r => r.KnowledgeSystemId == ks.Id && r.Id == rowId, ct)
             .ConfigureAwait(false);
         if (row is null) return null;
 
@@ -291,21 +290,13 @@ public sealed class ResolutionService
     /// <summary>
     /// Resolve a controller-side <see cref="InternalRequest.ResourceId"/>
     /// (a string from the URL slot) to the row's <see cref="EntityResolutionEntity"/>
-    /// PK. Tries <see cref="EntityResolutionEntity.LegacyId"/> first (matches
-    /// Python int wire format), then falls back to the GUID primary key.
-    /// Returns null when the string parses as neither or when no row matches.
+    /// PK. Phase 3: legacy_id 列已退役, so the string is parsed only as a
+    /// GUID. Returns null when the string is not a GUID or when no row matches.
     /// </summary>
     public static async Task<Guid?> ResolveResRowGuidAsync(
         ISEStudioDbContext db, Guid ksId, string? resourceId, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(resourceId)) return null;
-        if (long.TryParse(resourceId, out var legacyId))
-        {
-            var byLegacy = await db.EntityResolutions.AsNoTracking()
-                .Where(r => r.KnowledgeSystemId == ksId && r.LegacyId == legacyId)
-                .Select(r => (Guid?)r.Id).FirstOrDefaultAsync(ct).ConfigureAwait(false);
-            if (byLegacy is not null) return byLegacy;
-        }
         if (Guid.TryParse(resourceId, out var guid))
         {
             var exists = await db.EntityResolutions.AsNoTracking()
@@ -345,7 +336,7 @@ public sealed class ResolutionService
     {
         var candidates = ReadCandidates(r);
         return new ResolutionQueueItemOut(
-            r.LegacyId,
+            r.Id,
             r.SurfaceForm,
             r.ClassIri,
             null, // class_label: requires StoreWrapper rdfs:label lookup; MVP returns null
@@ -368,7 +359,7 @@ public sealed class ResolutionService
             }
         }
         return new ResolutionDecisionOut(
-            r.LegacyId,
+            r.Id,
             r.SurfaceForm,
             null,
             r.Status,

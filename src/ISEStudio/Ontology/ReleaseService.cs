@@ -134,7 +134,8 @@ public sealed class ReleaseService
 
         var rows = await _db.OntologyReleases.AsNoTracking()
             .Where(r => r.KnowledgeSystemId == ks.Id)
-            .OrderByDescending(r => r.LegacyId)
+            .OrderByDescending(r => r.CreatedAt)
+            .ThenByDescending(r => r.Id)
             .ToListAsync(ct).ConfigureAwait(false);
         var deployments = await _db.ReleaseDeployments.AsNoTracking()
             .Where(d => d.KnowledgeSystemId == ks.Id)

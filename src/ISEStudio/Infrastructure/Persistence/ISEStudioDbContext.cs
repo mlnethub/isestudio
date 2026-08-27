@@ -7,9 +7,8 @@ namespace ISEStudio.Infrastructure.Persistence;
 /// <summary>
 /// EF Core <see cref="DbContext"/> for ISEStudio's relational metadata store.
 /// Maps the 24 tables that mirror the Python backend's SQLModel schema, with
-/// <see cref="LegacyAddressableEntity.Id"/> (Guid) as the primary key and
-/// <see cref="LegacyAddressableEntity.LegacyId"/> (long) as a unique
-/// compatibility column for every business entity.
+/// <see cref="EntityBase.Id"/> (Guid) as the primary key for every business
+/// entity. (Phase 3: the legacy_id compatibility column was dropped.)
 /// </summary>
 /// <remarks>
 /// <para>Mapping strategy: Table-Per-Concrete-Type (TPC). Every entity owns

@@ -66,7 +66,7 @@ public sealed class VocabularyProposalService
     ///
     /// <para>SQLite refuses DateTimeOffset in <c>ORDER BY</c> (B7c root-cause
     /// fix): we materialise the filtered set first and sort client-side by
-    /// <c>CreatedAt</c> desc / <c>LegacyId</c> desc, then apply
+    /// <c>CreatedAt</c> desc / <c>Id</c> desc, then apply
     /// <paramref name="offset"/> / <paramref name="limit"/>. The total count
     /// runs server-side so the page envelope reports the true backlog size.</para>
     /// </summary>
@@ -122,7 +122,7 @@ public sealed class VocabularyProposalService
         rows.Sort((a, b) =>
         {
                 var cmp = b.CreatedAt.CompareTo(a.CreatedAt);
-                return cmp != 0 ? cmp : b.LegacyId.CompareTo(a.LegacyId);
+                return cmp != 0 ? cmp : b.Id.CompareTo(a.Id);
             });
         var page = rows.Skip(offset).Take(limit).ToList();
         return (page, total);
@@ -244,7 +244,6 @@ public sealed class VocabularyProposalService
             new Dictionary<string, object?>
             {
                 ["proposal_id"] = proposal.Id,
-                ["proposal_legacy_id"] = proposal.LegacyId,
                 ["action"] = proposal.Action,
                 ["term"] = proposal.Term,
                 ["target_iri"] = proposal.TargetIri,
@@ -301,7 +300,6 @@ public sealed class VocabularyProposalService
             new Dictionary<string, object?>
             {
                 ["proposal_id"] = proposal.Id,
-                ["proposal_legacy_id"] = proposal.LegacyId,
                 ["action"] = proposal.Action,
                 ["term"] = proposal.Term,
                 ["target_iri"] = proposal.TargetIri,
@@ -467,7 +465,7 @@ public sealed class VocabularyProposalService
         byte[] added, byte[] removed,
         CancellationToken token)
     {
-        // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+        // LegacyId is filled by the column DEFAULT 0 at INSERT time. (Phase 3: legacy_id 列已退役.)
         _db.AuditEvents.Add(new AuditEventEntity
         {
             KnowledgeSystemId = ksId,

@@ -36,11 +36,8 @@ public sealed class ExportJobStore
     }
 
     /// <summary>
-    /// Insert a fresh pending job row and return it. The
-    /// <see cref="LegacyAddressableEntity.LegacyId"/> stays at its CLR
-    /// default (0) and the column DEFAULT 0 fills it in on INSERT — the
-    /// per-entity <c>ux_*_legacy_id</c> UNIQUE indexes were dropped in the
-    /// Guid PK Phase 2 migration, so concurrent rows may share 0.
+    /// Insert a fresh pending job row and return it. The row gets a fresh
+    /// Guid Id (Phase 3 retired the legacy_id column and its UNIQUE indexes).
     /// </summary>
     public async Task<ExportJobEntity> CreateAsync(
         Guid knowledgeSystemId,
@@ -89,14 +86,10 @@ public sealed class ExportJobStore
     }
 
     /// <summary>
-    /// Resolve a job row from either its Guid primary key or its legacy
-    /// long id. Mirrors
-    /// <see cref="EntityResolution.ResolutionService.ResolveResRowGuidAsync"/>:
-    /// the legacy long is preferred when the URL slot carries a numeric
-    /// string (Python wire shape is <c>type: integer</c>), with a Guid
-    /// fallback for already-migrated call sites that ship the new PK.
-    /// Returns <c>null</c> when neither lookup matches so the dispatcher
-    /// can surface a stable 404.
+    /// Resolve a job row from its Guid primary key. Phase 3 retired the
+    /// legacy_id column, so the resourceId is parsed only as a GUID.
+    /// Returns <c>null</c> when the string is not a GUID or when no row
+    /// matches so the dispatcher can surface a stable 404.
     /// </summary>
     public async Task<ExportJobEntity?> ResolveAsync(
         ISEStudioDbContext db,
@@ -105,30 +98,16 @@ public sealed class ExportJobStore
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(resourceId)) return null;
-        if (long.TryParse(resourceId, out var legacyId))
-        {
-            var byLegacy = await db.ExportJobs.AsNoTracking()
-                .FirstOrDefaultAsync(j => j.KnowledgeSystemId == knowledgeSystemId
-                    && j.LegacyId == legacyId, cancellationToken)
-                .ConfigureAwait(false);
-            if (byLegacy is not null) return byLegacy;
-        }
-        if (Guid.TryParse(resourceId, out var guid))
-        {
-            return await db.ExportJobs.AsNoTracking()
-                .FirstOrDefaultAsync(j => j.KnowledgeSystemId == knowledgeSystemId
-                    && j.Id == guid, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        return null;
+        if (!Guid.TryParse(resourceId, out var guid)) return null;
+        return await db.ExportJobs.AsNoTracking()
+            .FirstOrDefaultAsync(j => j.KnowledgeSystemId == knowledgeSystemId
+                && j.Id == guid, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
-    /// Every job for the supplied knowledge system, newest first.
-    /// Sorted by <c>LegacyId desc</c> rather than <c>CreatedAt desc</c>
-    /// because SQLite refuses <c>ORDER BY</c> on <see cref="DateTimeOffset"/>
-    /// columns (same caveat as
-    /// <see cref="Extraction.ExtractionJobStore.ListAsync"/> + slice 7a).
+    /// Every job for the supplied knowledge system, newest first. Phase 3:
+    /// legacy_id 列已退役, ordering rides on CreatedAt (Python parity).
     /// </summary>
     public async Task<IReadOnlyList<ExportJobEntity>> ListAsync(
         Guid knowledgeSystemId,
@@ -138,7 +117,8 @@ public sealed class ExportJobStore
             .ConfigureAwait(false);
         return await db.ExportJobs.AsNoTracking()
             .Where(j => j.KnowledgeSystemId == knowledgeSystemId)
-            .OrderByDescending(j => j.LegacyId)
+            .OrderByDescending(j => j.CreatedAt)
+            .ThenByDescending(j => j.Id)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }

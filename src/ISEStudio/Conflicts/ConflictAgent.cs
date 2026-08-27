@@ -571,7 +571,7 @@ public sealed class ConflictAgent
     {
         var detail = new Dictionary<string, object?>
         {
-            ["conflict_id"] = conflict.LegacyId,
+            ["conflict_id"] = conflict.Id,
             ["resolution"] = decision.Resolution,
             ["confidence"] = decision.Confidence,
             ["agent"] = true,

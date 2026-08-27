@@ -86,7 +86,7 @@ public sealed class ValidationDecisionService
         }
         else
         {
-            // LegacyId is filled by the column DEFAULT 0 at INSERT time.
+            // LegacyId is filled by the column DEFAULT 0 at INSERT time. (Phase 3: legacy_id 列已退役.)
             _db.ValidationDecisions.Add(new ValidationDecisionEntity
             {
                 KnowledgeSystemId = ksId,
@@ -131,7 +131,7 @@ public sealed class ValidationDecisionService
         rows.Sort((a, b) =>
         {
             var cmp = b.CreatedAt.CompareTo(a.CreatedAt);
-            return cmp != 0 ? cmp : b.LegacyId.CompareTo(a.LegacyId);
+            return cmp != 0 ? cmp : b.Id.CompareTo(a.Id);
         });
         rows = rows.Skip(offset).Take(limit).ToList();
 

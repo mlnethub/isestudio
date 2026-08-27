@@ -563,13 +563,14 @@ public sealed class ExtractionOrchestrator
         }
 
         // job.ChunkIds stores ChunkSpan.Idx (an in-memory 0-based index,
-        // not ChunkEntity.LegacyId), so we cannot feed it to the agent
+        // not ChunkEntity.Id), so we cannot feed it to the agent
         // directly. Query the parsed-document chunks belonging to this
         // knowledge system, ordered for stable propose prompts (Python
         // _terminology_rows orders by document then chunk order too).
         // ChunkEntity has no `Document` navigation property — the join is
-        // explicit, mirroring TerminologyAgent.LoadChunksAsync.
-        var chunkLegacyIds = await db.Chunks.AsNoTracking()
+        // explicit, mirroring TerminologyAgent.LoadChunksAsync. Phase 3:
+        // legacy_id 列已退役; we hand the agent Guid PKs.
+        var chunkIds = await db.Chunks.AsNoTracking()
             .Join(db.Documents,
                 c => c.DocumentId,
                 d => d.Id,
@@ -578,17 +579,17 @@ public sealed class ExtractionOrchestrator
                 && join.Document.ParseStatus == "parsed")
             .OrderBy(join => join.Chunk.DocumentId).ThenBy(join => join.Chunk.Idx)
             .Take(_options.TerminologySuggestionMaxChunks)
-            .Select(join => join.Chunk.LegacyId)
+            .Select(join => join.Chunk.Id)
             .ToListAsync(CancellationToken.None)
             .ConfigureAwait(false);
-        if (chunkLegacyIds.Count == 0)
+        if (chunkIds.Count == 0)
         {
             return term;
         }
 
         var agent = services.GetRequiredService<TerminologyAgent>();
         var proposals = await agent.SuggestAsync(
-            ks, term.SchemeIri!, chunkLegacyIds, ctx.Request.Model, CancellationToken.None)
+            ks, term.SchemeIri!, chunkIds, ctx.Request.Model, CancellationToken.None)
             .ConfigureAwait(false);
         return term with { ProposalsQueued = proposals.Count };
     }

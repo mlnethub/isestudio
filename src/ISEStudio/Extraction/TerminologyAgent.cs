@@ -127,10 +127,10 @@ public sealed class TerminologyAgent
     /// payload so the reviewer can tell which scheme the agent considered.
     /// </param>
     /// <param name="chunkIds">
-    /// <see cref="ChunkEntity.LegacyId"/> values the LLM should consider as
-    /// source excerpts. Mirrors the Python <c>chunks[:max_chunks]</c>
-    /// trimming &mdash; the caller is expected to have already capped the
-    /// list to the configured maximum.
+    /// <see cref="ChunkEntity.Id"/> values (Guid primary key, post-Phase 3)
+    /// the LLM should consider as source excerpts. Mirrors the Python
+    /// <c>chunks[:max_chunks]</c> trimming &mdash; the caller is expected to
+    /// have already capped the list to the configured maximum.
     /// </param>
     /// <param name="model">
     /// Optional model override. When <c>null</c>, the LLM provider row's
@@ -146,7 +146,7 @@ public sealed class TerminologyAgent
     public async Task<IReadOnlyList<TermProposalEntity>> SuggestAsync(
         KnowledgeSystemEntity ks,
         string schemeIri,
-        IReadOnlyList<long> chunkIds,
+        IReadOnlyList<Guid> chunkIds,
         string? model,
         CancellationToken ct)
     {
@@ -205,7 +205,7 @@ public sealed class TerminologyAgent
             return Array.Empty<TermProposalEntity>();
         }
 
-        var allowedChunkIds = new HashSet<long>(chunks.Keys);
+        var allowedChunkIds = new HashSet<Guid>(chunks.Keys);
         var pending = new List<TermProposalEntity>(proposals.Count);
         var now = _clock.GetUtcNow();
         foreach (var raw in proposals)
@@ -236,7 +236,7 @@ public sealed class TerminologyAgent
 
         var rows = new List<TermProposalEntity>(pending.Count);
         // Filter duplicates FIRST so the batch is exactly the rows we
-        // persist. LegacyId is filled by the column DEFAULT 0 at INSERT.
+        // persist. (Phase 3: legacy_id 列已退役; new rows have no legacy id.)
         foreach (var row in pending)
         {
             if (existingSignatures.Contains(row.Signature))
@@ -279,30 +279,27 @@ public sealed class TerminologyAgent
     // Chunk loading
     // ----------------------------------------------------------------------
 
-    private async Task<Dictionary<long, ChunkEntity>> LoadChunksAsync(
+    private async Task<Dictionary<Guid, ChunkEntity>> LoadChunksAsync(
         KnowledgeSystemEntity ks,
-        IReadOnlyList<long> chunkIds,
+        IReadOnlyList<Guid> chunkIds,
         CancellationToken ct)
     {
         // Order by Idx within each document to keep chunk ordering stable
-        // across calls; chunkId is the Python-era integer id, so the
-        // dictionary key is LegacyId. The chunk rows are linked to
-        // DocumentEntity, so we join to filter on the parent document's
-        // knowledge system — the brief requested `db.Chunks.Where(c =>
-        // chunkIds.Contains(c.Id))`; LegacyId is the wire-format id the
-        // Python backend uses for chunks.
+        // across calls. Phase 3: dict key is Guid Id (legacy_id 列已退役).
+        // Chunk rows are linked to DocumentEntity, so we join to filter on
+        // the parent document's knowledge system.
         var rows = await _db.Chunks
             .Join(_db.Documents,
                 c => c.DocumentId,
                 d => d.Id,
                 (c, d) => new { Chunk = c, Document = d })
             .Where(join => join.Document.KnowledgeSystemId == ks.Id
-                && chunkIds.Contains(join.Chunk.LegacyId))
+                && chunkIds.Contains(join.Chunk.Id))
             .OrderBy(join => join.Chunk.DocumentId).ThenBy(join => join.Chunk.Idx)
             .Select(join => join.Chunk)
             .ToListAsync(ct)
             .ConfigureAwait(false);
-        return rows.ToDictionary(c => c.LegacyId);
+        return rows.ToDictionary(c => c.Id);
     }
 
     // ----------------------------------------------------------------------
@@ -360,7 +357,7 @@ public sealed class TerminologyAgent
     private List<ChatMessage> BuildMessages(
         KnowledgeSystemEntity ks,
         string schemeIri,
-        IReadOnlyDictionary<long, ChunkEntity> chunks)
+        IReadOnlyDictionary<Guid, ChunkEntity> chunks)
     {
         var sourceBlocks = new List<string>(chunks.Count);
         foreach (var (chunkId, chunk) in chunks)
@@ -438,8 +435,8 @@ public sealed class TerminologyAgent
         JsonElement raw,
         KnowledgeSystemEntity ks,
         string schemeIri,
-        HashSet<long> allowedChunkIds,
-        IReadOnlyDictionary<long, ChunkEntity> chunks,
+        HashSet<Guid> allowedChunkIds,
+        IReadOnlyDictionary<Guid, ChunkEntity> chunks,
         DateTimeOffset now)
     {
         var action = ResolveAction(raw);
@@ -639,9 +636,9 @@ public sealed class TerminologyAgent
         return null;
     }
 
-    private static List<long> ResolveSourceChunkIds(JsonElement raw, HashSet<long> allowedChunkIds)
+    private static List<Guid> ResolveSourceChunkIds(JsonElement raw, HashSet<Guid> allowedChunkIds)
     {
-        var result = new List<long>();
+        var result = new List<Guid>();
         if (!raw.TryGetProperty("source_chunk_ids", out var prop) || prop.ValueKind != JsonValueKind.Array)
         {
             return result;
@@ -649,30 +646,24 @@ public sealed class TerminologyAgent
 
         foreach (var item in prop.EnumerateArray())
         {
-            long parsedLong;
+            Guid parsedGuid;
             try
             {
-                if (item.ValueKind == JsonValueKind.Number)
+                var rawText = item.ValueKind switch
                 {
-                    parsedLong = item.GetInt64();
-                }
-                else if (item.ValueKind == JsonValueKind.String)
-                {
-                    parsedLong = long.Parse(item.GetString() ?? string.Empty, CultureInfo.InvariantCulture);
-                }
-                else
-                {
-                    continue;
-                }
+                    JsonValueKind.String => item.GetString() ?? string.Empty,
+                    _ => item.GetRawText().Trim('"'),
+                };
+                if (!Guid.TryParse(rawText, out parsedGuid)) continue;
             }
             catch (Exception ex) when (ex is FormatException or OverflowException)
             {
                 continue;
             }
 
-            if (allowedChunkIds.Contains(parsedLong) && !result.Contains(parsedLong))
+            if (allowedChunkIds.Contains(parsedGuid) && !result.Contains(parsedGuid))
             {
-                result.Add(parsedLong);
+                result.Add(parsedGuid);
             }
         }
         return result;
@@ -698,8 +689,8 @@ public sealed class TerminologyAgent
     /// </remarks>
     private static bool IsTermGroundedInChunks(
         string term,
-        List<long> sourceIds,
-        IReadOnlyDictionary<long, ChunkEntity> chunks)
+        List<Guid> sourceIds,
+        IReadOnlyDictionary<Guid, ChunkEntity> chunks)
     {
         if (string.IsNullOrWhiteSpace(term)) return false;
         var needle = term.Trim();
@@ -808,8 +799,8 @@ public sealed class TerminologyAgent
     }
 
     private static List<Dictionary<string, object?>> BuildEvidence(
-        List<long> sourceIds,
-        IReadOnlyDictionary<long, ChunkEntity> chunks)
+        List<Guid> sourceIds,
+        IReadOnlyDictionary<Guid, ChunkEntity> chunks)
     {
         var evidence = new List<Dictionary<string, object?>>(sourceIds.Count);
         foreach (var id in sourceIds)

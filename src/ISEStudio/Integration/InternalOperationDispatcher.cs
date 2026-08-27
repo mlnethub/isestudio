@@ -308,8 +308,9 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
             // -- settings --
             // Real CRUD via SettingsService (scoped). The service reads
-            // + writes the singleton SystemConfigEntity (LegacyId == 1)
-            // and returns the wire shape the Python baseline emits (see
+            // + writes the singleton SystemConfigEntity (Phase 3: identified
+            // via partial UNIQUE INDEX on IsSingleton = TRUE) and returns
+            // the wire shape the Python baseline emits (see
             // backend/app/api/settings_api.py:SettingsOut). settings.update
             // validates each provider pointer against ProviderEntity.Kind
             // so an LLM pointer can't silently flip to an embedding row.
@@ -844,9 +845,8 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     // ------------------------------------------------------------------
     // Entity-resolution slice (queue / decisions / resolve / revoke /
     // edit_reason). {res_id} route segment arrives in request.ResourceId
-    // as a string; ResolveResRowGuidAsync prefers the Python int wire
-    // format (LegacyId) and falls back to the Guid PK so the contract
-    // harness's seeded row matches even when it sends an int.
+    // as a string; ResolveResRowGuidAsync parses it as a Guid (Phase 3
+    // retired the legacy long id; the Python int wire format is gone).
     // ------------------------------------------------------------------
 
     private ResolutionService? ResolveResolutionService() =>
@@ -916,7 +916,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             var row = await db.EntityResolutions.AsNoTracking()
                 .FirstAsync(r => r.Id == rowId.Value, ct).ConfigureAwait(false);
             var res = await svc.ResolveAsync(
-                request.KnowledgeSystemGuid.Value, row.LegacyId, action, individualIri,
+                request.KnowledgeSystemGuid.Value, rowId.Value, action, individualIri,
                 request.Actor, ct).ConfigureAwait(false);
             return (object?)(res ?? (object)EmptyResolutionDecision());
         });
@@ -937,9 +937,11 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             var row = await db.EntityResolutions.AsNoTracking()
                 .FirstAsync(r => r.Id == rowId.Value, ct).ConfigureAwait(false);
             var ok = await svc.RevokeAsync(
-                request.KnowledgeSystemGuid.Value, row.LegacyId, request.Actor, ct)
+                request.KnowledgeSystemGuid.Value, rowId.Value, request.Actor, ct)
                 .ConfigureAwait(false);
-            return (object?)new { revoked = ok ? row.LegacyId : 0 };
+            // Phase 3: legacy_id 已退役; return Guid PK as the revoked
+            // identifier. Wire shape changes from int64 to guid string.
+            return (object?)new { revoked = ok ? rowId.Value.ToString() : "0" };
         });
     }
 
@@ -960,7 +962,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             var row = await db.EntityResolutions.AsNoTracking()
                 .FirstAsync(r => r.Id == rowId.Value, ct).ConfigureAwait(false);
             var res = await svc.EditReasonAsync(
-                request.KnowledgeSystemGuid.Value, row.LegacyId, reason, request.Actor, ct)
+                request.KnowledgeSystemGuid.Value, rowId.Value, reason, request.Actor, ct)
                 .ConfigureAwait(false);
             return (object?)(res ?? (object)EmptyResolutionDecision());
         });
@@ -2383,7 +2385,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         {
             var chunk = chunksById[id];
             return new ChunkSpan(
-                checked((int)chunk.LegacyId),
+                chunk.Idx,
                 chunk.Text,
                 chunk.CharStart,
                 chunk.CharEnd,
@@ -3061,7 +3063,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     //                    the switch so a live extraction blocks the new
     //                    job with 409 — same policy as the rest of the
     //                    release mutation surface)
-    //   - get_export    (read,  WrapAsync; resolves by Guid or int LegacyId)
+    //   - get_export    (read,  WrapAsync; resolves by Guid only)
     //   - download_export_file
     //                  (read; DownloadFileAsync raises
     //                   ExportFilePayloadException which the
@@ -3344,8 +3346,9 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     // ----- settings (B10) ---------------------------------------------------
     // Wires the settings.* dispatcher arms (list_models / get / update)
     // to the scoped SettingsService. The service reads + writes the
-    // singleton SystemConfigEntity (LegacyId == 1) and returns the wire
-    // shape the Python baseline emits. settings.update validates each
+    // singleton SystemConfigEntity (Phase 3: identified via partial
+    // UNIQUE INDEX on IsSingleton = TRUE) and returns the wire shape
+    // the Python baseline emits. settings.update validates each
     // provider pointer against ProviderEntity.Kind so an LLM pointer
     // can't silently flip to an embedding row.
     //
@@ -3681,24 +3684,10 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         _services.GetService(typeof(TerminologyAgent)) as TerminologyAgent;
 
     /// <summary>Resolve the bound <see cref="KnowledgeSystemEntity"/> from the
-    /// internal <c>{ks_id}</c> route id, or <c>null</c> when no KS is bound or
-    /// the DbContext isn't wired (hand-built dispatcher in unit tests).</summary>
-    private async Task<KnowledgeSystemEntity?> ResolveKsAsync(
-        long? knowledgeSystemId, CancellationToken ct)
-    {
-        if (knowledgeSystemId is null) return null;
-        var db = _services.GetService(typeof(ISEStudioDbContext)) as ISEStudioDbContext;
-        if (db is null) return null;
-        return await db.KnowledgeSystems.AsNoTracking()
-            .FirstOrDefaultAsync(k => k.LegacyId == knowledgeSystemId.Value, ct)
-            .ConfigureAwait(false);
-    }
-
-    /// <summary>Resolve the bound <see cref="KnowledgeSystemEntity"/> from the
     /// internal <c>{id:guid}</c> route id, or <c>null</c> when no KS is bound or
     /// the DbContext isn't wired (hand-built dispatcher in unit tests).
-    /// Mirrors the <c>long?</c> overload above so the two code paths are
-    /// semantically identical — callers can switch with no behavioural change.</summary>
+    /// Phase 3 retired the legacy long id; the <c>long?</c> overload above
+    /// has been removed.</summary>
     private async Task<KnowledgeSystemEntity?> ResolveKsAsync(
         Guid? knowledgeSystemId, CancellationToken ct)
     {
@@ -3753,32 +3742,29 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     /// <summary>Parse the <c>chunk_ids</c> list for <c>vocabulary.suggest_terms</c>
     /// — accepts either a <see cref="JsonElement"/> array (the
     /// <see cref="DeserializeBody{T}"/> shape) or a plain enumerable.</summary>
-    private static IReadOnlyList<long> ExtractChunkIds(Dictionary<string, object?>? body)
+    private static IReadOnlyList<Guid> ExtractChunkIds(Dictionary<string, object?>? body)
     {
-        if (body is null) return Array.Empty<long>();
+        if (body is null) return Array.Empty<Guid>();
         if (!body.TryGetValue("chunk_ids", out var raw) || raw is null)
-            return Array.Empty<long>();
-        var result = new List<long>();
+            return Array.Empty<Guid>();
+        var result = new List<Guid>();
         if (raw is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Array)
         {
             foreach (var item in el.EnumerateArray())
             {
-                if (item.ValueKind == System.Text.Json.JsonValueKind.Number
-                    && item.TryGetInt64(out var n)) result.Add(n);
-                else if (item.ValueKind == System.Text.Json.JsonValueKind.String
-                    && long.TryParse(item.GetString(), out var s)) result.Add(s);
+                if (item.ValueKind == System.Text.Json.JsonValueKind.String
+                    && Guid.TryParse(item.GetString(), out var g)) result.Add(g);
             }
         }
         else if (raw is System.Collections.IEnumerable enumerable)
         {
             foreach (var item in enumerable)
             {
-                if (item is long l) result.Add(l);
-                else if (item is int i) result.Add(i);
+                if (item is Guid g) result.Add(g);
+                else if (item is string str && Guid.TryParse(str, out var g2)) result.Add(g2);
                 else if (item is System.Text.Json.JsonElement je
-                    && je.ValueKind == System.Text.Json.JsonValueKind.Number
-                    && je.TryGetInt64(out var n2)) result.Add(n2);
-                else if (item is string str && long.TryParse(str, out var s2)) result.Add(s2);
+                    && je.ValueKind == System.Text.Json.JsonValueKind.String
+                    && Guid.TryParse(je.GetString(), out var g3)) result.Add(g3);
             }
         }
         return result;
