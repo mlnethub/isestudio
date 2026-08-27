@@ -105,14 +105,13 @@ public sealed class ProviderServicePgIntegrationTests : IAsyncLifetime
         // constraint — the inserts must all complete cleanly.
         await Task.WhenAll(tasks);
 
-        // All 8 rows persisted, each with legacy_id 0 (DB DEFAULT) and a
-        // distinct Guid PK — proving the shared zero is safe under real
-        // Postgres concurrency.
+        // All 8 rows persisted under distinct Guid PKs — proving the
+        // Guid keying is safe under real Postgres concurrency.
         await using var verify = OpenContext();
-        var legacyIds = await verify.Providers
-            .Select(p => p.LegacyId)
+        var ids = await verify.Providers
+            .Select(p => p.Id)
             .ToListAsync();
-        Assert.Equal(parallelism, legacyIds.Count);
-        Assert.All(legacyIds, id => Assert.Equal(0L, id));
+        Assert.Equal(parallelism, ids.Count);
+        Assert.Equal(parallelism, ids.Distinct().Count());
     }
 }

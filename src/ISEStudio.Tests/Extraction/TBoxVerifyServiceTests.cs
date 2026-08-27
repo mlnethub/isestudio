@@ -698,7 +698,6 @@ public sealed class TBoxVerifyServiceTests : IDisposable
                 db.KnowledgeSystems.Add(new KnowledgeSystemEntity
                 {
                     Id = ksId,
-                    LegacyId = TestLegacyIds.Next("knowledgesystem"),
                     PublicId = Guid.NewGuid().ToString("N"),
                     Name = "Verify fixture",
                     GraphIri = graphIri,

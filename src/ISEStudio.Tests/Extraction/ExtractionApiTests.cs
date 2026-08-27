@@ -210,13 +210,10 @@ public sealed class ExtractionApiTests
         int axioms_added = 0)
     {
         // Each test gets its own factory (and therefore its own SQLite
-        // file), so the legacy-id allocator doesn't need a per-table
-        // prefix to stay unique. We still go through TestLegacyIds so
-        // the index matches what production migrations expect.
+        // file), so Guid PKs stay unique across fixtures.
         var db = app.CreateDbContext();
         var job = new ExtractionJobEntity
         {
-            LegacyId = TestLegacyIds.Next("extraction_job"),
             KnowledgeSystemId = ksGuid,
             Kind = kind,
             Status = status,
@@ -246,7 +243,6 @@ public sealed class ExtractionApiTests
             var passwordService = new PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.AdminPassword),

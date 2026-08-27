@@ -34,8 +34,7 @@ public sealed class SettingsApiTests
     public async Task Settings_get_returns_default_payload_when_no_config_row_exists()
     {
         // Fresh DB → no SystemConfig row yet; the service must materialise
-        // the singleton with LegacyId == 1 (mirrors Python's
-        // get_system_config side effect).
+        // the singleton (mirrors Python's get_system_config side effect).
         await using var app = new AuthTestWebApplicationFactory();
         await SeedAdminAsync(app);
         var client = await AuthenticatedClientAsync(app);
@@ -53,12 +52,12 @@ public sealed class SettingsApiTests
             body.GetProperty("available_models").ValueKind);
         Assert.True(body.GetProperty("available_models").GetArrayLength() >= 1);
 
-        // DB-side: singleton row materialised at LegacyId == 1.
+        // DB-side: singleton row materialised with the IsSingleton marker.
         using var verifyScope = app.Services.CreateScope();
         var db = verifyScope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
         var rows = db.SystemConfigs.ToList();
         Assert.Single(rows);
-        Assert.Equal(SystemConfigEntity.SingletonLegacyId, rows[0].LegacyId);
+        Assert.True(rows[0].IsSingleton);
     }
 
     [Fact]
@@ -156,7 +155,6 @@ public sealed class SettingsApiTests
         }
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(
@@ -176,7 +174,6 @@ public sealed class SettingsApiTests
         var entity = new ProviderEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("provider"),
             Name = name,
             Kind = kind,
             BaseUrl = baseUrl,

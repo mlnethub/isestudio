@@ -92,7 +92,6 @@ public sealed class DispatcherConcurrencyTests
         {
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword(

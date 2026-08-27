@@ -255,7 +255,6 @@ public sealed class TokenManagementApiTests
         }
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(AuthTestWebApplicationFactory.AdminPassword, workFactor: 10),
@@ -272,7 +271,6 @@ public sealed class TokenManagementApiTests
         var db = app.CreateDbContext();
         var user = new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = username,
             DisplayName = username,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(
@@ -313,7 +311,6 @@ public sealed class TokenManagementApiTests
         var db = app.CreateDbContext();
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("knowledge_system"),
             Name = $"token-tests-{tag}",
             Description = "Seed KS for token contract tests.",
             GraphIri = $"http://goodcrew.local/ks/{tag}",

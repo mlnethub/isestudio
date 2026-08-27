@@ -185,7 +185,6 @@ public sealed class KSRoleAuthorizeFilterTests
     {
         var user = new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = $"{name}-{Guid.NewGuid():N}",
             DisplayName = name,
             PasswordHash = "x",
@@ -203,7 +202,6 @@ public sealed class KSRoleAuthorizeFilterTests
     {
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Test KS",
             Description = "Test KS",
@@ -222,7 +220,6 @@ public sealed class KSRoleAuthorizeFilterTests
     {
         db.KSGrants.Add(new KSGrantEntity
         {
-            LegacyId = TestLegacyIds.Next("ksgrant"),
             KnowledgeSystemId = ksId,
             UserId = userId,
             Role = role,

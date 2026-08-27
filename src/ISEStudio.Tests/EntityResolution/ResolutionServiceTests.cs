@@ -79,7 +79,7 @@ public sealed class ResolutionServiceTests
 
         using var scope = app.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<ResolutionService>();
-        var res = await svc.ResolveAsync(ks.Id, row.LegacyId, action: "match",
+        var res = await svc.ResolveAsync(ks.Id, row.Id, action: "match",
             individualIri: "http://example.com/individuals/fig-1",
             new Actor(admin.Id.ToString()), CancellationToken.None);
 
@@ -105,7 +105,7 @@ public sealed class ResolutionServiceTests
         using var scope = app.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<ResolutionService>();
         await Assert.ThrowsAsync<ValidationException>(() =>
-            svc.ResolveAsync(ks.Id, row.LegacyId, action: "match", individualIri: null,
+            svc.ResolveAsync(ks.Id, row.Id, action: "match", individualIri: null,
                 new Actor(admin.Id.ToString()), CancellationToken.None));
     }
 
@@ -122,7 +122,7 @@ public sealed class ResolutionServiceTests
         using var scope = app.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<ResolutionService>();
         await Assert.ThrowsAsync<ValidationException>(() =>
-            svc.ResolveAsync(ks.Id, row.LegacyId, action: "merge", individualIri: null,
+            svc.ResolveAsync(ks.Id, row.Id, action: "merge", individualIri: null,
                 new Actor(admin.Id.ToString()), CancellationToken.None));
     }
 
@@ -138,7 +138,7 @@ public sealed class ResolutionServiceTests
 
         using var scope = app.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<ResolutionService>();
-        var ok = await svc.RevokeAsync(ks.Id, row.LegacyId,
+        var ok = await svc.RevokeAsync(ks.Id, row.Id,
             new Actor(admin.Id.ToString()), CancellationToken.None);
 
         Assert.True(ok);
@@ -159,13 +159,13 @@ public sealed class ResolutionServiceTests
 
         using var scope = app.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<ResolutionService>();
-        var res = await svc.EditReasonAsync(ks.Id, row.LegacyId, reason: "manual override",
+        var res = await svc.EditReasonAsync(ks.Id, row.Id, reason: "manual override",
             new Actor(admin.Id.ToString()), CancellationToken.None);
 
         Assert.NotNull(res);
         Assert.Equal("manual override", res!.Reason);
         var reread = db.EntityResolutions.AsNoTracking()
-            .Single(r => r.KnowledgeSystemId == ks.Id && r.LegacyId == row.LegacyId);
+            .Single(r => r.KnowledgeSystemId == ks.Id && r.Id == row.Id);
         Assert.NotNull(reread.Context);
         using var doc = reread.Context!;
         Assert.Equal("manual override", doc.RootElement.GetProperty("reason").GetString());
@@ -181,7 +181,7 @@ public sealed class ResolutionServiceTests
         if (db.Users.Any(u => u.Username == AuthTestWebApplicationFactory.AdminUsername)) return;
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(AuthTestWebApplicationFactory.AdminPassword, workFactor: 4),
@@ -194,7 +194,7 @@ public sealed class ResolutionServiceTests
     {
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("ks"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             Name = $"ks-{tag}", Description = tag, OwnerId = ownerId,
             BaseIri = $"http://example.com/{tag}#", GraphIri = $"http://example.com/graph/{tag}",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -216,8 +216,6 @@ public sealed class ResolutionServiceTests
             CreatedAt = DateTimeOffset.UtcNow,
         };
         db.EntityResolutions.Add(row);
-        await db.SaveChangesAsync();
-        row.LegacyId = TestLegacyIds.Next("entityresolution");
         await db.SaveChangesAsync();
         return row;
     }

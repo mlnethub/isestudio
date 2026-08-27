@@ -1,5 +1,3 @@
-using System.Collections.Concurrent;
-using System.Runtime.CompilerServices;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -165,7 +163,7 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
     /// from the factory within the same scope).
     /// </para>
     /// </summary>
-    private async Task<(Guid ksId, long chunkLegacyId)> SeedFixtureAsync(IServiceProvider sp)
+    private async Task<(Guid ksId, Guid chunkId)> SeedFixtureAsync(IServiceProvider sp)
     {
         var db = sp.GetRequiredService<ISEStudioDbContext>();
         await db.Database.MigrateAsync();
@@ -173,7 +171,6 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
         var provider = new ProviderEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = NextLegacyId("provider"),
             Name = "term-agent-pg-llm",
             BaseUrl = "http://localhost/v1",
             ApiKey = "test-key",
@@ -188,7 +185,6 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
             Id = ksId,
-            LegacyId = NextLegacyId("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Term agent PG fixture",
             GraphIri = GraphIri,
@@ -203,7 +199,6 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
         var doc = new DocumentEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = NextLegacyId("document"),
             KnowledgeSystemId = ksId,
             Sha256 = Guid.NewGuid().ToString("N"),
             OriginalFilename = "pump.txt",
@@ -216,7 +211,6 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
         var chunk = new ChunkEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = NextLegacyId("chunk"),
             DocumentId = doc.Id,
             Idx = 0,
             Text = text,
@@ -226,7 +220,7 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
         };
         db.Chunks.Add(chunk);
         await db.SaveChangesAsync();
-        return (ksId, chunk.LegacyId);
+        return (ksId, chunk.Id);
     }
 
     /// <summary>
@@ -234,7 +228,7 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
     /// <c>create</c> proposal whose <c>preferred_label</c> appears
     /// verbatim in the seeded chunk text.
     /// </summary>
-    private static string ProposeReply(long chunkLegacyId) => $$"""
+    private static string ProposeReply(Guid chunkId) => $$"""
         {
           "proposals": [{
             "action": "create",
@@ -246,12 +240,12 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
             "mapped_entity_iri": null,
             "confidence": 0.9,
             "reason": "explicit component in source",
-            "source_chunk_ids": [{{chunkLegacyId}}]
+            "source_chunk_ids": ["{{chunkId}}"]
           }]
         }
         """;
 
-    private static string HallucinatedReply(long chunkLegacyId) => $$"""
+    private static string HallucinatedReply(Guid chunkId) => $$"""
         {
           "proposals": [{
             "action": "create",
@@ -263,7 +257,7 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
             "mapped_entity_iri": null,
             "confidence": 0.9,
             "reason": "hallucinated term not in source",
-            "source_chunk_ids": [{{chunkLegacyId}}]
+            "source_chunk_ids": ["{{chunkId}}"]
           }]
         }
         """;
@@ -277,14 +271,14 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
         // term_proposals table on the PG backend.
         if (DockerRequired()) return;
 
-        var chat = new CannedReplyChat(ProposeReply(0));
+        var chat = new CannedReplyChat(ProposeReply(Guid.Empty));
         var services = BuildServices(chat);
         try
         {
             await using var scope = services.CreateAsyncScope();
             var sp = scope.ServiceProvider;
-            var (ksId, chunkLegacyId) = await SeedFixtureAsync(sp);
-            chat.SetNextReply(ProposeReply(chunkLegacyId));
+            var (ksId, chunkId) = await SeedFixtureAsync(sp);
+            chat.SetNextReply(ProposeReply(chunkId));
 
             var ks = await LoadKsAsync(sp, ksId);
             Assert.NotNull(ks);
@@ -293,7 +287,7 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
             var rows = await agent.SuggestAsync(
                 ks: ks!,
                 schemeIri: GraphIri + "/scheme",
-                chunkIds: new[] { chunkLegacyId },
+                chunkIds: new[] { chunkId },
                 model: null,
                 ct: CancellationToken.None);
 
@@ -316,9 +310,8 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
                 .ToListAsync();
             var persistedRow = Assert.Single(persisted);
             Assert.Equal(row.Signature, persistedRow.Signature);
-            // D1(c): the allocator is retired — legacy_id is filled by the
-            // DB DEFAULT 0 on INSERT.
-            Assert.Equal(0L, persistedRow.LegacyId);
+            // The persisted row rides the same Guid PK the agent minted.
+            Assert.Equal(row.Id, persistedRow.Id);
         }
         finally
         {
@@ -337,14 +330,14 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
         // return empty, and no row must be persisted on PG.
         if (DockerRequired()) return;
 
-        var chat = new CannedReplyChat(HallucinatedReply(0));
+        var chat = new CannedReplyChat(HallucinatedReply(Guid.Empty));
         var services = BuildServices(chat);
         try
         {
             await using var scope = services.CreateAsyncScope();
             var sp = scope.ServiceProvider;
-            var (ksId, chunkLegacyId) = await SeedFixtureAsync(sp);
-            chat.SetNextReply(HallucinatedReply(chunkLegacyId));
+            var (ksId, chunkId) = await SeedFixtureAsync(sp);
+            chat.SetNextReply(HallucinatedReply(chunkId));
 
             var ks = await LoadKsAsync(sp, ksId);
             Assert.NotNull(ks);
@@ -353,7 +346,7 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
             var rows = await agent.SuggestAsync(
                 ks: ks!,
                 schemeIri: GraphIri + "/scheme",
-                chunkIds: new[] { chunkLegacyId },
+                chunkIds: new[] { chunkId },
                 model: null,
                 ct: CancellationToken.None);
 
@@ -388,17 +381,6 @@ public sealed class TerminologyAgentPgTests : IAsyncLifetime
     // ISEStudio.IntegrationTests project does not need to reference
     // ISEStudio.Tests for FakeChatClientFactory + FakeChat).
     // ------------------------------------------------------------------
-
-    /// <summary>
-    /// Per-prefix monotonic legacy-id allocator. Mirrors the
-    /// contract of <c>ISEStudio.Tests.Persistence.TestLegacyIds.Next</c>
-    /// without the project reference — each call returns a unique id
-    /// per prefix so multiple entity rows in the same fixture don't
-    /// collide on the unique index.
-    /// </summary>
-    private static readonly ConcurrentDictionary<string, long> _nextIds = new();
-    private static long NextLegacyId(string prefix) =>
-        _nextIds.AddOrUpdate(prefix, 1000L, (_, current) => current + 1);
 
     /// <summary>
     /// <see cref="IChatClientFactory"/> that returns the chat the test

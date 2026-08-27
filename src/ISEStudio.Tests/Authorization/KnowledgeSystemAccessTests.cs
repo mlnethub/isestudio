@@ -46,7 +46,6 @@ public sealed class KnowledgeSystemAccessTests
         var grantee = await AddUserAsync(db, "grantee");
         db.KSGrants.Add(new KSGrantEntity
         {
-            LegacyId = TestLegacyIds.Next("ksgrant"),
             KnowledgeSystemId = ks.Id,
             UserId = grantee.Id,
             Role = "viewer",
@@ -67,7 +66,6 @@ public sealed class KnowledgeSystemAccessTests
         var grantee = await AddUserAsync(db, "editor-user");
         db.KSGrants.Add(new KSGrantEntity
         {
-            LegacyId = TestLegacyIds.Next("ksgrant"),
             KnowledgeSystemId = ks.Id,
             UserId = grantee.Id,
             Role = "editor",
@@ -104,7 +102,6 @@ public sealed class KnowledgeSystemAccessTests
         var grantee = await AddUserAsync(db, "viewer-user");
         db.KSGrants.Add(new KSGrantEntity
         {
-            LegacyId = TestLegacyIds.Next("ksgrant"),
             KnowledgeSystemId = ks.Id,
             UserId = grantee.Id,
             Role = "viewer",
@@ -128,7 +125,6 @@ public sealed class KnowledgeSystemAccessTests
         var grantee = await AddUserAsync(db, "editor-user");
         db.KSGrants.Add(new KSGrantEntity
         {
-            LegacyId = TestLegacyIds.Next("ksgrant"),
             KnowledgeSystemId = ks.Id,
             UserId = grantee.Id,
             Role = "editor",
@@ -188,7 +184,6 @@ public sealed class KnowledgeSystemAccessTests
         var now = DateTimeOffset.UtcNow;
         var admin = new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = newUser ? "admin" : $"admin-{Guid.NewGuid():N}",
             DisplayName = "Admin",
             PasswordHash = "x",
@@ -198,7 +193,6 @@ public sealed class KnowledgeSystemAccessTests
         };
         var owner = new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = "owner",
             DisplayName = "Owner",
             PasswordHash = "x",
@@ -212,7 +206,6 @@ public sealed class KnowledgeSystemAccessTests
 
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Test KS",
             Description = "Test KS",
@@ -235,7 +228,6 @@ public sealed class KnowledgeSystemAccessTests
     {
         var user = new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = $"{name}-{Guid.NewGuid():N}",
             DisplayName = name,
             PasswordHash = "x",

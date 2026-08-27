@@ -49,7 +49,6 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
                 db.KnowledgeSystems.Add(new KnowledgeSystemEntity
                 {
                     Id = ksId,
-                    LegacyId = TestLegacyIds.Next("knowledgesystem"),
                     PublicId = Guid.NewGuid().ToString("N"),
                     Name = "Recovery fixture",
                     GraphIri = graphIri,

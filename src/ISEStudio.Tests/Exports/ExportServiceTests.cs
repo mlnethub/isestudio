@@ -69,7 +69,6 @@ public sealed class ExportServiceFixture : IDisposable
         var ks = new KnowledgeSystemEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Export service fixture",
             GraphIri = GraphIri,
@@ -253,7 +252,6 @@ public class ExportServiceTests : IClassFixture<ExportServiceFixture>
             db.OntologyReleases.Add(new OntologyReleaseEntity
             {
                 Id = releaseId,
-                LegacyId = TestLegacyIds.Next("ontology_releases"),
                 KnowledgeSystemId = ks.Id,
                 Version = "v1",
                 Status = "published",
@@ -309,7 +307,7 @@ public class ExportServiceTests : IClassFixture<ExportServiceFixture>
 
     [Fact]
     [Trait("Category", "Export")]
-    public async Task GetAsync_resolves_by_guid_and_by_legacy_id()
+    public async Task GetAsync_resolves_by_guid()
     {
         using var svc = _fx.CreateService();
         var ks = _fx.SeedKnowledgeSystem();
@@ -318,22 +316,10 @@ public class ExportServiceTests : IClassFixture<ExportServiceFixture>
             TestActor(), CancellationToken.None);
         Assert.NotNull(job);
 
-        // The wire DTO (ExportOut) drops LegacyId — read it back from the
-        // store so we can exercise the int→Guid fallback lookup path.
-        // D1(c): the job row carries legacy_id 0 (DB DEFAULT; allocator retired).
-        var entity = await _fx.Jobs.GetAsync(job!.Id, CancellationToken.None);
-        Assert.NotNull(entity);
-        Assert.Equal(0L, entity!.LegacyId);
-
         var byGuid = await svc.GetAsync(ks.Id, job.Id.ToString(),
             CancellationToken.None);
         Assert.NotNull(byGuid);
         Assert.Equal(job.Id, byGuid!.Id);
-
-        var byLegacy = await svc.GetAsync(ks.Id, entity.LegacyId.ToString(),
-            CancellationToken.None);
-        Assert.NotNull(byLegacy);
-        Assert.Equal(job.Id, byLegacy!.Id);
 
         var missing = await svc.GetAsync(ks.Id, Guid.NewGuid().ToString(),
             CancellationToken.None);
@@ -354,15 +340,6 @@ public class ExportServiceTests : IClassFixture<ExportServiceFixture>
             TestActor(), CancellationToken.None);
         Assert.NotNull(a);
         Assert.NotNull(b);
-
-        // D1(c): new rows carry legacy_id 0 — give the ordering coverage
-        // explicit distinct legacy ids (historical-data style).
-        await using (var db = _fx.Contexts.CreateDbContext())
-        {
-            db.ExportJobs.Single(j => j.Id == a.Id).LegacyId = 1;
-            db.ExportJobs.Single(j => j.Id == b.Id).LegacyId = 2;
-            await db.SaveChangesAsync();
-        }
 
         var result = await svc.ListAsync(ks.Id, CancellationToken.None);
         Assert.NotNull(result);

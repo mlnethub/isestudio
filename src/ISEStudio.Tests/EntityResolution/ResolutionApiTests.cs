@@ -91,7 +91,7 @@ public sealed class ResolutionApiTests
         var del = await client.DeleteAsync($"/api/knowledge/{ksId}/resolution/decisions/{resId}");
         Assert.Equal(HttpStatusCode.OK, del.StatusCode);
         var body = await del.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal(resId, body.GetProperty("revoked").GetInt64());
+        Assert.Equal(resId.ToString(), body.GetProperty("revoked").GetString());
     }
 
     [Fact]
@@ -122,7 +122,7 @@ public sealed class ResolutionApiTests
             var passwordService = new ISEStudio.Authentication.PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"), Id = Guid.NewGuid(),
+                Id = Guid.NewGuid(),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.AdminPassword),
@@ -156,7 +156,7 @@ public sealed class ResolutionApiTests
         return body.GetProperty("id").GetGuid();
     }
 
-    private static async Task<long> SeedRowViaDbAsync(
+    private static async Task<Guid> SeedRowViaDbAsync(
         AuthTestWebApplicationFactory app, Guid ksId, string surface, string status)
     {
         var db = app.CreateDbContext();
@@ -172,8 +172,6 @@ public sealed class ResolutionApiTests
         };
         db.EntityResolutions.Add(row);
         await db.SaveChangesAsync();
-        row.LegacyId = TestLegacyIds.Next("entityresolution");
-        await db.SaveChangesAsync();
-        return row.LegacyId;
+        return row.Id;
     }
 }

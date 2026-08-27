@@ -126,7 +126,6 @@ public sealed class StartupRecoveryHostTests
             db.KnowledgeSystems.Add(new KnowledgeSystemEntity
             {
                 Id = ksId,
-                LegacyId = TestLegacyIds.Next("knowledgesystem"),
                 PublicId = "kstest" + Guid.NewGuid().ToString("N")[..10],
                 Name = "ks-startup-recovery",
                 Description = "",
@@ -140,7 +139,6 @@ public sealed class StartupRecoveryHostTests
             // Seed a user so the bootstrap gate does NOT refuse to start.
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = "bootstrap-seed",
                 DisplayName = "Bootstrap Seed",
                 PasswordHash = "$2a$04$" + new string('0', 53),
@@ -155,7 +153,6 @@ public sealed class StartupRecoveryHostTests
             db.ExtractionJobs.Add(new ExtractionJobEntity
             {
                 Id = interruptedJobId,
-                LegacyId = TestLegacyIds.Next("extractionjob"),
                 KnowledgeSystemId = ksId,
                 Kind = "tbox",
                 Status = "running",
@@ -169,7 +166,6 @@ public sealed class StartupRecoveryHostTests
             db.Documents.Add(new DocumentEntity
             {
                 Id = orphanDocumentId,
-                LegacyId = TestLegacyIds.Next("document"),
                 KnowledgeSystemId = null,
                 Sha256 = new string('c', 64),
                 OriginalFilename = "orphan-at-startup.pdf",

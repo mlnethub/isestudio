@@ -60,11 +60,11 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
     /// <summary>
     /// Valid LLM reply the terminology agent must parse: one <c>create</c>
     /// proposal whose <c>preferred_label</c> / <c>source_chunk_ids</c> line
-    /// up with the seeded fixture chunk. <c>source_chunk_ids</c> uses the
-    /// chunk's wire-format <see cref="LegacyAddressableEntity.LegacyId"/>
-    /// because that is what the agent's filter key compares against.
+    /// up with the seeded fixture chunk. <c>source_chunk_ids</c> carries
+    /// the chunk's Guid PK (the key the agent's filter set compares
+    /// against), serialised as a JSON string.
     /// </summary>
-    private static string ProposeReply(long chunkLegacyId) => $$"""
+    private static string ProposeReply(Guid chunkId) => $$"""
         {
           "proposals": [{
             "action": "create",
@@ -76,7 +76,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
             "mapped_entity_iri": null,
             "confidence": 0.9,
             "reason": "explicit component in source",
-            "source_chunk_ids": [{{chunkLegacyId}}]
+            "source_chunk_ids": ["{{chunkId}}"]
           }]
         }
         """;
@@ -88,7 +88,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
     /// check should reject (parity with Python
     /// <c>terminology_agent._filter_to_supported_labels</c>).
     /// </summary>
-    private static string HallucinatedReply(long chunkLegacyId) => $$"""
+    private static string HallucinatedReply(Guid chunkId) => $$"""
         {
           "proposals": [{
             "action": "create",
@@ -100,7 +100,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
             "mapped_entity_iri": null,
             "confidence": 0.9,
             "reason": "hallucinated term not in source",
-            "source_chunk_ids": [{{chunkLegacyId}}]
+            "source_chunk_ids": ["{{chunkId}}"]
           }]
         }
         """;
@@ -111,7 +111,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
     /// uses lowercase "pump" — this reply proposes "PUMP" (uppercase),
     /// which the OrdinalIgnoreCase grounding check should accept.
     /// </summary>
-    private static string CaseVariantReply(long chunkLegacyId) => $$"""
+    private static string CaseVariantReply(Guid chunkId) => $$"""
         {
           "proposals": [{
             "action": "create",
@@ -123,7 +123,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
             "mapped_entity_iri": null,
             "confidence": 0.9,
             "reason": "case variant of corpus term",
-            "source_chunk_ids": [{{chunkLegacyId}}]
+            "source_chunk_ids": ["{{chunkId}}"]
           }]
         }
         """;
@@ -147,8 +147,8 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
 
     private ExtractionRequest Request { get; }
 
-    /// <summary>Wire-format LegacyId of the fixture chunk the agent's prompt will quote.</summary>
-    private long ChunkLegacyId { get; set; }
+    /// <summary>Guid PK of the fixture chunk the agent's prompt will quote.</summary>
+    private Guid ChunkId { get; set; }
 
     public TerminologyAgentOrchestrationTests()
     {
@@ -160,7 +160,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         SeedTBox();
 
         _contexts = new SqliteContextFactory();
-        ChunkLegacyId = SeedKnowledgeSystem();
+        ChunkId = SeedKnowledgeSystem();
 
         _blobs = new LocalCasBlobStore(Path.Combine(_root, "blobs"));
         var sha = PutDocument(_blobs);
@@ -196,7 +196,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         // deterministic sync seals the scheme; layer 3: the terminology
         // agent (LLM) emits one accepted proposal.
         FakeChat.Enqueue(TBoxDelta);
-        FakeChat.Enqueue(ProposeReply(ChunkLegacyId));
+        FakeChat.Enqueue(ProposeReply(ChunkId));
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
         var finished = await Jobs.WaitAsync(job.Id);
@@ -234,7 +234,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         // collapsing it into the dispatcher's anonymous object) cannot
         // silently drop the count without a test failure.
         FakeChat.Enqueue(TBoxDelta);
-        FakeChat.Enqueue(ProposeReply(ChunkLegacyId));
+        FakeChat.Enqueue(ProposeReply(ChunkId));
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
         var finished = await Jobs.WaitAsync(job.Id);
@@ -292,7 +292,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         // mentions "impeller" verbatim; this test proposes "Compressor"
         // (NOT in the chunk) and asserts 0 proposals are persisted.
         FakeChat.Enqueue(TBoxDelta);
-        FakeChat.Enqueue(HallucinatedReply(ChunkLegacyId));
+        FakeChat.Enqueue(HallucinatedReply(ChunkId));
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
         var finished = await Jobs.WaitAsync(job.Id);
@@ -315,7 +315,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         // mental model is "the term string is present", not "exact byte
         // match".
         FakeChat.Enqueue(TBoxDelta);
-        FakeChat.Enqueue(CaseVariantReply(ChunkLegacyId));
+        FakeChat.Enqueue(CaseVariantReply(ChunkId));
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
         var finished = await Jobs.WaitAsync(job.Id);
@@ -348,13 +348,12 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         Store.AddQuads(new OntoNamedNode(Ks.TBoxGraph), quads);
     }
 
-    private long SeedKnowledgeSystem()
+    private Guid SeedKnowledgeSystem()
     {
         using var db = _contexts.CreateDbContext();
         var provider = new ProviderEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("provider"),
             Name = "term-agent-llm",
             BaseUrl = "http://localhost/v1",
             ApiKey = "test-key",
@@ -368,7 +367,6 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
             Id = _ksId,
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Term agent fixture",
             GraphIri = GraphIri,
@@ -387,7 +385,6 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         var doc = new DocumentEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("document"),
             KnowledgeSystemId = _ksId,
             Sha256 = Guid.NewGuid().ToString("N"),
             OriginalFilename = "pump.txt",
@@ -399,7 +396,6 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         var chunk = new ChunkEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("chunk"),
             DocumentId = doc.Id,
             Idx = 0,
             Text = text,
@@ -409,7 +405,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         };
         db.Chunks.Add(chunk);
         db.SaveChanges();
-        return chunk.LegacyId;
+        return chunk.Id;
     }
 
     /// <summary>
@@ -424,7 +420,6 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         var provider = new ProviderEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("provider"),
             Name = "term-agent-llm-empty",
             BaseUrl = "http://localhost/v1",
             ApiKey = "test-key",
@@ -437,7 +432,6 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
             Id = _ksId,
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Term agent empty fixture",
             GraphIri = GraphIri,

@@ -113,7 +113,6 @@ public sealed class AuthenticationContractTests
         var user = db.Users.Single();
         db.AuthSessions.Add(new AuthSessionEntity
         {
-            LegacyId = TestLegacyIds.Next("authsession"),
             Token = "inactive-token",
             UserId = user.Id,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -140,7 +139,6 @@ public sealed class AuthenticationContractTests
         var token = "valid-token";
         db.AuthSessions.Add(new AuthSessionEntity
         {
-            LegacyId = TestLegacyIds.Next("authsession"),
             Token = token,
             UserId = user.Id,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -187,7 +185,6 @@ public sealed class AuthenticationContractTests
         {
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword(AuthTestWebApplicationFactory.AdminPassword, workFactor: 10),
@@ -212,7 +209,6 @@ public sealed class AuthenticationContractTests
         var user = db.Users.Single();
         var session = new AuthSessionEntity
         {
-            LegacyId = TestLegacyIds.Next("authsession"),
             Token = Guid.NewGuid().ToString("N"),
             UserId = user.Id,
             CreatedAt = DateTimeOffset.UtcNow,

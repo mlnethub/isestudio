@@ -177,7 +177,6 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
         if (db.Users.Any(u => u.Username == AdminUsername)) return;
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AdminUsername,
             DisplayName = AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(AdminPassword, workFactor: 10),
@@ -199,7 +198,6 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
         if (db.Users.Any(u => u.Username == username)) return;
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = username,
             DisplayName = username,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(OtherPassword, workFactor: 10),

@@ -51,10 +51,9 @@ public sealed class KnowledgeApiTests
         Assert.Equal("smoke test", created.GetProperty("description").GetString());
         Assert.Equal("owner", created.GetProperty("my_role").GetString());
         // Phase 2: graph_iri / base_iri are stamped from the row's PublicId
-        // (the wire-stable hex Guid), NOT the allocator-assigned LegacyId
-        // (which now defaults to 0 for every new row and would collide every
-        // KS on IriRoot/0). Stamp uses the configured IriRoot (default
-        // http://goodcrew.local/ks) — see ISEStudioOptions.IriRoot.
+        // (the wire-stable hex Guid), NOT any numeric surrogate. Stamp uses
+        // the configured IriRoot (default http://goodcrew.local/ks) — see
+        // ISEStudioOptions.IriRoot.
         var publicId = LookupKsPublicId(app, id);
         Assert.Equal($"http://goodcrew.local/ks/{publicId}", created.GetProperty("graph_iri").GetString());
         Assert.Equal($"http://goodcrew.local/ks/{publicId}/onto#", created.GetProperty("base_iri").GetString());
@@ -69,9 +68,10 @@ public sealed class KnowledgeApiTests
     /// <summary>
     /// Phase 2 regression (C1): every newly-created KS must derive a
     /// distinct <c>graph_iri</c> and <c>base_iri</c>. The pre-fix code
-    /// stamped both from <c>LegacyId</c>, which defaults to 0 post-Phase 2
-    /// — so two new KSes silently collided on the same RDF graph and
-    /// cross-contaminated TBox / ABox / Vocabulary data downstream.
+    /// stamped both from a numeric surrogate that defaulted to 0 for
+    /// every new row — so two new KSes silently collided on the same RDF
+    /// graph and cross-contaminated TBox / ABox / Vocabulary data
+    /// downstream.
     /// </summary>
     [Fact]
     public async Task CreateAsync_twice_yields_distinct_graph_and_base_iris()
@@ -234,7 +234,6 @@ public sealed class KnowledgeApiTests
         {
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword(AuthTestWebApplicationFactory.AdminPassword, workFactor: 10),
@@ -264,7 +263,6 @@ public sealed class KnowledgeApiTests
         var db = app.CreateDbContext();
         var u = new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = username,
             DisplayName = username,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(username + "-pwd", workFactor: 4),
@@ -327,7 +325,6 @@ public sealed class KnowledgeApiTests
         db.Conflicts.Add(new ConflictEntity
         {
             Id = id,
-            LegacyId = TestLegacyIds.Next("conflict"),
             KnowledgeSystemId = ksGuid,
             Signature = $"{ctype}|{Guid.NewGuid():N}",
             Ctype = ctype,

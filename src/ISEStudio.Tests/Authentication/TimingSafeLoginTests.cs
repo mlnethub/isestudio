@@ -43,7 +43,6 @@ public sealed class TimingSafeLoginTests
         var db = app.CreateDbContext();
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = "$2a$12$" + new string('0', 53),

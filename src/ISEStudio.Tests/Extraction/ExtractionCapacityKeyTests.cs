@@ -102,9 +102,7 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
         var requestB = NewRequest(ksB, endpoint: "https://provider-a.test/v1");
 
         var jobA = await _orchestrator.StartTBoxAsync(requestA, CancellationToken.None);
-        AllocateLegacyId(jobA.Id);
         var jobB = await _orchestrator.StartTBoxAsync(requestB, CancellationToken.None);
-        AllocateLegacyId(jobB.Id);
 
         // Give both background tasks a chance to enter the chat. After
         // ~500ms the scheduler has run both jobs to the semaphore wait;
@@ -144,9 +142,7 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
         var requestB = NewRequest(ksB, endpoint: "https://provider-b.test/v1");
 
         var jobA = await _orchestrator.StartTBoxAsync(requestA, CancellationToken.None);
-        AllocateLegacyId(jobA.Id);
         var jobB = await _orchestrator.StartTBoxAsync(requestB, CancellationToken.None);
-        AllocateLegacyId(jobB.Id);
 
         // Give both background tasks a chance to enter the chat. Each
         // holds its own permit, so both should have entered the chat
@@ -182,19 +178,6 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
         ApiKey: null,
         ConcurrencyLimit: 1);
 
-    /// <summary>
-    /// The job store's <c>CreateAsync</c> defaults <c>LegacyId = 0</c>; two
-    /// jobs in one fixture would trip the SQLite unique index. Allocate a
-    /// distinct legacy id per row so both inserts succeed.
-    /// </summary>
-    private void AllocateLegacyId(Guid jobId)
-    {
-        using var db = _contexts.CreateDbContext();
-        var job = db.ExtractionJobs.First(j => j.Id == jobId);
-        job.LegacyId = TestLegacyIds.Next("extractionjob");
-        db.SaveChanges();
-    }
-
     private Guid SeedKnowledgeSystem(string tag)
     {
         var id = Guid.NewGuid();
@@ -204,7 +187,6 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
             Id = id,
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = $"Capacity fixture {tag}",
             GraphIri = graphIri,

@@ -367,7 +367,6 @@ public sealed class ExtractionAgentChainTests : IDisposable
         var provider = new ProviderEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("provider"),
             Name = "agent-chain-llm",
             BaseUrl = "http://localhost/v1",
             ApiKey = "test-key",
@@ -381,7 +380,6 @@ public sealed class ExtractionAgentChainTests : IDisposable
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
             Id = _ksId,
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Agent chain fixture",
             GraphIri = GraphIri,
@@ -398,7 +396,6 @@ public sealed class ExtractionAgentChainTests : IDisposable
         var doc = new DocumentEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("document"),
             KnowledgeSystemId = _ksId,
             Sha256 = Guid.NewGuid().ToString("N"),
             OriginalFilename = "source.txt",
@@ -409,7 +406,6 @@ public sealed class ExtractionAgentChainTests : IDisposable
         db.Chunks.Add(new ChunkEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("chunk"),
             DocumentId = doc.Id,
             Idx = 0,
             Text = text,

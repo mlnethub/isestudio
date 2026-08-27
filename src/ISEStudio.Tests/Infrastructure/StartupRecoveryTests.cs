@@ -138,7 +138,6 @@ public sealed class StartupRecoveryTests
         // a separate release per deployment.
         var provisioningRelease = new OntologyReleaseEntity
         {
-            LegacyId = TestLegacyIds.Next("ontologyrelease"),
             KnowledgeSystemId = ks.Id,
             Version = "draft-prov",
             Status = "published",
@@ -154,7 +153,6 @@ public sealed class StartupRecoveryTests
         };
         var activeRelease = new OntologyReleaseEntity
         {
-            LegacyId = TestLegacyIds.Next("ontologyrelease"),
             KnowledgeSystemId = ks.Id,
             Version = "draft-active",
             Status = "published",
@@ -174,7 +172,6 @@ public sealed class StartupRecoveryTests
 
         db.ReleaseDeployments.Add(new ReleaseDeploymentEntity
         {
-            LegacyId = TestLegacyIds.Next("releasedeployment"),
             KnowledgeSystemId = ks.Id,
             ReleaseId = provisioningRelease.Id,
             Status = "provisioning",
@@ -185,7 +182,6 @@ public sealed class StartupRecoveryTests
         });
         db.ReleaseDeployments.Add(new ReleaseDeploymentEntity
         {
-            LegacyId = TestLegacyIds.Next("releasedeployment"),
             KnowledgeSystemId = ks.Id,
             ReleaseId = activeRelease.Id,
             Status = "active",
@@ -230,7 +226,6 @@ public sealed class StartupRecoveryTests
         var ks = NewKnowledgeSystem(db);
         var doc = new DocumentEntity
         {
-            LegacyId = TestLegacyIds.Next("document"),
             KnowledgeSystemId = null, // orphan
             Sha256 = new string('a', 64),
             OriginalFilename = "orphan.pdf",
@@ -258,7 +253,6 @@ public sealed class StartupRecoveryTests
         var ks = NewKnowledgeSystem(db);
         db.Documents.Add(new DocumentEntity
         {
-            LegacyId = TestLegacyIds.Next("document"),
             KnowledgeSystemId = ks.Id, // already bound
             Sha256 = new string('b', 64),
             OriginalFilename = "bound.pdf",
@@ -283,7 +277,6 @@ public sealed class StartupRecoveryTests
 
     private static UserEntity NewUser() => new()
     {
-        LegacyId = TestLegacyIds.Next("users"),
         Username = "admin" + Guid.NewGuid().ToString("N")[..6],
         DisplayName = "Admin",
         PasswordHash = "$2a$04$" + new string('0', 53),
@@ -295,7 +288,6 @@ public sealed class StartupRecoveryTests
     private static KnowledgeSystemEntity NewKnowledgeSystem(ISEStudioDbContext db) =>
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = "kstest" + Guid.NewGuid().ToString("N")[..10],
             Name = "ks-test",
             Description = "",
@@ -317,7 +309,6 @@ public sealed class StartupRecoveryTests
             {
                 db.ExportJobs.Add(new ExportJobEntity
                 {
-                    LegacyId = TestLegacyIds.Next("exportjob"),
                     KnowledgeSystemId = ks.Id,
                     Layer = "tbox",
                     Format = "nquads",
@@ -330,7 +321,6 @@ public sealed class StartupRecoveryTests
             {
                 db.ExtractionJobs.Add(new ExtractionJobEntity
                 {
-                    LegacyId = TestLegacyIds.Next("extractionjob"),
                     KnowledgeSystemId = ks.Id,
                     Kind = kind,
                     Status = status,

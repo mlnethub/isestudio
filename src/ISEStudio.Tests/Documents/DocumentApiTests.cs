@@ -607,7 +607,6 @@ public sealed class DocumentApiTests
             var passwordService = new ISEStudio.Authentication.PasswordService();
             db.Users.Add(new ISEStudio.Infrastructure.Persistence.Entities.UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.AdminPassword),
@@ -640,7 +639,6 @@ public sealed class DocumentApiTests
             var passwordService = new ISEStudio.Authentication.PasswordService();
             db.Users.Add(new ISEStudio.Infrastructure.Persistence.Entities.UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.OtherUsername,
                 DisplayName = AuthTestWebApplicationFactory.OtherUsername,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.OtherPassword),
@@ -703,7 +701,6 @@ public sealed class DocumentApiTests
         var db = app.CreateDbContext();
         db.AxiomProvenances.Add(new ISEStudio.Infrastructure.Persistence.Entities.AxiomProvenanceEntity
         {
-            LegacyId = TestLegacyIds.Next("axiom_provenance"),
             KnowledgeSystemId = ksId,
             ChunkId = chunkId,
             AxiomKey = axiomKey,
@@ -720,7 +717,6 @@ public sealed class DocumentApiTests
         var db = app.CreateDbContext();
         db.EntityResolutions.Add(new ISEStudio.Infrastructure.Persistence.Entities.EntityResolutionEntity
         {
-            LegacyId = TestLegacyIds.Next("entity_resolution"),
             KnowledgeSystemId = ksId,
             SourceChunkId = sourceChunkId,
             IndividualIri = iri,

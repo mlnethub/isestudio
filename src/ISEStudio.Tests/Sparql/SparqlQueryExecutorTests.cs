@@ -174,7 +174,7 @@ public sealed class SparqlQueryExecutorTests
         {
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"), Id = ownerId,
+                Id = ownerId,
                 Username = "sparql-admin", DisplayName = "SPARQL Admin",
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword("dummy", workFactor: 4),
                 IsAdmin = true, Active = true, CreatedAt = DateTimeOffset.UtcNow,
@@ -187,7 +187,7 @@ public sealed class SparqlQueryExecutorTests
         }
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("ks"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             Name = $"ks-{tag}", Description = tag, OwnerId = ownerId,
             PublicId = $"pub-{tag}",
             BaseIri = $"http://example.com/{tag}#",

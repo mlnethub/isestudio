@@ -160,7 +160,6 @@ public sealed class ProvidersApiTests
         }
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(AuthTestWebApplicationFactory.AdminPassword, workFactor: 10),
@@ -196,7 +195,6 @@ public sealed class ProvidersApiTests
         var db = app.CreateDbContext();
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("knowledge_system"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Test KS",
             Description = "Created by ProvidersApiTests.Delete_blocked_when_provider_referenced_by_knowledge_system",

@@ -413,7 +413,6 @@ public sealed class TokenServiceTests
     {
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = "kstest" + Guid.NewGuid().ToString("N")[..10],
             Name = "ks-test",
             Description = "",
@@ -432,7 +431,6 @@ public sealed class TokenServiceTests
     {
         var user = new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = "u" + Guid.NewGuid().ToString("N")[..8],
             DisplayName = "User",
             PasswordHash = BCrypt.Net.BCrypt.HashPassword("placeholder-password-123", workFactor: 4),

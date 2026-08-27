@@ -168,7 +168,6 @@ public sealed class ExtractionLlmFailureTests : IDisposable
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
             Id = _ksId,
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "LLM failure fixture",
             GraphIri = GraphIri,

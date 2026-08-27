@@ -131,7 +131,6 @@ public sealed class VocabularyProposalApiTests
             };
         var proposal = new TermProposalEntity
         {
-            LegacyId = TestLegacyIds.Next("term_proposal"),
             KnowledgeSystemId = ksGuid,
             Signature = $"test-{action}-{term}",
             Action = action,
@@ -175,7 +174,6 @@ public sealed class VocabularyProposalApiTests
             var passwordService = new PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.AdminPassword),

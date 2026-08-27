@@ -239,7 +239,6 @@ public sealed class StructureAgentTests : IDisposable
             seedDb.ExtractionJobs.Add(new ExtractionJobEntity
             {
                 Id = Guid.NewGuid(),
-                LegacyId = TestLegacyIds.Next("extraction_job"),
                 KnowledgeSystemId = ksId,
                 Kind = "tbox",
                 Status = "pending",
@@ -268,7 +267,6 @@ public sealed class StructureAgentTests : IDisposable
         var ks = new KnowledgeSystemEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("knowledge_system"),
             Name = "structure-agent-no-provider",
             GraphIri = "http://goodcrew.local/ks/no-provider",
             BaseIri = "http://goodcrew.local/ks/no-provider#",
@@ -475,7 +473,6 @@ public sealed class StructureAgentTests : IDisposable
         var provider = new ProviderEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("provider"),
             Name = $"structure-agent-llm-{tag}",
             BaseUrl = "http://localhost/v1",
             ApiKey = "test-key",
@@ -490,7 +487,6 @@ public sealed class StructureAgentTests : IDisposable
         var ks = new KnowledgeSystemEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("knowledge_system"),
             Name = $"structure-agent-{tag}",
             Description = "Seed KS for StructureAgent tests.",
             GraphIri = $"http://goodcrew.local/ks/{tag}",
@@ -510,7 +506,6 @@ public sealed class StructureAgentTests : IDisposable
         var doc = new DocumentEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("document"),
             KnowledgeSystemId = ksId,
             Sha256 = Guid.NewGuid().ToString("N"),
             OriginalFilename = "source.txt",
@@ -521,7 +516,6 @@ public sealed class StructureAgentTests : IDisposable
         db.Chunks.Add(new ChunkEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("chunk"),
             DocumentId = doc.Id,
             Idx = 0,
             Text = text,

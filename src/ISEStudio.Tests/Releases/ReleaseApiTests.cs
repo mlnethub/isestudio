@@ -123,7 +123,6 @@ public sealed class ReleaseApiTests
         }
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(AuthTestWebApplicationFactory.AdminPassword, workFactor: 10),
@@ -155,7 +154,6 @@ public sealed class ReleaseApiTests
         var db = app.CreateDbContext();
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("knowledge_system"),
             Name = $"release-tests-{tag}",
             Description = "Seed KS for release contract tests.",
             GraphIri = $"http://goodcrew.local/ks/{tag}",

@@ -66,7 +66,6 @@ public sealed class PublishedDataServiceFixture : IDisposable
         var ks = new KnowledgeSystemEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Published data fixture",
             Description = "",
@@ -108,7 +107,6 @@ public sealed class PublishedDataServiceFixture : IDisposable
             db.OntologyReleases.Add(new OntologyReleaseEntity
             {
                 Id = releaseId,
-                LegacyId = TestLegacyIds.Next("ontology_releases"),
                 KnowledgeSystemId = ks.Id,
                 Version = version,
                 Status = "published",
@@ -122,7 +120,6 @@ public sealed class PublishedDataServiceFixture : IDisposable
             db.ReleaseDeployments.Add(new ReleaseDeploymentEntity
             {
                 Id = deploymentId,
-                LegacyId = TestLegacyIds.Next("release_deployments"),
                 KnowledgeSystemId = ks.Id,
                 ReleaseId = releaseId,
                 Status = "active",

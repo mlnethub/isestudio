@@ -143,7 +143,6 @@ public sealed class ConflictApiTests
         db.Conflicts.Add(new ConflictEntity
         {
             Id = cid,
-            LegacyId = TestLegacyIds.Next("conflict"),
             KnowledgeSystemId = ks.Id,
             Signature = "cycle|A|B|C",
             Ctype = "cycle",
@@ -184,7 +183,6 @@ public sealed class ConflictApiTests
         db.Conflicts.Add(new ConflictEntity
         {
             Id = cid,
-            LegacyId = TestLegacyIds.Next("conflict"),
             KnowledgeSystemId = ks.Id,
             Signature = "range_multi|http://test/prop",
             Ctype = "range_multi",
@@ -311,7 +309,6 @@ public sealed class ConflictApiTests
         }
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(AuthTestWebApplicationFactory.AdminPassword, workFactor: 10),
@@ -343,7 +340,6 @@ public sealed class ConflictApiTests
         var db = app.CreateDbContext();
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("knowledge_system"),
             Name = $"conflict-tests-{tag}",
             Description = "Seed KS for conflict contract tests.",
             GraphIri = $"http://goodcrew.local/ks/{tag}",
@@ -364,7 +360,6 @@ public sealed class ConflictApiTests
         db.Conflicts.Add(new ConflictEntity
         {
             Id = id,
-            LegacyId = TestLegacyIds.Next("conflict"),
             KnowledgeSystemId = ksId,
             Signature = signature ?? $"{ctype}|{Guid.NewGuid():N}",
             Ctype = ctype,
@@ -387,7 +382,6 @@ public sealed class ConflictApiTests
         db.TboxReconciliations.Add(new TboxReconciliationEntity
         {
             Id = id,
-            LegacyId = TestLegacyIds.Next("tbox_reconciliation"),
             KnowledgeSystemId = ksId,
             Slot = slot,
             PropertyLabel = label,

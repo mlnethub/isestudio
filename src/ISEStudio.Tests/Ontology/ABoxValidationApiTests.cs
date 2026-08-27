@@ -375,7 +375,6 @@ public sealed class ABoxValidationApiTests
             var passwordService = new ISEStudio.Authentication.PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.AdminPassword),

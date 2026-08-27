@@ -119,7 +119,7 @@ public sealed class HistoryServiceTests
         if (db.Users.Any(u => u.Username == AuthTestWebApplicationFactory.AdminUsername)) return;
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(AuthTestWebApplicationFactory.AdminPassword, workFactor: 4),
@@ -132,7 +132,7 @@ public sealed class HistoryServiceTests
     {
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("ks"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             Name = $"ks-{tag}", Description = tag,
             OwnerId = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername).Id,
             BaseIri = $"http://example.com/{tag}#", GraphIri = $"http://example.com/graph/{tag}",
@@ -146,7 +146,7 @@ public sealed class HistoryServiceTests
     {
         db.AuditEvents.Add(new AuditEventEntity
         {
-            LegacyId = TestLegacyIds.Next("audit_event"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, ActorId = actorId, ActorName = actorName,
             Action = action, Summary = summary, Graph = graph, GroupId = groupId,
             Added = added, Removed = removed, CreatedAt = DateTimeOffset.UtcNow,

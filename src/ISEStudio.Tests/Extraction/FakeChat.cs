@@ -179,18 +179,18 @@ public sealed class FakeChat : IChatClient
     /// the caller control the <c>source_chunk_ids</c> each proposal cites.
     /// TerminologyAgent filters proposals whose cited chunks are not in the
     /// loaded set, so a test that seeds real <see cref="ISEStudio.Infrastructure.Persistence.Entities.ChunkEntity"/>
-    /// rows must cite their actual <c>LegacyId</c>s (not the 0..count-1
-    /// indices the parameterless overload uses) for the proposals to
-    /// survive <c>TryBuildProposal</c>.
+    /// rows must cite their actual Guid PKs (not the 0..count-1 indices the
+    /// parameterless overload uses) for the proposals to survive
+    /// <c>TryBuildProposal</c>.
     /// </summary>
-    public FakeChat EnqueueTerminologyProposal(int count, IReadOnlyList<long>? sourceChunkIds)
+    public FakeChat EnqueueTerminologyProposal(int count, IReadOnlyList<Guid>? sourceChunkIds)
     {
         var entries = new System.Text.StringBuilder();
         for (int i = 0; i < count; i++)
         {
             if (i > 0) entries.Append(',');
             var sourceIds = sourceChunkIds is { Count: > 0 }
-                ? string.Join(",", sourceChunkIds)
+                ? string.Join(",", sourceChunkIds.Select(id => $"\"{id}\""))
                 : i.ToString();
             entries.Append($$"""
                 {

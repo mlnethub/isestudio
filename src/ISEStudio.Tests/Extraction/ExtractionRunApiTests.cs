@@ -131,8 +131,8 @@ public sealed class ExtractionRunApiTests
         Assert.Equal(2, body.GetProperty("total_chunks").GetInt32());
         var jobId = body.GetProperty("id").GetGuid();
         var persistedJob = app.CreateDbContext().ExtractionJobs.Single(job => job.Id == jobId);
-        // D1(c): new rows carry legacy_id 0 (DB DEFAULT; allocator retired).
-        Assert.Equal(0L, persistedJob.LegacyId);
+        // The wire id round-trips to the persisted Guid PK.
+        Assert.Equal(jobId, persistedJob.Id);
     }
 
     [Fact]
@@ -237,7 +237,6 @@ public sealed class ExtractionRunApiTests
         var db = app.CreateDbContext();
         var existingJob = new ExtractionJobEntity
         {
-            LegacyId = TestLegacyIds.Next("extraction_job"),
             KnowledgeSystemId = ksGuid,
             Kind = "tbox",
             Status = "running",
@@ -400,7 +399,6 @@ public sealed class ExtractionRunApiTests
             var passwordService = new PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.AdminPassword),
@@ -436,7 +434,6 @@ public sealed class ExtractionRunApiTests
         {
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = viewerUsername,
                 DisplayName = "Viewer B6B",
                 PasswordHash = passwordService.Hash(viewerPassword),
@@ -515,7 +512,6 @@ public sealed class ExtractionRunApiTests
         var db = app.CreateDbContext();
         var provider = new ProviderEntity
         {
-            LegacyId = TestLegacyIds.Next("provider"),
             Name = "test-openai",
             BaseUrl = "https://api.example.com",
             ApiKey = "test-key",
@@ -526,7 +522,6 @@ public sealed class ExtractionRunApiTests
         };
         var document = new DocumentEntity
         {
-            LegacyId = TestLegacyIds.Next("document"),
             KnowledgeSystemId = knowledgeSystemId,
             Sha256 = new string('a', 64),
             OriginalFilename = "test.txt",
@@ -539,7 +534,6 @@ public sealed class ExtractionRunApiTests
         };
         var chunk = new ChunkEntity
         {
-            LegacyId = TestLegacyIds.Next("chunk"),
             DocumentId = document.Id,
             Idx = 0,
             Text = "the quick brown fox",
@@ -562,7 +556,6 @@ public sealed class ExtractionRunApiTests
         var db = app.CreateDbContext();
         db.ExtractionJobs.Add(new ExtractionJobEntity
         {
-            LegacyId = TestLegacyIds.Next("extraction_job"),
             KnowledgeSystemId = knowledgeSystemId,
             Kind = "both",
             Status = "completed",

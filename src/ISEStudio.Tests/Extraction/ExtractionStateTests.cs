@@ -357,7 +357,6 @@ public sealed class ExtractionStateTests : IDisposable
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
             Id = _ksId,
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = Guid.NewGuid().ToString("N"),
             Name = "Extraction fixture",
             GraphIri = GraphIri,

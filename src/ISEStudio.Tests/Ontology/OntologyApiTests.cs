@@ -647,7 +647,7 @@ public sealed class OntologyApiTests
         var db = app.CreateDbContext();
         var doc = new DocumentEntity
         {
-            LegacyId = TestLegacyIds.Next("document"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, OriginalFilename = "manual.pdf",
             Folder = "/", Sha256 = Guid.NewGuid().ToString("N"), Ext = "pdf",
             SizeBytes = 1, StoragePath = "aa/bb/x", UploadedAt = DateTimeOffset.UtcNow, ParseStatus = "parsed",
@@ -655,14 +655,14 @@ public sealed class OntologyApiTests
         db.Documents.Add(doc); await db.SaveChangesAsync();
         var chunk = new ChunkEntity
         {
-            LegacyId = TestLegacyIds.Next("chunk"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             DocumentId = doc.Id, Idx = 0, Text = "t", CharStart = 0, CharEnd = 1,
             TokenEstimate = 1, CreatedAt = DateTimeOffset.UtcNow,
         };
         db.Chunks.Add(chunk);
         db.AxiomProvenances.Add(new AxiomProvenanceEntity
         {
-            LegacyId = TestLegacyIds.Next("axiomprov"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, AxiomKey = "subClassOf|Pump|Device",
             ChunkId = chunk.Id, Method = "extraction", ActorName = "admin",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -692,7 +692,7 @@ public sealed class OntologyApiTests
         var db = app.CreateDbContext();
         var doc = new DocumentEntity
         {
-            LegacyId = TestLegacyIds.Next("document"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, OriginalFilename = "m.pdf",
             Folder = "/", Sha256 = Guid.NewGuid().ToString("N"), Ext = "pdf",
             SizeBytes = 1, StoragePath = "aa/bb/x", UploadedAt = DateTimeOffset.UtcNow, ParseStatus = "parsed",
@@ -700,14 +700,14 @@ public sealed class OntologyApiTests
         db.Documents.Add(doc); await db.SaveChangesAsync();
         var chunk = new ChunkEntity
         {
-            LegacyId = TestLegacyIds.Next("chunk"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             DocumentId = doc.Id, Idx = 0, Text = "t", CharStart = 0, CharEnd = 1,
             TokenEstimate = 1, CreatedAt = DateTimeOffset.UtcNow,
         };
         db.Chunks.Add(chunk);
         db.AxiomProvenances.Add(new AxiomProvenanceEntity
         {
-            LegacyId = TestLegacyIds.Next("axiomprov"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, AxiomKey = "domain|hasFlow|Pump",
             ChunkId = chunk.Id, Method = "extraction", ActorName = "admin",
             CreatedAt = DateTimeOffset.UtcNow,
@@ -745,7 +745,7 @@ public sealed class OntologyApiTests
         var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
         db.AuditEvents.Add(new AuditEventEntity
         {
-            LegacyId = TestLegacyIds.Next("audit_event"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, ActorId = admin.Id, ActorName = "Admin",
             Action = "ontology.edit", Summary = "edit A", Graph = null,
             Added = System.Text.Encoding.UTF8.GetBytes("<urn:A> a <urn:C> <urn:g> .\n"),
@@ -781,7 +781,7 @@ public sealed class OntologyApiTests
             new Oxigraph.NamedNode("urn:Y"), gName) });
         db.AuditEvents.Add(new AuditEventEntity
         {
-            LegacyId = TestLegacyIds.Next("audit_event"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, ActorId = admin.Id, ActorName = "Admin",
             Action = "ontology.edit", Summary = "add X", Graph = null,
             Added = store.DumpNQuads(gName), Removed = null, CreatedAt = DateTimeOffset.UtcNow,
@@ -814,7 +814,6 @@ public sealed class OntologyApiTests
             var passwordService = new ISEStudio.Authentication.PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.AdminPassword),
@@ -848,7 +847,6 @@ public sealed class OntologyApiTests
             var passwordService = new ISEStudio.Authentication.PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.OtherUsername,
                 DisplayName = "Alice",
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.OtherPassword),
@@ -882,7 +880,6 @@ public sealed class OntologyApiTests
         var db = app.CreateDbContext();
         var job = new ExtractionJobEntity
         {
-            LegacyId = TestLegacyIds.Next("extraction_job"),
             KnowledgeSystemId = ksId,
             Kind = "tbox",
             Status = JobStatus.Running.ToWire(),
@@ -956,7 +953,6 @@ public sealed class OntologyApiTests
         var db = app.CreateDbContext();
         db.AxiomProvenances.Add(new AxiomProvenanceEntity
         {
-            LegacyId = TestLegacyIds.Next("axiom_provenance"),
             KnowledgeSystemId = ksId,
             AxiomKey = axiomKey,
             ChunkId = chunkId,

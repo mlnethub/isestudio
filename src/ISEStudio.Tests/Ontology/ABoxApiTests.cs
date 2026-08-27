@@ -270,7 +270,6 @@ public sealed class ABoxApiTests
             var passwordService = new ISEStudio.Authentication.PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.AdminPassword),
@@ -304,7 +303,6 @@ public sealed class ABoxApiTests
             var passwordService = new ISEStudio.Authentication.PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.OtherUsername,
                 DisplayName = "Alice",
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.OtherPassword),

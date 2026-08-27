@@ -24,7 +24,6 @@ public sealed class ExternalOntologyServiceTests
         var publicId = "ext-" + Guid.NewGuid().ToString("N")[..8];
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("ks"),
             Id = Guid.NewGuid(),
             PublicId = publicId,
             Name = "ks-ext-test",
@@ -57,7 +56,6 @@ public sealed class ExternalOntologyServiceTests
         }
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(

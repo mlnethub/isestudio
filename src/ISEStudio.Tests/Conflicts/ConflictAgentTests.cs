@@ -25,7 +25,7 @@ namespace ISEStudio.Tests.Conflicts;
 /// <c>AUTO_APPLY_TYPES</c> stays empty, so the apply branch is a .NET
 /// extension). The agent auto-applies whenever the graph store is wired
 /// and the decision confidence is at or above the floor (Phase 2:
-/// <c>LegacyIdAllocator</c> retired — the store is the only gate);
+/// the allocator retired — the store is the only gate);
 /// below-floor decisions keep the recommendation-only behaviour so the
 /// P1-1 contract tests stay representative. Structural conflicts are
 /// untouched; every LLM hiccup leaves the conflict for a human instead
@@ -231,7 +231,6 @@ public sealed class ConflictAgentTests : IDisposable
             seedDb.ExtractionJobs.Add(new ExtractionJobEntity
             {
                 Id = Guid.NewGuid(),
-                LegacyId = TestLegacyIds.Next("extraction_job"),
                 KnowledgeSystemId = ksId,
                 Kind = "tbox",
                 Status = "pending",
@@ -260,7 +259,6 @@ public sealed class ConflictAgentTests : IDisposable
         var ks = new KnowledgeSystemEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("knowledge_system"),
             Name = "conflict-agent-no-provider",
             GraphIri = "http://goodcrew.local/ks/no-provider",
             BaseIri = "http://goodcrew.local/ks/no-provider#",
@@ -382,7 +380,7 @@ public sealed class ConflictAgentTests : IDisposable
         Assert.NotNull(audit.Added);
         var detail = audit.Detail!.RootElement;
         Assert.True(detail.GetProperty("agent").GetBoolean());
-        Assert.Equal(row.LegacyId, detail.GetProperty("conflict_id").GetInt64());
+        Assert.Equal(row.Id, detail.GetProperty("conflict_id").GetGuid());
         Assert.Equal("keep-general", detail.GetProperty("resolution").GetString());
         Assert.Equal("confident merge", detail.GetProperty("reason").GetString());
         Assert.Equal(0.92, detail.GetProperty("confidence").GetDouble());
@@ -630,7 +628,6 @@ public sealed class ConflictAgentTests : IDisposable
         var provider = new ProviderEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("provider"),
             Name = $"conflict-agent-llm-{tag}",
             BaseUrl = "http://localhost/v1",
             ApiKey = "test-key",
@@ -643,7 +640,6 @@ public sealed class ConflictAgentTests : IDisposable
         var ks = new KnowledgeSystemEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("knowledge_system"),
             Name = $"conflict-agent-{tag}",
             Description = "Seed KS for ConflictAgent tests.",
             GraphIri = $"http://goodcrew.local/ks/{tag}",
@@ -663,7 +659,6 @@ public sealed class ConflictAgentTests : IDisposable
         db.Conflicts.Add(new ConflictEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("conflict"),
             KnowledgeSystemId = ksId,
             Signature = $"{ctype}|{Guid.NewGuid():N}",
             Ctype = ctype,
@@ -686,7 +681,6 @@ public sealed class ConflictAgentTests : IDisposable
         db.Conflicts.Add(new ConflictEntity
         {
             Id = Guid.NewGuid(),
-            LegacyId = TestLegacyIds.Next("conflict"),
             KnowledgeSystemId = ksId,
             Signature = $"{ctype}|{Guid.NewGuid():N}",
             Ctype = ctype,

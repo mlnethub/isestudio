@@ -214,7 +214,6 @@ public sealed class EndpointRoleMatrixTests
                 var token = $"mx-session-{actor}";
                 db.AuthSessions.Add(new AuthSessionEntity
                 {
-                    LegacyId = TestLegacyIds.Next("authsession"),
                     Token = token,
                     UserId = user.Id,
                     CreatedAt = now,
@@ -251,7 +250,6 @@ public sealed class EndpointRoleMatrixTests
         var stamp = Guid.NewGuid().ToString("N");
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("knowledgesystem"),
             PublicId = stamp,
             Name = $"matrix-{stamp[..8]}",
             Description = "RBAC matrix probe",
@@ -264,7 +262,6 @@ public sealed class EndpointRoleMatrixTests
         db.KnowledgeSystems.Add(ks);
         db.KSGrants.Add(new KSGrantEntity
         {
-            LegacyId = TestLegacyIds.Next("ksgrant"),
             KnowledgeSystemId = ks.Id,
             UserId = s_viewerId,
             Role = "viewer",
@@ -272,7 +269,6 @@ public sealed class EndpointRoleMatrixTests
         });
         db.KSGrants.Add(new KSGrantEntity
         {
-            LegacyId = TestLegacyIds.Next("ksgrant"),
             KnowledgeSystemId = ks.Id,
             UserId = s_editorId,
             Role = "editor",
@@ -280,7 +276,6 @@ public sealed class EndpointRoleMatrixTests
         });
         var doc = new DocumentEntity
         {
-            LegacyId = TestLegacyIds.Next("document"),
             KnowledgeSystemId = ks.Id,
             Sha256 = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"),
             OriginalFilename = "matrix-probe.txt",

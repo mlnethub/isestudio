@@ -237,7 +237,6 @@ public sealed class VocabularyApiTests
         var db = app.CreateDbContext();
         var existingJob = new ExtractionJobEntity
         {
-            LegacyId = TestLegacyIds.Next("extraction_job"),
             KnowledgeSystemId = ksGuid,
             Kind = "tbox",
             Status = "running",
@@ -337,22 +336,22 @@ public sealed class VocabularyApiTests
         await using var app = new AuthTestWebApplicationFactory();
         FakeChatClientFactory.Default.Reset();
         // Seed the chunk + provider + document FIRST so we know the real
-        // chunk LegacyId; then prime the FakeChat reply to cite it. Without
+        // chunk Guid; then prime the FakeChat reply to cite it. Without
         // this, TryBuildProposal drops every proposal whose source ids are
         // not in the loaded set and we get total=0.
         var (client, _) = await SeedAdminAndClientAsync(app);
         var (ksId, ksGuid) = await SeedKnowledgeSystemAsync(app, client, "b8-suggest");
-        var chunkLegacyId = SeedSuggestionFixtureAsync(app, ksGuid);
+        var chunkId = SeedSuggestionFixtureAsync(app, ksGuid);
 
         FakeChatClientFactory.Default.UseClient(
-            new FakeChat().EnqueueTerminologyProposal(3, sourceChunkIds: new long[] { chunkLegacyId }));
+            new FakeChat().EnqueueTerminologyProposal(3, sourceChunkIds: new Guid[] { chunkId }));
 
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/vocabulary/suggest",
             new
             {
                 scheme_iri = "http://example.org/scheme",
-                chunk_ids = new long[] { chunkLegacyId },
+                chunk_ids = new Guid[] { chunkId },
                 model = (string?)null,
             });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -470,7 +469,6 @@ public sealed class VocabularyApiTests
             var passwordService = new PasswordService();
             db.Users.Add(new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"),
                 Username = AuthTestWebApplicationFactory.AdminUsername,
                 DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
                 PasswordHash = passwordService.Hash(AuthTestWebApplicationFactory.AdminPassword),
@@ -552,16 +550,15 @@ public sealed class VocabularyApiTests
     /// Seed a Provider + Document + Chunk so
     /// <see cref="ISEStudio.Extraction.TerminologyAgent.SuggestAsync"/>
     /// passes the empty-chunkIds / empty-loadedChunks short-circuit gates
-    /// and reaches the LLM call. Returns the seeded chunk's LegacyId so
+    /// and reaches the LLM call. Returns the seeded chunk's Guid PK so
     /// the caller can pass it through <c>chunk_ids</c>.
     /// </summary>
-    private static long SeedSuggestionFixtureAsync(
+    private static Guid SeedSuggestionFixtureAsync(
         AuthTestWebApplicationFactory app, Guid ksGuid)
     {
         var db = app.CreateDbContext();
         var provider = new ProviderEntity
         {
-            LegacyId = TestLegacyIds.Next("providers"),
             Name = "fake-suggest",
             BaseUrl = "https://example.invalid",
             ApiKey = "test",
@@ -579,7 +576,6 @@ public sealed class VocabularyApiTests
 
         var document = new DocumentEntity
         {
-            LegacyId = TestLegacyIds.Next("documents"),
             KnowledgeSystemId = ksGuid,
             Sha256 = Guid.NewGuid().ToString("N"),
             OriginalFilename = "suggest.txt",
@@ -597,7 +593,6 @@ public sealed class VocabularyApiTests
 
         var chunk = new ChunkEntity
         {
-            LegacyId = TestLegacyIds.Next("chunks"),
             DocumentId = document.Id,
             Idx = 0,
             // Chunk text contains "Term 0", "Term 1", "Term 2" verbatim
@@ -616,7 +611,7 @@ public sealed class VocabularyApiTests
         db.Entry(chunk).State = EntityState.Detached;
         db.Entry(document).State = EntityState.Detached;
         db.Entry(provider).State = EntityState.Detached;
-        return chunk.LegacyId;
+        return chunk.Id;
     }
 
     /// <summary>
@@ -631,7 +626,6 @@ public sealed class VocabularyApiTests
         var db = app.CreateDbContext();
         var release = new OntologyReleaseEntity
         {
-            LegacyId = TestLegacyIds.Next("ontology_releases"),
             KnowledgeSystemId = ksGuid,
             Version = "v1",
             Status = "published",
@@ -646,7 +640,6 @@ public sealed class VocabularyApiTests
         db.SaveChanges();
         var deployment = new ReleaseDeploymentEntity
         {
-            LegacyId = TestLegacyIds.Next("release_deployments"),
             KnowledgeSystemId = ksGuid,
             ReleaseId = release.Id,
             Status = "active",

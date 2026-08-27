@@ -26,7 +26,6 @@ public sealed class PublishedOntologyServiceTests
         var publicId = "pub-" + Guid.NewGuid().ToString("N")[..8];
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("ks"),
             Id = Guid.NewGuid(),
             PublicId = publicId,
             Name = "ks-pub-test",
@@ -82,7 +81,6 @@ public sealed class PublishedOntologyServiceTests
         }
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(

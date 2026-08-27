@@ -77,7 +77,6 @@ public sealed class OntologyServiceTests
 
         var otherUser = new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = "outsider",
             DisplayName = "Outsider",
             PasswordHash = BCrypt.Net.BCrypt.HashPassword("x", workFactor: 4),
@@ -106,7 +105,6 @@ public sealed class OntologyServiceTests
         }
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(
@@ -123,7 +121,6 @@ public sealed class OntologyServiceTests
     {
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("ks"),
             Id = Guid.NewGuid(),
             Name = $"ks-{tag}",
             Description = tag,

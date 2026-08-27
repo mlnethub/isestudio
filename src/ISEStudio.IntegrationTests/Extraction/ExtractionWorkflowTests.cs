@@ -78,7 +78,6 @@ public sealed class ExtractionWorkflowTests : IDisposable
             db.KnowledgeSystems.Add(new Infrastructure.Persistence.Entities.KnowledgeSystemEntity
             {
                 Id = ksId,
-                LegacyId = 9001,
                 PublicId = ksId.ToString("N"),
                 Name = "IT extraction",
                 GraphIri = graphIri,

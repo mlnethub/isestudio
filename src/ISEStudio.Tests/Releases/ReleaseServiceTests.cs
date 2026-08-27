@@ -183,7 +183,6 @@ public sealed class ReleaseServiceTests
         db.OntologyReleases.Add(new OntologyReleaseEntity
         {
             Id = stuckId,
-            LegacyId = TestLegacyIds.Next("ontology_releases"),
             KnowledgeSystemId = ks.Id,
             Version = $"draft-{stuckId.ToString("N")[..12]}",
             Status = "draft",
@@ -283,7 +282,7 @@ public sealed class ReleaseServiceTests
         {
             admin = new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"), Id = Guid.NewGuid(),
+                Id = Guid.NewGuid(),
                 Username = "external-admin", DisplayName = "Admin",
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword("dummy", workFactor: 4),
                 IsAdmin = true, Active = true, CreatedAt = DateTimeOffset.UtcNow,
@@ -306,7 +305,7 @@ public sealed class ReleaseServiceTests
         {
             admin = new UserEntity
             {
-                LegacyId = TestLegacyIds.Next("users"), Id = Guid.NewGuid(),
+                Id = Guid.NewGuid(),
                 Username = "external-admin", DisplayName = "Admin",
                 PasswordHash = BCrypt.Net.BCrypt.HashPassword("dummy", workFactor: 4),
                 IsAdmin = true, Active = true, CreatedAt = DateTimeOffset.UtcNow,
@@ -316,7 +315,7 @@ public sealed class ReleaseServiceTests
         }
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("ks"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             Name = $"ks-{tag}", Description = tag, OwnerId = admin.Id,
             PublicId = $"pub-{tag}",
             BaseIri = $"http://example.com/{tag}#",

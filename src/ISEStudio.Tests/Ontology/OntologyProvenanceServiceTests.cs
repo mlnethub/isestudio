@@ -67,7 +67,7 @@ public sealed class OntologyProvenanceServiceTests
         var phantomDocId = Guid.NewGuid();
         var chunk = new ChunkEntity
         {
-            LegacyId = TestLegacyIds.Next("chunk"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             DocumentId = phantomDocId, Idx = 0, Text = "t", CharStart = 0, CharEnd = 1,
             TokenEstimate = 1, CreatedAt = DateTimeOffset.UtcNow,
         };
@@ -133,7 +133,7 @@ public sealed class OntologyProvenanceServiceTests
         var ks = await CreateKsAsync(db, "prov-norole");
         var outsider = new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             Username = "outsider", DisplayName = "Outsider",
             PasswordHash = BCrypt.Net.BCrypt.HashPassword("x", workFactor: 4),
             IsAdmin = false, Active = true, CreatedAt = DateTimeOffset.UtcNow,
@@ -160,7 +160,7 @@ public sealed class OntologyProvenanceServiceTests
         var chunk = await CreateChunkAsync(db, doc.Id);
         var job = new ExtractionJobEntity
         {
-            LegacyId = TestLegacyIds.Next("extractionjob"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ks.Id, Kind = "tbox", Status = "completed",
             Model = "deepseek/deepseek-chat", PromptSnapshot = null,
             ChunkIds = new List<int>(), CreatedAt = DateTimeOffset.UtcNow,
@@ -200,7 +200,6 @@ public sealed class OntologyProvenanceServiceTests
         if (db.Users.Any(u => u.Username == AuthTestWebApplicationFactory.AdminUsername)) return;
         db.Users.Add(new UserEntity
         {
-            LegacyId = TestLegacyIds.Next("users"),
             Username = AuthTestWebApplicationFactory.AdminUsername,
             DisplayName = AuthTestWebApplicationFactory.AdminDisplayName,
             PasswordHash = BCrypt.Net.BCrypt.HashPassword(AuthTestWebApplicationFactory.AdminPassword, workFactor: 4),
@@ -213,7 +212,7 @@ public sealed class OntologyProvenanceServiceTests
     {
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = TestLegacyIds.Next("ks"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             Name = $"ks-{tag}", Description = tag,
             OwnerId = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername).Id,
             BaseIri = $"http://example.com/{tag}#", GraphIri = $"http://example.com/graph/{tag}",
@@ -228,7 +227,7 @@ public sealed class OntologyProvenanceServiceTests
     {
         var d = new DocumentEntity
         {
-            LegacyId = TestLegacyIds.Next("document"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, OriginalFilename = name, Folder = folder,
             Sha256 = Guid.NewGuid().ToString("N"), Ext = "pdf", SizeBytes = 1,
             StoragePath = "aa/bb/x", UploadedAt = DateTimeOffset.UtcNow, ParseStatus = "parsed",
@@ -240,7 +239,7 @@ public sealed class OntologyProvenanceServiceTests
     {
         var c = new ChunkEntity
         {
-            LegacyId = TestLegacyIds.Next("chunk"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             DocumentId = docId, Idx = 0, Text = "t", CharStart = 0, CharEnd = 1,
             TokenEstimate = 1, CreatedAt = DateTimeOffset.UtcNow,
         };
@@ -251,7 +250,7 @@ public sealed class OntologyProvenanceServiceTests
     {
         db.AxiomProvenances.Add(new AxiomProvenanceEntity
         {
-            LegacyId = TestLegacyIds.Next("axiomprov"), Id = Guid.NewGuid(),
+            Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, AxiomKey = key, ChunkId = chunkId, JobId = jobId,
             Method = "extraction", ActorName = "admin", CreatedAt = DateTimeOffset.UtcNow,
         });
