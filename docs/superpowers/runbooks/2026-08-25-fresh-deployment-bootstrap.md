@@ -1,7 +1,6 @@
 # Fresh-deployment bootstrap(2026-08-25)
 
-> **Phase 2 状态(2026-08-26+):** `LegacyIdAllocator` 已退役;新 row 的 `legacy_id` 由 DB `DEFAULT 0` 派发(非 `MAX+1`)。
-> 本 runbook §3.5 的 `COALESCE(MAX+1)` SQL INSERT 模板**保留不变** —— 它仍是合法的 bootstrap 路径,只是 MAX+1 不再是硬约束(UNIQUE 索引已删);保留 `MAX+1` 是为了历史 admin 序号习惯(admin 序号 = 1)。
+> **Phase 3 状态(2026-08-27+):** `legacy_id` 列已完全退役(dropped);所有业务表以 `Guid id` 为主键。SystemConfig 单例行由 `"IsSingleton" = true` 标记(partial UNIQUE INDEX `ux_systemconfig_singleton`)。本 runbook §3.5 的 SQL INSERT 模板已同步更新(不再出现 `legacy_id` 列)。
 
 > 当 `docker compose up` 完成后,后端容器反复重启,日志里看到 `Bootstrap required: the users table is empty... Process will exit with code 17.`,且容器持续 `Restarting (N)` —— 这意味着 `users` 表空,**必须 seed 第一个 admin 后端才会退出 restart loop**。
 
@@ -94,7 +93,7 @@ $2b$12$AC7V9A6arAVLenhz0aGMUe.6HXK1NIdMSOUSJbtOe7J1BDKBol/sK
 
 ### 3.3 查清楚 users 表的实际列名
 
-EF Core 10 + Npgsql 10 默认**保留 PascalCase 列名**(加了双引号)。`users` 表里 `Username` / `PasswordHash` / `IsAdmin` 等是 PascalCase,`id` / `legacy_id` 是 snake_case(EF 显式 `HasColumnName` 指定过)。**混合大小写** —— 必须先看实际 schema:
+EF Core 10 + Npgsql 10 默认**保留 PascalCase 列名**(加了双引号)。`users` 表里 `Username` / `PasswordHash` / `IsAdmin` 等是 PascalCase,`id` 是小写(EF Core 对 Guid 主键默认小写)。**混合大小写** —— 必须先看实际 schema:
 
 ```bash
 docker exec ontopilot-postgres-1 psql -U isestudio -d isestudio -c '\d users'
@@ -112,10 +111,9 @@ docker exec ontopilot-postgres-1 psql -U isestudio -d isestudio -c '\d users'
  IsAdmin        | boolean                  | not null | false
  Active         | boolean                  | not null | true
  CreatedAt      | timestamp with time zone | not null |
- legacy_id      | bigint                   | not null |           <-- snake_case
 ```
 
-如果你的表**全是 snake_case**,把下文的双引号去掉直接写即可;但当前 ISEStudio schema 是混合,必须按本 runbook 的双引号写法。(post-Phase-2): `legacy_id` 列保留,新 row 默认 `0` (DB DEFAULT 0);`ux_*_legacy_id` UNIQUE 索引已删。本 runbook 假设的 `users` 表结构兼容此变化。
+如果你的表**全是 snake_case**,把下文的双引号去掉直接写即可;但当前 ISEStudio schema 是混合,必须按本 runbook 的双引号写法。(post-Phase-3): `legacy_id` 列已删除,上文 `\d users` 输出即为当前实际 schema(无 `legacy_id` 列)。
 
 ### 3.4 确认 postgres 凭据
 
@@ -141,8 +139,7 @@ INSERT INTO users (
     "PasswordHash",
     "IsAdmin",
     "Active",
-    "CreatedAt",
-    legacy_id
+    "CreatedAt"
 )
 VALUES (
     gen_random_uuid(),
@@ -151,25 +148,22 @@ VALUES (
     '<BCRYPT_HASH>',
     true,
     true,
-    NOW(),
-    COALESCE((SELECT MAX(legacy_id) FROM users), 0) + 1
+    NOW()
 )
-RETURNING id, "Username", "IsAdmin", "Active", legacy_id, "CreatedAt";
+RETURNING id, "Username", "IsAdmin", "Active", "CreatedAt";
 SQL
 ```
 
 预期输出(具体值会变):
 
 ```
-                  id                  | Username | IsAdmin | Active | legacy_id |       CreatedAt
---------------------------------------+----------+---------+--------+-----------+---------------------
- d1d4a265-922c-471b-98d5-a029db926ebb | admin    | t       | t      |         1 | 2026-08-25 15:15:22+00
+                  id                  | Username | IsAdmin | Active |       CreatedAt
+--------------------------------------+----------+---------+--------+---------------------
+ d1d4a265-922c-471b-98d5-a029db926ebb | admin    | t       | t      | 2026-08-25 15:15:22+00
 (1 row)
 
 INSERT 0 1
 ```
-
-> `legacy_id` 现由 DB `DEFAULT 0` 派发(Phase 2 后 `LegacyIdAllocator` 已退役,`ux_*_legacy_id` UNIQUE 索引已删)。这里手动用 `COALESCE(MAX + 1)` 保留历史 admin 序号习惯(首个 admin 序号 = 1);已无 allocator 抢号风险,写固定值也合法,只是不建议打破序号习惯。
 
 ### 3.6 重启后端,看 bootstrap 通过
 
