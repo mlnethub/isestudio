@@ -213,31 +213,49 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
         Assert.Contains(found, x => x.Table == "knowledgepromptoverride" && x.Name == "ux_kpo_knowledge_system_id_prompt_key");
     }
 
-    /// <summary>
-    /// No business table may carry a unique index on legacy_id — the
-    /// <c>ux_*_legacy_id</c> indexes were dropped in Guid PK Phase 2
-    /// (D1(c)) because new rows legitimately share <c>legacy_id = 0</c>.
-    /// </summary>
+    /// <summary>Phase 3: the legacy_id column must be dropped from every business table.</summary>
     [Fact]
-    public async Task No_business_table_has_unique_legacy_id_index()
+    public async Task No_business_table_has_legacy_id_column()
     {
         await using var connection = new NpgsqlConnection(_container.GetConnectionString());
         await connection.OpenAsync();
 
-        foreach (var table in ExpectedTables)
-        {
-            await using var cmd = connection.CreateCommand();
-            cmd.CommandText = @"
-                SELECT 1
-                FROM pg_indexes
-                WHERE schemaname = 'public'
-                  AND tablename = @t
-                  AND indexdef LIKE '%legacy_id%'
-                  AND indexdef LIKE '%UNIQUE%'";
-            cmd.Parameters.AddWithValue("@t", table);
-            var has = await cmd.ExecuteScalarAsync();
-            Assert.Null(has);
-        }
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            SELECT table_name
+            FROM information_schema.columns
+            WHERE column_name = 'legacy_id' AND table_schema = 'public'";
+        await using var reader = await cmd.ExecuteReaderAsync();
+
+        var tables = new List<string>();
+        while (await reader.ReadAsync()) tables.Add(reader.GetString(0));
+        Assert.Empty(tables);
+    }
+
+    /// <summary>Phase 3: the partial unique index enforcing the singleton SystemConfig row must exist.</summary>
+    [Fact]
+    public async Task Systemconfig_has_unique_singleton()
+    {
+        await using var connection = new NpgsqlConnection(_container.GetConnectionString());
+        await connection.OpenAsync();
+
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = @"
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE indexname = 'ux_systemconfig_singleton'";
+        await using var reader = await cmd.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync(), "ux_systemconfig_singleton index should exist");
+        var def = reader.GetString(0);
+
+        Assert.Contains("UNIQUE", def);
+        // F1 (R3-4): the column keeps PascalCase — HasFilter is raw SQL and is NOT
+        // rewritten, so PG's pg_indexes.indexdef prints `WHERE ("IsSingleton" = true)`.
+        // Do NOT assert the snake_case `is_singleton` — it would fail against the
+        // real migration and contradict the applied DDL.
+        Assert.Contains("\"IsSingleton\" = true", def);
+        Assert.Contains("WHERE", def, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("TRUE", def, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
