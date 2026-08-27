@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using ISEStudio.Infrastructure.Persistence;
+using ISEStudio.Infrastructure.Persistence.Entities;
 using Testcontainers.PostgreSql;
 
 namespace ISEStudio.IntegrationTests.Persistence;
@@ -256,6 +257,61 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
         Assert.Contains("\"IsSingleton\" = true", def);
         Assert.Contains("WHERE", def, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("TRUE", def, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Phase 3 behavioural companion to
+    /// <see cref="Systemconfig_has_unique_singleton"/>: the DDL assertion
+    /// proves the partial index exists, this proves PostgreSQL actually
+    /// rejects a second <c>IsSingleton = TRUE</c> row with SQLSTATE 23505.
+    /// </summary>
+    /// <remarks>
+    /// Uses its own <see cref="ISEStudioDbContext"/> (not the shared
+    /// <c>_db</c>) so the failed <c>SaveChangesAsync</c> cannot leave an
+    /// Added entity in the class-wide change tracker, and deletes the
+    /// surviving row in a <c>finally</c> so the container's data state is
+    /// unchanged for any later test.
+    /// </remarks>
+    [Fact]
+    public async Task Singleton_invocation_twice_fails_on_PG_23505()
+    {
+        var options = new DbContextOptionsBuilder<ISEStudioDbContext>()
+            .UseNpgsql(_container.GetConnectionString())
+            .Options;
+        await using var db = new ISEStudioDbContext(options);
+
+        var firstId = Guid.NewGuid();
+        try
+        {
+            // First singleton — satisfies the partial index.
+            db.SystemConfigs.Add(new SystemConfigEntity
+            {
+                Id = firstId,
+                IsSingleton = true,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+
+            // Second singleton — must trip ux_systemconfig_singleton.
+            db.SystemConfigs.Add(new SystemConfigEntity
+            {
+                Id = Guid.NewGuid(),
+                IsSingleton = true,
+                UpdatedAt = DateTimeOffset.UtcNow,
+            });
+            var ex = await Assert.ThrowsAsync<DbUpdateException>(
+                () => db.SaveChangesAsync());
+            var pg = Assert.IsType<PostgresException>(ex.InnerException);
+            Assert.Equal("23505", pg.SqlState);
+        }
+        finally
+        {
+            // Drop everything this test inserted (and untrack the rejected
+            // insert) so the shared container keeps a clean systemconfig.
+            db.ChangeTracker.Clear();
+            await db.SystemConfigs.Where(c => c.Id == firstId)
+                .ExecuteDeleteAsync();
+        }
     }
 
     /// <summary>
