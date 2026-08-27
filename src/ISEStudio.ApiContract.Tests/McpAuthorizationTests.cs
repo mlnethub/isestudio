@@ -255,7 +255,6 @@ public sealed class McpAuthorizationTests
 
         var owner = new UserEntity
         {
-            LegacyId = await NextLegacyIdAsync(db, "users"),
             Username = $"owner-{publicId}",
             DisplayName = $"Owner {publicId}",
             IsAdmin = false,
@@ -267,7 +266,6 @@ public sealed class McpAuthorizationTests
 
         var user = new UserEntity
         {
-            LegacyId = owner.LegacyId + 1,
             Username = $"mcp-{publicId}",
             DisplayName = publicId,
             IsAdmin = false,
@@ -279,7 +277,6 @@ public sealed class McpAuthorizationTests
 
         var ks = new KnowledgeSystemEntity
         {
-            LegacyId = await NextLegacyIdAsync(db, "knowledgesystem"),
             PublicId = publicId,
             Name = publicId,
             Description = string.Empty,
@@ -293,7 +290,6 @@ public sealed class McpAuthorizationTests
 
         var grant = new KSGrantEntity
         {
-            LegacyId = await NextLegacyIdAsync(db, "ksgrant"),
             KnowledgeSystemId = ks.Id,
             UserId = user.Id,
             Role = "editor",
@@ -364,23 +360,6 @@ public sealed class McpAuthorizationTests
             return;
         }
         await accessor.RequireRoleAsync(principal, KSRole.Editor, CancellationToken.None);
-    }
-
-    /// <summary>
-    /// Allocate the next <c>legacy_id</c> for a table. Mirrors the
-    /// pattern in <c>PublishedCacheContractTests</c>.
-    /// </summary>
-    private static async Task<long> NextLegacyIdAsync(ISEStudioDbContext db, string table)
-    {
-        var conn = db.Database.GetDbConnection();
-        if (conn.State != System.Data.ConnectionState.Open)
-        {
-            await conn.OpenAsync();
-        }
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"SELECT COALESCE(MAX(legacy_id), 0) + 1 FROM {table}";
-        var raw = await cmd.ExecuteScalarAsync();
-        return raw is long l ? l : Convert.ToInt64(raw ?? 1L);
     }
 
     /// <summary>

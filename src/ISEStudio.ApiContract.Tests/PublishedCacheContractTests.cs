@@ -189,7 +189,6 @@ public sealed class PublishedCacheContractTests
         {
             ks = new KnowledgeSystemEntity
             {
-                LegacyId = await NextLegacyIdAsync(db, table: "knowledgesystem"),
                 PublicId = PublicId,
                 Name = PublicId,
                 Description = string.Empty,
@@ -208,7 +207,6 @@ public sealed class PublishedCacheContractTests
         {
             release = new OntologyReleaseEntity
             {
-                LegacyId = await NextLegacyIdAsync(db, table: "ontologyrelease"),
                 KnowledgeSystemId = ks.Id,
                 Version = releaseVersion,
                 Status = releaseStatus,
@@ -247,7 +245,6 @@ public sealed class PublishedCacheContractTests
 
         var deployment = new ReleaseDeploymentEntity
         {
-            LegacyId = await NextLegacyIdAsync(db, table: "releasedeployment"),
             KnowledgeSystemId = ks.Id,
             ReleaseId = release.Id,
             Status = deploymentStatus,
@@ -264,7 +261,6 @@ public sealed class PublishedCacheContractTests
         var plaintext = Guid.NewGuid().ToString("N");
         var token = new KnowledgeApiTokenEntity
         {
-            LegacyId = await NextLegacyIdAsync(db, table: "knowledgeapitoken"),
             KnowledgeSystemId = ks.Id,
             Name = "test-token",
             TokenPrefix = plaintext[..Math.Min(16, plaintext.Length)],
@@ -281,25 +277,5 @@ public sealed class PublishedCacheContractTests
         db.KnowledgeApiTokens.Add(token);
         await db.SaveChangesAsync();
         return plaintext;
-    }
-
-    /// <summary>
-    /// Allocate the next <c>legacy_id</c> for a table by selecting the
-    /// current MAX + 1. The EF Core schema declares a unique index on
-    /// every <c>legacy_id</c> column, so two test runs sharing the
-    /// same sqlite file (via the singleton factory) cannot blindly
-    /// hard-code 0/1/2.
-    /// </summary>
-    private static async Task<long> NextLegacyIdAsync(ISEStudioDbContext db, string table)
-    {
-        var conn = db.Database.GetDbConnection();
-        if (conn.State != System.Data.ConnectionState.Open)
-        {
-            await conn.OpenAsync();
-        }
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"SELECT COALESCE(MAX(legacy_id), 0) + 1 FROM {table}";
-        var raw = await cmd.ExecuteScalarAsync();
-        return raw is long l ? l : Convert.ToInt64(raw ?? 1L);
     }
 }

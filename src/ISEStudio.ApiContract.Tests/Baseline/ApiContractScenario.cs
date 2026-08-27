@@ -136,7 +136,7 @@ internal static class ApiContractScenario
             .Replace("{event_id}", seed.EventId.ToString("N"))
             .Replace("{job_id}", Guid.NewGuid().ToString("N"))
             .Replace("{release_id}", Guid.NewGuid().ToString("N"))
-            .Replace("{res_id}", seed.EntityResolutionLegacyId.ToString())
+            .Replace("{res_id}", seed.EntityResolutionId.ToString("N"))
             .Replace("{rid}", Guid.NewGuid().ToString("N"))
             .Replace("{token_id}", Guid.NewGuid().ToString("N"))
             .Replace("{pid}", seed.ProviderId.ToString("N"))
@@ -411,7 +411,7 @@ internal static class ApiContractScenario
 
     private readonly record struct Seeded(
         Guid KsId, Guid UserId, Guid VictimId, Guid ProviderId, Guid EventId,
-        long EntityResolutionLegacyId);
+        Guid EntityResolutionId);
 
     /// <summary>
     /// Insert a fresh <see cref="KnowledgeSystemEntity"/> + matching
@@ -434,8 +434,6 @@ internal static class ApiContractScenario
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
             Id = ksId,
-            LegacyId = await NextLegacyIdAsync(db, "knowledgesystem", cancellationToken)
-                .ConfigureAwait(false),
             PublicId = DemoPublicId,
             Name = "Demo Knowledge System",
             Description = string.Empty,
@@ -454,8 +452,6 @@ internal static class ApiContractScenario
         db.Users.Add(new UserEntity
         {
             Id = DemoUserId,
-            LegacyId = await NextLegacyIdAsync(db, "users", cancellationToken)
-                .ConfigureAwait(false),
             Username = "contract-admin",
             DisplayName = "Contract Admin",
             PasswordHash = string.Empty,
@@ -464,11 +460,6 @@ internal static class ApiContractScenario
             CreatedAt = DateTimeOffset.UtcNow,
         });
 
-        // Commit the KS + admin BEFORE computing the victim's legacy_id.
-        // NextLegacyIdAsync reads MAX(legacy_id) from the DB; if the admin
-        // row is still only in the ChangeTracker, both users would resolve
-        // legacy_id=1 and SaveChanges would trip
-        // 'UNIQUE constraint failed: users.legacy_id'.
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
         // Second user the auth-admin DELETE/PATCH tests act on. The actor
@@ -479,8 +470,6 @@ internal static class ApiContractScenario
         db.Users.Add(new UserEntity
         {
             Id = victimId,
-            LegacyId = await NextLegacyIdAsync(db, "users", cancellationToken)
-                .ConfigureAwait(false),
             Username = "contract-victim",
             DisplayName = "Contract Victim",
             PasswordHash = string.Empty,
@@ -496,8 +485,6 @@ internal static class ApiContractScenario
         db.Providers.Add(new ProviderEntity
         {
             Id = providerId,
-            LegacyId = await NextLegacyIdAsync(db, "provider", cancellationToken)
-                .ConfigureAwait(false),
             Name = "Contract Provider",
             BaseUrl = "http://demo",
             ApiKey = "demo",
@@ -515,8 +502,6 @@ internal static class ApiContractScenario
         db.AuditEvents.Add(new AuditEventEntity
         {
             Id = eventId,
-            LegacyId = await NextLegacyIdAsync(db, "auditevent", cancellationToken)
-                .ConfigureAwait(false),
             KnowledgeSystemId = ksId,
             ActorId = DemoUserId,
             ActorName = "Contract Admin",
@@ -533,15 +518,13 @@ internal static class ApiContractScenario
         // A random {res_id} hits ResolveResRowGuidAsync's null-return
         // branch and degrades to the empty placeholder → schema still
         // green but no real shape verification; binding the seeded row's
-        // LegacyId (matches Python int wire format) makes resolve /
-        // revoke / edit_reason land on a real row. resolve requires
-        // ClassIri so the 'new' action can mint; match needs none.
-        var entityResolutionLegacyId = await NextLegacyIdAsync(
-            db, "entityresolution", cancellationToken).ConfigureAwait(false);
+        // Guid id makes resolve / revoke / edit_reason land on a real
+        // row. resolve requires ClassIri so the 'new' action can mint;
+        // match needs none.
+        var entityResolutionId = Guid.NewGuid();
         db.EntityResolutions.Add(new EntityResolutionEntity
         {
-            Id = Guid.NewGuid(),
-            LegacyId = entityResolutionLegacyId,
+            Id = entityResolutionId,
             KnowledgeSystemId = ksId,
             SurfaceForm = "demo",
             ClassIri = "http://test/DemoClass",
@@ -568,7 +551,7 @@ internal static class ApiContractScenario
                 $"Contract harness seed failed (ks={seededKs}, user={seededUser}).");
         }
 
-        return new Seeded(ksId, DemoUserId, victimId, providerId, eventId, entityResolutionLegacyId);
+        return new Seeded(ksId, DemoUserId, victimId, providerId, eventId, entityResolutionId);
     }
 
     /// <summary>
@@ -642,24 +625,4 @@ internal static class ApiContractScenario
         });
     }
 
-    /// <summary>
-    /// Allocate the next <c>legacy_id</c> for a table by selecting the
-    /// current MAX + 1. The EF Core schema declares a unique index on
-    /// every <c>legacy_id</c> column, so two test runs sharing the
-    /// same sqlite file (via the singleton factory) cannot blindly
-    /// hard-code 0/1/2.
-    /// </summary>
-    private static async Task<long> NextLegacyIdAsync(
-        ISEStudioDbContext db, string table, CancellationToken cancellationToken)
-    {
-        var conn = db.Database.GetDbConnection();
-        if (conn.State != System.Data.ConnectionState.Open)
-        {
-            await conn.OpenAsync(cancellationToken).ConfigureAwait(false);
-        }
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"SELECT COALESCE(MAX(legacy_id), 0) + 1 FROM {table}";
-        var raw = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
-        return raw is long l ? l : Convert.ToInt64(raw ?? 1L);
-    }
 }
