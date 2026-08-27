@@ -10,7 +10,7 @@ namespace ISEStudio.Infrastructure.Persistence.Entities;
 /// A named ontology graph. Maps to one named graph (IRI) in the Oxigraph
 /// store.
 /// </summary>
-public sealed class KnowledgeSystemEntity : LegacyAddressableEntity
+public sealed class KnowledgeSystemEntity : EntityBase
 {
     /// <summary>Stable, opaque, public-facing identifier (UUID4 hex).</summary>
     public string PublicId { get; set; } = string.Empty;
@@ -65,7 +65,7 @@ public sealed class KnowledgeSystemEntity : LegacyAddressableEntity
 /// systems is two documents. Dedup is therefore scoped per-KS
 /// (<c>(KnowledgeSystemId, Sha256)</c> unique), not globally.
 /// </summary>
-public sealed class DocumentEntity : LegacyAddressableEntity
+public sealed class DocumentEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system; null = orphan (will be backfilled on startup).</summary>
     public Guid? KnowledgeSystemId { get; set; }
@@ -119,7 +119,7 @@ public sealed class DocumentEntity : LegacyAddressableEntity
 /// <summary>
 /// A contiguous text slice of a parsed document.
 /// </summary>
-public sealed class ChunkEntity : LegacyAddressableEntity
+public sealed class ChunkEntity : EntityBase
 {
     /// <summary>FK to the parent document.</summary>
     public Guid DocumentId { get; set; }
@@ -149,7 +149,7 @@ public sealed class ChunkEntity : LegacyAddressableEntity
 /// (<c>llm</c> | <c>embedding</c>). The <see cref="ApiKey"/> is stored
 /// server-side and never returned raw by the API.
 /// </summary>
-public sealed class ProviderEntity : LegacyAddressableEntity
+public sealed class ProviderEntity : EntityBase
 {
     /// <summary>Display name.</summary>
     public string Name { get; set; } = string.Empty;
@@ -184,7 +184,7 @@ public sealed class ProviderEntity : LegacyAddressableEntity
 /// a restart, overlaying the .env defaults. Holds the system default
 /// provider/model for chat + embeddings; a KS may override either.
 /// </summary>
-public sealed class SystemConfigEntity : LegacyAddressableEntity
+public sealed class SystemConfigEntity : EntityBase
 {
     /// <summary>Default LLM model; null falls back to appsettings.</summary>
     public string? ExtractModel { get; set; }

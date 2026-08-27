@@ -11,7 +11,7 @@ namespace ISEStudio.Infrastructure.Persistence.Entities;
 /// knowledge system. Reused for ABox extraction via the <see cref="Kind"/>
 /// column.
 /// </summary>
-public sealed class ExtractionJobEntity : LegacyAddressableEntity
+public sealed class ExtractionJobEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -90,7 +90,7 @@ public sealed class ExtractionJobEntity : LegacyAddressableEntity
 /// Links an ontology axiom (by canonical key) back to the chunk/job that
 /// produced it.
 /// </summary>
-public sealed class AxiomProvenanceEntity : LegacyAddressableEntity
+public sealed class AxiomProvenanceEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -126,7 +126,7 @@ public sealed class AxiomProvenanceEntity : LegacyAddressableEntity
 /// many chunks can mention the same individual or assert the same value, so
 /// ABox provenance is multi-source by design.
 /// </summary>
-public sealed class AboxProvenanceEntity : LegacyAddressableEntity
+public sealed class AboxProvenanceEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -161,7 +161,7 @@ public sealed class AboxProvenanceEntity : LegacyAddressableEntity
 /// details. The optional <see cref="Added"/> / <see cref="Removed"/> blobs
 /// store gzipped N-Triples for graph rollback.
 /// </summary>
-public sealed class AuditEventEntity : LegacyAddressableEntity
+public sealed class AuditEventEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }

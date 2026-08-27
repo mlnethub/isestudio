@@ -10,7 +10,7 @@ namespace ISEStudio.Infrastructure.Persistence.Entities;
 /// Immutable snapshot of the three governed layers for a knowledge system.
 /// Versions are unique per KS.
 /// </summary>
-public sealed class OntologyReleaseEntity : LegacyAddressableEntity
+public sealed class OntologyReleaseEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -64,7 +64,7 @@ public sealed class OntologyReleaseEntity : LegacyAddressableEntity
 /// <summary>
 /// Queryable read-only projection of one published release.
 /// </summary>
-public sealed class ReleaseDeploymentEntity : LegacyAddressableEntity
+public sealed class ReleaseDeploymentEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -106,7 +106,7 @@ public sealed class ReleaseDeploymentEntity : LegacyAddressableEntity
 /// <summary>
 /// Release-fixed provenance index used by immutable service endpoints.
 /// </summary>
-public sealed class ReleaseStatementProvenanceEntity : LegacyAddressableEntity
+public sealed class ReleaseStatementProvenanceEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -127,7 +127,7 @@ public sealed class ReleaseStatementProvenanceEntity : LegacyAddressableEntity
 /// <summary>
 /// Asynchronous, stream-written export of one layer or a complete release bundle.
 /// </summary>
-public sealed class ExportJobEntity : LegacyAddressableEntity
+public sealed class ExportJobEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -183,7 +183,7 @@ public sealed class ExportJobEntity : LegacyAddressableEntity
 /// <see cref="Signature"/> is a stable key so re-running detection does not
 /// re-open a conflict the user already resolved/dismissed.
 /// </summary>
-public sealed class ConflictEntity : LegacyAddressableEntity
+public sealed class ConflictEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -225,7 +225,7 @@ public sealed class ConflictEntity : LegacyAddressableEntity
 /// context of a class). Both a queue (<c>status == "pending"</c>) and a
 /// lookup table the extraction agent consults.
 /// </summary>
-public sealed class EntityResolutionEntity : LegacyAddressableEntity
+public sealed class EntityResolutionEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -266,7 +266,7 @@ public sealed class EntityResolutionEntity : LegacyAddressableEntity
 /// workflow and learned decision memory (approved terminology lives as SKOS
 /// RDF in the KS vocabulary graph).
 /// </summary>
-public sealed class TermProposalEntity : LegacyAddressableEntity
+public sealed class TermProposalEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -325,7 +325,7 @@ public sealed class TermProposalEntity : LegacyAddressableEntity
 /// <see cref="EntityResolutionEntity"/> for the schema. One row = a decision
 /// about how a property that accrued several domains/ranges was reconciled.
 /// </summary>
-public sealed class TboxReconciliationEntity : LegacyAddressableEntity
+public sealed class TboxReconciliationEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -362,7 +362,7 @@ public sealed class TboxReconciliationEntity : LegacyAddressableEntity
 /// Learned memory for datatype-violation fixes. One row = "for this
 /// numeric-typed data property, the fix is X".
 /// </summary>
-public sealed class ValidationDecisionEntity : LegacyAddressableEntity
+public sealed class ValidationDecisionEntity : EntityBase
 {
     /// <summary>FK to the owning knowledge system.</summary>
     public Guid KnowledgeSystemId { get; set; }

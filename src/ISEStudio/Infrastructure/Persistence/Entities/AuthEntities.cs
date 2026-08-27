@@ -9,7 +9,7 @@ namespace ISEStudio.Infrastructure.Persistence.Entities;
 /// primary key is <see cref="LegacyAddressableEntity.Id"/> (Guid); the
 /// Python integer identifier is preserved in <see cref="LegacyId"/>.
 /// </summary>
-public sealed class UserEntity : LegacyAddressableEntity
+public sealed class UserEntity : EntityBase
 {
     /// <summary>Login handle, immutable after creation.</summary>
     public string Username { get; set; } = string.Empty;
@@ -36,7 +36,7 @@ public sealed class UserEntity : LegacyAddressableEntity
 /// <see cref="LegacyAddressableEntity.Id"/> is the primary key and the token
 /// is a separately indexed unique column.
 /// </summary>
-public sealed class AuthSessionEntity : LegacyAddressableEntity
+public sealed class AuthSessionEntity : EntityBase
 {
     /// <summary>Opaque session token presented by the cookie.</summary>
     public string Token { get; set; } = string.Empty;
@@ -55,7 +55,7 @@ public sealed class AuthSessionEntity : LegacyAddressableEntity
 /// Per-knowledge-system access grant. Owners have full control implicitly;
 /// grants add other users as viewer (read) or editor (read + content ops).
 /// </summary>
-public sealed class KSGrantEntity : LegacyAddressableEntity
+public sealed class KSGrantEntity : EntityBase
 {
     /// <summary>FK to the knowledge system being granted.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -73,7 +73,7 @@ public sealed class KSGrantEntity : LegacyAddressableEntity
 /// <summary>
 /// Per-knowledge-system override for one registered model instruction prompt.
 /// </summary>
-public sealed class KnowledgePromptOverrideEntity : LegacyAddressableEntity
+public sealed class KnowledgePromptOverrideEntity : EntityBase
 {
     /// <summary>FK to the knowledge system the override applies to.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -104,7 +104,7 @@ public sealed class KnowledgePromptOverrideEntity : LegacyAddressableEntity
 /// is schema-retained for Python parity but is not yet populated by the
 /// .NET service — tokens remain hash-only and unrecoverable.
 /// </summary>
-public sealed class KnowledgeApiTokenEntity : LegacyAddressableEntity
+public sealed class KnowledgeApiTokenEntity : EntityBase
 {
     /// <summary>FK to the knowledge system this token is scoped to.</summary>
     public Guid KnowledgeSystemId { get; set; }
@@ -147,7 +147,7 @@ public sealed class KnowledgeApiTokenEntity : LegacyAddressableEntity
 /// Revocable user credential for the MCP transport, bound to one knowledge
 /// system. The bearer secret is never stored — only its SHA-256 hash.
 /// </summary>
-public sealed class McpUserTokenEntity : LegacyAddressableEntity
+public sealed class McpUserTokenEntity : EntityBase
 {
     /// <summary>FK to the knowledge system this token is scoped to.</summary>
     public Guid KnowledgeSystemId { get; set; }
