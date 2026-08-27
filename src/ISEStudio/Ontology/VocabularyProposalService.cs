@@ -240,7 +240,7 @@ public sealed class VocabularyProposalService
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         await WriteAuditAsync(ks.Id, user, "terminology.accept",
-            $"Accepted terminology proposal {proposal.LegacyId} ({proposal.Action} \"{proposal.Term}\")",
+            $"Accepted terminology proposal {proposal.Id} ({proposal.Action} \"{proposal.Term}\")",
             new Dictionary<string, object?>
             {
                 ["proposal_id"] = proposal.Id,
@@ -297,7 +297,7 @@ public sealed class VocabularyProposalService
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         await WriteAuditAsync(ks.Id, user, "terminology.reject",
-            $"Rejected terminology proposal {proposal.LegacyId} ({proposal.Action} \"{proposal.Term}\")",
+            $"Rejected terminology proposal {proposal.Id} ({proposal.Action} \"{proposal.Term}\")",
             new Dictionary<string, object?>
             {
                 ["proposal_id"] = proposal.Id,

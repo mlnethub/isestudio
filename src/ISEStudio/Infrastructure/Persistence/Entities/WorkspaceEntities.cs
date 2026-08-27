@@ -210,6 +210,10 @@ public sealed class SystemConfigEntity : EntityBase
     /// <summary>UTC last-update timestamp.</summary>
     public DateTimeOffset UpdatedAt { get; set; }
 
-    /// <summary>Convenience: the singleton row is always <c>LegacyId == 1</c>.</summary>
-    public const long SingletonLegacyId = 1;
+    public static readonly Guid SingletonId = Guid.Parse("00000000-0000-0000-0000-000000000001");
+    public const bool SingletonMarker = true;
+
+    /// <summary>Phase 3: marks the singleton system config row. Enforced by
+    /// a partial UNIQUE INDEX on <c>IsSingleton = TRUE</c>.</summary>
+    public bool IsSingleton { get; set; }
 }

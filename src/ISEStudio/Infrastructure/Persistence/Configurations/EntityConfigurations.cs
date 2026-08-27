@@ -21,8 +21,7 @@ public sealed class UserEntityConfiguration : IEntityTypeConfiguration<UserEntit
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.Property(x => x.Username).HasMaxLength(255).IsRequired();
         builder.HasIndex(x => x.Username).IsUnique().HasDatabaseName("ux_users_username");
 
@@ -46,8 +45,7 @@ public sealed class AuthSessionEntityConfiguration : IEntityTypeConfiguration<Au
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.Property(x => x.Token).HasMaxLength(255).IsRequired();
         builder.HasIndex(x => x.Token).IsUnique().HasDatabaseName("ux_authsession_token");
 
@@ -74,8 +72,7 @@ public sealed class KSGrantEntityConfiguration : IEntityTypeConfiguration<KSGran
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_ksgrant_knowledge_system_id");
         builder.HasIndex(x => x.UserId).HasDatabaseName("ix_ksgrant_user_id");
 
@@ -101,8 +98,7 @@ public sealed class KnowledgePromptOverrideEntityConfiguration : IEntityTypeConf
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_kpo_knowledge_system_id");
         builder.HasIndex(x => x.PromptKey).HasDatabaseName("ix_kpo_prompt_key");
 
@@ -135,8 +131,7 @@ public sealed class KnowledgeApiTokenEntityConfiguration : IEntityTypeConfigurat
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_kat_knowledge_system_id");
         builder.HasIndex(x => x.Name).HasDatabaseName("ix_kat_name");
 
@@ -173,8 +168,7 @@ public sealed class McpUserTokenEntityConfiguration : IEntityTypeConfiguration<M
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_mcp_knowledge_system_id");
         builder.HasIndex(x => x.UserId).HasDatabaseName("ix_mcp_user_id");
         builder.HasIndex(x => x.Name).HasDatabaseName("ix_mcp_name");
@@ -214,8 +208,7 @@ public sealed class KnowledgeSystemEntityConfiguration : IEntityTypeConfiguratio
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.Property(x => x.PublicId).HasMaxLength(64).IsRequired();
         builder.HasIndex(x => x.PublicId).IsUnique().HasDatabaseName("ux_ks_public_id");
 
@@ -260,8 +253,7 @@ public sealed class DocumentEntityConfiguration : IEntityTypeConfiguration<Docum
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_document_knowledge_system_id");
 
         builder.Property(x => x.Sha256).HasMaxLength(64).IsRequired();
@@ -312,8 +304,7 @@ public sealed class ChunkEntityConfiguration : IEntityTypeConfiguration<ChunkEnt
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.DocumentId).HasDatabaseName("ix_chunk_document_id");
 
         builder.Property(x => x.Idx).IsRequired().HasDefaultValue(0);
@@ -341,8 +332,7 @@ public sealed class ProviderEntityConfiguration : IEntityTypeConfiguration<Provi
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.Property(x => x.Name).HasMaxLength(255).IsRequired();
         builder.HasIndex(x => x.Name).HasDatabaseName("ix_provider_name");
 
@@ -369,7 +359,15 @@ public sealed class SystemConfigEntityConfiguration : IEntityTypeConfiguration<S
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(SystemConfigEntity.SingletonLegacyId);
+        builder.Property(x => x.IsSingleton)
+            .HasColumnName("is_singleton")
+            .IsRequired()
+            .HasDefaultValue(false);
+
+        builder.HasIndex(x => x.IsSingleton)
+            .HasFilter("\"IsSingleton\" = TRUE")
+            .IsUnique()
+            .HasDatabaseName("ux_systemconfig_singleton");
 
         builder.Property(x => x.ExtractModel).HasMaxLength(255);
         builder.Property(x => x.EmbeddingModel).HasMaxLength(255);
@@ -403,8 +401,7 @@ public sealed class ExtractionJobEntityConfiguration : IEntityTypeConfiguration<
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_extractionjob_knowledge_system_id");
 
         builder.Property(x => x.Kind).HasMaxLength(32).IsRequired().HasDefaultValue("tbox");
@@ -460,8 +457,7 @@ public sealed class AxiomProvenanceEntityConfiguration : IEntityTypeConfiguratio
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_axiomprov_knowledge_system_id");
         builder.Property(x => x.AxiomKey).HasMaxLength(1024).IsRequired();
         builder.HasIndex(x => x.AxiomKey).HasDatabaseName("ix_axiomprov_axiom_key");
@@ -497,8 +493,7 @@ public sealed class AboxProvenanceEntityConfiguration : IEntityTypeConfiguration
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_aboxprov_knowledge_system_id");
         builder.Property(x => x.FactKey).HasMaxLength(1024).IsRequired();
         builder.HasIndex(x => x.FactKey).HasDatabaseName("ix_aboxprov_fact_key");
@@ -534,8 +529,7 @@ public sealed class AuditEventEntityConfiguration : IEntityTypeConfiguration<Aud
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_auditevent_knowledge_system_id");
         builder.HasIndex(x => x.ActorId).HasDatabaseName("ix_auditevent_actor_id");
 
@@ -578,8 +572,7 @@ public sealed class OntologyReleaseEntityConfiguration : IEntityTypeConfiguratio
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_release_knowledge_system_id");
 
         builder.Property(x => x.Version).HasMaxLength(128).IsRequired();
@@ -628,8 +621,7 @@ public sealed class ReleaseDeploymentEntityConfiguration : IEntityTypeConfigurat
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_deployment_knowledge_system_id");
         builder.HasIndex(x => x.ReleaseId).IsUnique().HasDatabaseName("ux_deployment_release_id");
 
@@ -669,8 +661,7 @@ public sealed class ReleaseStatementProvenanceEntityConfiguration : IEntityTypeC
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_rsp_knowledge_system_id");
         builder.HasIndex(x => x.ReleaseId).HasDatabaseName("ix_rsp_release_id");
 
@@ -701,8 +692,7 @@ public sealed class ExportJobEntityConfiguration : IEntityTypeConfiguration<Expo
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_exportjob_knowledge_system_id");
         builder.HasIndex(x => x.ReleaseId).HasDatabaseName("ix_exportjob_release_id");
 
@@ -748,8 +738,7 @@ public sealed class ConflictEntityConfiguration : IEntityTypeConfiguration<Confl
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_conflict_knowledge_system_id");
 
         builder.Property(x => x.Signature).HasMaxLength(1024).IsRequired();
@@ -789,8 +778,7 @@ public sealed class EntityResolutionEntityConfiguration : IEntityTypeConfigurati
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_er_knowledge_system_id");
 
         builder.Property(x => x.SurfaceForm).HasMaxLength(1024).IsRequired();
@@ -831,8 +819,7 @@ public sealed class TermProposalEntityConfiguration : IEntityTypeConfiguration<T
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_tp_knowledge_system_id");
         builder.Property(x => x.Signature).HasMaxLength(1024).IsRequired();
         builder.HasIndex(x => x.Signature).HasDatabaseName("ix_tp_signature");
@@ -885,8 +872,7 @@ public sealed class TboxReconciliationEntityConfiguration : IEntityTypeConfigura
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_tboxr_knowledge_system_id");
 
         builder.Property(x => x.Slot).HasMaxLength(32).IsRequired();
@@ -924,8 +910,7 @@ public sealed class ValidationDecisionEntityConfiguration : IEntityTypeConfigura
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
 
-        builder.Property(x => x.LegacyId).HasColumnName("legacy_id").IsRequired().HasDefaultValue(0L);
-
+        
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_vd_knowledge_system_id");
 
         builder.Property(x => x.PropertyLabel).HasMaxLength(255).IsRequired();
