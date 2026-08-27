@@ -132,11 +132,16 @@ public sealed class ReleaseService
             .FirstOrDefaultAsync(k => k.Id == ksId, ct).ConfigureAwait(false);
         if (ks is null) return null;
 
-        var rows = await _db.OntologyReleases.AsNoTracking()
+        // Phase 3: legacy_id 已退役. EF Core's SQLite provider cannot
+        // translate DateTimeOffset in ORDER BY (NotSupportedException), so
+        // materialise first and sort newest-first client-side with a Guid
+        // Id tiebreak. CreatedAt desc == Python `created_at desc`.
+        var rows = (await _db.OntologyReleases.AsNoTracking()
             .Where(r => r.KnowledgeSystemId == ks.Id)
+            .ToListAsync(ct).ConfigureAwait(false))
             .OrderByDescending(r => r.CreatedAt)
             .ThenByDescending(r => r.Id)
-            .ToListAsync(ct).ConfigureAwait(false);
+            .ToList();
         var deployments = await _db.ReleaseDeployments.AsNoTracking()
             .Where(d => d.KnowledgeSystemId == ks.Id)
             .ToDictionaryAsync(d => d.ReleaseId, ct).ConfigureAwait(false);

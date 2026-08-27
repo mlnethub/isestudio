@@ -107,7 +107,9 @@ public sealed class ExportJobStore
 
     /// <summary>
     /// Every job for the supplied knowledge system, newest first. Phase 3:
-    /// legacy_id 列已退役, ordering rides on CreatedAt (Python parity).
+    /// legacy_id 列已退役. EF Core's SQLite provider cannot translate
+    /// DateTimeOffset in ORDER BY, so we materialise first and sort
+    /// newest-first client-side (CreatedAt desc + Guid Id tiebreak).
     /// </summary>
     public async Task<IReadOnlyList<ExportJobEntity>> ListAsync(
         Guid knowledgeSystemId,
@@ -115,12 +117,13 @@ public sealed class ExportJobStore
     {
         await using var db = await _contexts.CreateDbContextAsync(cancellationToken)
             .ConfigureAwait(false);
-        return await db.ExportJobs.AsNoTracking()
+        var rows = await db.ExportJobs.AsNoTracking()
             .Where(j => j.KnowledgeSystemId == knowledgeSystemId)
-            .OrderByDescending(j => j.CreatedAt)
-            .ThenByDescending(j => j.Id)
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
+        return rows.OrderByDescending(j => j.CreatedAt)
+            .ThenByDescending(j => j.Id)
+            .ToList();
     }
 
     /// <summary>Transition <paramref name="id"/> from pending to running.</summary>

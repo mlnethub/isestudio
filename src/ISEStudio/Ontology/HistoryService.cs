@@ -42,10 +42,13 @@ public sealed class HistoryService
         }
         var total = await query.CountAsync(ct).ConfigureAwait(false);
         // Phase 3: legacy_id 列已退役. Python orders by `created_at desc,
-        // id desc`; mirror that with CreatedAt + Id tiebreak (SQLite
-        // DateTimeOffset ORDER BY works since the slice 7a fix).
-        var items = await query.OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.Id)
-            .Skip(offset).Take(limit).ToListAsync(ct).ConfigureAwait(false);
+        // id desc`. EF Core's SQLite provider cannot translate
+        // DateTimeOffset in ORDER BY (NotSupportedException), so we
+        // materialise first and sort/paginate client-side with a Guid Id
+        // tiebreak.
+        var items = (await query.ToListAsync(ct).ConfigureAwait(false))
+            .OrderByDescending(e => e.CreatedAt).ThenByDescending(e => e.Id)
+            .Skip(offset).Take(limit).ToList();
         return new HistoryResponseOut(
             items.Select(e => new HistoryItemOut(
                 e.Id, e.ActorName, e.Action, e.Summary, e.Detail?.RootElement, e.CreatedAt,
@@ -78,10 +81,15 @@ public sealed class HistoryService
         }
         else cutoffAt = target.CreatedAt;
 
-        var events = await _db.AuditEvents.AsNoTracking()
-            .Where(e => e.KnowledgeSystemId == ksId && e.CreatedAt >= cutoffAt
+        // Same SQLite limitation as ListHistoryAsync: DateTimeOffset
+        // predicates + ORDER BY are not translatable, so apply the
+        // cutoff filter and sort newest-first client-side.
+        var events = (await _db.AuditEvents.AsNoTracking()
+            .Where(e => e.KnowledgeSystemId == ksId
                 && (e.Added != null || e.Removed != null))
-            .OrderByDescending(e => e.CreatedAt).ToListAsync(ct).ConfigureAwait(false);
+            .ToListAsync(ct).ConfigureAwait(false))
+            .Where(e => e.CreatedAt >= cutoffAt)
+            .OrderByDescending(e => e.CreatedAt).ToList();
 
         var graphs = events.Select(e => e.Graph ?? ks.GraphIri).Distinct().ToList();
         var rbGid = graphs.Count > 1 ? Guid.NewGuid().ToString("N") : null;

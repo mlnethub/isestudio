@@ -67,12 +67,13 @@ public sealed class ResolutionService
             q = q.Where(r => EF.Functions.Like(r.SurfaceForm, $"%{query}%"));
 
         var total = await q.CountAsync(ct).ConfigureAwait(false);
-        // Phase 3: legacy_id 列已退役. Guid PK is sortable; tiebreak by Id
-        // directly. Python parity preserved.
-        var rows = await q
+        // Phase 3: legacy_id 列已退役. EF Core's SQLite provider cannot
+        // translate DateTimeOffset in ORDER BY, so materialise first and
+        // sort/paginate client-side (CreatedAt asc + Guid Id tiebreak).
+        var rows = (await q.ToListAsync(ct).ConfigureAwait(false))
             .OrderBy(r => r.CreatedAt).ThenBy(r => r.Id)
             .Skip(Math.Max(offset, 0)).Take(Math.Clamp(limit, 1, 200))
-            .ToListAsync(ct).ConfigureAwait(false);
+            .ToList();
 
         var items = rows.ConvertAll(ToQueueItem);
         return new ResolutionQueueEnvelope(items, total);
@@ -102,11 +103,13 @@ public sealed class ResolutionService
         var total = await q.CountAsync(ct).ConfigureAwait(false);
         // Resolved rows are scoped to status ∈ {matched, new, distinct}, so
         // every row has ResolvedAt != null. Phase 3 ordering rides on
-        // ResolvedAt (when set) + Id tiebreak; portable across SQLite/PG.
-        var rows = await q
+        // ResolvedAt + Id tiebreak; EF Core's SQLite provider cannot
+        // translate DateTimeOffset in ORDER BY, so we materialise first and
+        // sort/paginate client-side.
+        var rows = (await q.ToListAsync(ct).ConfigureAwait(false))
             .OrderByDescending(r => r.ResolvedAt).ThenBy(r => r.Id)
             .Skip(Math.Max(offset, 0)).Take(Math.Clamp(limit, 1, 200))
-            .ToListAsync(ct).ConfigureAwait(false);
+            .ToList();
 
         var items = rows.ConvertAll(ToDecision);
         return new ResolutionDecisionsEnvelope(items, total);
