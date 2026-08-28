@@ -1,10 +1,13 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Application.Integration;
+using ISEStudio.Application.Vocabulary;
 using ISEStudio.Authorization;
 using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Integration;
 using ISEStudio.Storage;
 
 namespace ISEStudio.Ontology;
@@ -714,6 +717,13 @@ public static class VocabularyServiceCollectionExtensions
     {
         services.AddScoped<VocabularyService>();
         services.AddScoped<VocabularyProposalService>();
+        // Application service facade for the twenty-eight vocabulary
+        // dispatcher arms (sixteen internal + twelve cross-surface).
+        // Resolves VocabularyService / VocabularyProposalService /
+        // TerminologyAgent by service-locator through the request's
+        // IServiceProvider. Scoped — shares the request DbContext with
+        // the underlying services.
+        services.AddScoped<IVocabularyApplicationService, VocabularyApplicationService>();
         return services;
     }
 }

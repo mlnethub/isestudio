@@ -1,3 +1,4 @@
+using ISEStudio.Application.Vocabulary;
 using ISEStudio.Ontology;
 using Oxigraph;
 using OntoNamedNode = Oxigraph.NamedNode;

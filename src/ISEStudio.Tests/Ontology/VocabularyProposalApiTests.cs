@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using ISEStudio.Application.Vocabulary;
 using ISEStudio.Authentication;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;

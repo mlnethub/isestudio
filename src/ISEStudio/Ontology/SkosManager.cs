@@ -1,6 +1,6 @@
 using System.Text;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using ISEStudio.Application.Vocabulary;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -82,102 +82,8 @@ public static class SkosVocab
 }
 
 // ----------------------------------------------------------------------
-// DTOs
+// SkosManager
 // ----------------------------------------------------------------------
-
-/// <summary>Payload for <see cref="SkosManager.CreateScheme"/>.</summary>
-public sealed record SkosSchemeData(
-    string? Iri = null,
-    string Title = "",
-    string DefaultLanguage = "zh-CN",
-    string Description = "",
-    string Origin = "manual");
-
-/// <summary>One localizable label set for a SKOS concept.</summary>
-public sealed record SkosLabel(
-    [property: JsonPropertyName("value")] string Value,
-    [property: JsonPropertyName("language")] string Language = "");
-
-/// <summary>Payload for <see cref="SkosManager.CreateConcept"/>.</summary>
-public sealed record SkosConceptData(
-    string? Iri = null,
-    string SchemeIri = "",
-    string PrefLabel = "",
-    string Language = "en",
-    IReadOnlyList<SkosLabel>? AltLabels = null,
-    IReadOnlyList<SkosLabel>? HiddenLabels = null,
-    IReadOnlyList<string>? Broader = null,
-    IReadOnlyList<string>? Related = null,
-    string Description = "",
-    string Notation = "",
-    string Status = "active",
-    string Origin = "manual",
-    string? MappedEntityIri = null)
-{
-    internal IReadOnlyList<SkosLabel> EffectiveAltLabels => AltLabels ?? Array.Empty<SkosLabel>();
-    internal IReadOnlyList<SkosLabel> EffectiveHiddenLabels => HiddenLabels ?? Array.Empty<SkosLabel>();
-    internal IReadOnlyList<string> EffectiveBroader => Broader ?? Array.Empty<string>();
-    internal IReadOnlyList<string> EffectiveRelated => Related ?? Array.Empty<string>();
-}
-
-/// <summary>One concept as it appears in <see cref="SkosView"/>.</summary>
-public sealed record SkosConceptView(
-    [property: JsonPropertyName("iri")] string Iri,
-    [property: JsonPropertyName("scheme_iri")] string SchemeIri,
-    [property: JsonPropertyName("pref_labels")] IReadOnlyList<SkosLabel> PrefLabels,
-    [property: JsonPropertyName("alt_labels")] IReadOnlyList<SkosLabel> AltLabels,
-    [property: JsonPropertyName("hidden_labels")] IReadOnlyList<SkosLabel> HiddenLabels,
-    [property: JsonPropertyName("display_label")] string DisplayLabel,
-    [property: JsonPropertyName("description")] string Description,
-    [property: JsonPropertyName("notation")] string Notation,
-    [property: JsonPropertyName("broader")] IReadOnlyList<string> Broader,
-    [property: JsonPropertyName("related")] IReadOnlyList<string> Related,
-    [property: JsonPropertyName("broader_labels")] IReadOnlyList<string> BroaderLabels,
-    [property: JsonPropertyName("related_labels")] IReadOnlyList<string> RelatedLabels,
-    [property: JsonPropertyName("mapped_entity_iri")] string? MappedEntityIri,
-    [property: JsonPropertyName("status")] string Status,
-    [property: JsonPropertyName("origin")] string Origin,
-    [property: JsonPropertyName("created_at")] string CreatedAt,
-    [property: JsonPropertyName("modified_at")] string ModifiedAt);
-
-/// <summary>One scheme as it appears in <see cref="SkosView"/>.</summary>
-public sealed record SkosSchemeView(
-    [property: JsonPropertyName("iri")] string Iri,
-    [property: JsonPropertyName("title")] string Title,
-    [property: JsonPropertyName("titles")] IReadOnlyList<SkosLabel> Titles,
-    [property: JsonPropertyName("description")] string Description,
-    [property: JsonPropertyName("descriptions")] IReadOnlyList<SkosLabel> Descriptions,
-    [property: JsonPropertyName("default_language")] string DefaultLanguage,
-    [property: JsonPropertyName("origin")] string Origin,
-    [property: JsonPropertyName("created_at")] string CreatedAt,
-    [property: JsonPropertyName("modified_at")] string ModifiedAt,
-    [property: JsonPropertyName("concept_count")] int ConceptCount);
-
-/// <summary>Curated view of the SKOS graph for one knowledge system.</summary>
-public sealed record SkosView(
-    [property: JsonPropertyName("schemes")] IReadOnlyList<SkosSchemeView> Schemes,
-    [property: JsonPropertyName("concepts")] IReadOnlyList<SkosConceptView> Concepts,
-    [property: JsonPropertyName("stats")] SkosStats Stats);
-
-/// <summary>Roll-up counts surfaced alongside a <see cref="SkosView"/>.</summary>
-public sealed record SkosStats(
-    [property: JsonPropertyName("scheme_count")] int SchemeCount,
-    [property: JsonPropertyName("concept_count")] int ConceptCount,
-    [property: JsonPropertyName("label_count")] int LabelCount,
-    [property: JsonPropertyName("mapped_count")] int MappedCount,
-    [property: JsonPropertyName("unmapped_count")] int UnmappedCount);
-
-/// <summary>One match in <see cref="SkosManager.Resolve"/>.</summary>
-public sealed record SkosMatch(
-    [property: JsonPropertyName("concept")] SkosConceptView Concept,
-    [property: JsonPropertyName("matched_label")] SkosLabel MatchedLabel,
-    [property: JsonPropertyName("match_type")] string MatchType,
-    [property: JsonPropertyName("score")] double Score);
-
-/// <summary>One page from <see cref="SkosManager.ListConcepts"/>.</summary>
-public sealed record SkosConceptPage(
-    [property: JsonPropertyName("items")] IReadOnlyList<SkosConceptView> Items,
-    [property: JsonPropertyName("total")] int Total);
 
 /// <summary>Thrown when SKOS payload validation fails (mirrors the Python
 /// <c>VocabularyValidationError</c>).</summary>
@@ -186,10 +92,6 @@ public sealed class SkosValidationException : Exception
     public SkosValidationException(string message) : base(message) { }
     public SkosValidationException(string message, Exception inner) : base(message, inner) { }
 }
-
-// ----------------------------------------------------------------------
-// SkosManager
-// ----------------------------------------------------------------------
 
 /// <summary>
 /// RDF-native controlled vocabularies. One knowledge system owns a third

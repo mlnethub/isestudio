@@ -1,7 +1,7 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Application.Vocabulary;
 using ISEStudio.Authorization;
 using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence;
@@ -481,28 +481,3 @@ public sealed class VocabularyProposalService
         await _db.SaveChangesAsync(token).ConfigureAwait(false);
     }
 }
-
-/// <summary>
-/// Wire shape for one <see cref="TermProposalEntity"/> row. Mirrors the
-/// Python <c>backend/app/schemas/terminology.py::_proposal_out</c> schema so
-/// the dispatcher arm can serialize the row straight to JSON without an
-/// additional mapper. Field names match the Python reference verbatim.
-/// </summary>
-public sealed record TermProposalOut(
-    [property: JsonPropertyName("id")] Guid Id,
-    [property: JsonPropertyName("action")] string Action,
-    [property: JsonPropertyName("term")] string Term,
-    [property: JsonPropertyName("target_iri")] string? TargetIri,
-    [property: JsonPropertyName("target_label")] string? TargetLabel,
-    [property: JsonPropertyName("status")] string Status,
-    [property: JsonPropertyName("payload")] JsonElement? Payload,
-    [property: JsonPropertyName("confidence")] double? Confidence,
-    [property: JsonPropertyName("reason")] string? Reason,
-    [property: JsonPropertyName("evidence")] JsonElement? Evidence,
-    [property: JsonPropertyName("source_chunk_ids")] JsonElement? SourceChunkIds,
-    [property: JsonPropertyName("extraction_job_id")] Guid? ExtractionJobId,
-    [property: JsonPropertyName("proposed_by")] string ProposedBy,
-    [property: JsonPropertyName("resolved_by")] string? ResolvedBy,
-    [property: JsonPropertyName("resolution_note")] string? ResolutionNote,
-    [property: JsonPropertyName("created_at")] DateTimeOffset CreatedAt,
-    [property: JsonPropertyName("resolved_at")] DateTimeOffset? ResolvedAt);

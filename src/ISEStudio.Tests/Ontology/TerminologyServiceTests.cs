@@ -1,3 +1,4 @@
+using ISEStudio.Application.Vocabulary;
 using ISEStudio.Extraction;
 using ISEStudio.Ontology;
 using Oxigraph;
