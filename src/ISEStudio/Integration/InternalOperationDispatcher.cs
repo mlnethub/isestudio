@@ -1260,34 +1260,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return await body().ConfigureAwait(false);
     }
 
-    /// <summary>
-    /// Pull the typed body for an operation. Controllers bind the loose
-    /// <c>object</c> body which the framework materializes as a
-    /// <see cref="System.Text.Json.JsonElement"/> via the AddJsonOptions
-    /// input formatter. We deserialize with the same snake_case naming
-    /// policy the controllers emit (see Program.cs AddJsonOptions) so the
-    /// wire shape <c>api_key</c> / <c>base_url</c> maps cleanly onto the
-    /// PascalCase record properties. Case-insensitive matching is on by
-    /// default in System.Text.Json, so mixed-case input is accepted too.
-    /// </summary>
-    private static readonly System.Text.Json.JsonSerializerOptions DeserializeOptions = new()
-    {
-        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.SnakeCaseLower,
-        PropertyNameCaseInsensitive = true,
-    };
-
-    private static T? DeserializeBody<T>(InternalRequest request) where T : class
-    {
-        if (request.Body is null) return null;
-        if (!request.Body.TryGetValue("_", out var raw) || raw is null) return null;
-        if (raw is T typed) return typed;
-        if (raw is System.Text.Json.JsonElement element)
-        {
-            return System.Text.Json.JsonSerializer.Deserialize<T>(element.GetRawText(), DeserializeOptions);
-        }
-        return null;
-    }
-
     // ---- conflicts ---------------------------------------------------------
     // Conflict queue + reconciliation memory CRUD lives behind
     // ConflictService (scoped). The dispatcher is registered Scoped, so
@@ -1422,223 +1394,113 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     };
 
     // ---- knowledge --------------------------------------------------------
-    // KS CRUD + membership + review stats. Real delegation to
-    // KnowledgeService (scoped); the service enforces Viewer / Editor /
-    // Owner role gates against the request's session user.
-    //
-    // Failure modes:
+    // Twelve arms routed through IKnowledgeApplicationService (12/13
+    // slice): list / create / delete / get / update / list_members /
+    // add_member / grantable_users / remove_member / member_detail /
+    // review_counts / refresh_stats. The app service owns body DTO
+    // unpacking + Guid parsing + the delete/remove/refresh wire
+    // projections; the dispatcher keeps only the per-arm fallbacks.
     // * Service not registered (unit tests that hand-built the dispatcher)
     //   → returns a schema-compatible empty payload so the route still 200s.
     // * KnowledgeService throws InvalidOperationException → FastApiErrorMiddleware
     //   translates it to the { "detail": "..." } envelope the Python
     //   backend emits.
 
-    private KnowledgeService? ResolveKnowledgeService() =>
-        _services.GetService(typeof(KnowledgeService)) as KnowledgeService;
+    private IKnowledgeApplicationService? ResolveKnowledgeAppService() =>
+        _services.GetService(typeof(IKnowledgeApplicationService)) as IKnowledgeApplicationService;
 
-    private Task<object?> InvokeKnowledgeListAsync(InternalRequest request, CancellationToken ct)
+    /// <summary>
+    /// Resolve the scoped <see cref="IKnowledgeApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors
+    /// the ontology / history / prompts / external / published /
+    /// provider / auth / settings slice wrappers.
+    /// </summary>
+    private Task<object?> InvokeKnowledgeAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IKnowledgeApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        var svc = ResolveKnowledgeService();
-        if (svc is null) return Task.FromResult<object?>(Array.Empty<object>());
-        return WrapAsync(async () =>
+        var app = ResolveKnowledgeAppService();
+        if (app is null)
         {
-            var rows = await svc.ListAsync(request.Actor, ct).ConfigureAwait(false);
-            return (object?)rows;
-        });
-    }
-
-    private Task<object?> InvokeKnowledgeGetAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(EmptyKnowledgeSystem());
+            return Task.FromResult<object?>(onMissing());
         }
         return WrapAsync(async () =>
         {
-            var row = await svc.GetAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(row ?? EmptyKnowledgeSystem());
-        });
-    }
-
-    private Task<object?> InvokeKnowledgeRefreshStatsAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            // Service not wired (unit-test path) or no KS id in URL
-            // (bad request). Surface a schema-compatible empty payload
-            // so the route still 200s and the operator can detect the
-            // no-op from the response.
-            return Task.FromResult<object?>(new { refreshed = false });
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.RefreshStatsAsync(
-                request.KnowledgeSystemGuid.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)new { refreshed = true, item = row };
-        });
-    }
-
-    private Task<object?> InvokeKnowledgeCreateAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        var body = DeserializeBody<CreateKnowledgeSystemRequest>(request);
-        if (svc is null || body is null)
-        {
-            if (body is null)
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
             {
-                throw new InvalidOperationException(
-                    "Request body is required for knowledge.create.");
+                return (onNull ?? onMissing)();
             }
-            return Task.FromResult<object?>(EmptyKnowledgeSystem());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.CreateAsync(body, request.Actor, ct).ConfigureAwait(false);
-            return (object?)row;
+            return out_;
         });
     }
 
-    private Task<object?> InvokeKnowledgeUpdateAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        var body = DeserializeBody<UpdateKnowledgeSystemRequest>(request);
-        if (svc is null || body is null || request.KnowledgeSystemGuid is null)
-        {
-            if (body is null)
-            {
-                throw new InvalidOperationException(
-                    "Request body is required for knowledge.update.");
-            }
-            return Task.FromResult<object?>(EmptyKnowledgeSystem());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.UpdateAsync(request.KnowledgeSystemGuid.Value, body, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(row ?? EmptyKnowledgeSystem());
-        });
-    }
+    private Task<object?> InvokeKnowledgeListAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.ListAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => Array.Empty<object>());
 
-    private Task<object?> InvokeKnowledgeDeleteAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(new { deleted = Guid.Empty });
-        }
-        return WrapAsync(async () =>
-        {
-            var deleted = await svc.DeleteAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)new { deleted = deleted ?? Guid.Empty };
-        });
-    }
+    private Task<object?> InvokeKnowledgeGetAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.GetAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyKnowledgeSystem);
 
-    private Task<object?> InvokeKnowledgeListMembersAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.ListMembersAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            if (rows is null) return (object?)Array.Empty<object>();
-            return (object?)rows;
-        });
-    }
+    private Task<object?> InvokeKnowledgeRefreshStatsAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.RefreshStatsAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { refreshed = false });
 
-    private Task<object?> InvokeKnowledgeAddMemberAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        var body = DeserializeBody<AddMemberRequest>(request);
-        if (svc is null || body is null || request.KnowledgeSystemGuid is null)
-        {
-            if (body is null)
-            {
-                throw new InvalidOperationException(
-                    "Request body is required for knowledge.add_member.");
-            }
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.AddMemberAsync(request.KnowledgeSystemGuid.Value, body, request.Actor, ct)
-                .ConfigureAwait(false);
-            if (rows is null) return (object?)Array.Empty<object>();
-            return (object?)rows;
-        });
-    }
+    private Task<object?> InvokeKnowledgeCreateAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.CreateAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyKnowledgeSystem);
 
-    private Task<object?> InvokeKnowledgeGrantableUsersAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        var query = request.Query is not null && request.Query.TryGetValue("q", out var q) ? q : null;
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.GrantableUsersAsync(request.KnowledgeSystemGuid.Value, query,
-                request.Actor, ct).ConfigureAwait(false);
-            if (rows is null) return (object?)Array.Empty<object>();
-            return (object?)rows;
-        });
-    }
+    private Task<object?> InvokeKnowledgeUpdateAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.UpdateAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyKnowledgeSystem);
 
-    private Task<object?> InvokeKnowledgeRemoveMemberAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var userId))
-        {
-            return Task.FromResult<object?>(new { removed = Guid.Empty });
-        }
-        return WrapAsync(async () =>
-        {
-            var removed = await svc.RemoveMemberAsync(request.KnowledgeSystemGuid.Value, userId,
-                request.Actor, ct).ConfigureAwait(false);
-            return (object?)new { removed = removed ?? Guid.Empty };
-        });
-    }
+    private Task<object?> InvokeKnowledgeDeleteAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.DeleteAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { deleted = Guid.Empty });
 
-    private Task<object?> InvokeKnowledgeMemberDetailAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var userId))
-        {
-            return Task.FromResult<object?>(EmptyMember());
-        }
-        return WrapAsync(async () =>
-        {
-            var detail = await svc.MemberDetailAsync(request.KnowledgeSystemGuid.Value, userId,
-                request.Actor, ct).ConfigureAwait(false);
-            return (object?)(detail ?? EmptyMember());
-        });
-    }
+    private Task<object?> InvokeKnowledgeListMembersAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.ListMembersAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => Array.Empty<object>());
 
-    private Task<object?> InvokeKnowledgeReviewCountsAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveKnowledgeService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(EmptyReviewCounts());
-        }
-        return WrapAsync(async () =>
-        {
-            var counts = await svc.ReviewCountsAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(counts ?? EmptyReviewCounts());
-        });
-    }
+    private Task<object?> InvokeKnowledgeAddMemberAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.AddMemberAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => Array.Empty<object>());
+
+    private Task<object?> InvokeKnowledgeGrantableUsersAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.GrantableUsersAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => Array.Empty<object>());
+
+    private Task<object?> InvokeKnowledgeRemoveMemberAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.RemoveMemberAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { removed = Guid.Empty });
+
+    private Task<object?> InvokeKnowledgeMemberDetailAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.MemberDetailAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyMember);
+
+    private Task<object?> InvokeKnowledgeReviewCountsAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeKnowledgeAsync(request, ct,
+            async app => (object?)await app.ReviewCountsAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyReviewCounts);
 
     // ---- documents --------------------------------------------------------
     // Real CRUD via DocumentApplicationService. documents.upload is intentionally
@@ -2420,16 +2282,15 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             async app => (object?)await app.UpdateAsync(request, ct).ConfigureAwait(false),
             onMissing: EmptySettings);
 
-    // ----- tokens (B10) -----------------------------------------------------
-    // Wires the tokens.* dispatcher arms (list / create / reveal / revoke)
-    // and the mcp_tokens.* arms (list / create / revoke) to the scoped
-    // TokenManagementService. The service enforces the owner-only gate,
-    // mints bearer secrets via the IKnowledgeApiTokenService /
-    // IMcpTokenService primitives, persists only the SHA-256 hash, and
-    // writes audit rows. The dispatcher only resolves the scoped service
-    // and forwards.
-    //
-    // Failure modes mirror the other slices:
+    // ----- tokens (12/13) ----------------------------------------------------
+    // Seven arms routed through ITokenApplicationService: tokens.list /
+    // create / revoke / reveal + mcp_tokens.list / create / revoke. The
+    // service enforces the owner-only gate, mints bearer secrets via
+    // the IKnowledgeApiTokenService / IMcpTokenService primitives,
+    // persists only the SHA-256 hash, and writes audit rows. The app
+    // service owns body DTO unpacking + token-Guid parsing + the
+    // snake_case wire projections; the dispatcher keeps only the
+    // per-arm fallbacks.
     // * Service not registered (hand-built dispatcher in unit tests)
     //   → returns the schema-compatible empty payload so the route
     //   still 200s and the contract-test path degrades cleanly.
@@ -2437,216 +2298,76 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     //   InvalidOperationException → FastApiErrorMiddleware translates
     //   to the {"detail": "..."} envelope the Python backend emits.
 
-    private TokenManagementService? ResolveTokenManagementService() =>
-        _services.GetService(typeof(TokenManagementService)) as TokenManagementService;
+    private ITokenApplicationService? ResolveTokenAppService() =>
+        _services.GetService(typeof(ITokenApplicationService)) as ITokenApplicationService;
 
-    private Task<object?> InvokeTokenListAsync(
-        InternalRequest request, CancellationToken ct)
+    /// <summary>
+    /// Resolve the scoped <see cref="ITokenApplicationService"/> and run
+    /// <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors
+    /// the ontology / history / prompts / external / published /
+    /// provider / auth / settings / knowledge slice wrappers.
+    /// </summary>
+    private Task<object?> InvokeTokenAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<ITokenApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        var svc = ResolveTokenManagementService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
+        var app = ResolveTokenAppService();
+        if (app is null)
         {
-            return Task.FromResult<object?>(Array.Empty<object>());
+            return Task.FromResult<object?>(onMissing());
         }
         return WrapAsync(async () =>
         {
-            var rows = await svc.ListApiTokensAsync(
-                request.KnowledgeSystemGuid.Value, ct).ConfigureAwait(false);
-            return (object?)rows;
-        });
-    }
-
-    private Task<object?> InvokeTokenCreateAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveTokenManagementService();
-        var body = DeserializeBody<TokenCreateRequest>(request);
-        if (svc is null || body is null || request.KnowledgeSystemGuid is null)
-        {
-            if (body is null)
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
             {
-                throw new InvalidOperationException(
-                    "Request body is required for tokens.create.");
+                return (onNull ?? onMissing)();
             }
-            return Task.FromResult<object?>(EmptyTokenCreated());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.CreateApiTokenAsync(
-                request.KnowledgeSystemGuid.Value, body, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)ProjectTokenCreatedOut(row);
+            return out_;
         });
     }
 
-    private Task<object?> InvokeTokenRevokeAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveTokenManagementService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var tokenId))
-        {
-            return Task.FromResult<object?>(new { ok = false });
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.RevokeApiTokenAsync(
-                request.KnowledgeSystemGuid.Value, tokenId, request.Actor, ct)
-                .ConfigureAwait(false);
-            if (row is null)
-            {
-                // No row matched (KS/token mismatch): empty envelope.
-                return (object?)EmptyTokenCreated();
-            }
-            return (object?)ProjectTokenOut(row);
-        });
-    }
+    private Task<object?> InvokeTokenListAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeTokenAsync(request, ct,
+            async app => (object?)await app.ListTokensAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => Array.Empty<object>());
 
-    private Task<object?> InvokeTokenRevealAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveTokenManagementService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var tokenId))
-        {
-            return Task.FromResult<object?>(EmptyTokenRevealed());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.RevealApiTokenAsync(
-                request.KnowledgeSystemGuid.Value, tokenId, request.Actor, ct)
-                .ConfigureAwait(false);
-            if (row is null)
-            {
-                // Missing row or secret-ciphertext unavailable: empty
-                // envelope matches the Python "legacy token cannot be
-                // recovered" / 404 path semantics at the wire level.
-                return (object?)EmptyTokenRevealed();
-            }
-            return (object?)new { token = row.Token };
-        });
-    }
+    private Task<object?> InvokeTokenCreateAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeTokenAsync(request, ct,
+            async app => (object?)await app.CreateTokenAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyTokenCreated);
 
-    private Task<object?> InvokeMcpTokenListAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveTokenManagementService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(EmptyListResponse());
-        }
-        return WrapAsync(async () =>
-        {
-            var actorId = Guid.TryParse(request.Actor.UserId, out var parsed)
-                ? parsed : Guid.Empty;
-            var row = await svc.ListMcpTokensAsync(
-                request.KnowledgeSystemGuid.Value, actorId, ct)
-                .ConfigureAwait(false);
-            return (object?)row;
-        });
-    }
+    private Task<object?> InvokeTokenRevokeAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeTokenAsync(request, ct,
+            async app => (object?)await app.RevokeTokenAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { ok = false });
 
-    private Task<object?> InvokeMcpTokenCreateAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveTokenManagementService();
-        var body = DeserializeBody<McpTokenCreateBody>(request);
-        if (svc is null || body is null || request.KnowledgeSystemGuid is null)
-        {
-            if (body is null)
-            {
-                throw new InvalidOperationException(
-                    "Request body is required for mcp_tokens.create.");
-            }
-            return Task.FromResult<object?>(EmptyMcpTokenCreated());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.CreateMcpTokenAsync(
-                request.KnowledgeSystemGuid.Value, body, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)ProjectMcpTokenCreatedOut(row);
-        });
-    }
+    private Task<object?> InvokeTokenRevealAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeTokenAsync(request, ct,
+            async app => (object?)await app.RevealTokenAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyTokenRevealed);
 
-    private Task<object?> InvokeMcpTokenRevokeAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveTokenManagementService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var tokenId))
-        {
-            return Task.FromResult<object?>(new { ok = false });
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.RevokeMcpTokenAsync(
-                request.KnowledgeSystemGuid.Value, tokenId, request.Actor, ct)
-                .ConfigureAwait(false);
-            if (row is null)
-            {
-                return (object?)EmptyMcpTokenCreated();
-            }
-            return (object?)ProjectMcpTokenOut(row);
-        });
-    }
+    private Task<object?> InvokeMcpTokenListAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeTokenAsync(request, ct,
+            async app => (object?)await app.ListMcpTokensAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyListResponse);
 
-    private static object ProjectTokenOut(TokenOut row) => new
-    {
-        id = row.Id,
-        name = row.Name,
-        token_prefix = row.TokenPrefix,
-        scopes = row.Scopes,
-        status = row.Status,
-        created_at = row.CreatedAt,
-        expires_at = row.ExpiresAt,
-        last_used_at = row.LastUsedAt,
-        revoked_at = row.RevokedAt,
-        can_reveal = row.CanReveal,
-    };
+    private Task<object?> InvokeMcpTokenCreateAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeTokenAsync(request, ct,
+            async app => (object?)await app.CreateMcpTokenAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyMcpTokenCreated);
 
-    private static object ProjectTokenCreatedOut(TokenCreatedOut row) => new
-    {
-        id = row.Id,
-        name = row.Name,
-        token_prefix = row.TokenPrefix,
-        scopes = row.Scopes,
-        status = row.Status,
-        created_at = row.CreatedAt,
-        expires_at = row.ExpiresAt,
-        last_used_at = row.LastUsedAt,
-        revoked_at = row.RevokedAt,
-        can_reveal = row.CanReveal,
-        token = row.Token,
-    };
-
-    private static object ProjectMcpTokenOut(McpTokenOut row) => new
-    {
-        id = row.Id,
-        name = row.Name,
-        token_prefix = row.TokenPrefix,
-        scopes = row.Scopes,
-        status = row.Status,
-        created_at = row.CreatedAt,
-        expires_at = row.ExpiresAt,
-        last_used_at = row.LastUsedAt,
-        revoked_at = row.RevokedAt,
-    };
-
-    private static object ProjectMcpTokenCreatedOut(McpTokenCreatedOut row) => new
-    {
-        id = row.Id,
-        name = row.Name,
-        token_prefix = row.TokenPrefix,
-        scopes = row.Scopes,
-        status = row.Status,
-        created_at = row.CreatedAt,
-        expires_at = row.ExpiresAt,
-        last_used_at = row.LastUsedAt,
-        revoked_at = row.RevokedAt,
-        token = row.Token,
-        endpoint = row.Endpoint,
-    };
+    private Task<object?> InvokeMcpTokenRevokeAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeTokenAsync(request, ct,
+            async app => (object?)await app.RevokeMcpTokenAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { ok = false });
 
 // ----- shared envelope helpers (pre-slice leftovers) -------------------
     // Kept in this class because the abox / conflicts / documents / releases

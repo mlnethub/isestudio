@@ -1,3 +1,5 @@
+using ISEStudio.Application.Integration;
+using ISEStudio.Integration;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace ISEStudio.Knowledge;
@@ -13,6 +15,10 @@ public static class KnowledgeServiceCollectionExtensions
     public static IServiceCollection AddKnowledgeServices(this IServiceCollection services)
     {
         services.AddScoped<KnowledgeService>();
+        // Application service facade for the twelve knowledge.*
+        // dispatcher arms. Scoped — shares the request DbContext with
+        // KnowledgeService through the constructor.
+        services.AddScoped<IKnowledgeApplicationService, KnowledgeApplicationService>();
         return services;
     }
 }

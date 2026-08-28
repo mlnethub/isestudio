@@ -365,6 +365,10 @@ builder.Services.AddScoped<IMcpTokenService, McpTokenService>();
 // mcp_tokens.* (list / create / revoke). Scoped because it shares the
 // request DbContext + audit + clock with the bearer-token primitives.
 builder.Services.AddScoped<TokenManagementService>();
+// Application service facade for the seven tokens.* / mcp_tokens.*
+// dispatcher arms. Scoped — shares the request DbContext with
+// TokenManagementService through the constructor.
+builder.Services.AddScoped<ITokenApplicationService, TokenApplicationService>();
 // User CRUD (admin side). auth.update_me + auth.list_users / create /
 // update / delete_user. auth.login / logout / me stay inline in
 // AuthController because they own the session-cookie plumbing. Scoped
