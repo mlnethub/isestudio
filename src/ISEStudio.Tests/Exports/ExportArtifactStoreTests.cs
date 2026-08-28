@@ -1,3 +1,4 @@
+using ISEStudio.Application.Releases;
 using ISEStudio.Exports;
 
 namespace ISEStudio.Tests.Exports;

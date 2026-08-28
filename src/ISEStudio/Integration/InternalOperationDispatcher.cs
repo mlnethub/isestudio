@@ -9,7 +9,6 @@ using ISEStudio.Application.Documents;
 using ISEStudio.Authentication;
 using ISEStudio.Documents;
 using ISEStudio.EntityResolution;
-using ISEStudio.Exports;
 using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
@@ -2485,401 +2484,158 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         });
     }
 
-    // ----- releases (B9) ---------------------------------------------------
-    // Real write-through for releases.create. Reads the optional title /
-    // notes from the request body (matching the Python
-    // backend/app/api/releases.py:353 CreateReleaseRequest shape — both
-    // fields optional, defaults to ""), delegates to ReleaseService
-    // which inserts the OntologyReleaseEntity row + audit row, and
-    // projects the typed ReleaseOut back to the wire. The dispatcher is
-    // Scoped, so the resolved ReleaseService shares the request
-    // DbContext — the audit + allocator pattern is identical to
-    // ConflictService.DismissAsync / ResolveAsync.
-    private ReleaseService? ResolveReleaseService() =>
-        _services.GetService(typeof(ReleaseService)) as ReleaseService;
+// ----- releases (B9) ---------------------------------------------------
+    // Twelve release-lifecycle ops + four release-export ops, all routed
+    // through IReleaseApplicationService (see
+    // src/ISEStudio.Application/Integration/IReleaseApplicationService.cs).
+    // Each helper is a one-line delegate through `InvokeReleaseAsync`,
+    // which resolves the scoped application service, invokes the call,
+    // and falls back to the wire-shape-compatible empty envelope
+    // (`EmptyRelease()`, `EmptyReleaseDiff()`, `EmptyListResponse()`,
+    // `EmptyExportJob()`, inline `{ok:true}`, inline
+    // `{restored:Guid.Empty, version:string.Empty}`) when the service
+    // is missing or returns null. The application service does NOT own
+    // these fallbacks — matching the abox + conflicts + documents slice
+    // decisions documented in
+    // docs/superpowers/specs/2026-08-28-abox-application-service-pilot.md
+    // §2.5. The wire projection that turned `ReleaseOut` into the
+    // snake-case `{id, knowledge_system_id, version, status, ...}` shape
+    // (the old `ProjectReleaseOut`) is gone too — `ReleaseOut` itself is
+    // already snake-case via the global `JsonNamingPolicy.SnakeCaseLower`
+    // policy configured in `Program.cs`.
+    //
+    // Read arms go through `WrapAsync`; write arms
+    // (publish / deploy / stop_deployment / delete / rollback /
+    // create_export) are wrapped in `RunWithExtractionGuardAsync` at
+    // the switch so an extraction in progress surfaces 409.
+    // State-machine conflicts throw `ResourceInUseException` → 409
+    // (`FastApiErrorMiddleware` L92).
 
-    private Task<object?> InvokeReleaseCreateAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveReleaseService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            // Service not wired (hand-built dispatcher in unit tests)
-            // or no KS bound — return a schema-compatible empty payload
-            // so the route still 200s and the operator sees the no-op.
-            return Task.FromResult<object?>(EmptyRelease());
-        }
-
-        // Body is optional: the frontend ReleasePanel.createDraft sends
-        // {} and the Python baseline marks every field optional. Pull
-        // title / notes defensively so an empty body degrades to
-        // empty strings (matching the Python defaults).
-        //
-        // InternalControllerBase.ToBody wraps the bound [FromBody] object
-        // under the "_" key so callers like DeserializeBody<T> can find
-        // it; we read both shapes — a flat dict (when the dispatcher is
-        // invoked directly with raw fields) and the wrapped JsonElement
-        // (when the controller is the source).
-        string title = string.Empty;
-        string notes = string.Empty;
-        if (request.Body is not null
-            && request.Body.TryGetValue("_", out var raw)
-            && raw is System.Text.Json.JsonElement el
-            && el.ValueKind == System.Text.Json.JsonValueKind.Object)
-        {
-            if (el.TryGetProperty("title", out var t) && t.ValueKind == System.Text.Json.JsonValueKind.String)
-                title = t.GetString() ?? string.Empty;
-            if (el.TryGetProperty("notes", out var n) && n.ValueKind == System.Text.Json.JsonValueKind.String)
-                notes = n.GetString() ?? string.Empty;
-        }
-
-        return WrapAsync(async () =>
-        {
-            var row = await svc.CreateDraftAsync(
-                request.KnowledgeSystemGuid.Value, request.Actor, title, notes, ct)
-                .ConfigureAwait(false);
-            // Contract-test path uses a random Guid, so the service
-            // may return null when no KS row exists. Fall back to the
-            // schema-compatible empty envelope so the route still 200s
-            // (matches the existing EmptyRelease() placeholder shape).
-            if (row is null) return (object?)EmptyRelease();
-            return (object?)ProjectReleaseOut(row);
-        });
-    }
-
-    // ------------------------------------------------------------------
-    // release lifecycle arms (7a). All resolve the scoped ReleaseService
-    // + the bound KS guid + the {release_id} route resource (a Guid).
-    // Read arms (list/review/diff) go through WrapAsync; write arms
-    // (publish/deploy/stop/delete/rollback) are wrapped by
-    // RunWithExtractionGuardAsync at the switch so an extraction in
-    // progress surfaces 409. State-machine conflicts throw
-    // ResourceInUseException → 409 (FastApiErrorMiddleware L92).
-    // ------------------------------------------------------------------
-
-    private Task<object?> InvokeReleaseListAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveReleaseService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-            return Task.FromResult<object?>(EmptyListResponse());
-        return WrapAsync(async () =>
-        {
-            var out_ = await svc.ListAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(out_ ?? (object)EmptyListResponse());
-        });
-    }
-
-    private Task<object?> InvokeReleaseReviewAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveReleaseService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(EmptyRelease());
-        if (!Guid.TryParse(request.ResourceId, out var releaseId))
-            return Task.FromResult<object?>(EmptyRelease());
-        return WrapAsync(async () =>
-        {
-            var note = ReadStringField(request, "note");
-            var row = await svc.ReviewAsync(
-                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, note, ct)
-                .ConfigureAwait(false);
-            return (object?)(row is null ? (object?)EmptyRelease() : ProjectReleaseOut(row));
-        });
-    }
-
-    private Task<object?> InvokeReleasePublishAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveReleaseService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(EmptyRelease());
-        if (!Guid.TryParse(request.ResourceId, out var releaseId))
-            return Task.FromResult<object?>(EmptyRelease());
-        return WrapAsync(async () =>
-        {
-            var note = ReadStringField(request, "note");
-            var row = await svc.PublishAsync(
-                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, note, ct)
-                .ConfigureAwait(false);
-            return (object?)(row is null ? (object?)EmptyRelease() : ProjectReleaseOut(row));
-        });
-    }
-
-    private Task<object?> InvokeReleaseDeployAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveReleaseService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(EmptyRelease());
-        if (!Guid.TryParse(request.ResourceId, out var releaseId))
-            return Task.FromResult<object?>(EmptyRelease());
-        return WrapAsync(async () =>
-        {
-            var row = await svc.DeployAsync(
-                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(row is null ? (object?)EmptyRelease() : ProjectReleaseOut(row));
-        });
-    }
-
-    private Task<object?> InvokeReleaseStopDeploymentAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveReleaseService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(EmptyRelease());
-        if (!Guid.TryParse(request.ResourceId, out var releaseId))
-            return Task.FromResult<object?>(EmptyRelease());
-        return WrapAsync(async () =>
-        {
-            var row = await svc.StopDeploymentAsync(
-                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(row is null ? (object?)EmptyRelease() : ProjectReleaseOut(row));
-        });
-    }
-
-    private Task<object?> InvokeReleaseDeleteAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveReleaseService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(new { ok = true });
-        if (!Guid.TryParse(request.ResourceId, out var releaseId))
-            return Task.FromResult<object?>(new { ok = true });
-        return WrapAsync(async () =>
-        {
-            var row = await svc.DeleteAsync(
-                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(row is null ? (object?)new { ok = true } : ProjectReleaseOut(row));
-        });
-    }
-
-    private Task<object?> InvokeReleaseRollbackAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveReleaseService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(new { restored = Guid.Empty, version = string.Empty });
-        if (!Guid.TryParse(request.ResourceId, out var releaseId))
-            return Task.FromResult<object?>(new { restored = Guid.Empty, version = string.Empty });
-        return WrapAsync(async () =>
-        {
-            var out_ = await svc.RollbackAsync(
-                request.KnowledgeSystemGuid.Value, releaseId, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(out_ ?? (object)new { restored = Guid.Empty, version = string.Empty });
-        });
-    }
-
-    private Task<object?> InvokeReleaseDiffAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveReleaseService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-            return Task.FromResult<object?>(EmptyReleaseDiff());
-        var fromStr = QueryString(request, "from_id");
-        var toStr = QueryString(request, "to_id");
-        if (string.IsNullOrEmpty(fromStr) || string.IsNullOrEmpty(toStr)
-            || !Guid.TryParse(fromStr, out var fromId) || !Guid.TryParse(toStr, out var toId))
-        {
-            return Task.FromResult<object?>(EmptyReleaseDiff());
-        }
-        return WrapAsync(async () =>
-        {
-            var out_ = await svc.DiffAsync(
-                request.KnowledgeSystemGuid.Value, fromId, toId, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(out_ ?? (object)EmptyReleaseDiff());
-        });
-    }
+    private IReleaseApplicationService? ResolveReleaseAppService() =>
+        _services.GetService(typeof(IReleaseApplicationService)) as IReleaseApplicationService;
 
     /// <summary>
-    /// Pull an optional string field from the loose body dict (the
-    /// controller wraps [FromBody] under the "_" key).
+    /// Resolve the scoped <see cref="IReleaseApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors
+    /// the abox + conflicts + documents slice wrappers.
     /// </summary>
-    private static string? ReadStringField(InternalRequest request, string name)
+    private Task<object?> InvokeReleaseAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IReleaseApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        if (request.Body is null) return null;
-        if (request.Body.TryGetValue("_", out var raw) && raw is System.Text.Json.JsonElement el
-            && el.ValueKind == System.Text.Json.JsonValueKind.Object)
+        var app = ResolveReleaseAppService();
+        if (app is null)
         {
-            if (el.TryGetProperty(name, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String)
-                return v.GetString();
-        }
-        if (request.Body.TryGetValue(name, out var direct))
-            return direct?.ToString();
-        return null;
-    }
-
-    /// <summary>
-    /// Pull an optional int field from the loose body dict. Mirrors
-    /// <see cref="ReadStringField"/> — handles either the
-    /// [FromBody]-wrapped <c>"_"</c> envelope or a top-level key.
-    /// Used by <c>releases.create_export</c> to parse
-    /// <c>shard_size</c>.
-    /// </summary>
-    private static int? ReadIntField(InternalRequest request, string name)
-    {
-        if (request.Body is null) return null;
-        if (request.Body.TryGetValue("_", out var raw) && raw is System.Text.Json.JsonElement el
-            && el.ValueKind == System.Text.Json.JsonValueKind.Object
-            && el.TryGetProperty(name, out var v)
-            && v.ValueKind == System.Text.Json.JsonValueKind.Number
-            && v.TryGetInt32(out var n))
-        {
-            return n;
-        }
-        return null;
-    }
-
-    // ----- release exports helpers (slice 7b) -----
-    // Four operations under releases.* that map to ExportService:
-    //   - list_exports  (read,  WrapAsync)
-    //   - create_export (write, wrapped in RunWithExtractionGuardAsync at
-    //                    the switch so a live extraction blocks the new
-    //                    job with 409 — same policy as the rest of the
-    //                    release mutation surface)
-    //   - get_export    (read,  WrapAsync; resolves by Guid only)
-    //   - download_export_file
-    //                  (read; DownloadFileAsync raises
-    //                   ExportFilePayloadException which the
-    //                   FastApiErrorMiddleware catches to write a raw-bytes
-    //                   response with Content-Type + Content-Disposition —
-    //                   mirrors the Python FileResponse on
-    //                   backend/app/api/releases.py:759)
-
-    private ExportService? ResolveExportService() =>
-        _services.GetService(typeof(ExportService)) as ExportService;
-
-    private Task<object?> InvokeReleaseListExportsAsync(
-        InternalRequest request, CancellationToken cancellationToken)
-    {
-        var svc = ResolveExportService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-            return Task.FromResult<object?>(EmptyListResponse());
-        return WrapAsync(async () =>
-        {
-            var out_ = await svc.ListAsync(
-                request.KnowledgeSystemGuid.Value, cancellationToken)
-                .ConfigureAwait(false);
-            return (object?)(out_ ?? (object)EmptyListResponse());
-        });
-    }
-
-    private Task<object?> InvokeReleaseCreateExportAsync(
-        InternalRequest request, CancellationToken cancellationToken)
-    {
-        var svc = ResolveExportService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-            return Task.FromResult<object?>(EmptyExportJob());
-        return WrapAsync(async () =>
-        {
-            // Body shape (ExportRequest): { layer, release_id?, shard_size? }
-            // layer default "bundle"; release_id optional; shard_size
-            // default 100_000. ReadIntField mirrors ReadStringField for
-            // the int-typed fields.
-            var layer = ReadStringField(request, "layer") ?? ExportLayer.Bundle;
-            var releaseIdStr = ReadStringField(request, "release_id");
-            Guid? releaseId = Guid.TryParse(releaseIdStr, out var rid) ? rid : null;
-            var shardSize = ReadIntField(request, "shard_size") ?? 100_000;
-            var body = new ExportRequest(layer, releaseId, shardSize);
-            var out_ = await svc.CreateAsync(
-                request.KnowledgeSystemGuid.Value, body, request.Actor, cancellationToken)
-                .ConfigureAwait(false);
-            return (object?)(out_ ?? (object)EmptyExportJob());
-        });
-    }
-
-    private Task<object?> InvokeReleaseGetExportAsync(
-        InternalRequest request, CancellationToken cancellationToken)
-    {
-        var svc = ResolveExportService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(EmptyExportJob());
-        return WrapAsync(async () =>
-        {
-            var out_ = await svc.GetAsync(
-                request.KnowledgeSystemGuid.Value, request.ResourceId, cancellationToken)
-                .ConfigureAwait(false);
-            return (object?)(out_ ?? (object)EmptyExportJob());
-        });
-    }
-
-    private Task<object?> InvokeReleaseDownloadExportAsync(
-        InternalRequest request, CancellationToken cancellationToken)
-    {
-        var svc = ResolveExportService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || string.IsNullOrEmpty(request.ResourceId)
-            || string.IsNullOrEmpty(request.SecondResourceId))
-        {
-            return Task.FromResult<object?>(Array.Empty<byte>());
+            return Task.FromResult<object?>(onMissing());
         }
         return WrapAsync(async () =>
         {
-            // DownloadFileAsync throws ExportFilePayloadException — the
-            // FastApiErrorMiddleware catches it and writes the raw-bytes
-            // response. The placeholder returned below is unreachable in
-            // practice but the dispatcher arm needs a non-null Task
-            // return type for WrapAsync.
-            await svc.DownloadFileAsync(
-                request.KnowledgeSystemGuid.Value,
-                request.ResourceId,
-                request.SecondResourceId,
-                cancellationToken).ConfigureAwait(false);
-            return (object?)Array.Empty<byte>();
-        });
-    }
-
-    /// <summary>
-    /// Project the typed <see cref="ReleaseOut"/> to the wire shape the
-    /// Python <c>_release_out()</c> emits (see
-    /// <c>backend/app/api/releases.py:68</c>). Snake-case keys line up
-    /// with the JSON naming policy in <c>Program.cs</c> and the frontend
-    /// <c>OntologyRelease</c> TypeScript interface.
-    /// </summary>
-    private static object ProjectReleaseOut(ReleaseOut row) => new
-    {
-        id = row.Id,
-        knowledge_system_id = row.KnowledgeSystemId,
-        version = row.Version,
-        status = row.Status,
-        title = row.Title,
-        notes = row.Notes,
-        manifest = row.Manifest,
-        created_by = row.CreatedBy,
-        reviewed_by = row.ReviewedBy,
-        published_by = row.PublishedBy,
-        created_at = row.CreatedAt,
-        reviewed_at = row.ReviewedAt,
-        published_at = row.PublishedAt,
-        deployment = row.Deployment,
-        service_url = row.ServiceUrl,
-    };
-
-    /// <summary>
-    /// Pull the <c>iri</c> field out of a loose-body POST. The
-    /// <c>IndividualRef</c> DTO is the documented wire shape; we also
-    /// accept the bare <c>"iri"</c> key so the body shape stays loose
-    /// like the Python side.
-    /// </summary>
-    private static string? ExtractIriFromBody(InternalRequest request)
-    {
-        if (request.Body is null) return null;
-        if (!request.Body.TryGetValue("_", out var raw) || raw is null)
-        {
-            // Direct dict body
-            return request.Body.TryGetValue("iri", out var iri) ? iri?.ToString() : null;
-        }
-        if (raw is System.Text.Json.JsonElement el && el.ValueKind == System.Text.Json.JsonValueKind.Object)
-        {
-            foreach (var prop in el.EnumerateObject())
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
             {
-                if (prop.NameEquals("iri") || prop.NameEquals("Iri"))
-                {
-                    return prop.Value.GetString();
-                }
+                return (onNull ?? onMissing)();
             }
-        }
-        return null;
+            return out_;
+        });
     }
+
+    // ----- release lifecycle -----
+
+    private Task<object?> InvokeReleaseListAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => await app.ListAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyListResponse());
+
+    private Task<object?> InvokeReleaseCreateAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => (object?)await app.CreateDraftAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyRelease());
+
+    private Task<object?> InvokeReleaseReviewAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => (object?)await app.ReviewAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyRelease());
+
+    private Task<object?> InvokeReleasePublishAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => (object?)await app.PublishAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyRelease());
+
+    private Task<object?> InvokeReleaseDeployAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => (object?)await app.DeployAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyRelease());
+
+    private Task<object?> InvokeReleaseStopDeploymentAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => (object?)await app.StopDeploymentAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyRelease());
+
+    private Task<object?> InvokeReleaseDeleteAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => (object?)await app.DeleteAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyRelease());
+
+    private Task<object?> InvokeReleaseRollbackAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => (object?)await app.RollbackAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { restored = Guid.Empty, version = string.Empty });
+
+    private Task<object?> InvokeReleaseDiffAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => await app.DiffAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyReleaseDiff());
+
+    // ----- release exports (slice 7b) -----
+    // - list_exports  (read,  WrapAsync)
+    // - create_export (write, wrapped in RunWithExtractionGuardAsync at
+    //                   the switch — same policy as the rest of the
+    //                   release mutation surface)
+    // - get_export    (read,  WrapAsync; resolves by Guid only)
+    // - download_export_file
+    //                 (read; the application service throws
+    //                  ExportFilePayloadException — the
+    //                  FastApiErrorMiddleware catches it to write a
+    //                  raw-bytes response with Content-Type +
+    //                  Content-Disposition, mirroring the Python
+    //                  FileResponse on backend/app/api/releases.py:759)
+
+    private Task<object?> InvokeReleaseListExportsAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => await app.ListExportsAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyListResponse());
+
+    private Task<object?> InvokeReleaseCreateExportAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => (object?)await app.CreateExportAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyExportJob());
+
+    private Task<object?> InvokeReleaseGetExportAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app => (object?)await app.GetExportAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyExportJob());
+
+    private Task<object?> InvokeReleaseDownloadExportAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeReleaseAsync(request, ct,
+            async app =>
+            {
+                // The application service throws ExportFilePayloadException
+                // — FastApiErrorMiddleware catches it and writes the
+                // raw-bytes response. The `Array.Empty<byte>()` placeholder
+                // below is unreachable in practice but the dispatcher arm
+                // needs a non-null Task<object?> return type for the
+                // wrapper.
+                await app.DownloadExportFileAsync(request, ct).ConfigureAwait(false);
+                return (object?)Array.Empty<byte>();
+            },
+            onMissing: () => Array.Empty<byte>());
 
     // ----- auth admin (B10) -------------------------------------------------
     // Wires the auth.update_me / auth.list_users / auth.create_user /

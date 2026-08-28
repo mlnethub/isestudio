@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Application.Releases;
 using ISEStudio.Audit;
 using ISEStudio.Conflicts;
 using ISEStudio.Infrastructure.Persistence;
@@ -321,7 +322,7 @@ public sealed class ReleaseService
     // Rollback
     // ----------------------------------------------------------------------
 
-    public async Task<object?> RollbackAsync(
+    public async Task<ReleaseRollbackResponse?> RollbackAsync(
         Guid ksId, Guid releaseId, Actor actor, CancellationToken ct)
     {
         var (ks, row) = await ResolveReleaseAsync(ksId, releaseId, ct).ConfigureAwait(false);
@@ -362,7 +363,7 @@ public sealed class ReleaseService
             $"Restored release {row.Version}",
             new Dictionary<string, object?> { ["release_id"] = row.Id, ["version"] = row.Version },
             ct).ConfigureAwait(false);
-        return new { restored = row.Id, version = row.Version };
+        return new ReleaseRollbackResponse(row.Id, row.Version);
     }
 
     // ----------------------------------------------------------------------
@@ -607,25 +608,3 @@ public sealed class ReleaseService
         return manifest.RootElement.Clone();
     }
 }
-
-/// <summary>
-/// Wire DTO matching the Python <c>_release_out()</c> shape
-/// (<c>backend/app/api/releases.py:68</c>) so the frontend
-/// <c>OntologyRelease</c> TypeScript interface lines up.
-/// </summary>
-public sealed record ReleaseOut(
-    Guid Id,
-    Guid KnowledgeSystemId,
-    string Version,
-    string Status,
-    string Title,
-    string Notes,
-    JsonElement Manifest,
-    string CreatedBy,
-    string? ReviewedBy,
-    string? PublishedBy,
-    DateTimeOffset CreatedAt,
-    DateTimeOffset? ReviewedAt,
-    DateTimeOffset? PublishedAt,
-    object? Deployment,
-    string? ServiceUrl);

@@ -1,5 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using ISEStudio.Application.Integration;
+using ISEStudio.Integration;
 using ISEStudio.Knowledge;
 
 namespace ISEStudio.Ontology;
@@ -76,6 +78,12 @@ public static class OntologyServiceCollectionExtensions
         // Scoped because it shares the request DbContext with the audit
         // and allocator.
         services.AddScoped<ReleaseService>();
+        // Application service facade for the twelve release-lifecycle +
+        // four release-export dispatcher arms. Resolves both ReleaseService
+        // and ExportService (the latter lives in ISEStudio.Exports; DI
+        // registers it there). Scoped — shares the request DbContext
+        // with ReleaseService via the constructor.
+        services.AddScoped<IReleaseApplicationService, ReleaseApplicationService>();
         return services;
     }
 }

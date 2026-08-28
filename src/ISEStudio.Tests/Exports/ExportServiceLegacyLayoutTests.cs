@@ -1,4 +1,5 @@
 using System.Text;
+using ISEStudio.Application.Releases;
 using ISEStudio.Exports;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Tests.Extraction;

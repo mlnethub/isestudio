@@ -92,6 +92,55 @@ public static class InternalRequestHelpers
         return null;
     }
 
+    // ------------------------------------------------------------------
+    // Loose-body field readers (snake_case insensitive)
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Pull an optional string field from the loose body dict. Handles
+    /// both the <c>[FromBody]</c>-wrapped <c>"_"</c> envelope (the shape
+    /// <c>InternalControllerBase.ToBody</c> stamps for every internal
+    /// POST) and a flat top-level key (when the dispatcher is invoked
+    /// directly with raw fields). Used by <c>releases.create</c> /
+    /// <c>releases.review</c> / <c>releases.publish</c> /
+    /// <c>releases.create_export</c>.
+    /// </summary>
+    public static string? ReadStringField(InternalRequest request, string name)
+    {
+        if (request.Body is null) return null;
+        if (request.Body.TryGetValue("_", out var raw) && raw is JsonElement el
+            && el.ValueKind == JsonValueKind.Object)
+        {
+            if (el.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String)
+                return v.GetString();
+        }
+        if (request.Body.TryGetValue(name, out var direct))
+            return direct?.ToString();
+        return null;
+    }
+
+    /// <summary>
+    /// Pull an optional int field from the loose body dict. Mirrors
+    /// <see cref="ReadStringField"/> — handles either the
+    /// <c>[FromBody]</c>-wrapped <c>"_"</c> envelope or a top-level
+    /// key. Returns <c>null</c> when the field is missing or not a JSON
+    /// number. Used by <c>releases.create_export</c> to parse
+    /// <c>shard_size</c>.
+    /// </summary>
+    public static int? ReadIntField(InternalRequest request, string name)
+    {
+        if (request.Body is null) return null;
+        if (request.Body.TryGetValue("_", out var raw) && raw is JsonElement el
+            && el.ValueKind == JsonValueKind.Object
+            && el.TryGetProperty(name, out var v)
+            && v.ValueKind == JsonValueKind.Number
+            && v.TryGetInt32(out var n))
+        {
+            return n;
+        }
+        return null;
+    }
+
     /// <summary>
     /// Variant of <see cref="ExtractIriFromBody"/> that also accepts a
     /// raw <see cref="IReadOnlyDictionary{TKey, TValue}"/> body (the
