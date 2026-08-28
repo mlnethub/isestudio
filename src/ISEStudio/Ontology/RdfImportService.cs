@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using ISEStudio.Application.Conflicts;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Audit;
 using ISEStudio.Authorization;
