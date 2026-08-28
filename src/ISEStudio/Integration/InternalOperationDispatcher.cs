@@ -456,79 +456,136 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             RemovedTriples: Array.Empty<string>()));
     }
 
-    private async Task<object?> InvokeOntologyGetAsync(InternalRequest request, CancellationToken ct)
-    {
-        // Reuse the typed helper so the dispatcher and the typed facade
-        // surface stay in lock-step. The route binds only the Guid field
-        // (ReqGuid), so read KnowledgeSystemGuid and leave the legacy long
-        // field alone. Awaiting directly (no ContinueWith wrapper) lets the
-        // typed exception surface to FastApiErrorMiddleware without being
-        // wrapped in AggregateException — a faulted KeyNotFoundException
-        // would otherwise reach the generic 500 branch instead of the 404
-        // envelope.
-        return (object?)await GetOntologyAsync(
-            request.KnowledgeSystemGuid ?? Guid.Empty,
-            request.Actor,
-            ct).ConfigureAwait(false);
-    }
+// ----- ontology -------------------------------------------------------
+    // Six internal ontology.* arms (get / edit / export / reset /
+    // provenance / sources) plus the cross-surface published.ontology /
+    // published.release.ontology shared helper, routed through
+    // IOntologyApplicationService. The dispatcher is registered Scoped,
+    // so each `_services.GetService` resolves the request's own
+    // OntologyService + OntologyProvenanceService + RdfExportService +
+    // PublishedOntologyService through the application service (B6b's
+    // service-locator pattern). Role gates (Viewer / Editor / Owner),
+    // audit diffs, capture-and-rollback on edit, and refresh-stats live
+    // inside the underlying services — the dispatcher only forwards.
+    //
+    // edit + reset are wrapped in `RunWithExtractionGuardAsync` by the
+    // switch arm so a running extraction job turns 409 with a job_id
+    // envelope; the application service throws no guard of its own.
+    //
+    // ParseExportFormat moved to OntologyApplicationService.ParseExportFormat
+    // — `external.export` (11/13 slice) still uses ParseExportFormat but
+    // through the future IExternalApplicationService.
+
+    private IOntologyApplicationService? ResolveOntologyAppService() =>
+        _services.GetService(typeof(IOntologyApplicationService)) as IOntologyApplicationService;
 
     /// <summary>
-    /// Shared body for the <c>published.ontology</c> and
-    /// <c>published.release.ontology</c> arms. When <paramref name="version"/>
-    /// is null (the current-deployment arm), pick the latest deployment
-    /// row by <c>CreatedAt</c>, take its <c>ReleaseId</c>, fetch the
-    /// release row, and forward its version string into the service. When
-    /// a pinned version is supplied, forward it as-is. Empty envelope is
-    /// returned whenever the service or its DB lookup can't resolve a
-    /// KS / deployment / release — that keeps the contract-test path on
-    /// the 200 branch.
+    /// Resolve the scoped <see cref="IOntologyApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors the
+    /// vocabulary slice wrapper.
     /// </summary>
-    private async Task<object?> InvokePublishedOntologyAsync(
-        InternalRequest request, string? version, CancellationToken ct)
+    private Task<object?> InvokeOntologyAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IOntologyApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        var service = ResolvePublishedOntologyService();
-        if (service is null || string.IsNullOrEmpty(request.PublicId))
+        var app = ResolveOntologyAppService();
+        if (app is null)
         {
-            return EmptyOntologyResponse();
+            return Task.FromResult<object?>(onMissing());
         }
-
-        var effectiveVersion = version;
-        if (string.IsNullOrEmpty(effectiveVersion))
+        return WrapAsync(async () =>
         {
-            var db = _services.GetService(typeof(ISEStudioDbContext)) as ISEStudioDbContext;
-            if (db is null) return EmptyOntologyResponse();
-
-            var ks = await db.KnowledgeSystems.AsNoTracking()
-                .FirstOrDefaultAsync(k => k.PublicId == request.PublicId, ct)
-                .ConfigureAwait(false);
-            if (ks is null) return EmptyOntologyResponse();
-
-            // SQLite does not support DateTimeOffset in ORDER BY — pull
-            // the rows client-side and sort in memory, mirroring the
-            // controller-side ResolveReleaseAsync pattern.
-            var deployment = (await db.ReleaseDeployments.AsNoTracking()
-                .Where(d => d.KnowledgeSystemId == ks.Id)
-                .ToListAsync(ct)
-                .ConfigureAwait(false))
-                .OrderByDescending(d => d.CreatedAt)
-                .FirstOrDefault();
-            if (deployment is null) return EmptyOntologyResponse();
-
-            var release = await db.OntologyReleases.AsNoTracking()
-                .FirstOrDefaultAsync(r => r.Id == deployment.ReleaseId, ct)
-                .ConfigureAwait(false);
-            if (release is null) return EmptyOntologyResponse();
-
-            effectiveVersion = release.Version;
-        }
-
-        var view = await service.GetViewAsync(
-            request.PublicId, effectiveVersion, request.Actor, ct)
-            .ConfigureAwait(false);
-        if (view is null) return EmptyOntologyResponse();
-        return view;
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
+            {
+                return (onNull ?? onMissing)();
+            }
+            return out_;
+        });
     }
 
+    // ----- internal ontology reads -----
+
+    private Task<object?> InvokeOntologyGetAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeOntologyAsync(request, ct,
+            async app => (object?)await app.GetAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyOntologyResponse);
+
+    private Task<object?> InvokeOntologyExportAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeOntologyAsync(request, ct,
+            async app => (object?)(await app.ExportAsync(request, ct).ConfigureAwait(false)) ?? string.Empty,
+            onMissing: () => string.Empty);
+
+    private Task<object?> InvokeOntologyProvenanceAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeOntologyAsync(request, ct,
+            async app => (object?)(await app.ProvenanceAsync(request, ct).ConfigureAwait(false)) ?? Array.Empty<object>(),
+            onMissing: () => Array.Empty<object>());
+
+    private Task<object?> InvokeOntologySourcesAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeOntologyAsync(request, ct,
+            async app => (object?)(await app.SourcesAsync(request, ct).ConfigureAwait(false)) ?? Array.Empty<object>(),
+            onMissing: () => Array.Empty<object>());
+
+    // ----- internal ontology writes (edit + reset) -----
+
+    private Task<object?> InvokeOntologyEditAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeOntologyAsync(request, ct,
+            async app => (object?)await app.EditAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyKnowledgeSystem);
+
+    private Task<object?> InvokeOntologyResetAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeOntologyAsync(request, ct,
+            async app => (object?)await app.ResetAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyKnowledgeSystem);
+
+    // ----- cross-surface (publicId-keyed) — shared by published.ontology
+    // + published.release.ontology -----
+
+    private Task<object?> InvokePublishedOntologyAsync(
+        InternalRequest request, string? version, CancellationToken ct) =>
+        InvokeOntologyAsync(request, ct,
+            async app => (object?)await app.GetPublishedAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyOntologyResponse);
+
+    // ----- ontology shims (kept for cross-slice callers) -----
+    // `ResolveOntologyService` is still used by the typed facade's
+    // `IIntegrationApiFacade.GetOntologyAsync` (line 421) — the facade
+    // path bypasses the dispatcher, so the application service can't
+    // be reused. The 9/13 history slice will move it onto a
+    // IHistoryApplicationService and free the dispatcher of this
+    // direct dependency. Until then this shim keeps the build green.
+    private OntologyService? ResolveOntologyService() =>
+        _services.GetService(typeof(OntologyService)) as OntologyService;
+
+    // `ResolveExternalOntologyService` + `ParseExportFormat` are still
+    // used by `external.ontology` / `external.export` (11/13 slice).
+    // They live here until that slice moves them onto
+    // IExternalApplicationService.
+    private ExternalOntologyService? ResolveExternalOntologyService() =>
+        _services.GetService(typeof(ExternalOntologyService)) as ExternalOntologyService;
+
+    private static RdfFormat ParseExportFormat(string fmt)
+    {
+        var normalized = fmt.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "turtle" or "ttl" => RdfFormat.Turtle,
+            "ntriples" or "nt" or "n-triples" => RdfFormat.NTriples,
+            "nquads" or "n-quads" or "nq" => RdfFormat.NQuads,
+            "trig" => RdfFormat.TriG,
+            "rdfxml" or "rdf/xml" or "xml" or "rdf" => RdfFormat.RdfXml,
+            "jsonld" or "json-ld" or "json" => RdfFormat.JsonLd,
+            _ => throw new ISEStudio.Api.ValidationException(
+                $"Unsupported export format: {fmt}. Use turtle, ntriples, nquads, trig, rdfxml, or jsonld."),
+        };
+    }
     // ----------------------------------------------------------------------
     // Slice 8 — published.{metadata,manifest,classes,export,individual,
     // individuals} + pinned /releases/{version}/ equivalents.
@@ -694,9 +751,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return Array.Empty<string>();
     }
 
-    private OntologyService? ResolveOntologyService() =>
-        _services.GetService(typeof(OntologyService)) as OntologyService;
-
     private HistoryService? ResolveHistoryService() =>
         _services.GetService(typeof(HistoryService)) as HistoryService;
 
@@ -732,38 +786,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         });
     }
 
-    private OntologyProvenanceService? ResolveOntologyProvenanceService() =>
-        _services.GetService(typeof(OntologyProvenanceService)) as OntologyProvenanceService;
-
-    private Task<object?> InvokeOntologySourcesAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveOntologyProvenanceService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.ListSourcesAsync(
-                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(rows ?? (object)Array.Empty<object>());
-        });
-    }
-
-    private Task<object?> InvokeOntologyProvenanceAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveOntologyProvenanceService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.GetProvenanceAsync(
-                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(rows ?? (object)Array.Empty<object>());
-        });
-    }
 
     private PromptService? ResolvePromptService() =>
         _services.GetService(typeof(PromptService)) as PromptService;
@@ -999,47 +1021,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     /// → HTTP 400, matching the Python
     /// <c>HTTPException(400, "Unsupported format")</c> contract.
     /// </summary>
-    private Task<object?> InvokeOntologyExportAsync(
-        InternalRequest request, CancellationToken cancellationToken)
-    {
-        var svc = ResolveRdfExportService();
-        var fmt = QueryString(request, "fmt") ?? "turtle";
-        return WrapAsync(async () =>
-        {
-            var ks = await ResolveKsAsync(request.KnowledgeSystemGuid, cancellationToken)
-                .ConfigureAwait(false);
-            // Contract-test path (Testing env, no Oxigraph store): return
-            // the placeholder empty string so the wire shape stays stable.
-            if (svc is null || ks is null) return (object?)"";
-            var format = ParseExportFormat(fmt);
-            var bytes = await svc.ExportAsync(
-                KsContext.FromEntity(ks), RdfLayer.TBox, format, cancellationToken)
-                .ConfigureAwait(false);
-            return (object?)System.Text.Encoding.UTF8.GetString(bytes);
-        });
-    }
-
-    private static RdfFormat ParseExportFormat(string fmt)
-    {
-        var normalized = fmt.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "turtle" or "ttl" => RdfFormat.Turtle,
-            "ntriples" or "nt" or "n-triples" => RdfFormat.NTriples,
-            "nquads" or "n-quads" or "nq" => RdfFormat.NQuads,
-            "trig" => RdfFormat.TriG,
-            "rdfxml" or "rdf/xml" or "xml" or "rdf" => RdfFormat.RdfXml,
-            "jsonld" or "json-ld" or "json" => RdfFormat.JsonLd,
-            _ => throw new ISEStudio.Api.ValidationException(
-                $"Unsupported export format: {fmt}. Use turtle, ntriples, nquads, trig, rdfxml, or jsonld."),
-        };
-    }
-
-    private PublishedOntologyService? ResolvePublishedOntologyService() =>
-        _services.GetService(typeof(PublishedOntologyService)) as PublishedOntologyService;
-
-    private ExternalOntologyService? ResolveExternalOntologyService() =>
-        _services.GetService(typeof(ExternalOntologyService)) as ExternalOntologyService;
 
     /// <summary>
     /// Shared body for the <c>external.ontology</c> arm. Resolves the KS
@@ -1175,84 +1156,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     /// accepted without an explicit <c>[JsonPropertyName]</c> per
     /// field.
     /// </summary>
-    private static IReadOnlyDictionary<string, object?>? DeserializeOntologyEditBody(
-        InternalRequest request)
-    {
-        if (request.Body is null) return null;
-        if (!request.Body.TryGetValue("_", out var raw) || raw is null) return null;
-        if (raw is System.Text.Json.JsonElement element)
-        {
-            if (element.ValueKind != System.Text.Json.JsonValueKind.Object)
-            {
-                throw new InvalidOperationException(
-                    "Request body must be a JSON object for ontology.edit.");
-            }
-            var dict = new Dictionary<string, object?>(StringComparer.Ordinal);
-            foreach (var prop in element.EnumerateObject())
-            {
-                dict[prop.Name] = JsonElementToObject(prop.Value);
-            }
-            return dict;
-        }
-        if (raw is IReadOnlyDictionary<string, object?> alreadyDict)
-        {
-            return alreadyDict;
-        }
-        return null;
-    }
-
-    private static object? JsonElementToObject(System.Text.Json.JsonElement el) => el.ValueKind switch
-    {
-        System.Text.Json.JsonValueKind.String => el.GetString(),
-        System.Text.Json.JsonValueKind.Number => el.TryGetInt64(out var l) ? l : (object)el.GetDouble(),
-        System.Text.Json.JsonValueKind.True => true,
-        System.Text.Json.JsonValueKind.False => false,
-        System.Text.Json.JsonValueKind.Null => null,
-        _ => el.GetRawText(),
-    };
-
-    private Task<object?> InvokeOntologyEditAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveOntologyService();
-        var op = DeserializeOntologyEditBody(request);
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            // Service not wired (unit test that hand-built the dispatcher)
-            // OR no KS bound — surface an empty KS so the contract test
-            // path still 200s.
-            return Task.FromResult<object?>(EmptyKnowledgeSystem());
-        }
-        if (op is null)
-        {
-            throw new InvalidOperationException(
-                "Request body is required for ontology.edit.");
-        }
-        return WrapAsync(async () =>
-        {
-            var result = await svc.EditAsync(
-                request.KnowledgeSystemGuid.Value, op, request.Actor, ct)
-                .ConfigureAwait(false);
-            if (result is null) return (object?)EmptyKnowledgeSystem();
-            return (object?)(new { iri = result.Iri });
-        });
-    }
-
-    private Task<object?> InvokeOntologyResetAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveOntologyService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(EmptyKnowledgeSystem());
-        }
-        return WrapAsync(async () =>
-        {
-            var result = await svc.ResetAsync(
-                request.KnowledgeSystemGuid.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            if (result is null) return (object?)EmptyKnowledgeSystem();
-            return (object?)(new { iri = result.Iri });
-        });
-    }
 
     /// <summary>
     /// Multipart RDF import. The <c>RdfImportController</c> packs the

@@ -84,6 +84,12 @@ public static class OntologyServiceCollectionExtensions
         // registers it there). Scoped — shares the request DbContext
         // with ReleaseService via the constructor.
         services.AddScoped<IReleaseApplicationService, ReleaseApplicationService>();
+        // Application service facade for the six internal ontology.*
+        // dispatcher arms plus the cross-surface published.ontology /
+        // published.release.ontology shared helper. Scoped — shares the
+        // request DbContext with OntologyService + OntologyProvenanceService
+        // through the constructor.
+        services.AddScoped<IOntologyApplicationService, OntologyApplicationService>();
         return services;
     }
 }
