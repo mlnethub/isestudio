@@ -230,8 +230,11 @@ export function ensureAuthenticated(): Promise<void> {
     return exchangePromise
   }
   if (sessionStorage.getItem(K.access)) return Promise.resolve()
-  login()
-  return halt<void>()
+  // 无回调、无 token:停在登录页——本地表单与 SSO 按钮并存(决策 D1,
+  // spec §3 架构图)。跳 Keycloak 只在用户点按钮(login())、会话过期
+  // (401 链 ssoLogin)或回调对不上自动重登(restartLogin)时发生;
+  // 启动时静默抢跳会让本地账号无路可走。
+  return Promise.resolve()
 }
 
 /**

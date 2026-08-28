@@ -35,10 +35,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     // Any 401 from a background call (expired session) drops us to the login screen.
-    // SSO 模式下清掉 token 后自动回 Keycloak——重登大概率换到新 token;若回调
-    // 又对不上,claimAutoRelogin 的 60s 闸会挡住,不会无限跳转。
+    // SSO 模式且**曾经持有 token**(会话过期)→ 清掉后自动回 Keycloak;若回调
+    // 又对不上,claimAutoRelogin 的 60s 闸会挡住,不会无限跳转。无 token 的
+    // 401(如 boot 时 /api/auth/me,或本地账号会话过期)不跳——留在登录页,
+    // 本地表单与 SSO 按钮并存(决策 D1)。
     setUnauthorizedHandler(() => {
-      if (ssoEnabled()) {
+      if (ssoEnabled() && hasSession()) {
         clearTokens()
         ssoLogin()
       } else {
