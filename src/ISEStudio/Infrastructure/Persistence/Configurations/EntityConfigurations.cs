@@ -30,6 +30,15 @@ public sealed class UserEntityConfiguration : IEntityTypeConfiguration<UserEntit
         builder.Property(x => x.IsAdmin).IsRequired().HasDefaultValue(false);
         builder.Property(x => x.Active).IsRequired().HasDefaultValue(true);
         builder.Property(x => x.CreatedAt).IsRequired();
+        // Keycloak sub for SSO users; unique across non-null values so
+        // SsoUserSyncService's first-vs-relogin lookup is consistent and
+        // a duplicate subject (concurrent first-login) surfaces as a
+        // DbUpdateException the sync can recover from via re-query.
+        builder.Property(x => x.SubjectId).HasMaxLength(255);
+        builder.HasIndex(x => x.SubjectId)
+            .IsUnique()
+            .HasFilter("\"SubjectId\" IS NOT NULL")
+            .HasDatabaseName("ux_users_subject_id");
     }
 }
 

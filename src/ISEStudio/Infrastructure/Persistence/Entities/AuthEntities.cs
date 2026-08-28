@@ -27,6 +27,12 @@ public sealed class UserEntity : EntityBase
 
     /// <summary>UTC creation timestamp.</summary>
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>
+    /// Keycloak subject (<c>sub</c>) for SSO-provisioned users; null for
+    /// local accounts. Unique across non-null values — the sync lookup key.
+    /// </summary>
+    public string? SubjectId { get; set; }
 }
 
 /// <summary>
