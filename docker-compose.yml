@@ -49,6 +49,57 @@ services:
       - "9000"   # S3 API
       - "9001"   # Console
 
+  # ---- Keycloak (SSO, D6 必选服务) ----
+  # 浏览器经宿主 ${KEYCLOAK_PORT:-8081} 直连 Keycloak;后端容器内经
+  # keycloak:8080 拉 discovery/JWKS(MetadataAddress),iss 校验用浏览器
+  # 可见的 Authority(见 backend 服务的 ISEStudio__Auth__Keycloak__* 注释)。
+  # --hostname-strict=false:自托管 http 部署下 Keycloak 按请求 Host 动态
+  # 生成 issuer,与浏览器 URL 一致;生产切 https + 固定域名时应收紧。
+  keycloak-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?Set KEYCLOAK_DB_PASSWORD in the root .env file}
+    volumes:
+      - isestudio-keycloak-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26
+    # --import-realm:首次启动导入 /opt/keycloak/data/import/ 下的 realm JSON
+    # (已导入后 re-run 不重复导入)。--health-enabled 打开 9000 管理端口
+    # 供健康检查。
+    command: start --import-realm --health-enabled=true
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: keycloak-postgres
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD}
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in the root .env file}
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+    volumes:
+      - ./deploy/keycloak/isestudio-realm.json:/opt/keycloak/data/import/isestudio-realm.json:ro
+    ports:
+      - "${KEYCLOAK_PORT:-8081}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:9000/health/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    depends_on:
+      keycloak-postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
   # ---- migrate (init container) ----
   # Runs the EF Core migrations baked into the backend image and exits.
   # Uses the SAME image as `backend` (built below) with a different entry
@@ -147,6 +198,16 @@ services:
       ISEStudio__Storage__UseSsl: "false"
       ISEStudio__SystemLanguage: ${SYSTEM_LANGUAGE:-en}
       ISEStudio__PublicHost: ${MCP_PUBLIC_HOST:-localhost}
+      # Keycloak SSO(JwtBearer,第 4 个 auth scheme)。Authority 是浏览器
+      # 可见 URL —— token 的 iss 校验基准(Keycloak 按请求 Host 动态生成
+      # issuer,与它一致);MetadataAddress 指容器内地址 —— 后端从这里拉
+      # discovery + JWKS 验签(容器内无法解析 localhost:8081)。
+      # 三者共享 root .env 的 ISE_AUTH_* 键,单处配置。
+      ISEStudio__Auth__Keycloak__Authority: ${ISE_AUTH_AUTHORITY:-http://localhost:8081/realms/isestudio}
+      ISEStudio__Auth__Keycloak__MetadataAddress: http://keycloak:8080/realms/isestudio/.well-known/openid-configuration
+      ISEStudio__Auth__Keycloak__ClientId: ${ISE_AUTH_CLIENT_ID:-isestudio-frontend}
+      ISEStudio__Auth__Keycloak__RequireHttpsMetadata: "false"
+      ISEStudio__Auth__Keycloak__AdminRole: ${ISE_AUTH_ADMIN_ROLE:-admin}
     depends_on:
       postgres:
         condition: service_healthy
@@ -170,6 +231,12 @@ services:
 
   frontend:
     build: ./frontend
+    environment:
+      # 前端 SSO 配置:容器 entrypoint 把它注入 index.html 的
+      # window.__ISE_AUTH__(一镜像多环境的关键)。值必须浏览器可达——
+      # 浏览器登录跳转与回调都走这个地址。
+      ISE_AUTH_AUTHORITY: ${ISE_AUTH_AUTHORITY:-http://localhost:8081/realms/isestudio}
+      ISE_AUTH_CLIENT_ID: ${ISE_AUTH_CLIENT_ID:-isestudio-frontend}
     depends_on:
       isestudio:
         condition: service_healthy
@@ -181,3 +248,4 @@ volumes:
   isestudio-data:
   isestudio-postgres:
   isestudio-minio:
+  isestudio-keycloak-postgres:
