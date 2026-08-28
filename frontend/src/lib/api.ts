@@ -75,12 +75,23 @@ import type {
   TermProposal,
   TermProposalList,
 } from "./types"
+import { ssoEnabled } from "@/lib/sso/authModel"
+import { getAccessToken } from "@/lib/sso/auth"
 
 // The AuthProvider registers a handler here so a 401 from any call (e.g. an expired
 // session) drops the app back to the login screen instead of surfacing a raw error.
 let onUnauthorized: (() => void) | null = null
 export function setUnauthorizedHandler(fn: (() => void) | null) {
   onUnauthorized = fn
+}
+
+// SSO 启用时给请求注入 Bearer token;否则 undefined,保持现有 cookie 行为。
+// 拿不到 token(未登录/refresh 已失效)返回 undefined —— 不带 header 发出,
+// 由后端 401 触发 onUnauthorized 链,AuthProvider 的 handler 接 SSO 重登。
+async function ssoAuthHeaders(): Promise<HeadersInit | undefined> {
+  if (!ssoEnabled()) return undefined
+  const token = await getAccessToken()
+  return token ? { Authorization: `Bearer ${token}` } : undefined
 }
 
 function errorMessage(detail: unknown) {
@@ -105,7 +116,12 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, { credentials: "include", ...init })
+  const headers = new Headers(init?.headers)
+  const ssoHeaders = await ssoAuthHeaders()
+  if (ssoHeaders) {
+    for (const [k, v] of Object.entries(ssoHeaders)) headers.set(k, v)
+  }
+  const res = await fetch(path, { credentials: "include", ...init, headers })
   if (!res.ok) {
     if (res.status === 401 && onUnauthorized) onUnauthorized()
     let detail: unknown = res.statusText
@@ -315,7 +331,10 @@ export const api = {
   // Ontology
   getOntology: (ksId: string) => request<OntologyView>(`/api/knowledge/${ksId}/ontology`),
   exportOntology: async (ksId: string, fmt: string): Promise<string> => {
-    const res = await fetch(`/api/knowledge/${ksId}/ontology/export?fmt=${fmt}`, { credentials: "include" })
+    const res = await fetch(`/api/knowledge/${ksId}/ontology/export?fmt=${fmt}`, {
+      credentials: "include",
+      headers: await ssoAuthHeaders(),
+    })
     if (!res.ok) {
       if (res.status === 401 && onUnauthorized) onUnauthorized()
       throw new Error(`${res.status}: ${res.statusText}`)
@@ -437,7 +456,10 @@ export const api = {
       json({ note }),
     ),
   exportVocabulary: async (ksId: string, fmt = "turtle"): Promise<string> => {
-    const res = await fetch(`/api/knowledge/${ksId}/vocabulary/export?fmt=${fmt}`, { credentials: "include" })
+    const res = await fetch(`/api/knowledge/${ksId}/vocabulary/export?fmt=${fmt}`, {
+      credentials: "include",
+      headers: await ssoAuthHeaders(),
+    })
     if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`)
     return res.text()
   },
