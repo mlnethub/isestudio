@@ -1,4 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
+using ISEStudio.Application.Integration;
+using ISEStudio.Integration;
 
 namespace ISEStudio.Documents;
 
@@ -15,12 +17,19 @@ namespace ISEStudio.Documents;
 /// (<c>Program.cs</c>) so a single instance spans the whole app —
 /// <see cref="DocumentService"/> resolves them from constructor
 /// injection.</para>
+///
+/// <para>The application-service layer <see cref="IDocumentApplicationService"/>
+/// is registered here so the existing <c>Program.cs</c> call site
+/// (<c>builder.Services.AddDocumentServices()</c>) picks it up
+/// transparently; see
+/// <c>docs/superpowers/specs/2026-08-28-documents-application-service.md</c>.</para>
 /// </summary>
 public static class DocumentServiceCollectionExtensions
 {
     public static IServiceCollection AddDocumentServices(this IServiceCollection services)
     {
         services.AddScoped<DocumentService>();
+        services.AddScoped<IDocumentApplicationService, DocumentApplicationService>();
         return services;
     }
 }

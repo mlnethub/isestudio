@@ -5,6 +5,7 @@ using ISEStudio.Application.Foundation;
 using ISEStudio.Application.Integration;
 using ISEStudio.Application.Ontology;
 using ISEStudio.Application.Conflicts;
+using ISEStudio.Application.Documents;
 using ISEStudio.Authentication;
 using ISEStudio.Documents;
 using ISEStudio.EntityResolution;
@@ -1919,211 +1920,130 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     }
 
     // ---- documents --------------------------------------------------------
-    // Real CRUD via DocumentService (scoped). documents.upload is intentionally
+    // Real CRUD via DocumentApplicationService. documents.upload is intentionally
     // NOT routed here — see the "documents.upload" arm above; that operation
     // is multipart/form-data and bypasses the facade. The remaining 10
     // operations go through the standard envelope so the dispatcher applies
     // the usual extraction-active guard via the service.
-    private DocumentService? ResolveDocumentService() =>
-        _services.GetService(typeof(DocumentService)) as DocumentService;
 
-    private static long ParseLongOrDefault(string? s, long fallback) =>
-        long.TryParse(s, out var parsed) ? parsed : fallback;
+    // -- documents ----------------------------------------------------------
+    // Real CRUD via DocumentApplicationService. Each helper below is a
+    // one-line delegate through InvokeDocumentAsync; the application
+    // service owns envelope unpacking (KnowledgeSystemGuid / ResourceId /
+    // body / actor) and returns the strongly-typed DTO. On a missing app
+    // service OR a null domain return, the dispatcher emits the same
+    // schema-compatible fallback envelope the openapi-baseline contract
+    // test expects (EmptyDocument / EmptyContribution / EmptyImpact /
+    // EmptyParseResponse / EmptyParseBatchResponse / inline
+    // {items:[], total:0L, folders:[]} / inline {ok:false}).
+    //
+    // documents.upload is intentionally NOT routed through here — see the
+    // "documents.upload" arm above; that operation is multipart/form-data
+    // and bypasses the facade, so DocumentsController handles it
+    // directly.
 
-    private static Guid? ParseDocumentId(InternalRequest request) =>
-        request.ResourceId is null
-            ? null
-            : Guid.TryParse(request.ResourceId, out var id) ? id : null;
-
-    private Task<object?> InvokeDocumentListAsync(InternalRequest request, CancellationToken ct)
+    private static readonly object EmptyDocumentListPage = new
     {
-        var svc = ResolveDocumentService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
+        items = Array.Empty<object>(),
+        total = 0L,
+        folders = Array.Empty<string>(),
+    };
+
+    private Task<object?> InvokeDocumentListAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app => (object?)await app.ListAsync(request, ct).ConfigureAwait(false),
+            onMissing: Array.Empty<object>);
+
+    private Task<object?> InvokeDocumentListPageAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app => (object?)await app.ListPageAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => EmptyDocumentListPage,
+            onNull: () => EmptyDocumentListPage);
+
+    private Task<object?> InvokeDocumentGetAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app => (object?)await app.GetAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyDocument);
+
+    private Task<object?> InvokeDocumentMoveAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app => (object?)await app.MoveAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyDocument);
+
+    private Task<object?> InvokeDocumentListChunksAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app => (object?)await app.ListChunksAsync(request, ct).ConfigureAwait(false),
+            onMissing: Array.Empty<object>);
+
+    private Task<object?> InvokeDocumentContributionAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app => (object?)await app.ContributionAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyContribution);
+
+    private Task<object?> InvokeDocumentImpactAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app => (object?)await app.ImpactAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyImpact);
+
+    private Task<object?> InvokeDocumentDeleteAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app =>
+            {
+                // Project the bool? result to the wire shape {ok:bool}.
+                // DocumentService returns bool (non-nullable) on the
+                // success path; null only when the resource id is
+                // missing (already mapped to onMissing by the wrapper).
+                var ok = await app.DeleteAsync(request, ct).ConfigureAwait(false);
+                return (object?)new { ok };
+            },
+            onMissing: () => new { ok = false });
+
+    private Task<object?> InvokeDocumentParseAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app => (object?)await app.ParseAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyParseResponse);
+
+    private Task<object?> InvokeDocumentParseBatchAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeDocumentAsync(request, ct,
+            async app => (object?)await app.ParseBatchAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyParseBatchResponse);
+
+    /// <summary>
+    /// Common envelope for the ten <c>documents.*</c> helpers: resolve
+    /// the application service, hand off to the typed
+    /// <paramref name="call"/>, and collapse a null result (service not
+    /// wired OR envelope missing OR domain service returned null) to the
+    /// <paramref name="onMissing"/> fallback envelope &mdash; or, when the
+    /// caller distinguishes a "real null" from a "service-missing" case
+    /// (e.g. <c>documents.list_page</c>), to the <paramref name="onNull"/>
+    /// envelope instead. Keeps each helper a one-line expression so the
+    /// dispatcher switch arm at lines 173&ndash;185 stays shape-stable.
+    /// </summary>
+    private Task<object?> InvokeDocumentAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IDocumentApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
+    {
+        var app = ResolveDocumentAppService();
+        if (app is null)
         {
-            return Task.FromResult<object?>(Array.Empty<object>());
+            return Task.FromResult<object?>(onMissing());
         }
         return WrapAsync(async () =>
         {
-            var rows = await svc.ListAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(rows ?? (object)Array.Empty<object>());
-        });
-    }
-
-    private Task<object?> InvokeDocumentListPageAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveDocumentService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(new
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
             {
-                items = Array.Empty<object>(),
-                total = 0L,
-                folders = Array.Empty<string>(),
-            });
-        }
-        var folder = request.Query is not null && request.Query.TryGetValue("folder", out var f) ? f : null;
-        var q = request.Query is not null && request.Query.TryGetValue("q", out var qq) ? qq : null;
-        var status = request.Query is not null && request.Query.TryGetValue("status", out var s) ? s : null;
-        var limit = ParseLongOrDefault(
-            request.Query is not null && request.Query.TryGetValue("limit", out var l) ? l : null,
-            50);
-        var offset = ParseLongOrDefault(
-            request.Query is not null && request.Query.TryGetValue("offset", out var o) ? o : null,
-            0);
-        return WrapAsync(async () =>
-        {
-            var page = await svc.ListPageAsync(
-                request.KnowledgeSystemGuid.Value, folder, q, status,
-                (int)limit, (int)offset, request.Actor, ct).ConfigureAwait(false);
-            if (page is not null) return (object?)page;
-            return (object?)new
-            {
-                items = Array.Empty<object>(),
-                total = 0L,
-                folders = Array.Empty<string>(),
-            };
-        });
-    }
-
-    private Task<object?> InvokeDocumentGetAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveDocumentService();
-        var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
-        {
-            return Task.FromResult<object?>(EmptyDocument());
-        }
-        return WrapAsync(async () =>
-        {
-            var doc = await svc.GetAsync(request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(doc ?? EmptyDocument());
-        });
-    }
-
-    private Task<object?> InvokeDocumentMoveAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveDocumentService();
-        var docId = ParseDocumentId(request);
-        var body = DeserializeBody<MoveRequest>(request);
-        if (svc is null || request.KnowledgeSystemGuid is null || docId is null || body is null)
-        {
-            if (body is null)
-            {
-                throw new InvalidOperationException("Request body is required for documents.move.");
+                return (onNull ?? onMissing)();
             }
-            return Task.FromResult<object?>(EmptyDocument());
-        }
-        return WrapAsync(async () =>
-        {
-            var doc = await svc.MoveAsync(
-                request.KnowledgeSystemGuid.Value, docId.Value, body, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(doc ?? EmptyDocument());
+            return out_;
         });
     }
 
-    private Task<object?> InvokeDocumentListChunksAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveDocumentService();
-        var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.ListChunksAsync(
-                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(rows ?? (object)Array.Empty<object>());
-        });
-    }
-
-    private Task<object?> InvokeDocumentContributionAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveDocumentService();
-        var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
-        {
-            return Task.FromResult<object?>(EmptyContribution());
-        }
-        return WrapAsync(async () =>
-        {
-            var contrib = await svc.ContributionAsync(
-                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(contrib ?? EmptyContribution());
-        });
-    }
-
-    private Task<object?> InvokeDocumentImpactAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveDocumentService();
-        var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
-        {
-            return Task.FromResult<object?>(EmptyImpact());
-        }
-        return WrapAsync(async () =>
-        {
-            var impact = await svc.ImpactAsync(
-                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(impact ?? EmptyImpact());
-        });
-    }
-
-    private Task<object?> InvokeDocumentDeleteAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveDocumentService();
-        var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
-        {
-            return Task.FromResult<object?>(new { ok = false });
-        }
-        return WrapAsync(async () =>
-        {
-            var ok = await svc.DeleteAsync(
-                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
-            return (object)new { ok };
-        });
-    }
-
-    private Task<object?> InvokeDocumentParseAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveDocumentService();
-        var docId = ParseDocumentId(request);
-        if (svc is null || request.KnowledgeSystemGuid is null || docId is null)
-        {
-            return Task.FromResult<object?>(EmptyParseResponse());
-        }
-        return WrapAsync(async () =>
-        {
-            var resp = await svc.ParseAsync(
-                request.KnowledgeSystemGuid.Value, docId.Value, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(resp ?? EmptyParseResponse());
-        });
-    }
-
-    private Task<object?> InvokeDocumentParseBatchAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveDocumentService();
-        var body = DeserializeBody<ParseBatchIn>(request);
-        if (svc is null || request.KnowledgeSystemGuid is null || body is null)
-        {
-            if (body is null)
-            {
-                throw new InvalidOperationException(
-                    "Request body is required for documents.parse_batch.");
-            }
-            return Task.FromResult<object?>(EmptyParseBatchResponse());
-        }
-        return WrapAsync(async () =>
-        {
-            var resp = await svc.ParseBatchAsync(
-                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(resp ?? EmptyParseBatchResponse());
-        });
-    }
+    private IDocumentApplicationService? ResolveDocumentAppService() =>
+        _services.GetService(typeof(IDocumentApplicationService)) as IDocumentApplicationService;
 
     // ----- extraction read helpers -----
     // The two extraction read endpoints (list_jobs / get_job) live on
