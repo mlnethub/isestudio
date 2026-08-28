@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Application.Integration;
+using ISEStudio.Application.Ontology;
 using ISEStudio.Application.Sparql;
 using ISEStudio.Integration;
 
@@ -27,10 +28,15 @@ public sealed class FacadeSmokeTests
         // surface returns its stub values), so the empty implementation
         // is sufficient. The SPARQL executor is stubbed with a null-returning
         // double so we don't need a real Oxigraph store to instantiate the
-        // facade.
+        // facade; the ontology application service is stubbed the same way
+        // (the typed facade only reaches it from the Guid overload, which
+        // the smoke tests don't exercise).
         var services = new ServiceCollection().BuildServiceProvider();
         var dispatcher = new InternalOperationDispatcher(services);
-        return new IntegrationApiFacade(dispatcher, new NullSparqlQueryExecutor());
+        return new IntegrationApiFacade(
+            dispatcher,
+            new NullSparqlQueryExecutor(),
+            new NullOntologyApplicationService());
     }
 
     /// <summary>
@@ -50,6 +56,34 @@ public sealed class FacadeSmokeTests
         {
             return Task.FromResult(new QueryResponse(Array.Empty<IReadOnlyDictionary<string, object?>>()));
         }
+    }
+
+    /// <summary>
+    /// Null-returning <see cref="IOntologyApplicationService"/> so the
+    /// facade can be constructed without a live ontology stack.
+    /// </summary>
+    private sealed class NullOntologyApplicationService : IOntologyApplicationService
+    {
+        public Task<OntologyResponse?> GetAsync(InternalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult<OntologyResponse?>(null);
+
+        public Task<OntologyEditResult?> EditAsync(InternalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult<OntologyEditResult?>(null);
+
+        public Task<string?> ExportAsync(InternalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult<string?>(null);
+
+        public Task<OntologyEditResult?> ResetAsync(InternalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult<OntologyEditResult?>(null);
+
+        public Task<IReadOnlyList<ProvenanceGroupOut>?> ProvenanceAsync(InternalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<ProvenanceGroupOut>?>(null);
+
+        public Task<IReadOnlyList<SourceOut>?> SourcesAsync(InternalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult<IReadOnlyList<SourceOut>?>(null);
+
+        public Task<OntologyResponse?> GetPublishedAsync(InternalRequest request, CancellationToken cancellationToken)
+            => Task.FromResult<OntologyResponse?>(null);
     }
 
     /// <summary>

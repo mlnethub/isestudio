@@ -396,7 +396,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "published.export" => InvokePublishedExportAsync(request, cancellationToken),
             "published.individual" => InvokePublishedIndividualAsync(request, cancellationToken),
             "published.individuals" => InvokePublishedIndividualsAsync(request, cancellationToken),
-            "published.query" => InvokeExternalQueryAsync(request, cancellationToken),
+            "published.query" => InvokePublishedQueryAsync(request, cancellationToken),
             "published.vocabulary.concepts" => InvokePublishedVocabularyListConceptsAsync(request, cancellationToken),
             "published.vocabulary.export" => InvokePublishedVocabularyExportAsync(request, cancellationToken),
             "published.vocabulary.resolve" => InvokePublishedVocabularyResolveAsync(request, cancellationToken),
@@ -408,7 +408,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "published.release.export" => InvokePublishedExportAsync(request, cancellationToken),
             "published.release.individual" => InvokePublishedIndividualAsync(request, cancellationToken),
             "published.release.individuals" => InvokePublishedIndividualsAsync(request, cancellationToken),
-            "published.release.query" => InvokeExternalQueryAsync(request, cancellationToken),
+            "published.release.query" => InvokePublishedQueryAsync(request, cancellationToken),
             "published.release.vocabulary.concepts" => InvokePublishedReleaseVocabularyListConceptsAsync(request, cancellationToken),
             "published.release.vocabulary.export" => InvokePublishedReleaseVocabularyExportAsync(request, cancellationToken),
             "published.release.vocabulary.resolve" => InvokePublishedReleaseVocabularyResolveAsync(request, cancellationToken),
@@ -417,57 +417,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             _ => throw new NotSupportedException(
                 $"Internal operation '{operation}' is not yet wired in the dispatcher."),
         };
-    }
-
-    /// <inheritdoc />
-    public Task<OntologyResponse> GetOntologyAsync(
-        long knowledgeSystemId,
-        Actor actor,
-        CancellationToken cancellationToken)
-    {
-        // Stage 2 will layer the real OntologyEditor call here; for now
-        // return an empty TBox so the typed surface still compiles and the
-        // smoke test sees a non-throwing result.
-        return EmptyOntologyResponseAsync();
-    }
-
-    /// <inheritdoc />
-    public async Task<OntologyResponse> GetOntologyAsync(
-        Guid knowledgeSystemId,
-        Actor actor,
-        CancellationToken cancellationToken)
-    {
-        var service = ResolveOntologyService();
-        if (service is null) return await EmptyOntologyResponseAsync().ConfigureAwait(false);
-        var view = await service.GetViewAsync(knowledgeSystemId, actor, cancellationToken).ConfigureAwait(false);
-        if (view is null)
-            throw new KeyNotFoundException($"Knowledge system {knowledgeSystemId} not found.");
-        return view;
-    }
-
-    private static Task<OntologyResponse> EmptyOntologyResponseAsync() =>
-        Task.FromResult(new OntologyResponse(
-            Classes: Array.Empty<OntologyClass>(),
-            ObjectProperties: Array.Empty<OntologyProperty>(),
-            DataProperties: Array.Empty<OntologyProperty>(),
-            Axioms: new OntologyAxioms(
-                SubclassOf: Array.Empty<SubclassAxiom>(),
-                DisjointWith: Array.Empty<PairAxiom>(),
-                EquivalentClass: Array.Empty<PairAxiom>()),
-            Labels: new Dictionary<string, string>(),
-            Stats: new OntologyStats(0, 0, 0),
-            KnowledgeSystem: null));
-
-    /// <inheritdoc />
-    public Task<ChangePreview> PreviewOntologyChangesAsync(
-        long knowledgeSystemId,
-        IReadOnlyList<EditOperation> operations,
-        Actor actor,
-        CancellationToken cancellationToken)
-    {
-        return Task.FromResult(new ChangePreview(
-            AddedTriples: Array.Empty<string>(),
-            RemovedTriples: Array.Empty<string>()));
     }
 
 // ----- ontology -------------------------------------------------------
@@ -568,13 +517,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             async app => (object?)await app.GetPublishedAsync(request, ct).ConfigureAwait(false),
             onMissing: EmptyOntologyResponse);
 
-    // ----- ontology shims (kept for cross-slice callers) -----
-    // `ResolveOntologyService` is still used by the typed facade's
-    // `IIntegrationApiFacade.GetOntologyAsync` (line 421) — the facade
-    // path bypasses the dispatcher, so the application service can't
-    // be reused. Until then this shim keeps the build green.
-    private OntologyService? ResolveOntologyService() =>
-        _services.GetService(typeof(OntologyService)) as OntologyService;
     // ----------------------------------------------------------------------
     // published.{metadata,manifest,classes,export,individual,individuals} +
     // pinned /releases/{version}/ equivalents — 11/13 slice routes all
@@ -901,37 +843,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             async app => (object?)(await app.EditDecisionReasonAsync(request, ct).ConfigureAwait(false))
                 ?? EmptyResolutionDecision(),
             onMissing: EmptyResolutionDecision);
-    private RdfExportService? ResolveRdfExportService()
-    {
-        // Defensive: in the contract-test (Testing) env StoreWrapper is
-        // registered as null, so constructing RdfExportService throws
-        // ArgumentNullException(store) — and GetService propagates ctor
-        // exceptions rather than returning null. Catch and treat as
-        // "service unavailable" so the export arm degrades to the empty
-        // placeholder (HTTP 200) instead of 500.
-        try
-        {
-            return _services.GetService(typeof(RdfExportService)) as RdfExportService;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// Serialize the workspace TBox graph in the requested RDF format.
-    /// Mirrors Python <c>ontology.export</c>
-    /// (<c>backend/app/api/ontology.py:62</c> — serializes
-    /// <c>ks.graph_iri</c> in one of <c>EXPORT_FORMATS</c>). Returns the
-    /// raw bytes as a UTF-8 string; the controller wraps them in a
-    /// <c>Content(...)</c> result with the matching media type so the
-    /// frontend's Blob download is valid RDF (not a JSON-quoted string).
-    /// Unsupported formats surface as <see cref="Api.ValidationException"/>
-    /// → HTTP 400, matching the Python
-    /// <c>HTTPException(400, "Unsupported format")</c> contract.
-    /// </summary>
-
     // ------------------------------------------------------------------
     // external read endpoints (ontology / metadata / classes / export /
     // individual / individuals) — 11/13 slice routes all six arms
@@ -1055,47 +966,26 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
 
     /// <summary>
-    /// External / published SPARQL query dispatch. Forwards to the
-    /// typed <see cref="IIntegrationApiFacade.QueryAsync"/> so the
-    /// read-only SPARQL executor (when it lands) is the single
-    /// implementation for both the current and pinned release
-    /// surfaces. The controller has already enforced
+    /// SPARQL query arms. The application services (external + published)
+    /// unpack the body and reach the read-only
+    /// <see cref="ISEStudio.Application.Sparql.ISparqlQueryExecutor"/>
+    /// directly — the facade-resolving step that used to live here (and
+    /// made the dispatcher depend on <see cref="IIntegrationApiFacade"/>)
+    /// is gone, so the facade↔dispatcher mutual reference is removed.
+    /// The controller has already enforced
     /// <see cref="ISEStudio.Api.ReadOnlySparqlPolicy"/>, so by the time
     /// we reach the dispatcher the request is guaranteed to be a
     /// bounded SELECT/ASK.
     /// </summary>
-    private Task<object?> InvokeExternalQueryAsync(InternalRequest request, CancellationToken ct)
-    {
-        if (request.PublicId is null || request.Body is null)
-        {
-            // Controller-level validation has already run; this branch
-            // is only reachable if a future caller wires the operation
-            // through without going through External / Published.
-            return Task.FromResult<object?>(EmptyQueryResponse());
-        }
-        var sparql = request.Body.TryGetValue("query", out var queryObj) ? queryObj as string : null;
-        var maxRows = request.Body.TryGetValue("max_rows", out var maxObj) && maxObj is int maxInt
-            ? maxInt
-            : 1000;
-        if (string.IsNullOrWhiteSpace(sparql))
-        {
-            return Task.FromResult<object?>(EmptyQueryResponse());
-        }
-        var token = new ISEStudio.Application.Foundation.TokenPrincipal(
-            TokenId: request.Actor.UserId,
-            KnowledgeSystemPublicId: request.PublicId,
-            Scopes: Array.Empty<string>());
-        var facade = _services.GetService(typeof(IIntegrationApiFacade)) as IIntegrationApiFacade;
-        if (facade is null)
-        {
-            // No facade wired (e.g. unit test that built the dispatcher
-            // by hand) — return the placeholder so the route still
-            // produces a 200 instead of a 500.
-            return Task.FromResult<object?>(EmptyQueryResponse());
-        }
-        return facade.QueryAsync(request.PublicId, sparql, maxRows, token, ct)
-            .ContinueWith(t => (object?)t.Result, ct);
-    }
+    private Task<object?> InvokeExternalQueryAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeExternalAsync(request, ct,
+            async app => (object?)await app.QueryAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyQueryResponse);
+
+    private Task<object?> InvokePublishedQueryAsync(InternalRequest request, CancellationToken ct) =>
+        InvokePublishedAsync(request, ct,
+            async app => (object?)await app.QueryAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyQueryResponse);
 
     // ---- providers ----------------------------------------------------------
     // Five arms routed through IProviderApplicationService (12/13 slice):
@@ -2286,41 +2176,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         InvokeTokenAsync(request, ct,
             async app => (object?)await app.RevokeMcpTokenAsync(request, ct).ConfigureAwait(false),
             onMissing: () => new { ok = false });
-
-// ----- shared envelope helpers (pre-slice leftovers) -------------------
-    // Kept in this class because the abox / conflicts / documents / releases
-    // / sparql slices still call them as bare identifiers. The vocabulary
-    // slice (5/13) replaced its own private duplicates with the
-    // IVocabularyApplicationService wrapper and no longer needs them; the
-    // remaining slices will move to `InternalRequestHelpers.X` calls in
-    // their own slice commits. Until then these thin shims keep the build
-    // green.
-
-    private static string? QueryString(InternalRequest request, string key) =>
-        InternalRequestHelpers.QueryString(request, key);
-
-    private static int QueryInt(InternalRequest request, string key, int fallback) =>
-        InternalRequestHelpers.QueryInt(request, key, fallback);
-
-    private static IReadOnlyDictionary<string, object?>? ExtractPayload(
-        Dictionary<string, object?>? body) =>
-        InternalRequestHelpers.ExtractPayload(body);
-
-    private static IReadOnlyList<Guid> ExtractChunkIds(Dictionary<string, object?>? body) =>
-        InternalRequestHelpers.ExtractChunkIds(body);
-
-    private static string? ExtractBodyIri(InternalRequest request) =>
-        InternalRequestHelpers.ExtractBodyIri(request);
-
-    private async Task<KnowledgeSystemEntity?> ResolveKsAsync(
-        Guid? knowledgeSystemId, CancellationToken ct) =>
-        await InternalRequestHelpers.ResolveKsAsync(
-            knowledgeSystemId, _services, ct).ConfigureAwait(false);
-
-    private async Task<KnowledgeSystemEntity?> ResolveKsByPublicIdAsync(
-        string? publicId, CancellationToken ct) =>
-        await InternalRequestHelpers.ResolveKsByPublicIdAsync(
-            publicId, _services, ct).ConfigureAwait(false);
 
 // ----- vocabulary -------------------------------------------------------
     // 28 dispatcher arms routed through IVocabularyApplicationService:

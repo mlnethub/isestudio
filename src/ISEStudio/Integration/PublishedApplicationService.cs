@@ -1,26 +1,33 @@
 using ISEStudio.Api;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Application.Integration;
+using ISEStudio.Application.Sparql;
 using ISEStudio.Ontology;
 using static ISEStudio.Integration.InternalRequestHelpers;
 
 namespace ISEStudio.Integration;
 
 /// <summary>
-/// Application service for the twelve <c>published.*</c> /
-/// <c>published.release.*</c> dispatcher arms (11/13 slice). Each
-/// operation serves both the current-deployment path and the pinned
-/// <c>/releases/{version}/</c> path — the pinned version rides in
-/// <c>request.ResourceId</c> (null on the current path), mirroring
-/// <see cref="OntologyApplicationService.GetPublishedAsync"/>.
+/// Application service for the thirteen <c>published.*</c> /
+/// <c>published.release.*</c> dispatcher arms (11/13 slice + the two
+/// SPARQL query arms). Each operation serves both the current-deployment
+/// path and the pinned <c>/releases/{version}/</c> path — the pinned
+/// version rides in <c>request.ResourceId</c> (null on the current
+/// path), mirroring <see cref="OntologyApplicationService.GetPublishedAsync"/>.
+/// The query arms reach the read-only <see cref="ISparqlQueryExecutor"/>
+/// directly.
 /// </summary>
 public sealed class PublishedApplicationService : IPublishedApplicationService
 {
     private readonly PublishedDataService _published;
+    private readonly ISparqlQueryExecutor _executor;
 
-    public PublishedApplicationService(PublishedDataService published)
+    public PublishedApplicationService(
+        PublishedDataService published,
+        ISparqlQueryExecutor executor)
     {
         _published = published;
+        _executor = executor;
     }
 
     public async Task<object?> GetMetadataAsync(
@@ -107,6 +114,36 @@ public sealed class PublishedApplicationService : IPublishedApplicationService
                 ctx, classIri, q, limit, offset, ct)
             .ConfigureAwait(false);
         return result is null ? null : new { items = result.Items, total = result.Total };
+    }
+
+    public async Task<object?> QueryAsync(
+        InternalRequest request, CancellationToken ct)
+    {
+        if (request.PublicId is null || request.Body is null)
+        {
+            // Controller-level validation has already run; a null body is
+            // only reachable when a caller wires the operation without
+            // going through PublishedController. Degrade to the
+            // dispatcher's empty query envelope.
+            return null;
+        }
+        var sparql = request.Body.TryGetValue("query", out var queryObj) ? queryObj as string : null;
+        if (string.IsNullOrWhiteSpace(sparql))
+        {
+            return null;
+        }
+        var maxRows = request.Body.TryGetValue("max_rows", out var maxObj) && maxObj is int maxInt
+            ? maxInt
+            : 1000;
+        var token = new TokenPrincipal(
+            TokenId: request.Actor.UserId,
+            KnowledgeSystemPublicId: request.PublicId,
+            Scopes: Array.Empty<string>());
+        // Same cap the typed facade applies for the MCP path, so both
+        // surfaces keep identical bounds.
+        return await _executor.ExecuteAsync(
+                request.PublicId, sparql, Math.Clamp(maxRows, 1, 10_000), token, ct)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

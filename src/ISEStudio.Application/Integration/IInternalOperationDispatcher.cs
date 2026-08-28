@@ -11,10 +11,15 @@ namespace ISEStudio.Application.Integration;
 ///
 /// <para>The dispatcher keeps <see cref="IIntegrationApiFacade"/> itself a
 /// pure protocol adapter: adding a new internal operation is a single
-/// registration here, not a new method on the facade. The stage 2/3 typed
-/// helpers (<c>GetOntologyAsync</c>, <c>PreviewOntologyChangesAsync</c>) are
-/// preserved on the facade for backwards compatibility with the smoke
-/// tests.</para>
+/// registration here, not a new method on the facade. The former stage
+/// 2/3 typed helpers (<c>GetOntologyAsync</c>,
+/// <c>PreviewOntologyChangesAsync</c>) were removed in the facade
+/// de-coupling pass — the facade now reaches
+/// <see cref="IOntologyApplicationService"/> and the SPARQL executor
+/// directly instead of forwarding through the dispatcher, which also
+/// removed the facade↔dispatcher mutual reference (the dispatcher used
+/// to resolve <see cref="IIntegrationApiFacade"/> for the SPARQL query
+/// arms).</para>
 /// </summary>
 public interface IInternalOperationDispatcher
 {
@@ -22,29 +27,5 @@ public interface IInternalOperationDispatcher
     Task<object?> InvokeAsync(
         string operation,
         InternalRequest request,
-        CancellationToken cancellationToken);
-
-    /// <summary>Stage 2/3 helper kept on the dispatcher for the typed facade surface.</summary>
-    Task<OntologyResponse> GetOntologyAsync(
-        long knowledgeSystemId,
-        Actor actor,
-        CancellationToken cancellationToken);
-
-    /// <summary>
-    /// Guid-keyed overload used by the migrated <c>ontology.get</c> arm
-    /// (<c>InvokeOntologyGetAsync</c>) and the typed facade. The
-    /// <c>long</c> overload above is retained for the out-of-scope MCP
-    /// caller and will be removed when the Stage 2 placeholder is filled.
-    /// </summary>
-    Task<OntologyResponse> GetOntologyAsync(
-        Guid knowledgeSystemId,
-        Actor actor,
-        CancellationToken cancellationToken);
-
-    /// <summary>Stage 2/3 helper kept on the dispatcher for the typed facade surface.</summary>
-    Task<ChangePreview> PreviewOntologyChangesAsync(
-        long knowledgeSystemId,
-        IReadOnlyList<EditOperation> operations,
-        Actor actor,
         CancellationToken cancellationToken);
 }

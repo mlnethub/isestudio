@@ -17,9 +17,11 @@ namespace ISEStudio.Application.Integration;
 /// entities. A <c>null</c> return degrades to the dispatcher's
 /// schema-compatible empty envelope per arm.</para>
 ///
-/// <para><c>published.query</c> stays on the dispatcher for the same
-/// reason as <c>external.query</c> (see
-/// <see cref="IExternalApplicationService"/>).</para>
+/// <para><c>published.query</c> / <c>published.release.query</c> route
+/// through <see cref="QueryAsync"/> — both arms share the read-only
+/// <see cref="Sparql.ISparqlQueryExecutor"/> directly, so the
+/// dispatcher no longer needs to resolve the facade (the historical
+/// facade↔dispatcher mutual reference is gone).</para>
 /// </summary>
 public interface IPublishedApplicationService
 {
@@ -51,4 +53,13 @@ public interface IPublishedApplicationService
 
     /// <summary>individuals — paginated published ABox listing.</summary>
     Task<object?> ListIndividualsAsync(InternalRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// query — read-only SPARQL against the public_id graph. Shared by
+    /// <c>published.query</c> (current deployment) and
+    /// <c>published.release.query</c> (pinned version). Returns
+    /// <c>null</c> when the public_id / body / query text is missing so
+    /// the dispatcher degrades to its empty query envelope.
+    /// </summary>
+    Task<object?> QueryAsync(InternalRequest request, CancellationToken cancellationToken);
 }

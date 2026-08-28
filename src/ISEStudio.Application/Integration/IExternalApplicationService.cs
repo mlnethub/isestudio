@@ -12,10 +12,11 @@ namespace ISEStudio.Application.Integration;
 /// <c>request.PublicId</c> — not the internal Guid — because the
 /// token actor's id is a token Guid, not a user id.
 ///
-/// <para><c>external.query</c> stays on the dispatcher: it is the
-/// SPARQL facade path (<c>IIntegrationApiFacade.QueryAsync</c>),
-/// and the facade is the dispatcher itself, so routing it through an
-/// application service would be circular.</para>
+/// <para><c>external.query</c> routes through <see cref="QueryAsync"/> —
+/// the application service reaches the read-only
+/// <see cref="Sparql.ISparqlQueryExecutor"/> directly, so the
+/// dispatcher no longer needs to resolve the facade (the historical
+/// facade↔dispatcher mutual reference is gone).</para>
 ///
 /// <para>Returns are <c>object?</c> because
 /// <see cref="ExternalApiService.GetMetadataAsync"/> returns an
@@ -45,4 +46,12 @@ public interface IExternalApplicationService
 
     /// <summary><c>external.individuals</c> — paginated individual listing.</summary>
     Task<object?> ListIndividualsAsync(InternalRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// <c>external.query</c> — read-only SPARQL against the public_id
+    /// graph. Returns <c>null</c> when the public_id / body / query
+    /// text is missing so the dispatcher degrades to its empty query
+    /// envelope.
+    /// </summary>
+    Task<object?> QueryAsync(InternalRequest request, CancellationToken cancellationToken);
 }
