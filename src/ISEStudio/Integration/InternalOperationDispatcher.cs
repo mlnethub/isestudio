@@ -389,25 +389,25 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // resolved per request; the dispatcher arms below pick which
             // method to call based on the operation id and let the
             // service do the KS/release/serving-store resolve.
-            "published.metadata" => InvokePublishedMetadataAsync(request, version: null, cancellationToken),
-            "published.manifest" => InvokePublishedManifestAsync(request, version: null, cancellationToken),
-            "published.ontology" => InvokePublishedOntologyAsync(request, version: null, cancellationToken),
-            "published.classes" => InvokePublishedClassesAsync(request, version: null, cancellationToken),
-            "published.export" => InvokePublishedExportAsync(request, version: null, cancellationToken),
-            "published.individual" => InvokePublishedIndividualAsync(request, version: null, cancellationToken),
-            "published.individuals" => InvokePublishedIndividualsAsync(request, version: null, cancellationToken),
+            "published.metadata" => InvokePublishedMetadataAsync(request, cancellationToken),
+            "published.manifest" => InvokePublishedManifestAsync(request, cancellationToken),
+            "published.ontology" => InvokePublishedOntologyAsync(request, cancellationToken),
+            "published.classes" => InvokePublishedClassesAsync(request, cancellationToken),
+            "published.export" => InvokePublishedExportAsync(request, cancellationToken),
+            "published.individual" => InvokePublishedIndividualAsync(request, cancellationToken),
+            "published.individuals" => InvokePublishedIndividualsAsync(request, cancellationToken),
             "published.query" => InvokeExternalQueryAsync(request, cancellationToken),
             "published.vocabulary.concepts" => InvokePublishedVocabularyListConceptsAsync(request, cancellationToken),
             "published.vocabulary.export" => InvokePublishedVocabularyExportAsync(request, cancellationToken),
             "published.vocabulary.resolve" => InvokePublishedVocabularyResolveAsync(request, cancellationToken),
             "published.vocabulary.schemes" => InvokePublishedVocabularyListSchemesAsync(request, cancellationToken),
-            "published.release" => InvokePublishedMetadataAsync(request, version: request.ResourceId, cancellationToken),
-            "published.release.manifest" => InvokePublishedManifestAsync(request, version: request.ResourceId, cancellationToken),
-            "published.release.ontology" => InvokePublishedOntologyAsync(request, version: request.ResourceId, cancellationToken),
-            "published.release.classes" => InvokePublishedClassesAsync(request, version: request.ResourceId, cancellationToken),
-            "published.release.export" => InvokePublishedExportAsync(request, version: request.ResourceId, cancellationToken),
-            "published.release.individual" => InvokePublishedIndividualAsync(request, version: request.ResourceId, cancellationToken),
-            "published.release.individuals" => InvokePublishedIndividualsAsync(request, version: request.ResourceId, cancellationToken),
+            "published.release" => InvokePublishedMetadataAsync(request, cancellationToken),
+            "published.release.manifest" => InvokePublishedManifestAsync(request, cancellationToken),
+            "published.release.ontology" => InvokePublishedOntologyAsync(request, cancellationToken),
+            "published.release.classes" => InvokePublishedClassesAsync(request, cancellationToken),
+            "published.release.export" => InvokePublishedExportAsync(request, cancellationToken),
+            "published.release.individual" => InvokePublishedIndividualAsync(request, cancellationToken),
+            "published.release.individuals" => InvokePublishedIndividualsAsync(request, cancellationToken),
             "published.release.query" => InvokeExternalQueryAsync(request, cancellationToken),
             "published.release.vocabulary.concepts" => InvokePublishedReleaseVocabularyListConceptsAsync(request, cancellationToken),
             "published.release.vocabulary.export" => InvokePublishedReleaseVocabularyExportAsync(request, cancellationToken),
@@ -563,7 +563,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     // + published.release.ontology -----
 
     private Task<object?> InvokePublishedOntologyAsync(
-        InternalRequest request, string? version, CancellationToken ct) =>
+        InternalRequest request, CancellationToken ct) =>
         InvokeOntologyAsync(request, ct,
             async app => (object?)await app.GetPublishedAsync(request, ct).ConfigureAwait(false),
             onMissing: EmptyOntologyResponse);
@@ -572,198 +572,88 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     // `ResolveOntologyService` is still used by the typed facade's
     // `IIntegrationApiFacade.GetOntologyAsync` (line 421) — the facade
     // path bypasses the dispatcher, so the application service can't
-    // be reused. The 9/13 history slice will move it onto a
-    // IHistoryApplicationService and free the dispatcher of this
-    // direct dependency. Until then this shim keeps the build green.
+    // be reused. Until then this shim keeps the build green.
     private OntologyService? ResolveOntologyService() =>
         _services.GetService(typeof(OntologyService)) as OntologyService;
-
-    // `ResolveExternalOntologyService` + `ParseExportFormat` are still
-    // used by `external.ontology` / `external.export` (11/13 slice).
-    // They live here until that slice moves them onto
-    // IExternalApplicationService.
-    private ExternalOntologyService? ResolveExternalOntologyService() =>
-        _services.GetService(typeof(ExternalOntologyService)) as ExternalOntologyService;
-
-    private static RdfFormat ParseExportFormat(string fmt)
-    {
-        var normalized = fmt.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "turtle" or "ttl" => RdfFormat.Turtle,
-            "ntriples" or "nt" or "n-triples" => RdfFormat.NTriples,
-            "nquads" or "n-quads" or "nq" => RdfFormat.NQuads,
-            "trig" => RdfFormat.TriG,
-            "rdfxml" or "rdf/xml" or "xml" or "rdf" => RdfFormat.RdfXml,
-            "jsonld" or "json-ld" or "json" => RdfFormat.JsonLd,
-            _ => throw new ISEStudio.Api.ValidationException(
-                $"Unsupported export format: {fmt}. Use turtle, ntriples, nquads, trig, rdfxml, or jsonld."),
-        };
-    }
     // ----------------------------------------------------------------------
-    // Slice 8 — published.{metadata,manifest,classes,export,individual,
-    // individuals} + pinned /releases/{version}/ equivalents.
-    //
-    // Each helper resolves the same way the controller's published.access
-    // does: KS by PublicId, release by version OR current deployment,
-    // serving-store handle from ReleaseManager. The resolve is delegated
-    // to PublishedDataService.ResolveAsync so each helper can stay a
-    // thin project-and-return.
+    // published.{metadata,manifest,classes,export,individual,individuals} +
+    // pinned /releases/{version}/ equivalents — 11/13 slice routes all
+    // twelve arms through IPublishedApplicationService. Each helper stays
+    // a one-line delegate; the pinned version rides in request.ResourceId
+    // (the controller binds it there), matching OntologyApplicationService.
+    // GetPublishedAsync.
     // ----------------------------------------------------------------------
 
-    private PublishedDataService? ResolvePublishedDataService() =>
-        _services.GetService(typeof(PublishedDataService)) as PublishedDataService;
+    private IPublishedApplicationService? ResolvePublishedAppService() =>
+        _services.GetService(typeof(IPublishedApplicationService)) as IPublishedApplicationService;
 
     /// <summary>
-    /// Resolve the (KS, release, deployment, serving-store) tuple for
-    /// either the current or pinned URL. Falls back to the schema-compatible
-    /// empty envelope when any link is missing so the contract test
-    /// inventory sees a stable surface.
+    /// Resolve the scoped <see cref="IPublishedApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors
+    /// the ontology / history / prompts slice wrappers.
     /// </summary>
-    private async Task<ServingContext?> ResolveServingAsync(
-        PublishedDataService service, InternalRequest request, string? version,
-        CancellationToken ct)
+    private Task<object?> InvokePublishedAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IPublishedApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        if (string.IsNullOrEmpty(request.PublicId)) return null;
-        var ctx = await service.ResolveAsync(
-            request.PublicId, version, ct).ConfigureAwait(false);
-        return ctx;
+        var app = ResolvePublishedAppService();
+        if (app is null)
+        {
+            return Task.FromResult<object?>(onMissing());
+        }
+        return WrapAsync(async () =>
+        {
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
+            {
+                return (onNull ?? onMissing)();
+            }
+            return out_;
+        });
     }
 
-    private async Task<object?> InvokePublishedMetadataAsync(
-        InternalRequest request, string? version, CancellationToken ct)
-    {
-        var service = ResolvePublishedDataService();
-        if (service is null || string.IsNullOrEmpty(request.PublicId))
-        {
-            return EmptyRelease();
-        }
-        var ctx = await ResolveServingAsync(service, request, version, ct)
-            .ConfigureAwait(false);
-        if (ctx is null) return EmptyRelease();
-        // The Python baseline echoes the active token scopes back in the
-        // metadata body; the controller has already verified the token, so
-        // we pass through Actor.Scopes if the runtime populated it. The
-        // published surface is anonymous-by-design (token-bearing) so
-        // Actor here is the controller-minted stub; a future hardening
-        // pass can pass real scopes through Actor extras.
-        var scopes = TryReadScopes(request);
-        return await service.GetMetadataAsync(ctx, scopes, ct)
-            .ConfigureAwait(false) ?? EmptyRelease();
-    }
+    private Task<object?> InvokePublishedMetadataAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePublishedAsync(request, ct,
+            async app => (object?)await app.GetMetadataAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyRelease);
 
-    private async Task<object?> InvokePublishedManifestAsync(
-        InternalRequest request, string? version, CancellationToken ct)
-    {
-        var service = ResolvePublishedDataService();
-        if (service is null || string.IsNullOrEmpty(request.PublicId))
-        {
-            return EmptyReleaseManifest();
-        }
-        var ctx = await ResolveServingAsync(service, request, version, ct)
-            .ConfigureAwait(false);
-        if (ctx is null) return EmptyReleaseManifest();
-        return service.GetManifest(ctx) ?? EmptyReleaseManifest();
-    }
+    private Task<object?> InvokePublishedManifestAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePublishedAsync(request, ct,
+            async app => (object?)await app.GetManifestAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyReleaseManifest);
 
-    private async Task<object?> InvokePublishedClassesAsync(
-        InternalRequest request, string? version, CancellationToken ct)
-    {
-        var service = ResolvePublishedDataService();
-        if (service is null || string.IsNullOrEmpty(request.PublicId))
-        {
-            return EmptyListResponse();
-        }
-        var ctx = await ResolveServingAsync(service, request, version, ct)
-            .ConfigureAwait(false);
-        if (ctx is null) return EmptyListResponse();
-        return await service.GetClassesAsync(ctx, ct)
-            .ConfigureAwait(false) ?? EmptyListResponse();
-    }
+    private Task<object?> InvokePublishedClassesAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePublishedAsync(request, ct,
+            async app => (object?)await app.ListClassesAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyListResponse);
 
-    private async Task<object?> InvokePublishedExportAsync(
-        InternalRequest request, string? version, CancellationToken ct)
-    {
-        var service = ResolvePublishedDataService();
-        if (service is null || string.IsNullOrEmpty(request.PublicId))
-        {
-            return Task.FromResult<object?>(Array.Empty<byte>()).Result;
-        }
-        var ctx = await ResolveServingAsync(service, request, version, ct)
-            .ConfigureAwait(false);
-        if (ctx is null) return Task.FromResult<object?>(Array.Empty<byte>()).Result;
-        // Throw ExportFilePayloadException — FastApiErrorMiddleware catches
-        // it and writes the raw bytes without a JSON envelope. Mirrors
-        // Python FileResponse on published.py:181.
-        throw new ExportFilePayloadException(
-            service.GetExport(ctx), "application/n-quads", "tbox.nq");
-    }
+    private Task<object?> InvokePublishedExportAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePublishedAsync(request, ct,
+            async app => (object?)await app.ExportAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => Array.Empty<byte>());
 
-    private async Task<object?> InvokePublishedIndividualAsync(
-        InternalRequest request, string? version, CancellationToken ct)
-    {
-        var service = ResolvePublishedDataService();
-        if (service is null || string.IsNullOrEmpty(request.PublicId))
-        {
-            return EmptyIndividualRef();
-        }
-        var ctx = await ResolveServingAsync(service, request, version, ct)
-            .ConfigureAwait(false);
-        if (ctx is null) throw new KeyNotFoundException("Individual not found");
-        var iri = QueryString(request, "iri");
-        if (string.IsNullOrEmpty(iri))
-        {
-            throw new ValidationException("Query parameter 'iri' is required.");
-        }
-        var ind = await service.GetIndividualAsync(ctx, iri, ct)
-            .ConfigureAwait(false);
-        return ind ?? throw new KeyNotFoundException("Individual not found");
-    }
+    private Task<object?> InvokePublishedIndividualAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePublishedAsync(request, ct,
+            async app => (object?)await app.GetIndividualAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyIndividualRef);
 
-    private async Task<object?> InvokePublishedIndividualsAsync(
-        InternalRequest request, string? version, CancellationToken ct)
-    {
-        var service = ResolvePublishedDataService();
-        if (service is null || string.IsNullOrEmpty(request.PublicId))
-        {
-            return EmptyListResponse();
-        }
-        var ctx = await ResolveServingAsync(service, request, version, ct)
-            .ConfigureAwait(false);
-        if (ctx is null) return EmptyListResponse();
-        var classIri = QueryString(request, "class_iri");
-        var q = QueryString(request, "q");
-        // MVP: the Python baseline accepts limit (1..200) and offset (>=0)
-        // with sane defaults (20, 0). Mirror those defaults so the wire
-        // shape matches what the frontend sends.
-        int.TryParse(QueryString(request, "limit"), out var limit);
-        if (limit <= 0) limit = 20;
-        else if (limit > 200) limit = 200;
-        int.TryParse(QueryString(request, "offset"), out var offset);
-        if (offset < 0) offset = 0;
-        var result = await service.ListIndividualsAsync(ctx, classIri, q, limit, offset, ct)
-            .ConfigureAwait(false);
-        if (result is null) return EmptyListResponse();
-        return new { items = result.Items, total = result.Total };
-    }
-
-    private static IReadOnlyList<string>? TryReadScopes(InternalRequest request)
-    {
-        // The published controller populates Actor.Scopes via the token
-        // verification path (PublishedController.ReadVerification). The
-        // dispatcher receives an Actor stub from the controller — for the
-        // metadata body we read the scope list out of the verification item
-        // when the dispatcher is hosted by the controller. For direct
-        // invocations (e.g. contract tests), return null and let the wire
-        // shape degrade to an empty scopes list.
-        var actor = request.Actor;
-        if (actor is null) return null;
-        // Mirror the published.py behaviour with an empty placeholder when
-        // we don't have a real token in hand; this keeps the response
-        // shape stable across the contract test scenarios that don't seed
-        // scopes.
-        return Array.Empty<string>();
-    }
+    private Task<object?> InvokePublishedIndividualsAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePublishedAsync(request, ct,
+            async app => (object?)await app.ListIndividualsAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyListResponse);
 
 // ----- history -----
     // Two arms routed through IHistoryApplicationService (B9 slice):
@@ -1042,129 +932,89 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     /// <c>HTTPException(400, "Unsupported format")</c> contract.
     /// </summary>
 
-    /// <summary>
-    /// Shared body for the <c>external.ontology</c> arm. Resolves the KS
-    /// by <paramref name="request.PublicId"/> (NOT internal Guid — external
-    /// callers never see the internal id), builds the live TBox view via
-    /// <see cref="ExternalOntologyService"/>, and attaches
-    /// <see cref="ExternalKnowledgeSystemMeta"/> (public_id string, no
-    /// release) so the wire shape matches the Python <c>build_view()</c>
-    /// contract. Throws <see cref="InvalidOperationException"/> when the
-    /// caller didn't bind a public_id; returns the empty envelope when
-    /// the service is unresolvable or the KS row no longer exists.
-    /// </summary>
-    private async Task<object?> InvokeExternalOntologyAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var service = ResolveExternalOntologyService();
-        if (service is null) return EmptyOntologyResponse();
-        var publicId = request.PublicId
-            ?? throw new InvalidOperationException("publicId required for external.ontology");
-        var view = await service.GetViewAsync(publicId, request.Actor, ct).ConfigureAwait(false);
-        return view ?? EmptyOntologyResponse();
-    }
-
     // ------------------------------------------------------------------
-    // external read endpoints (metadata / classes / export / individual /
-    // individuals). All resolve the KS by public_id (NOT internal Guid)
-    // and delegate to ExternalApiService, which reads directly from the
-    // low-level managers — bypassing ABoxService's KSRole gate because a
-    // token actor's id is the token Guid, not a user id. Token scope +
-    // KS-binding are already enforced by ExternalApiController before the
-    // dispatcher is reached. Read arms go through WrapAsync (no
+    // external read endpoints (ontology / metadata / classes / export /
+    // individual / individuals) — 11/13 slice routes all six arms
+    // through IExternalApplicationService. Each helper stays a one-line
+    // delegate. All resolve the KS by public_id (NOT internal Guid) and
+    // delegate to ExternalApiService / ExternalOntologyService — the
+    // token actor's id is the token Guid, not a user id, so the KSRole
+    // gate inside ABoxService is bypassed by design. Token scope +
+    // KS-binding are already enforced by ExternalApiController before
+    // the dispatcher is reached. Read arms go through WrapAsync (no
     // extraction-guard 409 — these are all reads).
     // ------------------------------------------------------------------
 
-    private ExternalApiService? ResolveExternalApiService() =>
-        _services.GetService(typeof(ExternalApiService)) as ExternalApiService;
+    private IExternalApplicationService? ResolveExternalAppService() =>
+        _services.GetService(typeof(IExternalApplicationService)) as IExternalApplicationService;
+
+    /// <summary>
+    /// Resolve the scoped <see cref="IExternalApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors
+    /// the ontology / history / prompts / published slice wrappers.
+    /// </summary>
+    private Task<object?> InvokeExternalAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IExternalApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
+    {
+        var app = ResolveExternalAppService();
+        if (app is null)
+        {
+            return Task.FromResult<object?>(onMissing());
+        }
+        return WrapAsync(async () =>
+        {
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
+            {
+                return (onNull ?? onMissing)();
+            }
+            return out_;
+        });
+    }
+
+    private Task<object?> InvokeExternalOntologyAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeExternalAsync(request, ct,
+            async app => (object?)await app.GetOntologyAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyOntologyResponse);
 
     private Task<object?> InvokeExternalMetadataAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveExternalApiService();
-        if (svc is null) return Task.FromResult<object?>(EmptyKnowledgeSystem());
-        var publicId = request.PublicId
-            ?? throw new InvalidOperationException("publicId required for external.metadata");
-        return WrapAsync(async () =>
-        {
-            var meta = await svc.GetMetadataAsync(publicId, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(meta ?? EmptyKnowledgeSystem());
-        });
-    }
+        InternalRequest request, CancellationToken ct) =>
+        InvokeExternalAsync(request, ct,
+            async app => (object?)await app.GetMetadataAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyKnowledgeSystem);
 
     private Task<object?> InvokeExternalClassesAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveExternalApiService();
-        if (svc is null)
-            return Task.FromResult<object?>(new { classes = Array.Empty<object>(), total = 0 });
-        var publicId = request.PublicId
-            ?? throw new InvalidOperationException("publicId required for external.classes");
-        return WrapAsync(async () =>
-        {
-            var out_ = await svc.ListClassesAsync(publicId, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(out_ ?? (object)new { classes = Array.Empty<object>(), total = 0 });
-        });
-    }
+        InternalRequest request, CancellationToken ct) =>
+        InvokeExternalAsync(request, ct,
+            async app => (object?)await app.ListClassesAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { classes = Array.Empty<object>(), total = 0 });
 
     private Task<object?> InvokeExternalExportAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveExternalApiService();
-        if (svc is null) return Task.FromResult<object?>("");
-        var publicId = request.PublicId
-            ?? throw new InvalidOperationException("publicId required for external.export");
-        var fmt = QueryString(request, "fmt") ?? "turtle";
-        return WrapAsync(async () =>
-        {
-            // ParseExportFormat is invoked inside the body so an
-            // unsupported fmt throws ValidationException from the async
-            // path (→ 400), matching InvokeOntologyExportAsync.
-            var format = ParseExportFormat(fmt);
-            var rdf = await svc.ExportAsync(publicId, format, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(rdf ?? "");
-        });
-    }
+        InternalRequest request, CancellationToken ct) =>
+        InvokeExternalAsync(request, ct,
+            async app => (object?)await app.ExportAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => "");
 
     private Task<object?> InvokeExternalIndividualAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveExternalApiService();
-        var iri = QueryString(request, "iri");
-        if (svc is null || string.IsNullOrEmpty(iri))
-            return Task.FromResult<object?>(EmptyIndividualRef());
-        var publicId = request.PublicId
-            ?? throw new InvalidOperationException("publicId required for external.individual");
-        return WrapAsync(async () =>
-        {
-            var ind = await svc.GetIndividualAsync(publicId, iri!, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(ind ?? EmptyIndividualRef());
-        });
-    }
+        InternalRequest request, CancellationToken ct) =>
+        InvokeExternalAsync(request, ct,
+            async app => (object?)await app.GetIndividualAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyIndividualRef);
 
     private Task<object?> InvokeExternalIndividualsAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveExternalApiService();
-        if (svc is null) return Task.FromResult<object?>(EmptyListResponse());
-        var publicId = request.PublicId
-            ?? throw new InvalidOperationException("publicId required for external.individuals");
-        var classIri = QueryString(request, "class_iri");
-        var q = QueryString(request, "q");
-        var limit = QueryInt(request, "limit", 20);
-        var offset = QueryInt(request, "offset", 0);
-        return WrapAsync(async () =>
-        {
-            var out_ = await svc.ListIndividualsAsync(
-                publicId, classIri, q, limit, offset, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(out_ ?? (object)EmptyListResponse());
-        });
-    }
+        InternalRequest request, CancellationToken ct) =>
+        InvokeExternalAsync(request, ct,
+            async app => (object?)await app.ListIndividualsAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyListResponse);
 
     /// <summary>
     /// Pull the edit body as a loose dictionary so the JSON the

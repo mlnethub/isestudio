@@ -94,6 +94,16 @@ public static class OntologyServiceCollectionExtensions
         // arms (history.get + history.rollback). Scoped — shares the
         // request DbContext with HistoryService through the constructor.
         services.AddScoped<IHistoryApplicationService, HistoryApplicationService>();
+        // Application service facade for the six external.* read arms
+        // (ontology / metadata / classes / export / individual /
+        // individuals). Scoped — shares the request DbContext with
+        // ExternalApiService + ExternalOntologyService through the
+        // constructor.
+        services.AddScoped<IExternalApplicationService, ExternalApplicationService>();
+        // Application service facade for the twelve published.* /
+        // published.release.* read arms. Scoped — shares the request
+        // DbContext with PublishedDataService through the constructor.
+        services.AddScoped<IPublishedApplicationService, PublishedApplicationService>();
         return services;
     }
 }
