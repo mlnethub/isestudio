@@ -9,28 +9,36 @@ namespace ISEStudio.Extraction.Dovetail.TBox.Steps;
 /// is non-null, returns it directly (adjudicator failed; denotation already ran
 /// inside AdjudicatorStep over the original chunk delta). Otherwise merges the
 /// normal denotation output with the adjudicator's recovered classes.
+/// Multi-input form so Dovetail can wire it directly off the three prior
+/// step outputs (DOVE006 forbids bundle inputs).
 /// </summary>
-public sealed class ChunkMergeStep : IPipelineSegment<MergeInput, TBoxVerifyResult>
+public sealed class ChunkMergeStep
+    : IPipelineSegment<TBoxChunkInput, CriticOutput, AdjudicatorOutput, DenotationOutput, TBoxVerifyResult>
 {
-    public Task<TBoxVerifyResult> ExecuteAsync(MergeInput input, CancellationToken cancellationToken)
+    public Task<TBoxVerifyResult> ExecuteAsync(
+        TBoxChunkInput chunk,
+        CriticOutput critic,
+        AdjudicatorOutput adjudicator,
+        DenotationOutput denotation,
+        CancellationToken cancellationToken)
     {
         // Fail-soft path: adjudicator failed; AdjudicatorStep already ran the
         // fallback denotation over the original chunk delta.
-        if (input.Adjudicator.DenotationFallback is { } fallback)
+        if (adjudicator.DenotationFallback is { } fallback)
         {
             return Task.FromResult(fallback);
         }
 
-        var denotated = input.Denotation;
+        var denotated = denotation;
 
         var finalClasses = new List<ClassMutation>(denotated.VerifiedDelta.Classes);
         var finalNorms = finalClasses.Select(c => TBoxVerifyService.LabelNorm(c.Label))
             .ToHashSet(StringComparer.Ordinal);
         var recoveries = new List<RecoveredClass>(denotated.Recoveries);
 
-        if (input.Adjudicator.Succeeded)
+        if (adjudicator.Succeeded)
         {
-            foreach (var row in input.Adjudicator.Recovered)
+            foreach (var row in adjudicator.Recovered)
             {
                 var norm = TBoxVerifyService.LabelNorm(row.Label);
                 if (norm.Length == 0 || finalNorms.Contains(norm)) continue;
@@ -51,10 +59,3 @@ public sealed class ChunkMergeStep : IPipelineSegment<MergeInput, TBoxVerifyResu
         return Task.FromResult(merged);
     }
 }
-
-/// <summary>All three step outputs + chunk input bundled for ChunkMergeStep.</summary>
-public sealed record MergeInput(
-    TBoxChunkInput Chunk,
-    CriticOutput Critic,
-    AdjudicatorOutput Adjudicator,
-    DenotationOutput Denotation);

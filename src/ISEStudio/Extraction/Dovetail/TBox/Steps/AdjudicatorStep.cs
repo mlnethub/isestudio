@@ -9,17 +9,21 @@ namespace ISEStudio.Extraction.Dovetail.TBox.Steps;
 /// falls back to denotation over the ORIGINAL chunk delta (not the
 /// critic-filtered subset), matching the fail-soft branch of
 /// <c>TBoxVerifyService.VerifyAsync</c>. The outer <c>FailSoftSegment</c>
-/// in the pipeline ctor stays as a defense-in-depth wrapper but never
-/// triggers because this step does not throw.
+/// wrapper that earlier drafts proposed is unnecessary — this step already
+/// never throws on adjudicator failure.
 /// </summary>
-public sealed class AdjudicatorStep(TBoxVerifyService verify) : IPipelineSegment<AdjudicatorInput, AdjudicatorOutput>
+public sealed class AdjudicatorStep(TBoxVerifyService verify)
+    : IPipelineSegment<TBoxChunkInput, CriticOutput, AdjudicatorOutput>
 {
     private readonly TBoxVerifyService _verify = verify ?? throw new ArgumentNullException(nameof(verify));
 
-    public async Task<AdjudicatorOutput> ExecuteAsync(AdjudicatorInput input, CancellationToken cancellationToken)
+    public async Task<AdjudicatorOutput> ExecuteAsync(
+        TBoxChunkInput chunk,
+        CriticOutput critic,
+        CancellationToken cancellationToken)
     {
-        var disputed = input.Chunk.Delta.Classes
-            .Where(c => !input.Critic.AcceptedNorms.Contains(TBoxVerifyService.LabelNorm(c.Label)))
+        var disputed = chunk.Delta.Classes
+            .Where(c => !critic.AcceptedNorms.Contains(TBoxVerifyService.LabelNorm(c.Label)))
             .ToList();
 
         if (disputed.Count == 0)
@@ -30,14 +34,14 @@ public sealed class AdjudicatorStep(TBoxVerifyService verify) : IPipelineSegment
                 DenotationFallback: null);
         }
 
-        var firstReasons = input.Critic.CriticRejections.ToDictionary(
+        var firstReasons = critic.CriticRejections.ToDictionary(
             r => TBoxVerifyService.LabelNorm(r.Label), r => r.Reason, StringComparer.Ordinal);
 
         try
         {
             var result = await _verify.RunAdjudicatorAsync(
-                input.Chunk.Chat, input.Chunk.Text, disputed, firstReasons,
-                new Dictionary<string, double>(), input.Critic.CriticState,
+                chunk.Chat, chunk.Text, disputed, firstReasons,
+                new Dictionary<string, double>(), critic.CriticState,
                 cancellationToken).ConfigureAwait(false);
 
             return new AdjudicatorOutput(
@@ -52,10 +56,10 @@ public sealed class AdjudicatorStep(TBoxVerifyService verify) : IPipelineSegment
             // subset — this matches the original VerifyAsync catch-block
             // behavior and is required by VerifyAsync_adjudicator_failure_is_fail_soft.
             var fallback = await _verify.RunDenotationAsync(
-                input.Chunk.Chat, input.Chunk.Text,
-                input.Chunk.Delta.Classes,
-                new HashSet<string>(input.Critic.AcceptedNorms, StringComparer.Ordinal),
-                input.Critic.CriticState with { Rejections = Array.Empty<RejectedClass>() },
+                chunk.Chat, chunk.Text,
+                chunk.Delta.Classes,
+                new HashSet<string>(critic.AcceptedNorms, StringComparer.Ordinal),
+                critic.CriticState with { Rejections = Array.Empty<RejectedClass>() },
                 cancellationToken).ConfigureAwait(false);
 
             return new AdjudicatorOutput(
@@ -65,6 +69,3 @@ public sealed class AdjudicatorStep(TBoxVerifyService verify) : IPipelineSegment
         }
     }
 }
-
-/// <summary>Bundle of chunk + critic output for AdjudicatorStep.</summary>
-public sealed record AdjudicatorInput(TBoxChunkInput Chunk, CriticOutput Critic);

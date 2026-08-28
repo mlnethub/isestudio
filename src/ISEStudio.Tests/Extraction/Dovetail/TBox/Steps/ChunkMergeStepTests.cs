@@ -26,10 +26,9 @@ public class ChunkMergeStepTests
             Rejections: Array.Empty<RejectedClass>(),
             Recoveries: Array.Empty<RecoveredClass>(),
             DenotationState: TBoxVerifyResult.Unchanged(TBoxDelta.Empty));
-        var input = new MergeInput(chunk, critic, adjudicator, denotation);
         var step = new ChunkMergeStep();
 
-        var output = await step.ExecuteAsync(input, CancellationToken.None);
+        var output = await step.ExecuteAsync(chunk, critic, adjudicator, denotation, CancellationToken.None);
 
         Assert.NotNull(output);
         Assert.Empty(output.Delta.Classes);
@@ -54,10 +53,9 @@ public class ChunkMergeStepTests
             Rejections: Array.Empty<RejectedClass>(),
             Recoveries: Array.Empty<RecoveredClass>(),
             DenotationState: TBoxVerifyResult.Unchanged(TBoxDelta.Empty));
-        var input = new MergeInput(chunk, critic, adjudicator, denotation);
         var step = new ChunkMergeStep();
 
-        var output = await step.ExecuteAsync(input, CancellationToken.None);
+        var output = await step.ExecuteAsync(chunk, critic, adjudicator, denotation, CancellationToken.None);
 
         Assert.Same(fallback, output);
     }

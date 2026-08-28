@@ -20,12 +20,14 @@ public class DenotationStepTests
             AcceptedNorms: new HashSet<string>(),
             CriticRejections: Array.Empty<RejectedClass>(),
             CriticState: TBoxVerifyResult.Unchanged(TBoxDelta.Empty));
-        var input = new DenotationInput(
-            Chunk: new TBoxChunkInput(1, "x", TBoxDelta.Empty, new TestChatClient("{}")),
-            Critic: critic);
+        var adjudicator = new AdjudicatorOutput(
+            Succeeded: true,
+            Recovered: Array.Empty<ISEStudio.Ontology.ClassMutation>(),
+            DenotationFallback: null);
+        var chunk = new TBoxChunkInput(1, "x", TBoxDelta.Empty, new TestChatClient("{}"));
         var step = new DenotationStep(MakeService());
 
-        var output = await step.ExecuteAsync(input, CancellationToken.None);
+        var output = await step.ExecuteAsync(chunk, critic, adjudicator, CancellationToken.None);
 
         Assert.NotNull(output);
         Assert.Empty(output.VerifiedDelta.Classes);

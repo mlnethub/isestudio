@@ -20,12 +20,10 @@ public class AdjudicatorStepTests
             AcceptedNorms: new HashSet<string>(),
             CriticRejections: Array.Empty<RejectedClass>(),
             CriticState: TBoxVerifyResult.Unchanged(TBoxDelta.Empty));
-        var input = new AdjudicatorInput(
-            Chunk: new TBoxChunkInput(1, "x", TBoxDelta.Empty, new TestChatClient("{}")),
-            Critic: critic);
+        var chunk = new TBoxChunkInput(1, "x", TBoxDelta.Empty, new TestChatClient("{}"));
         var step = new AdjudicatorStep(MakeService());
 
-        var output = await step.ExecuteAsync(input, CancellationToken.None);
+        var output = await step.ExecuteAsync(chunk, critic, CancellationToken.None);
 
         Assert.True(output.Succeeded);
         Assert.Empty(output.Recovered);
