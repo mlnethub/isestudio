@@ -23,6 +23,10 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.0" />
+    <!-- IdentityModel 家族必须整体统一版本:JwtBearer 10.0.0 传递解析 JsonWebTokens 8.0.1,
+         与 Tokens 8.22.0 运行时 API 不兼容(JsonWebToken.ReadToken → Base64UrlEncoder.Decode
+         抛 MissingMethodException)。显式引用 Protocols.OpenIdConnect 会把全家桶拉到 8.22.0。 -->
+    <PackageReference Include="Microsoft.IdentityModel.Protocols.OpenIdConnect" Version="8.22.0" />
     <PackageReference Include="Microsoft.IdentityModel.Tokens" Version="8.22.0" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.2.0" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
