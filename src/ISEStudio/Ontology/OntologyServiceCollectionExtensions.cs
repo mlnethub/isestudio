@@ -68,6 +68,10 @@ public static class OntologyServiceCollectionExtensions
         // singleton through the workflow collaborators.
         services.AddSingleton<RdfImportParser>();
         services.AddScoped<RdfImportService>();
+        // Application service facade for the rdf.import dispatcher arm
+        // (13/13 slice). Scoped — shares the request DbContext with
+        // RdfImportService through the constructor.
+        services.AddScoped<IRdfImportApplicationService, RdfImportApplicationService>();
         // Singleton RDF exporter — depends only on the singleton
         // StoreWrapper and holds no state. Resolved by the dispatcher
         // for ontology.export (and re-used by future export arms).
