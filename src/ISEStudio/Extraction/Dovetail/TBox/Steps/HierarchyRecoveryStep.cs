@@ -20,6 +20,15 @@ public sealed class HierarchyRecoveryStep(HierarchyRecoveryService? service)
 
     public async Task<HierarchyRecoverySegmentOutput> ExecuteAsync(TBoxJobInput input, CancellationToken cancellationToken)
     {
+        if (_service is not null && input.PerChunkText.Count == 0)
+        {
+            throw new ArgumentException(
+                "HierarchyRecoveryService is registered but TBoxJobInput.PerChunkText is empty. " +
+                "The orchestrator must populate PerChunkText from ctx.Chunks[i].Text in chunk-index order before invoking TBoxJobPipeline.ExecuteAsync. " +
+                "See spec §6 D7(a) and Task 9 carry-over note.",
+                nameof(input));
+        }
+
         if (_service is null)
         {
             return new HierarchyRecoverySegmentOutput(HierarchyRecoveryResult.Empty, Enabled: false);

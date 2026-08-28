@@ -50,32 +50,18 @@ public static class DovetailPipelineRegistrations
         services.AddSingleton<HierarchyRecoveryStep>(sp =>
             new HierarchyRecoveryStep(sp.GetService<HierarchyRecoveryService>()));
 
-        // 5. Corpus/Hierarchy Recovery wrapped in OptionalSegment — pipeline
-        // ctor parameter type. Registering IPipelineSegment<TIn, TOut> here
-        // is required because the ctor parameter type on TBoxJobPipeline is
-        // IPipelineSegment<TBoxJobInput, CorpusRecoverySegmentOutput>, not
-        // OptionalSegment itself.
-        services.AddSingleton<IPipelineSegment<TBoxJobInput, CorpusRecoverySegmentOutput>>(sp =>
-        {
-            var inner = sp.GetService<CorpusRecoveryStep>();
-            return inner is null
-                ? new NoOpSegment<TBoxJobInput, CorpusRecoverySegmentOutput>(_ =>
-                    new CorpusRecoverySegmentOutput(CorpusRecoveryResult.Empty, Enabled: false))
-                : new OptionalSegment<TBoxJobInput, CorpusRecoverySegmentOutput>(
-                    inner,
-                    _ => new CorpusRecoverySegmentOutput(CorpusRecoveryResult.Empty, Enabled: false));
-        });
-
-        services.AddSingleton<IPipelineSegment<TBoxJobInput, HierarchyRecoverySegmentOutput>>(sp =>
-        {
-            var inner = sp.GetService<HierarchyRecoveryStep>();
-            return inner is null
-                ? new NoOpSegment<TBoxJobInput, HierarchyRecoverySegmentOutput>(_ =>
-                    new HierarchyRecoverySegmentOutput(HierarchyRecoveryResult.Empty, Enabled: false))
-                : new OptionalSegment<TBoxJobInput, HierarchyRecoverySegmentOutput>(
-                    inner,
-                    _ => new HierarchyRecoverySegmentOutput(HierarchyRecoveryResult.Empty, Enabled: false));
-        });
+        // 5. OptionalSegment wrapping for Corpus/Hierarchy Recovery is
+        // applied inside CorpusRecoveryStep.ExecuteAsync /
+        // HierarchyRecoveryStep.ExecuteAsync themselves: each step takes a
+        // nullable Service and returns its Enabled:false wrapper when the
+        // service is absent. We do NOT register
+        // IPipelineSegment<TBoxJobInput, *> here because TBoxJobPipeline's
+        // [Segment] ctor parameter types are the concrete
+        // CorpusRecoveryStep / HierarchyRecoveryStep classes — those
+        // factory registrations are unreachable at runtime. The concrete
+        // AddSingleton<CorpusRecoveryStep>(...) /
+        // AddSingleton<HierarchyRecoveryStep>(...) on lines 48-51 are what
+        // the pipeline actually resolves. (See Slice 1 final review F-1.)
 
         return services;
     }
