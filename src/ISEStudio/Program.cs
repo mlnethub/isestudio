@@ -632,22 +632,40 @@ if (ssoOptions.IsEnabled)
                     return;
                 }
 
-                // realm_access.roles 摊平成 role claim ——
-                // Policies.AdminOnly 的 RequireRole("Admin") 依赖 IsInRole。
-                if (ctx.Principal.Identity is ClaimsIdentity identity)
-                {
-                    foreach (var role in SsoClaimMapping.RealmRoles(ctx.Principal))
-                        identity.AddClaim(new Claim(ClaimTypes.Role, role));
-                }
-
                 // 用户同步(建行/刷新)+ Items 挂点 ——下
                 // KSRoleAuthorize / ResolveActor / me 全部复用。
+                // 必须先 sync 才知道 IsAdmin,然后再把可配置 admin 角色
+                // 名字(realm_access.roles 默认 "admin")映射成与本地
+                // SessionCookie 路径一致的 ClaimTypes.Role "Admin" claim,
+                // 让 Policies.AdminOnly 的 RequireRole("Admin") 不必区分
+                // 本地 / SSO 凭据来源。
                 using var scope = ctx.HttpContext.RequestServices.CreateScope();
                 var sync = scope.ServiceProvider
                     .GetRequiredService<SsoUserSyncService>();
-                ctx.HttpContext.Items[SessionAuthenticationHandler.UserItemKey] =
-                    await sync.SyncAsync(
+                UserEntity user;
+                try
+                {
+                    user = await sync.SyncAsync(
                         ctx.Principal, ctx.HttpContext.RequestAborted);
+                }
+                catch (UnauthorizedAccessException ex)
+                {
+                    // 同步后的用户被禁用 — 走 401 通道而非未处理异常 500。
+                    ctx.Fail(ex.Message);
+                    return;
+                }
+
+                if (ctx.Principal.Identity is ClaimsIdentity identity)
+                {
+                    // realm_access.roles 摊平 —— 保留 Keycloak 原角色名
+                    // (viewer / editor / ...)供服务层做细粒度判别。
+                    foreach (var role in SsoClaimMapping.RealmRoles(ctx.Principal))
+                        identity.AddClaim(new Claim(ClaimTypes.Role, role));
+                    if (user.IsAdmin)
+                        identity.AddClaim(new Claim(ClaimTypes.Role, "Admin"));
+                }
+
+                ctx.HttpContext.Items[SessionAuthenticationHandler.UserItemKey] = user;
             },
         };
     });
