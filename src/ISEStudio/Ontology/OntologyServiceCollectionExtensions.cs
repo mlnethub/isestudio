@@ -90,6 +90,10 @@ public static class OntologyServiceCollectionExtensions
         // request DbContext with OntologyService + OntologyProvenanceService
         // through the constructor.
         services.AddScoped<IOntologyApplicationService, OntologyApplicationService>();
+        // Application service facade for the two history.* dispatcher
+        // arms (history.get + history.rollback). Scoped — shares the
+        // request DbContext with HistoryService through the constructor.
+        services.AddScoped<IHistoryApplicationService, HistoryApplicationService>();
         return services;
     }
 }

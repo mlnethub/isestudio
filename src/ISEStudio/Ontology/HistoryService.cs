@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using ISEStudio.Application.Conflicts;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Application.History;
 using ISEStudio.Audit;
 using ISEStudio.Authorization;
 using ISEStudio.Conflicts;
@@ -130,7 +132,7 @@ public sealed class HistoryService
             await _audit.RecordAsync(ksId, user, "system.rollback", summary, detail, g, added, removed, rbGid, ct).ConfigureAwait(false);
         }
 
-        object? openConflicts = Array.Empty<object>();
+        IReadOnlyList<ConflictOut>? openConflicts = Array.Empty<ConflictOut>();
         if (tboxChanged)
         {
             await _stats.RefreshAsync(ksId, ct).ConfigureAwait(false);

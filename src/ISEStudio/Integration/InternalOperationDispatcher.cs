@@ -349,7 +349,13 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "mcp_tokens.revoke" => InvokeMcpTokenRevokeAsync(request, cancellationToken),
 
             // -- history --
-            "history.get" => InvokeHistoryGetAsync(request, cancellationToken),
+            // Two arms routed through IHistoryApplicationService (B9
+            // slice): history.get (read) + history.rollback (mutation).
+            // history.rollback still wraps RunWithExtractionGuardAsync at
+            // the switch arm layer so a running extraction job turns 409
+            // with the {detail:{job_id,...}} envelope — the application
+            // service throws no guard of its own.
+            "history.get" => InvokeHistoryListAsync(request, cancellationToken),
             "history.rollback" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
                 () => InvokeHistoryRollbackAsync(request, cancellationToken)),
@@ -759,41 +765,72 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
         return Array.Empty<string>();
     }
 
-    private HistoryService? ResolveHistoryService() =>
-        _services.GetService(typeof(HistoryService)) as HistoryService;
+// ----- history -----
+    // Two arms routed through IHistoryApplicationService (B9 slice):
+    // history.get (read) + history.rollback (mutation). The dispatcher
+    // is registered Scoped, so each `_services.GetService` resolves
+    // the request's own HistoryApplicationService through the
+    // application-service seam. HistoryService remains Scoped inside
+    // the service.
+    //
+    // history.rollback still wraps `RunWithExtractionGuardAsync` at
+    // the switch arm layer so a running extraction job turns 409 with
+    // the {detail:{job_id,...}} envelope — the application service
+    // throws no guard of its own.
+    //
+    // The schema-compatible empty payload fallback envelopes
+    // (`EmptyListResponse()` / `EmptyKnowledgeSystem()`) remain on
+    // the dispatcher arm layer; the application service returns `null`
+    // and the dispatcher substitutes the right shape.
 
-    private Task<object?> InvokeHistoryGetAsync(InternalRequest request, CancellationToken ct)
+    private IHistoryApplicationService? ResolveHistoryAppService() =>
+        _services.GetService(typeof(IHistoryApplicationService)) as IHistoryApplicationService;
+
+    /// <summary>
+    /// Resolve the scoped <see cref="IHistoryApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors the
+    /// ontology / vocabulary / extraction / resolution slice wrappers.
+    /// </summary>
+    private Task<object?> InvokeHistoryAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IHistoryApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        var svc = ResolveHistoryService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-            return Task.FromResult<object?>(EmptyListResponse());
+        var app = ResolveHistoryAppService();
+        if (app is null)
+        {
+            return Task.FromResult<object?>(onMissing());
+        }
         return WrapAsync(async () =>
         {
-            var cat = QueryString(request, "category");
-            var q = QueryString(request, "q");
-            var limit = int.TryParse(QueryString(request, "limit"), out var l) ? l : 50;
-            var offset = int.TryParse(QueryString(request, "offset"), out var o) ? o : 0;
-            var res = await svc.ListHistoryAsync(
-                request.KnowledgeSystemGuid.Value, request.Actor, cat, q, limit, offset, ct).ConfigureAwait(false);
-            return (object?)(res ?? (object)EmptyListResponse());
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
+            {
+                return (onNull ?? onMissing)();
+            }
+            return out_;
         });
     }
 
-    private Task<object?> InvokeHistoryRollbackAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveHistoryService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(EmptyKnowledgeSystem());
-        return WrapAsync(async () =>
-        {
-            if (!Guid.TryParse(request.ResourceId, out var eventId))
-                throw new KeyNotFoundException("History event not found");
-            var res = await svc.RollbackAsync(
-                request.KnowledgeSystemGuid.Value, eventId, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(res ?? (object)EmptyKnowledgeSystem());
-        });
-    }
+    private Task<object?> InvokeHistoryListAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeHistoryAsync(request, ct,
+            async app => (object?)(await app.ListAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyListResponse(),
+            onMissing: EmptyListResponse);
 
+    private Task<object?> InvokeHistoryRollbackAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeHistoryAsync(request, ct,
+            async app => (object?)(await app.RollbackAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyKnowledgeSystem(),
+            onMissing: EmptyKnowledgeSystem);
 
     private PromptService? ResolvePromptService() =>
         _services.GetService(typeof(PromptService)) as PromptService;
