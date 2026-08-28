@@ -25,6 +25,7 @@ public class TBoxJobPipelineTests
             ChunkResults: Array.Empty<TBoxVerifyResult>(),
             PerChunkRejections: Array.Empty<CorpusRecoveryChunk>(),
             FinalClassVocabulary: Array.Empty<string>(),
+            PerChunkText: Array.Empty<string>(),
             Chat: new TestJobChatClient());
 
         var output = await pipeline.ExecuteAsync(input, CancellationToken.None);

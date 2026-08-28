@@ -44,6 +44,7 @@ public sealed record TBoxJobInput(
     IReadOnlyList<TBoxVerifyResult> ChunkResults,
     IReadOnlyList<CorpusRecoveryChunk> PerChunkRejections,
     IReadOnlyList<string> FinalClassVocabulary,
+    IReadOnlyList<string> PerChunkText,
     IChatClient Chat);
 
 /// <summary>Output of TBoxJobPipeline: chunk results + corpus recovery + hierarchy recovery.</summary>

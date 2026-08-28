@@ -25,9 +25,13 @@ public sealed class HierarchyRecoveryStep(HierarchyRecoveryService? service)
             return new HierarchyRecoverySegmentOutput(HierarchyRecoveryResult.Empty, Enabled: false);
         }
 
-        // Aggregate chunk delta strings for the recovery prompt context.
+        // Aggregate per-chunk source text for the recovery prompt context.
+        // The orchestrator (or test caller) populates TBoxJobInput.PerChunkText
+        // in chunk-index order from ChunkSpan.Text; previously we read the
+        // default record ToString() off TBoxDelta which gave a property-dump
+        // string, not the source text the recovery prompt expects.
         var aggregatedText = string.Join("\n\n",
-            input.ChunkResults.Select(r => r.Delta.ToString()).Where(s => s.Length > 0));
+            input.PerChunkText.Where(s => s.Length > 0));
 
         var result = await _service.RecoverAsync(
             input.Chat, aggregatedText, input.FinalClassVocabulary, cancellationToken)

@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Conflicts;
+using ISEStudio.Extraction.Dovetail.TBox;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Knowledge;
 using ISEStudio.Llm;
@@ -106,6 +107,14 @@ public sealed class ExtractionOrchestrator
     private readonly TBoxVerifyService? _verify;
 
     /// <summary>
+    /// Dovetail-generated chunk-level pipeline (critic → adjudicator →
+    /// denotation → merge). Preferred over <see cref="_verify"/> when
+    /// registered in DI; the service is the legacy fallback. Null in
+    /// hand-built test orchestrators where the pipeline is not registered.
+    /// </summary>
+    private readonly TBoxChunkPipeline? _chunkPipeline;
+
+    /// <summary>
     /// Job-level corpus recovery pass (Python
     /// <c>_recover_rejected_classes</c>): revisits every per-chunk rejection
     /// with cross-chunk evidence and re-decides them. Like
@@ -139,7 +148,8 @@ public sealed class ExtractionOrchestrator
         TBoxVerifyService? verify = null,
         CorpusRecoveryService? corpus = null,
         HierarchyRecoveryService? hierarchy = null,
-        IServiceScopeFactory? scopes = null)
+        IServiceScopeFactory? scopes = null,
+        TBoxChunkPipeline? chunkPipeline = null)
     {
         ArgumentNullException.ThrowIfNull(jobs);
         ArgumentNullException.ThrowIfNull(blobs);
@@ -173,6 +183,7 @@ public sealed class ExtractionOrchestrator
         _corpus = corpus;
         _hierarchy = hierarchy;
         _scopes = scopes;
+        _chunkPipeline = chunkPipeline;
     }
 
     // ------------------------------------------------------------------
@@ -778,6 +789,13 @@ public sealed class ExtractionOrchestrator
     /// <see cref="TBoxVerifyResult"/> is forwarded to the merger so
     /// <see cref="RejectedClass"/> / <see cref="RecoveredClass"/> lists flow
     /// into the per-chunk result and into the corpus recovery pass.
+    ///
+    /// <para>When the Dovetail chunk pipeline is registered in DI it is
+    /// preferred over the direct service call so the four-stage DAG
+    /// (critic → adjudicator [self fail-soft] → denotation → merge) runs
+    /// instead of <see cref="TBoxVerifyService.VerifyAsync"/>. The legacy
+    /// service is kept as the fallback for hand-built test orchestrators
+    /// that bypass DI registration.</para>
     /// </summary>
     private async Task<VerifiedTBox> ExtractAndVerifyAsync(
         JobRunContext ctx, ChunkSpan chunk, CancellationToken cancellationToken)
@@ -788,8 +806,15 @@ public sealed class ExtractionOrchestrator
         {
             return new VerifiedTBox(delta, null);
         }
-        var verified = await _verify.VerifyAsync(ctx.Chat, chunk.Text, delta, cancellationToken)
-            .ConfigureAwait(false);
+        // Dovetail pipeline preferred when registered; fall back to direct
+        // service call when pipeline is absent (legacy hand-built test
+        // orchestrators). Both paths return TBoxVerifyResult.
+        var verified = _chunkPipeline is not null
+            ? await _chunkPipeline.ExecuteAsync(
+                new TBoxChunkInput(chunk.Idx, chunk.Text, delta, ctx.Chat),
+                cancellationToken).ConfigureAwait(false)
+            : await _verify.VerifyAsync(ctx.Chat, chunk.Text, delta, cancellationToken)
+                .ConfigureAwait(false);
         return new VerifiedTBox(verified.Delta, verified);
     }
 
