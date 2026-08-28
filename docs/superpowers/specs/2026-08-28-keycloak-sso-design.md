@@ -315,3 +315,12 @@ frontend: ISE_AUTH_AUTHORITY / ISE_AUTH_CLIENT_ID 环境变量
 
 - 2026-08-28: 用户拍板 D1-D7(并存 / bearer 直调 / 自动同步 /
   默认无访问 / 手写 OIDC / compose 必选 / 无 PKCE)。设计呈现后获批。
+- 2026-08-28(全栈冒烟修正):§5.3 `ensureAuthenticated()` 原文
+  "否则 login(自动跳 Keycloak)" 与 D1 并存 / §3 架构图 / deploy 计划
+  Task 5 Step 3 冒烟步骤 1、8 冲突——自动抢跳时登录页永不可达,
+  本地账号无路可走。修正为:**无回调、无 token 时停在登录页**
+  (本地表单 + SSO 按钮并存);跳 Keycloak 仅发生在点按钮、会话过期
+  401(带 `hasSession()` 守卫,无 token 的 401 不跳)、回调对不上
+  自动重登三处。同时冒烟另抓两处部署 drift:Keycloak 镜像裸 tag
+  `26` 不存在(改 26.7.2)、healthcheck 依赖镜像没有的 curl(改 bash
+  /dev/tcp 探 9000 管理端口)。
