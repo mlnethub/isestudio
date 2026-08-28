@@ -105,7 +105,20 @@ public sealed class AuthController : ControllerBase
         // the user is missing — so missing vs wrong-password both take
         // one BCrypt round. The booleans are then folded in without
         // short-circuiting.
-        var presentedHash = user?.PasswordHash ?? PasswordService.TimingSafeDummyHash;
+        //
+        // SSO users carry an empty PasswordHash (SsoUserSyncService
+        // creates the row with PasswordHash="" so local-password login
+        // is structurally impossible). The BCrypt library short-circuits
+        // an empty hash to false before doing any work — that would let
+        // timing distinguish "SSO user" from "missing user" and reveal
+        // which usernames have ever signed in via Keycloak. Substitute
+        // the dummy hash so SSO users take the same BCrypt round as
+        // every other failure case; the resulting Verify(false) then
+        // drives the same 401 path below.
+        var storedHash = user?.PasswordHash;
+        var presentedHash = string.IsNullOrEmpty(storedHash)
+            ? PasswordService.TimingSafeDummyHash
+            : storedHash;
         var passwordOk = _passwords.Verify(body.Password, presentedHash);
         var ok = user is not null && user.Active && passwordOk;
         if (!ok)
