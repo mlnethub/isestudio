@@ -832,83 +832,87 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
                 ?? EmptyKnowledgeSystem(),
             onMissing: EmptyKnowledgeSystem);
 
-    private PromptService? ResolvePromptService() =>
-        _services.GetService(typeof(PromptService)) as PromptService;
+// ----- prompts -----
+    // Four arms routed through IPromptsApplicationService (B10 slice):
+    // prompts.list (read) + prompts.update / prompts.restore /
+    // prompts.restore_all (mutations). The dispatcher is registered
+    // Scoped, so each `_services.GetService` resolves the request's
+    // own PromptsApplicationService through the application-service
+    // seam. PromptService remains Scoped inside the service.
+    //
+    // The three mutation arms still wrap `RunWithExtractionGuardAsync`
+    // at the switch arm layer so a running extraction job turns 409
+    // with the {detail:{job_id,...}} envelope — the application service
+    // throws no guard of its own.
+    //
+    // The schema-compatible empty payload fallback envelopes
+    // (`EmptyPrompt()` / `EmptyPromptList()`) remain on the dispatcher
+    // arm layer; the application service returns `null` and the
+    // dispatcher substitutes the right shape.
 
-    private Task<object?> InvokePromptsListAsync(InternalRequest request, CancellationToken ct)
+    private IPromptsApplicationService? ResolvePromptsAppService() =>
+        _services.GetService(typeof(IPromptsApplicationService)) as IPromptsApplicationService;
+
+    /// <summary>
+    /// Resolve the scoped <see cref="IPromptsApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors
+    /// the ontology / vocabulary / extraction / resolution / history
+    /// slice wrappers.
+    /// </summary>
+    private Task<object?> InvokePromptsAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IPromptsApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        var svc = ResolvePromptService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
+        var app = ResolvePromptsAppService();
+        if (app is null)
         {
-            return Task.FromResult<object?>(EmptyPromptList());
+            return Task.FromResult<object?>(onMissing());
         }
         return WrapAsync(async () =>
         {
-            var res = await svc.ListAsync(
-                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(res ?? (object)EmptyPromptList());
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
+            {
+                return (onNull ?? onMissing)();
+            }
+            return out_;
         });
     }
 
-    private Task<object?> InvokePromptsUpdateAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolvePromptService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-        {
-            return Task.FromResult<object?>(EmptyPrompt());
-        }
-        var body = DeserializeBody<PromptUpdateIn>(request);
-        if (body is null || string.IsNullOrWhiteSpace(body.Content))
-        {
-            throw new ISEStudio.Api.ValidationException("content must not be empty");
-        }
-        return WrapAsync(async () =>
-        {
-            var res = await svc.UpdateAsync(
-                request.KnowledgeSystemGuid.Value,
-                request.ResourceId,
-                body.Content,
-                request.Actor,
-                ct).ConfigureAwait(false);
-            return (object?)(res ?? (object)EmptyPrompt());
-        });
-    }
+    private Task<object?> InvokePromptsListAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePromptsAsync(request, ct,
+            async app => (object?)(await app.ListAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyPromptList(),
+            onMissing: EmptyPromptList);
 
-    private Task<object?> InvokePromptsRestoreAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolvePromptService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-        {
-            return Task.FromResult<object?>(EmptyPrompt());
-        }
-        return WrapAsync(async () =>
-        {
-            var res = await svc.RestoreAsync(
-                request.KnowledgeSystemGuid.Value,
-                request.ResourceId,
-                request.Actor,
-                ct).ConfigureAwait(false);
-            return (object?)(res ?? (object)EmptyPrompt());
-        });
-    }
+    private Task<object?> InvokePromptsUpdateAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePromptsAsync(request, ct,
+            async app => (object?)(await app.UpdateAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyPrompt(),
+            onMissing: EmptyPrompt);
 
-    private Task<object?> InvokePromptsRestoreAllAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolvePromptService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(EmptyPromptList());
-        }
-        return WrapAsync(async () =>
-        {
-            _ = await svc.RestoreAllAsync(
-                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
-            // PromptsController.RestoreAllAsync short-circuits to NoContent();
-            // the dispatcher still returns the empty list shape for any
-            // downstream fallback path that bypasses the controller.
-            return (object?)EmptyPromptList();
-        });
-    }
+    private Task<object?> InvokePromptsRestoreAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePromptsAsync(request, ct,
+            async app => (object?)(await app.RestoreAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyPrompt(),
+            onMissing: EmptyPrompt);
+
+    private Task<object?> InvokePromptsRestoreAllAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokePromptsAsync(request, ct,
+            async app => (object?)(await app.RestoreAllAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyPromptList(),
+            onMissing: EmptyPromptList);
 
     // ------------------------------------------------------------------
 // ----- resolution -----

@@ -1,10 +1,16 @@
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Api;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Application.Prompts;
 using ISEStudio.Audit;
 using ISEStudio.Authorization;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
+// Type aliases — the wire DTOs moved to the Application project as
+// part of the 10/13 dispatcher split (B10). The catalog record stays
+// here.
+using PromptOut = ISEStudio.Application.Prompts.PromptOut;
+using PromptListOut = ISEStudio.Application.Prompts.PromptListOut;
 
 namespace ISEStudio.Prompts;
 
