@@ -79,6 +79,13 @@ public sealed class TBoxVerifyService
     /// no classes and no subclass axioms is returned untouched — exactly like
     /// Python's early return before any LLM call.
     /// </summary>
+    /// <remarks>
+    /// The composite is split into three internal steps
+    /// (<see cref="RunCriticAsync"/> / <see cref="RunAdjudicatorAsync"/> /
+    /// <see cref="RunDenotationAsync"/>) so the Dovetail TBox sub-DAG can
+    /// invoke each step individually; this method keeps the original
+    /// composite behavior identical.
+    /// </remarks>
     public async Task<TBoxVerifyResult> VerifyAsync(
         IChatClient chat,
         string text,
@@ -88,33 +95,17 @@ public sealed class TBoxVerifyService
         ArgumentNullException.ThrowIfNull(chat);
         ArgumentNullException.ThrowIfNull(delta);
 
-        var subclasses = delta.Axioms.Where(a => a.Type == "subclass").ToList();
-        if (delta.Classes.Count == 0 && subclasses.Count == 0)
-        {
-            return TBoxVerifyResult.Unchanged(delta);
-        }
-
-        // 1. Boundary critic — the untrusted first pass is re-judged with
-        // evidence from the source text only. The candidates payload carries
-        // the extractor's source span (Python <c>row["evidence"]</c>) as
+        // 1. Critic — the untrusted first pass is re-judged with evidence
+        // from the source text only. The candidates payload carries the
+        // extractor's source span (Python <c>row["evidence"]</c>) as
         // advisory context — the critic always re-quotes the source on its
         // own, so extractor_evidence never enters the decision logic; it is
         // only there to help the critic disambiguate when two candidates
         // share the same label in different paragraphs.
-        var candidates = new
-        {
-            classes = delta.Classes.Select(c => new ClassCandidate(c.Label, c.Comment ?? "", c.Evidence ?? "")).ToList(),
-            subclass_of = subclasses.Select(s => new SubclassCandidate(s.Sub ?? "", s.Super ?? "", s.Evidence ?? "")).ToList(),
-        };
-        var criticPayload = await CallAsync(
-            chat, BoundaryCriticKey,
-            SourceBlock(text) + "UNTRUSTED CANDIDATES:\n" + ToJson(candidates),
-            "Critic",
-            cancellationToken).ConfigureAwait(false);
+        var criticResult = await RunCriticAsync(chat, text, delta, cancellationToken)
+            .ConfigureAwait(false);
 
-        var verified = ApplyTBoxRoleDecisions(text, delta, criticPayload, _options.AutoApplyFloor);
-        var verifiedState = verified with { Recoveries = Array.Empty<RecoveredClass>() };
-        var acceptedNorms = verified.Delta.Classes
+        var acceptedNorms = criticResult.Delta.Classes
             .Select(c => LabelNorm(c.Label))
             .ToHashSet(StringComparer.Ordinal);
 
@@ -127,43 +118,32 @@ public sealed class TBoxVerifyService
         // pass over the original candidates (extract.py:1171-1175).
         if (disputed.Count == 0)
         {
-            return await VerifyClassDenotationsAsync(
-                chat, text, verifiedState,
-                candidateClasses: delta.Classes,
-                eligibleNorms: acceptedNorms,
+            return await RunDenotationAsync(
+                chat, text,
+                criticResult.Delta.Classes, acceptedNorms,
+                criticResult with { Recoveries = Array.Empty<RecoveredClass>() },
                 cancellationToken).ConfigureAwait(false);
         }
 
-        var firstReasons = verified.Rejections.ToDictionary(
+        var firstReasons = criticResult.Rejections.ToDictionary(
             r => LabelNorm(r.Label), r => r.Reason, StringComparer.Ordinal);
-        var disputedPayload = new
-        {
-            classes = disputed.Select(c => new DisputedClassCandidate(
-                c.Label, c.Comment ?? "", c.Evidence ?? "",
-                firstReasons.GetValueOrDefault(LabelNorm(c.Label), ""))).ToList(),
-        };
         TBoxVerifyResult adjudicated;
         try
         {
-            var adjudicatorPayload = await CallAsync(
-                chat, BoundaryAdjudicatorKey,
-                SourceBlock(text) + "DISPUTED CLASS CANDIDATES:\n" + ToJson(disputedPayload),
-                "Adjudicator",
+            adjudicated = await RunAdjudicatorAsync(
+                chat, text, disputed, firstReasons,
+                new Dictionary<string, double>(),
+                criticResult with { Recoveries = Array.Empty<RecoveredClass>() },
                 cancellationToken).ConfigureAwait(false);
-            adjudicated = ApplyTBoxRoleDecisions(
-                text, new TBoxDelta(
-                    disputed, Array.Empty<PropertyMutation>(),
-                    Array.Empty<PropertyMutation>(), Array.Empty<AxiomMutation>()),
-                adjudicatorPayload, _options.AutoApplyFloor);
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
             // Fail-soft: adjudication is a best-effort second opinion; the
             // denotation pass still applies to the original candidates.
-            return await VerifyClassDenotationsAsync(
-                chat, text, verifiedState,
-                candidateClasses: delta.Classes,
-                eligibleNorms: acceptedNorms,
+            return await RunDenotationAsync(
+                chat, text,
+                delta.Classes, acceptedNorms,
+                criticResult with { Recoveries = Array.Empty<RecoveredClass>() },
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -172,10 +152,10 @@ public sealed class TBoxVerifyService
         // 3. Denotation critic over the critic-accepted classes; the
         // adjudicator's recoveries are re-attached afterwards (Python keeps
         // the critic's rejections out of this pass, extract.py:1178-1186).
-        var denotated = await VerifyClassDenotationsAsync(
-            chat, text, verifiedState with { Rejections = Array.Empty<RejectedClass>() },
-            candidateClasses: verified.Delta.Classes,
-            eligibleNorms: acceptedNorms,
+        var denotated = await RunDenotationAsync(
+            chat, text,
+            criticResult.Delta.Classes, acceptedNorms,
+            criticResult with { Rejections = Array.Empty<RejectedClass>() },
             cancellationToken).ConfigureAwait(false);
 
         var finalClasses = new List<ClassMutation>(denotated.Delta.Classes);
@@ -201,6 +181,104 @@ public sealed class TBoxVerifyService
     }
 
     /// <summary>
+    /// Internal API for Dovetail TBoxChunkPipeline.CriticStep. Equivalent to
+    /// step 1 of <see cref="VerifyAsync"/>: invoke BoundaryCriticKey prompt,
+    /// apply <see cref="ApplyTBoxRoleDecisions"/> against <paramref name="text"/>,
+    /// return the filtered delta + critic rejections.
+    /// </summary>
+    internal async Task<TBoxVerifyResult> RunCriticAsync(
+        IChatClient chat,
+        string text,
+        TBoxDelta delta,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(chat);
+        ArgumentNullException.ThrowIfNull(delta);
+
+        var subclasses = delta.Axioms.Where(a => a.Type == "subclass").ToList();
+        if (delta.Classes.Count == 0 && subclasses.Count == 0)
+        {
+            return TBoxVerifyResult.Unchanged(delta);
+        }
+
+        var candidates = new
+        {
+            classes = delta.Classes.Select(c => new ClassCandidate(c.Label, c.Comment ?? "", c.Evidence ?? "")).ToList(),
+            subclass_of = subclasses.Select(s => new SubclassCandidate(s.Sub ?? "", s.Super ?? "", s.Evidence ?? "")).ToList(),
+        };
+        var criticPayload = await CallAsync(
+            chat, BoundaryCriticKey,
+            SourceBlock(text) + "UNTRUSTED CANDIDATES:\n" + ToJson(candidates),
+            "Critic",
+            cancellationToken).ConfigureAwait(false);
+
+        return ApplyTBoxRoleDecisions(text, delta, criticPayload, _options.AutoApplyFloor);
+    }
+
+    /// <summary>
+    /// Internal API for Dovetail TBoxChunkPipeline.AdjudicatorStep. Equivalent
+    /// to step 2 of <see cref="VerifyAsync"/>. Caller (FailSoftSegment) decides
+    /// fail-soft behavior.
+    /// </summary>
+    internal async Task<TBoxVerifyResult> RunAdjudicatorAsync(
+        IChatClient chat,
+        string text,
+        IReadOnlyList<ClassMutation> disputed,
+        IReadOnlyDictionary<string, string> firstReasons,
+        IReadOnlyDictionary<string, double> firstConfidences,
+        TBoxVerifyResult criticState,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(chat);
+        ArgumentNullException.ThrowIfNull(disputed);
+
+        if (disputed.Count == 0)
+        {
+            return criticState;
+        }
+
+        var disputedPayload = new
+        {
+            classes = disputed.Select(c => new DisputedClassCandidate(
+                c.Label, c.Comment ?? "", c.Evidence ?? "",
+                firstReasons.GetValueOrDefault(LabelNorm(c.Label), ""))).ToList(),
+        };
+        var adjudicatorPayload = await CallAsync(
+            chat, BoundaryAdjudicatorKey,
+            SourceBlock(text) + "DISPUTED CLASS CANDIDATES:\n" + ToJson(disputedPayload),
+            "Adjudicator",
+            cancellationToken).ConfigureAwait(false);
+        return ApplyTBoxRoleDecisions(
+            text, new TBoxDelta(
+                disputed, Array.Empty<PropertyMutation>(),
+                Array.Empty<PropertyMutation>(), Array.Empty<AxiomMutation>()),
+            adjudicatorPayload, _options.AutoApplyFloor);
+    }
+
+    /// <summary>
+    /// Internal API for Dovetail TBoxChunkPipeline.DenotationStep. Equivalent
+    /// to step 3 of <see cref="VerifyAsync"/>. Runs <see cref="VerifyClassDenotationsAsync"/>
+    /// over the critic-accepted classes.
+    /// </summary>
+    internal async Task<TBoxVerifyResult> RunDenotationAsync(
+        IChatClient chat,
+        string text,
+        IReadOnlyList<ClassMutation> criticAcceptedClasses,
+        IReadOnlySet<string> eligibleNorms,
+        TBoxVerifyResult criticState,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(chat);
+        ArgumentNullException.ThrowIfNull(criticAcceptedClasses);
+
+        return await VerifyClassDenotationsAsync(
+            chat, text, criticState with { Rejections = Array.Empty<RejectedClass>() },
+            candidateClasses: criticAcceptedClasses,
+            eligibleNorms: (ISet<string>)eligibleNorms,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
     /// Python <c>_verify_class_denotations</c>: send the provisional classes
     /// to the denotation critic, keep accepted classes that were already
     /// eligible, strip references to rejected labels, and attach recovered
@@ -209,7 +287,7 @@ public sealed class TBoxVerifyService
     /// caller ever passes a state that already carries recoveries into this
     /// pass — so it is not ported.
     /// </summary>
-    private async Task<TBoxVerifyResult> VerifyClassDenotationsAsync(
+    internal async Task<TBoxVerifyResult> VerifyClassDenotationsAsync(
         IChatClient chat,
         string text,
         TBoxVerifyResult state,
@@ -616,7 +694,7 @@ public sealed class TBoxVerifyService
     /// whitespace collapse, punctuation kept. Decision keys and norm sets
     /// use this so critic payloads match candidate labels token-for-token.
     /// </summary>
-    internal static string LabelNorm(string? value)
+    public static string LabelNorm(string? value)
     {
         value = (value ?? string.Empty)
             .Normalize(NormalizationForm.FormKC)
