@@ -198,6 +198,22 @@ docker compose down
 
 This preserves named volumes. `docker compose down -v` permanently deletes the deployment's PostgreSQL and ISEStudio data volumes; use it only when you explicitly want a clean reset.
 
+### Keycloak SSO(可选开关,compose 必带服务)
+
+`docker compose up -d --build` 会一并启动 Keycloak(宿主端口 `KEYCLOAK_PORT`,默认 8081)。
+首次启动自动导入 realm `isestudio`(见 `deploy/keycloak/isestudio-realm.json`),登录页即出现
+「使用 SSO 登录」按钮。
+
+- **演示账号**:`sso-admin / change-me-sso`(realm role `admin` → 后端 `IsAdmin=true`);
+  `sso-viewer / change-me-sso`(无 role → 默认无任何 KS 权限,由 admin 在成员页授权)。**生产必改**
+- **管理控制台**:<http://localhost:8081/admin>(`KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD`)
+- **SSO 与本地账号并存**:本地账号登录、session cookie、API/MCP token 全部不变;SSO 用户首次登录
+  自动建本地用户行(用户名 `preferred_username`,与本地用户撞名时加 `~` 前缀后缀)
+- **关闭 SSO**:把 root `.env` 的 `ISE_AUTH_AUTHORITY` 留空并重启——后端不注册 JwtBearer,
+  前端不渲染 SSO 按钮,行为回到纯本地登录
+- **切 https/生产域名**:改 `ISE_AUTH_AUTHORITY` + realm JSON 的 `redirectUris`/`webOrigins` +
+  删 `sslRequired: "none"` + `RequireHttpsMetadata=true`
+
 ## First Governed Workflow
 
 1. Open **Settings → Model endpoints**, configure chat/embedding services, set per-endpoint concurrency, and test them.
