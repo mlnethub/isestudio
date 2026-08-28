@@ -323,7 +323,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // backend/app/api/settings_api.py:SettingsOut). settings.update
             // validates each provider pointer against ProviderEntity.Kind
             // so an LLM pointer can't silently flip to an embedding row.
-            "settings.list_models" => InvokeSettingsListModelsAsync(cancellationToken),
+            "settings.list_models" => InvokeSettingsListModelsAsync(request, cancellationToken),
             "settings.get" => InvokeSettingsGetAsync(request, cancellationToken),
             "settings.update" => InvokeSettingsUpdateAsync(request, cancellationToken),
 
@@ -1180,26 +1180,85 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     }
 
     // ---- providers ----------------------------------------------------------
-    // Provider CRUD lives behind ProviderService (scoped). The dispatcher
-    // is registered Scoped, so `_services.GetService(typeof(ProviderService))`
-    // resolves the request's own DbContext per call — the same context the
-    // controller opened for this request, with the same session user / tx.
-    //
-    // Body shape: controllers bind [FromBody] to a typed record (or the
-    // loose `object` body for handlers that need it). InternalControllerBase
-    // wraps loose bodies under a single "_" key (see
-    // InternalControllerBase.ToBody), so we read from "Body["_"]" when the
-    // caller didn't already pre-deserialize.
-    //
-    // Failure modes:
+    // Five arms routed through IProviderApplicationService (12/13 slice):
+    // list / create / update / delete / test. The app service owns the
+    // body DTO unpacking + invalid-id throw semantics; the dispatcher
+    // keeps only the per-arm empty-payload fallbacks.
     // * Service not registered (unit tests that hand-built the dispatcher)
     //   → returns a schema-compatible empty payload so the route still 200s.
     // * ProviderService throws InvalidOperationException → FastApiErrorMiddleware
     //   translates it to the { "detail": "..." } envelope the Python
     //   backend emits.
 
-    private ProviderService? ResolveProviderService() =>
-        _services.GetService(typeof(ProviderService)) as ProviderService;
+    private IProviderApplicationService? ResolveProviderAppService() =>
+        _services.GetService(typeof(IProviderApplicationService)) as IProviderApplicationService;
+
+    /// <summary>
+    /// Resolve the scoped <see cref="IProviderApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors
+    /// the ontology / history / prompts / external / published slice
+    /// wrappers.
+    /// </summary>
+    private Task<object?> InvokeProviderAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IProviderApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
+    {
+        var app = ResolveProviderAppService();
+        if (app is null)
+        {
+            return Task.FromResult<object?>(onMissing());
+        }
+        return WrapAsync(async () =>
+        {
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
+            {
+                return (onNull ?? onMissing)();
+            }
+            return out_;
+        });
+    }
+
+    private Task<object?> InvokeProviderListAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeProviderAsync(request, ct,
+            async app => (object?)await app.ListAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => Array.Empty<object>());
+
+    private Task<object?> InvokeProviderCreateAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeProviderAsync(request, ct,
+            async app => (object?)await app.CreateAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => null!);
+
+    private Task<object?> InvokeProviderUpdateAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeProviderAsync(request, ct,
+            async app => (object?)await app.UpdateAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => null!);
+
+    private Task<object?> InvokeProviderDeleteAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeProviderAsync(request, ct,
+            async app => (object?)await app.DeleteAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { ok = true });
+
+    private Task<object?> InvokeProviderTestAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeProviderAsync(request, ct,
+            async app => (object?)await app.TestAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => null!);
+
+    /// <summary>
+    /// Funnel every async dispatcher helper through one place so we can
+    /// later attach a uniform cross-cutting concern (logging, telemetry).
+    /// </summary>
+    private static async Task<object?> WrapAsync(Func<Task<object?>> body)
+    {
+        return await body().ConfigureAwait(false);
+    }
 
     /// <summary>
     /// Pull the typed body for an operation. Controllers bind the loose
@@ -1227,116 +1286,6 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             return System.Text.Json.JsonSerializer.Deserialize<T>(element.GetRawText(), DeserializeOptions);
         }
         return null;
-    }
-
-    private Task<object?> InvokeProviderListAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveProviderService();
-        if (svc is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.ListAsync(ct).ConfigureAwait(false);
-            return (object?)rows;
-        });
-    }
-
-    private Task<object?> InvokeProviderCreateAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveProviderService();
-        var body = DeserializeBody<ProviderCreateRequest>(request);
-        if (svc is null || body is null)
-        {
-            // Caller (controller) didn't supply one OR service not wired.
-            // Surface as a 422-like envelope via the global middleware by
-            // throwing — preserves the Python parity contract.
-            if (body is null)
-            {
-                throw new InvalidOperationException(
-                    "Request body is required for providers.create.");
-            }
-            return Task.FromResult<object?>(null);
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.CreateAsync(body, ct).ConfigureAwait(false);
-            return (object?)row;
-        });
-    }
-
-    private Task<object?> InvokeProviderUpdateAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveProviderService();
-        var body = DeserializeBody<ProviderPatchRequest>(request);
-        var id = Guid.TryParse(request.ResourceId, out var parsed) ? parsed : Guid.Empty;
-        if (svc is null || body is null || id == Guid.Empty)
-        {
-            if (id == Guid.Empty)
-            {
-                throw new InvalidOperationException("provider id must be a valid UUID.");
-            }
-            if (body is null)
-            {
-                throw new InvalidOperationException(
-                    "Request body is required for providers.update.");
-            }
-            return Task.FromResult<object?>(null);
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.UpdateAsync(id, body, ct).ConfigureAwait(false);
-            return (object?)row;
-        });
-    }
-
-    private Task<object?> InvokeProviderDeleteAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveProviderService();
-        var id = Guid.TryParse(request.ResourceId, out var parsed) ? parsed : Guid.Empty;
-        if (svc is null || id == Guid.Empty)
-        {
-            if (id == Guid.Empty)
-            {
-                throw new InvalidOperationException("provider id must be a valid UUID.");
-            }
-            return Task.FromResult<object?>(new { ok = true });
-        }
-        return WrapAsync(async () =>
-        {
-            var removed = await svc.DeleteAsync(id, ct).ConfigureAwait(false);
-            return (object?)new { deleted = removed ? 1 : 0 };
-        });
-    }
-
-    private Task<object?> InvokeProviderTestAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveProviderService();
-        var body = DeserializeBody<ProviderTestRequest>(request);
-        if (svc is null || body is null)
-        {
-            if (body is null)
-            {
-                throw new InvalidOperationException(
-                    "Request body is required for providers.test.");
-            }
-            return Task.FromResult<object?>(null);
-        }
-        return WrapAsync(async () =>
-        {
-            var result = await svc.TestAsync(body, ct).ConfigureAwait(false);
-            return (object?)result;
-        });
-    }
-
-    /// <summary>
-    /// Funnel every async provider helper through one place so we can
-    /// later attach a uniform cross-cutting concern (logging, telemetry).
-    /// </summary>
-    private static async Task<object?> WrapAsync(Func<Task<object?>> body)
-    {
-        return await body().ConfigureAwait(false);
     }
 
     // ---- conflicts ---------------------------------------------------------
@@ -2327,19 +2276,15 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             },
             onMissing: () => Array.Empty<byte>());
 
-    // ----- auth admin (B10) -------------------------------------------------
-    // Wires the auth.update_me / auth.list_users / auth.create_user /
-    // auth.update_user / auth.delete_user dispatcher arms to the scoped
-    // AuthService. auth.login / auth.logout / auth.me stay inline in
-    // AuthController (they own the AuthSessionEntity + opaque-cookie
-    // plumbing; the existing AuthenticationContractTests rely on that
-    // shape). The admin-side CRUD mirrors the Python
-    // backend/app/api/auth.py guards:
-    //   * "Can't remove the last admin" — would lock the operator out.
-    //   * "You can't deactivate yourself" / "You can't delete yourself".
-    //   * "owns N knowledge system(s); transfer or delete them first" —
-    //     a KS must not be orphaned by deleting its owner.
-    //
+    // ----- auth admin (12/13) ------------------------------------------------
+    // Five admin-side arms routed through IAuthApplicationService:
+    // update_me / list_users / create_user / update_user / delete_user.
+    // auth.login / auth.logout / auth.me stay inline in AuthController
+    // (they own the AuthSessionEntity + opaque-cookie plumbing; the
+    // existing AuthenticationContractTests rely on that shape). The
+    // app service owns the body DTO unpacking + user-id parsing + the
+    // snake_case UserOut wire projection; the dispatcher keeps only
+    // the per-arm empty-payload fallbacks.
     // Failure modes mirror the other slices:
     // * Service not registered (hand-built dispatcher in unit tests)
     //   → returns the schema-compatible empty payload so the route
@@ -2347,129 +2292,74 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     // * AuthService throws ValidationException → 400 envelope.
     // * AuthService throws KeyNotFoundException → 404 envelope.
     // * AuthService throws ResourceInUseException → 409 envelope.
-    private AuthService? ResolveAuthService() =>
-        _services.GetService(typeof(AuthService)) as AuthService;
 
-    private Task<object?> InvokeAuthUpdateMeAsync(
-        InternalRequest request, CancellationToken ct)
+    private IAuthApplicationService? ResolveAuthAppService() =>
+        _services.GetService(typeof(IAuthApplicationService)) as IAuthApplicationService;
+
+    /// <summary>
+    /// Resolve the scoped <see cref="IAuthApplicationService"/> and run
+    /// <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors
+    /// the ontology / history / prompts / external / published /
+    /// provider slice wrappers.
+    /// </summary>
+    private Task<object?> InvokeAuthAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IAuthApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        var svc = ResolveAuthService();
-        var body = DeserializeBody<UpdateMeRequest>(request);
-        if (svc is null || body is null)
+        var app = ResolveAuthAppService();
+        if (app is null)
         {
-            if (body is null)
+            return Task.FromResult<object?>(onMissing());
+        }
+        return WrapAsync(async () =>
+        {
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
             {
-                throw new InvalidOperationException(
-                    "Request body is required for auth.update_me.");
+                return (onNull ?? onMissing)();
             }
-            return Task.FromResult<object?>(EmptyUser());
-        }
-        var userId = Guid.TryParse(request.Actor.UserId, out var parsed)
-            ? parsed : Guid.Empty;
-        if (userId == Guid.Empty)
-        {
-            return Task.FromResult<object?>(EmptyUser());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.UpdateMeAsync(userId, body, ct).ConfigureAwait(false);
-            return (object?)ProjectUserOut(row);
+            return out_;
         });
     }
 
-    private Task<object?> InvokeAuthListUsersAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAuthService();
-        if (svc is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.ListUsersAsync(ct).ConfigureAwait(false);
-            return (object?)rows.Select(ProjectUserOut).ToArray();
-        });
-    }
+    private Task<object?> InvokeAuthUpdateMeAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAuthAsync(request, ct,
+            async app => (object?)await app.UpdateMeAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyUser);
 
-    private Task<object?> InvokeAuthCreateUserAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAuthService();
-        var body = DeserializeBody<CreateUserRequest>(request);
-        if (svc is null || body is null)
-        {
-            if (body is null)
-            {
-                throw new InvalidOperationException(
-                    "Request body is required for auth.create_user.");
-            }
-            return Task.FromResult<object?>(EmptyUser());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.CreateUserAsync(body, ct).ConfigureAwait(false);
-            return (object?)ProjectUserOut(row);
-        });
-    }
+    private Task<object?> InvokeAuthListUsersAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAuthAsync(request, ct,
+            async app => (object?)await app.ListUsersAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => Array.Empty<object>());
 
-    private Task<object?> InvokeAuthUpdateUserAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAuthService();
-        var body = DeserializeBody<UpdateUserRequest>(request);
-        if (svc is null || body is null
-            || !Guid.TryParse(request.ResourceId, out var userId))
-        {
-            if (body is null)
-            {
-                throw new InvalidOperationException(
-                    "Request body is required for auth.update_user.");
-            }
-            return Task.FromResult<object?>(EmptyUser());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.UpdateUserAsync(userId, body, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)ProjectUserOut(row);
-        });
-    }
+    private Task<object?> InvokeAuthCreateUserAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAuthAsync(request, ct,
+            async app => (object?)await app.CreateUserAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyUser);
 
-    private Task<object?> InvokeAuthDeleteUserAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAuthService();
-        if (svc is null || !Guid.TryParse(request.ResourceId, out var userId))
-        {
-            return Task.FromResult<object?>(new { ok = false });
-        }
-        return WrapAsync(async () =>
-        {
-            var deleted = await svc.DeleteUserAsync(userId, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)new { deleted = deleted };
-        });
-    }
+    private Task<object?> InvokeAuthUpdateUserAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAuthAsync(request, ct,
+            async app => (object?)await app.UpdateUserAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyUser);
 
-    private static object ProjectUserOut(UserOut row) => new
-    {
-        id = row.Id,
-        username = row.Username,
-        display_name = row.DisplayName,
-        is_admin = row.IsAdmin,
-        active = row.Active,
-    };
+    private Task<object?> InvokeAuthDeleteUserAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAuthAsync(request, ct,
+            async app => (object?)await app.DeleteUserAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { ok = false });
 
-    // ----- settings (B10) ---------------------------------------------------
-    // Wires the settings.* dispatcher arms (list_models / get / update)
-    // to the scoped SettingsService. The service reads + writes the
-    // singleton SystemConfigEntity (Phase 3: identified via partial
-    // UNIQUE INDEX on IsSingleton = TRUE) and returns the wire shape
-    // the Python baseline emits. settings.update validates each
-    // provider pointer against ProviderEntity.Kind so an LLM pointer
-    // can't silently flip to an embedding row.
-    //
+    // ----- settings (12/13) --------------------------------------------------
+    // Three arms routed through ISettingsApplicationService: list_models
+    // / get / update. The app service owns the snake_case wire
+    // projections (settings envelope + model catalog) and the missing
+    // body throw; the dispatcher keeps only the empty-payload
+    // fallbacks.
     // Failure modes mirror the other slices:
     // * Service not registered (hand-built dispatcher in unit tests)
     //   → returns the schema-compatible empty payload so the route
@@ -2478,74 +2368,57 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     //   → FastApiErrorMiddleware translates to the {"detail": "..."}
     //   envelope the Python backend emits.
 
-    private SettingsService? ResolveSettingsService() =>
-        _services.GetService(typeof(SettingsService)) as SettingsService;
+    private ISettingsApplicationService? ResolveSettingsAppService() =>
+        _services.GetService(typeof(ISettingsApplicationService)) as ISettingsApplicationService;
 
-    private Task<object?> InvokeSettingsListModelsAsync(CancellationToken ct)
+    /// <summary>
+    /// Resolve the scoped <see cref="ISettingsApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors
+    /// the ontology / history / prompts / external / published /
+    /// provider / auth slice wrappers.
+    /// </summary>
+    private Task<object?> InvokeSettingsAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<ISettingsApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        var svc = ResolveSettingsService();
-        if (svc is null)
+        var app = ResolveSettingsAppService();
+        if (app is null)
         {
-            return Task.FromResult<object?>(EmptyModelCatalog());
+            return Task.FromResult<object?>(onMissing());
         }
         return WrapAsync(async () =>
         {
-            var row = await Task.FromResult(svc.ListModels()).ConfigureAwait(false);
-            return (object?)ProjectModelCatalog(row);
-        });
-    }
-
-    private Task<object?> InvokeSettingsGetAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveSettingsService();
-        if (svc is null)
-        {
-            return Task.FromResult<object?>(EmptySettings());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.GetAsync(ct).ConfigureAwait(false);
-            return (object?)ProjectSettings(row);
-        });
-    }
-
-    private Task<object?> InvokeSettingsUpdateAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveSettingsService();
-        var body = DeserializeBody<UpdateSettingsRequest>(request);
-        if (svc is null || body is null)
-        {
-            if (body is null)
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
             {
-                throw new InvalidOperationException(
-                    "Request body is required for settings.update.");
+                return (onNull ?? onMissing)();
             }
-            return Task.FromResult<object?>(EmptySettings());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.UpdateAsync(body, ct).ConfigureAwait(false);
-            return (object?)ProjectSettings(row);
+            return out_;
         });
     }
 
-    private static object ProjectSettings(SettingsOut row) => new
-    {
-        llm_provider_id = row.LlmProviderId,
-        embedding_provider_id = row.EmbeddingProviderId,
-        available_models = row.AvailableModels,
-        temperature = row.Temperature,
-        system_language = row.SystemLanguage,
-        extract_model = row.ExtractModel,
-    };
+    private Task<object?> InvokeSettingsListModelsAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeSettingsAsync(request, ct,
+            async app => (object?)await app.ListModelsAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyModelCatalog);
 
-    private static object ProjectModelCatalog(ModelCatalogOut row) => new
-    {
-        models = row.Models,
-        @default = row.Default,
-    };
+    private Task<object?> InvokeSettingsGetAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeSettingsAsync(request, ct,
+            async app => (object?)await app.GetAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptySettings);
+
+    private Task<object?> InvokeSettingsUpdateAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeSettingsAsync(request, ct,
+            async app => (object?)await app.UpdateAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptySettings);
 
     // ----- tokens (B10) -----------------------------------------------------
     // Wires the tokens.* dispatcher arms (list / create / reveal / revoke)

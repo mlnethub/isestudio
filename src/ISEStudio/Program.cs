@@ -372,6 +372,11 @@ builder.Services.AddScoped<TokenManagementService>();
 // KSGrants + McpUserTokens so the cascade-on-deactivate / -delete
 // paths run in a single transaction.
 builder.Services.AddScoped<AuthService>();
+// Application service facade for the five admin-side auth.* dispatcher
+// arms (update_me / list_users / create_user / update_user /
+// delete_user). Scoped — shares the request DbContext with AuthService
+// through the constructor.
+builder.Services.AddScoped<IAuthApplicationService, AuthApplicationService>();
 
 // Startup recovery hosted services (scoped to a single DbContext per run).
 builder.Services.AddScoped<BootstrapAdminService>();
@@ -390,6 +395,10 @@ builder.Services.AddProviderServices();
 // update). Scoped because it shares the request DbContext with the
 // provider validation paths inside UpdateAsync.
 builder.Services.AddScoped<ISEStudio.Settings.SettingsService>();
+// Application service facade for the three settings.* dispatcher arms
+// (list_models / get / update). Scoped — shares the request DbContext
+// with SettingsService through the constructor.
+builder.Services.AddScoped<ISettingsApplicationService, SettingsApplicationService>();
 // Conflicts slice — detect / list / get_context / dismiss / reopen / resolve
 // / reconciliations CRUD. Service is Scoped (shares the request DbContext);
 // the optional StoreWrapper + ExtractionJobStore are resolved per-request

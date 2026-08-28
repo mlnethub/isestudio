@@ -1,3 +1,6 @@
+using ISEStudio.Application.Integration;
+using ISEStudio.Integration;
+
 namespace ISEStudio.Providers;
 
 /// <summary>
@@ -17,6 +20,11 @@ public static class ProviderServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(services);
         services.AddScoped<ProviderService>();
+        // Application service facade for the five providers.* dispatcher
+        // arms (list / create / update / delete / test). Scoped — shares
+        // the request DbContext with ProviderService through the
+        // constructor.
+        services.AddScoped<IProviderApplicationService, ProviderApplicationService>();
         return services;
     }
 }
