@@ -569,6 +569,18 @@ var authBuilder = builder.Services.AddAuthentication(options =>
         options.DefaultAuthenticateScheme = ForwardScheme;
         options.DefaultChallengeScheme = ForwardScheme;
     }
+    else
+    {
+        // SSO 关闭时保持原行为:五个默认全部指向 SessionCookie,
+        // 等价旧的 AddAuthentication(SessionAuthenticationHandler.SchemeName)
+        // 字符串重载(它同时设 DefaultSignIn/SignOut)。缺失会让任何
+        // [Authorize] 请求 500 "no DefaultChallengeScheme"。
+        options.DefaultScheme = SessionAuthenticationHandler.SchemeName;
+        options.DefaultAuthenticateScheme = SessionAuthenticationHandler.SchemeName;
+        options.DefaultChallengeScheme = SessionAuthenticationHandler.SchemeName;
+        options.DefaultSignInScheme = SessionAuthenticationHandler.SchemeName;
+        options.DefaultSignOutScheme = SessionAuthenticationHandler.SchemeName;
+    }
 });
 if (ssoOptions.IsEnabled)
 {
