@@ -204,7 +204,15 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "abox.revoke_validation_decision" => InvokeAboxRevokeValidationDecisionAsync(request, cancellationToken),
 
             // -- resolution --
-            "resolution.get_queue" => InvokeResolutionGetQueueAsync(request, cancellationToken),
+            // Five arms routed through IResolutionApplicationService
+            // (B8 slice): two reads (get_queue + list_decisions) + three
+            // mutations (resolve + revoke_decision + edit_decision_reason).
+            // The three mutations still wrap RunWithExtractionGuardAsync at
+            // the switch arm layer so a running extraction job turns 409
+            // with the {detail:{job_id,...}} envelope the brief's "抽取进行中
+            // 的修改返回 409" requirement mandates — the application
+            // service throws no guard of its own.
+            "resolution.get_queue" => InvokeResolutionListQueueAsync(request, cancellationToken),
             "resolution.list_decisions" => InvokeResolutionListDecisionsAsync(request, cancellationToken),
             "resolution.resolve" => RunWithExtractionGuardAsync(request, cancellationToken,
                 () => InvokeResolutionResolveAsync(request, cancellationToken)),
@@ -866,131 +874,102 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     }
 
     // ------------------------------------------------------------------
-    // Entity-resolution slice (queue / decisions / resolve / revoke /
-    // edit_reason). {res_id} route segment arrives in request.ResourceId
-    // as a string; ResolveResRowGuidAsync parses it as a Guid (Phase 3
-    // retired the legacy long id; the Python int wire format is gone).
-    // ------------------------------------------------------------------
+// ----- resolution -----
+    // Five arms routed through IResolutionApplicationService (B8
+    // pilot slice): two reads (resolution.get_queue +
+    // resolution.list_decisions) + three mutations
+    // (resolution.resolve + resolution.revoke_decision +
+    // resolution.edit_decision_reason). The dispatcher is registered
+    // Scoped, so each `_services.GetService` resolves the request's
+    // own ResolutionApplicationService through the application-service
+    // seam. ResolutionService remains Scoped inside the service.
+    //
+    // The three mutation arms still wrap `RunWithExtractionGuardAsync`
+    // at the switch arm layer so a running extraction job turns 409
+    // with the {detail:{job_id,...}} envelope the brief's "抽取进行中
+    // 的修改返回 409" requirement mandates — the application service
+    // throws no guard of its own.
+    //
+    // The schema-compatible empty payload fallback envelopes
+    // (`EmptyListResponse()` / `EmptyResolutionDecision()` /
+    // `{revoked: 0}`) remain on the dispatcher arm layer; the
+    // application service returns `null` and the dispatcher
+    // substitutes the right shape.
 
-    private ResolutionService? ResolveResolutionService() =>
-        _services.GetService(typeof(ResolutionService)) as ResolutionService;
+    private IResolutionApplicationService? ResolveResolutionAppService() =>
+        _services.GetService(typeof(IResolutionApplicationService)) as IResolutionApplicationService;
 
-    private static (string? Query, int Limit, int Offset) ReadResolutionPaging(InternalRequest request)
+    /// <summary>
+    /// Resolve the scoped <see cref="IResolutionApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors the
+    /// ontology / vocabulary / extraction slice wrappers.
+    /// </summary>
+    private Task<object?> InvokeResolutionAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IResolutionApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        string? q = null;
-        int limit = 50;
-        int offset = 0;
-        if (request.Query is not null)
+        var app = ResolveResolutionAppService();
+        if (app is null)
         {
-            if (request.Query.TryGetValue("q", out var qv) && !string.IsNullOrEmpty(qv)) q = qv;
-            if (request.Query.TryGetValue("limit", out var lv)
-                && int.TryParse(lv, out var lp)) limit = lp;
-            if (request.Query.TryGetValue("offset", out var ov)
-                && int.TryParse(ov, out var op)) offset = op;
+            return Task.FromResult<object?>(onMissing());
         }
-        return (q, limit, offset);
-    }
-
-    private Task<object?> InvokeResolutionGetQueueAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveResolutionService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-            return Task.FromResult<object?>(EmptyListResponse());
         return WrapAsync(async () =>
         {
-            var (q, limit, offset) = ReadResolutionPaging(request);
-            var res = await svc.ListQueueAsync(
-                request.KnowledgeSystemGuid.Value, q, limit, offset,
-                request.Actor, ct).ConfigureAwait(false);
-            return (object?)(res ?? (object)EmptyListResponse());
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
+            {
+                return (onNull ?? onMissing)();
+            }
+            return out_;
         });
     }
 
-    private Task<object?> InvokeResolutionListDecisionsAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveResolutionService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-            return Task.FromResult<object?>(EmptyListResponse());
-        return WrapAsync(async () =>
-        {
-            var (q, limit, offset) = ReadResolutionPaging(request);
-            var res = await svc.ListDecisionsAsync(
-                request.KnowledgeSystemGuid.Value, q, limit, offset,
-                request.Actor, ct).ConfigureAwait(false);
-            return (object?)(res ?? (object)EmptyListResponse());
-        });
-    }
+    // ----- resolution reads (get_queue / list_decisions) -----
 
-    private Task<object?> InvokeResolutionResolveAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveResolutionService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(EmptyResolutionDecision());
-        return WrapAsync(async () =>
-        {
-            var body = DeserializeBody<ResolutionResolveIn>(request);
-            var action = body?.Action ?? string.Empty;
-            var individualIri = body?.IndividualIri;
-            var db = _services.GetService(typeof(ISEStudioDbContext)) as ISEStudioDbContext;
-            if (db is null) return (object?)EmptyResolutionDecision();
-            var rowId = await ResolutionService.ResolveResRowGuidAsync(
-                db, request.KnowledgeSystemGuid.Value, request.ResourceId, ct).ConfigureAwait(false);
-            if (rowId is null) return (object?)EmptyResolutionDecision();
-            var row = await db.EntityResolutions.AsNoTracking()
-                .FirstAsync(r => r.Id == rowId.Value, ct).ConfigureAwait(false);
-            var res = await svc.ResolveAsync(
-                request.KnowledgeSystemGuid.Value, rowId.Value, action, individualIri,
-                request.Actor, ct).ConfigureAwait(false);
-            return (object?)(res ?? (object)EmptyResolutionDecision());
-        });
-    }
+    private Task<object?> InvokeResolutionListQueueAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeResolutionAsync(request, ct,
+            async app => (object?)(await app.ListQueueAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyListResponse(),
+            onMissing: EmptyListResponse);
 
-    private Task<object?> InvokeResolutionRevokeDecisionAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveResolutionService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(new { revoked = 0 });
-        return WrapAsync(async () =>
-        {
-            var db = _services.GetService(typeof(ISEStudioDbContext)) as ISEStudioDbContext;
-            if (db is null) return (object?)new { revoked = 0 };
-            var rowId = await ResolutionService.ResolveResRowGuidAsync(
-                db, request.KnowledgeSystemGuid.Value, request.ResourceId, ct).ConfigureAwait(false);
-            if (rowId is null) return (object?)new { revoked = 0 };
-            var row = await db.EntityResolutions.AsNoTracking()
-                .FirstAsync(r => r.Id == rowId.Value, ct).ConfigureAwait(false);
-            var ok = await svc.RevokeAsync(
-                request.KnowledgeSystemGuid.Value, rowId.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            // Phase 3: legacy_id 已退役; return Guid PK as the revoked
-            // identifier. Wire shape changes from int64 to guid string.
-            return (object?)new { revoked = ok ? rowId.Value.ToString() : "0" };
-        });
-    }
+    private Task<object?> InvokeResolutionListDecisionsAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeResolutionAsync(request, ct,
+            async app => (object?)(await app.ListDecisionsAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyListResponse(),
+            onMissing: EmptyListResponse);
 
-    private Task<object?> InvokeResolutionEditDecisionReasonAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveResolutionService();
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(request.ResourceId))
-            return Task.FromResult<object?>(EmptyResolutionDecision());
-        return WrapAsync(async () =>
-        {
-            var body = DeserializeBody<ResolutionEditReasonIn>(request);
-            var reason = body?.Reason;
-            var db = _services.GetService(typeof(ISEStudioDbContext)) as ISEStudioDbContext;
-            if (db is null) return (object?)EmptyResolutionDecision();
-            var rowId = await ResolutionService.ResolveResRowGuidAsync(
-                db, request.KnowledgeSystemGuid.Value, request.ResourceId, ct).ConfigureAwait(false);
-            if (rowId is null) return (object?)EmptyResolutionDecision();
-            var row = await db.EntityResolutions.AsNoTracking()
-                .FirstAsync(r => r.Id == rowId.Value, ct).ConfigureAwait(false);
-            var res = await svc.EditReasonAsync(
-                request.KnowledgeSystemGuid.Value, rowId.Value, reason, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(res ?? (object)EmptyResolutionDecision());
-        });
-    }
+    // ----- resolution mutations (resolve / revoke_decision / edit_decision_reason) -----
 
+    private Task<object?> InvokeResolutionResolveAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeResolutionAsync(request, ct,
+            async app => (object?)(await app.ResolveAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyResolutionDecision(),
+            onMissing: EmptyResolutionDecision);
+
+    private Task<object?> InvokeResolutionRevokeDecisionAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeResolutionAsync(request, ct,
+            async app => (object?)(await app.RevokeDecisionAsync(request, ct).ConfigureAwait(false)) is Guid rowId
+                ? (object)new { revoked = rowId.ToString() }
+                : (object)new { revoked = 0 },
+            onMissing: () => new { revoked = 0 });
+
+    private Task<object?> InvokeResolutionEditDecisionReasonAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeResolutionAsync(request, ct,
+            async app => (object?)(await app.EditDecisionReasonAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyResolutionDecision(),
+            onMissing: EmptyResolutionDecision);
     private RdfExportService? ResolveRdfExportService()
     {
         // Defensive: in the contract-test (Testing) env StoreWrapper is

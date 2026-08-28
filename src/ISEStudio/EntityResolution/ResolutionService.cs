@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Api;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Application.Resolution;
 using ISEStudio.Audit;
 using ISEStudio.Authorization;
 using ISEStudio.Infrastructure.Persistence;

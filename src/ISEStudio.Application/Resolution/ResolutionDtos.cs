@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace ISEStudio.EntityResolution;
+namespace ISEStudio.Application.Resolution;
 
 /// <summary>
 /// Candidate individual suggested for a surface form (mirrors Python
