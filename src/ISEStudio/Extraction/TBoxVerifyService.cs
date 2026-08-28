@@ -120,7 +120,7 @@ public sealed class TBoxVerifyService
         {
             return await RunDenotationAsync(
                 chat, text,
-                criticResult.Delta.Classes, acceptedNorms,
+                delta.Classes, acceptedNorms,
                 criticResult with { Recoveries = Array.Empty<RecoveredClass>() },
                 cancellationToken).ConfigureAwait(false);
         }
