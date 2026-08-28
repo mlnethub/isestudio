@@ -1,4 +1,6 @@
+using ISEStudio.Application.Integration;
 using ISEStudio.Extraction;
+using ISEStudio.Integration;
 using ISEStudio.Llm;
 using ISEStudio.Ontology;
 using ISEStudio.Storage;
@@ -29,6 +31,11 @@ public static class ExtractionServiceCollectionExtensions
         services.AddSingleton<IExtractionMerger, ExtractionMerger>();
         services.AddSingleton<ExtractionOrchestrator>();
         services.AddScoped<TerminologyAgent>();
+        // Application service facade for the five extraction.* dispatcher
+        // arms (three run* + list_jobs + get_job). Scoped — shares the
+        // request DbContext with the BuildFrontendExtractionRequestAsync
+        // provider / chunk resolution through the constructor.
+        services.AddScoped<IExtractionApplicationService, ExtractionApplicationService>();
         return services;
     }
 }

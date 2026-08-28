@@ -121,23 +121,23 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             "ontology.sources" => InvokeOntologySourcesAsync(request, cancellationToken),
 
             // -- extraction --
-            // Real reads (list_jobs / get_job) are wired into
-            // ExtractionJobStore via InvokeExtractionListJobsAsync /
-            // InvokeExtractionGetJobAsync so HTTP callers see the actual
-            // job rows. The three run* arms delegate to ExtractionOrchestrator
-            // via InvokeExtractionAsync; the RunWithExtractionGuardAsync
-            // wrapper still rejects them with the 409 envelope when an
-            // active job exists, matching the brief's "抽取进行中的修改返回
-            // 409" requirement.
+            // Five arms routed through IExtractionApplicationService
+            // (B7d pilot slice): three extraction.run* (TBox / combined /
+            // ABox) + extraction.list_jobs + extraction.get_job. The three
+            // run* arms still wrap RunWithExtractionGuardAsync at the
+            // switch arm layer so a running extraction job turns 409 with
+            // the {detail:{job_id,...}} envelope the brief's "抽取进行中
+            // 的修改返回 409" requirement mandates — the application
+            // service throws no guard of its own.
             "extraction.run" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
-                () => InvokeExtractionAsync(request, "extraction.run", cancellationToken)),
+                () => InvokeExtractionRunAsync(request, "extraction.run", cancellationToken)),
             "extraction.run_combined" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
-                () => InvokeExtractionAsync(request, "extraction.run_combined", cancellationToken)),
+                () => InvokeExtractionRunAsync(request, "extraction.run_combined", cancellationToken)),
             "extraction.run_instances" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
-                () => InvokeExtractionAsync(request, "extraction.run_instances", cancellationToken)),
+                () => InvokeExtractionRunAsync(request, "extraction.run_instances", cancellationToken)),
             "extraction.list_jobs" => InvokeExtractionListJobsAsync(request, cancellationToken),
             "extraction.get_job" => InvokeExtractionGetJobAsync(request, cancellationToken),
 
@@ -1947,171 +1947,88 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     private IDocumentApplicationService? ResolveDocumentAppService() =>
         _services.GetService(typeof(IDocumentApplicationService)) as IDocumentApplicationService;
 
-    // ----- extraction read helpers -----
-    // The two extraction read endpoints (list_jobs / get_job) live on
-    // a singleton ExtractionJobStore that opens a fresh DbContext per
-    // call via its IDbContextFactory. The dispatcher resolves the
-    // store from DI and projects the entity rows to ExtractionJobOut
-    // so the wire shape matches the Python ExtractionJob SQLModel.
+// ----- extraction -----
+    // Five arms routed through IExtractionApplicationService (B7d
+    // pilot slice): three extraction.run* (TBox / combined / ABox) +
+    // extraction.list_jobs + extraction.get_job. The dispatcher is
+    // registered Scoped, so each `_services.GetService` resolves the
+    // request's own ExtractionApplicationService through the
+    // application-service seam. ExtractionJobStore + ExtractionOrchestrator
+    // remain singletons inside the service.
+    //
+    // The three run* arms still wrap `RunWithExtractionGuardAsync` at
+    // the switch arm layer so a running extraction job turns 409 with
+    // the {detail:{job_id,...}} envelope the brief's "抽取进行中
+    // 的修改返回 409" requirement mandates — the application service
+    // throws no guard of its own.
+    //
+    // `EmptyExtractionJob()` and `Array.Empty<object>()` fallback
+    // envelopes remain on the dispatcher arm layer; the application
+    // service returns `null` and the dispatcher substitutes the right
+    // shape. ExtractionJobOut (the wire DTO) stays in ISEStudio.Extraction
+    // because its `From(ExtractionJobEntity)` projection depends on
+    // ISEStudio.Infrastructure.Persistence.Entities — promoting it to
+    // the zero-ProjectReference Application layer would force a
+    // circular reference back through Infrastructure.
 
-    private ExtractionJobStore? ResolveExtractionJobs() =>
-        _services.GetService(typeof(ExtractionJobStore)) as ExtractionJobStore;
-
-    private ExtractionOrchestrator? ResolveExtractionOrchestrator() =>
-        _services.GetService(typeof(ExtractionOrchestrator)) as ExtractionOrchestrator;
-
-    private Task<object?> InvokeExtractionListJobsAsync(InternalRequest request, CancellationToken ct)
-    {
-        var jobs = ResolveExtractionJobs();
-        if (jobs is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        return WrapAsync(async () =>
-        {
-            var rows = await jobs.ListAsync(request.KnowledgeSystemGuid.Value, ct)
-                .ConfigureAwait(false);
-            return (object?)rows.Select(ExtractionJobOut.From).ToList();
-        });
-    }
-
-    private Task<object?> InvokeExtractionGetJobAsync(InternalRequest request, CancellationToken ct)
-    {
-        var jobs = ResolveExtractionJobs();
-        if (jobs is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var jobId))
-        {
-            return Task.FromResult<object?>(EmptyExtractionJob());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await jobs.GetAsync(jobId, ct).ConfigureAwait(false);
-            // Job id is scoped to its KS: a job owned by a different
-            // KS surfaces as the empty placeholder (matches the Python
-            // 404 envelope without forcing the dispatcher to throw).
-            if (row is null) return (object?)EmptyExtractionJob();
-            return (object?)ExtractionJobOut.From(row);
-        });
-    }
+    private IExtractionApplicationService? ResolveExtractionAppService() =>
+        _services.GetService(typeof(IExtractionApplicationService)) as IExtractionApplicationService;
 
     /// <summary>
-    /// Shared body for the 3 extraction.run* arms. Deserialises the request
-    /// body to <see cref="ExtractionRequest"/>, invokes the matching
-    /// <see cref="ExtractionOrchestrator.Start*Async"/> entry point, and
-    /// projects the resulting job entity to the wire DTO via
-    /// <see cref="ExtractionJobOut.From"/>.
+    /// Resolve the scoped <see cref="IExtractionApplicationService"/> and
+    /// run <paramref name="call"/> against it. Returns
+    /// <paramref name="onMissing"/> when the service isn't registered
+    /// (hand-built dispatcher in unit tests); returns
+    /// <paramref name="onNull"/> when the call returns a real
+    /// <c>null</c>; otherwise passes through the typed return. Mirrors the
+    /// ontology / vocabulary slice wrappers.
     /// </summary>
-    private async Task<object?> InvokeExtractionAsync(
-        InternalRequest request, string runKind, CancellationToken cancellationToken)
-    {
-        var frontendBody = DeserializeBody<FrontendExtractionRequest>(request);
-        var body = frontendBody?.ChunkIds is not null
-            ? await BuildFrontendExtractionRequestAsync(request, frontendBody, cancellationToken)
-                .ConfigureAwait(false)
-            : DeserializeBody<ExtractionRequest>(request);
-        if (body is null)
-        {
-            throw new InvalidOperationException(
-                "extraction body is required (knowledge_system_id, blob_sha, " +
-                "file_name, provider, model, endpoint).");
-        }
-        if (request.KnowledgeSystemGuid is Guid knowledgeSystemId)
-        {
-            body = body with { KnowledgeSystemId = knowledgeSystemId };
-        }
-        var orchestrator = ResolveExtractionOrchestrator();
-        if (orchestrator is null)
-        {
-            throw new InvalidOperationException(
-                "ExtractionOrchestrator is not registered in the service container.");
-        }
-
-        var job = runKind switch
-        {
-            "extraction.run"           => await orchestrator.StartTBoxAsync(body, cancellationToken),
-            "extraction.run_combined"  => await orchestrator.StartCombinedAsync(body, cancellationToken),
-            "extraction.run_instances" => await orchestrator.StartABoxAsync(body, cancellationToken),
-            _ => throw new InvalidOperationException(
-                $"Unknown extraction run kind '{runKind}'."),
-        };
-
-        return ExtractionJobOut.From(job);
-    }
-
-    private sealed record FrontendExtractionRequest(List<Guid>? ChunkIds, string? Model);
-
-    private async Task<ExtractionRequest> BuildFrontendExtractionRequestAsync(
+    private Task<object?> InvokeExtractionAsync(
         InternalRequest request,
-        FrontendExtractionRequest body,
-        CancellationToken cancellationToken)
+        CancellationToken ct,
+        Func<IExtractionApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        if (request.KnowledgeSystemGuid is not Guid knowledgeSystemId)
+        var app = ResolveExtractionAppService();
+        if (app is null)
         {
-            throw new InvalidOperationException("Knowledge system id is required.");
+            return Task.FromResult<object?>(onMissing());
         }
-        if (body.ChunkIds is not { Count: > 0 })
+        return WrapAsync(async () =>
         {
-            throw new InvalidOperationException("No chunks selected.");
-        }
-
-        var db = _services.GetRequiredService<ISEStudioDbContext>();
-        var knowledgeSystem = await db.KnowledgeSystems.AsNoTracking()
-            .FirstOrDefaultAsync(k => k.Id == knowledgeSystemId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Knowledge system {knowledgeSystemId} not found.");
-        var systemConfig = await db.SystemConfigs.AsNoTracking()
-            .SingleOrDefaultAsync(cancellationToken)
-            .ConfigureAwait(false);
-        var providerId = knowledgeSystem.LlmProviderId ?? systemConfig?.LlmProviderId
-            ?? throw new InvalidOperationException(
-                "No LLM provider is configured for this knowledge system.");
-        var provider = await db.Providers.AsNoTracking()
-            .FirstOrDefaultAsync(p => p.Id == providerId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"LLM provider {providerId} not found.");
-
-        var requestedIds = body.ChunkIds.Distinct().ToList();
-        var chunkRows = await (
-                from chunk in db.Chunks.AsNoTracking()
-                join document in db.Documents.AsNoTracking() on chunk.DocumentId equals document.Id
-                where requestedIds.Contains(chunk.Id)
-                    && document.KnowledgeSystemId == knowledgeSystemId
-                select chunk)
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
-        if (chunkRows.Count != requestedIds.Count)
-        {
-            throw new InvalidOperationException(
-                "One or more selected chunks were not found in this knowledge system.");
-        }
-
-        var chunksById = chunkRows.ToDictionary(chunk => chunk.Id);
-        var selectedChunks = requestedIds.Select(id =>
-        {
-            var chunk = chunksById[id];
-            return new ChunkSpan(
-                chunk.Idx,
-                chunk.Text,
-                chunk.CharStart,
-                chunk.CharEnd,
-                chunk.TokenEstimate);
-        }).ToList();
-        var model = !string.IsNullOrWhiteSpace(body.Model)
-            ? body.Model
-            : knowledgeSystem.LlmModel ?? systemConfig?.ExtractModel ?? provider.Model;
-
-        return new ExtractionRequest(
-            knowledgeSystemId,
-            "<already-read>",
-            string.Empty,
-            "openai-compatible",
-            model,
-            provider.BaseUrl,
-            provider.ApiKey,
-            provider.ConcurrencyLimit,
-            selectedChunks);
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
+            {
+                return (onNull ?? onMissing)();
+            }
+            return out_;
+        });
     }
 
+    // ----- extraction run* (TBox / combined / ABox) -----
+
+    private Task<object?> InvokeExtractionRunAsync(
+        InternalRequest request, string runKind, CancellationToken ct) =>
+        InvokeExtractionAsync(request, ct,
+            async app => (object?)await app.RunAsync(request, runKind, ct).ConfigureAwait(false),
+            onMissing: () => new { ok = false, error = "extraction service not registered" });
+
+    // ----- extraction reads (list_jobs / get_job) -----
+
+    private Task<object?> InvokeExtractionListJobsAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeExtractionAsync(request, ct,
+            async app => (object?)(await app.ListJobsAsync(request, ct).ConfigureAwait(false))
+                ?? Array.Empty<object>(),
+            onMissing: () => Array.Empty<object>());
+
+    private Task<object?> InvokeExtractionGetJobAsync(
+        InternalRequest request, CancellationToken ct) =>
+        InvokeExtractionAsync(request, ct,
+            async app => (object?)(await app.GetJobAsync(request, ct).ConfigureAwait(false))
+                ?? EmptyExtractionJob(),
+            onMissing: EmptyExtractionJob);
     // Shared empty / placeholder shapes for the document slice. These
     // mirror the field set the Python documents.py endpoints emit on
     // misses and on conflict envelopes so the wire shape stays stable
