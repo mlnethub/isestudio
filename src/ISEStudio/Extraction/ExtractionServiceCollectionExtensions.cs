@@ -1,5 +1,6 @@
 using ISEStudio.Application.Integration;
 using ISEStudio.Extraction;
+using ISEStudio.Extraction.Dovetail;
 using ISEStudio.Integration;
 using ISEStudio.Llm;
 using ISEStudio.Ontology;
@@ -36,6 +37,7 @@ public static class ExtractionServiceCollectionExtensions
         // request DbContext with the BuildFrontendExtractionRequestAsync
         // provider / chunk resolution through the constructor.
         services.AddScoped<IExtractionApplicationService, ExtractionApplicationService>();
+        services.AddDovetailPipelines();
         return services;
     }
 }
