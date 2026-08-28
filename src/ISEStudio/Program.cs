@@ -1,9 +1,12 @@
+using System.Security.Claims;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
 using ModelContextProtocol.AspNetCore;
 using Npgsql;
 using ISEStudio.Api;
@@ -547,7 +550,38 @@ Directory.CreateDirectory(exportRoot);
 builder.Services.AddSingleton(_ => new ExportArtifactStore(exportRoot));
 builder.Services.AddExportServices();
 
-builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
+// ---- Authentication ----
+// 默认 scheme 是 PolicyScheme:请求带 Authorization: Bearer 头 →
+// Keycloak JwtBearer(SSO);否则 → SessionCookie(本地账号)。ApiBearer /
+// ExternalToken 在各自 controller 显式标注 scheme,不走默认转发。
+// Keycloak 未配置(Authority 空)→ 不注册 JwtBearer,default 保持
+// SessionCookie,现有行为逐字节不变(spec §2 配置驱动激活)。
+const string ForwardScheme = "ForwardScheme";
+var ssoOptions = builder.Configuration
+    .GetSection(SsoOptions.SectionName)
+    .Get<SsoOptions>() ?? new SsoOptions();
+
+var authBuilder = builder.Services.AddAuthentication(options =>
+{
+    if (ssoOptions.IsEnabled)
+    {
+        options.DefaultScheme = ForwardScheme;
+        options.DefaultAuthenticateScheme = ForwardScheme;
+        options.DefaultChallengeScheme = ForwardScheme;
+    }
+});
+if (ssoOptions.IsEnabled)
+{
+    authBuilder.AddPolicyScheme(ForwardScheme, "forward", o =>
+    {
+        o.ForwardDefaultSelector = ctx =>
+            ctx.Request.Headers.Authorization.ToString()
+                .StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                ? JwtBearerDefaults.AuthenticationScheme
+                : SessionAuthenticationHandler.SchemeName;
+    });
+}
+authBuilder
     .AddScheme<AuthenticationSchemeOptions, SessionAuthenticationHandler>(
         SessionAuthenticationHandler.SchemeName,
         _ => { })
@@ -557,6 +591,67 @@ builder.Services.AddAuthentication(SessionAuthenticationHandler.SchemeName)
     .AddScheme<AuthenticationSchemeOptions, ExternalTokenAuthenticationHandler>(
         ExternalTokenAuthenticationHandler.SchemeName,
         _ => { });
+
+if (ssoOptions.IsEnabled)
+{
+    authBuilder.AddJwtBearer(o =>
+    {
+        o.Authority = ssoOptions.Authority;
+        // 默认必须 https;容器内 http 部署显式置 false。
+        o.RequireHttpsMetadata = ssoOptions.RequireHttpsMetadata;
+        // claim 保持 Keycloak 原名(不映射成 WS-Federation 长 URI)。
+        o.MapInboundClaims = false;
+        // 容器部署双 URL:Authority(iss 校验)是浏览器可见地址,metadata
+        // 从容器内地址拉(见 deploy 计划 Task 1)。空 = 默认从 Authority 派生。
+        if (!string.IsNullOrWhiteSpace(ssoOptions.MetadataAddress))
+        {
+            o.MetadataAddress = ssoOptions.MetadataAddress;
+        }
+        o.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = ssoOptions.Authority,
+            // aud 恒为 account,无判定价值;azp 断言在 OnTokenValidated。
+            ValidateAudience = false,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromSeconds(30),
+            NameClaimType = "preferred_username",
+        };
+        o.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async ctx =>
+            {
+                // azp 门:Keycloak public client 的 access_token 里
+                // aud 恒为 account,azp 等于 clientId 才是真凭据。
+                if (ctx.Principal is null
+                    || !string.Equals(
+                        ctx.Principal.FindFirst("azp")?.Value,
+                        ssoOptions.ClientId, StringComparison.Ordinal))
+                {
+                    ctx.Fail($"azp is not {ssoOptions.ClientId}");
+                    return;
+                }
+
+                // realm_access.roles 摊平成 role claim ——
+                // Policies.AdminOnly 的 RequireRole("Admin") 依赖 IsInRole。
+                if (ctx.Principal.Identity is ClaimsIdentity identity)
+                {
+                    foreach (var role in SsoClaimMapping.RealmRoles(ctx.Principal))
+                        identity.AddClaim(new Claim(ClaimTypes.Role, role));
+                }
+
+                // 用户同步(建行/刷新)+ Items 挂点 ——下
+                // KSRoleAuthorize / ResolveActor / me 全部复用。
+                using var scope = ctx.HttpContext.RequestServices.CreateScope();
+                var sync = scope.ServiceProvider
+                    .GetRequiredService<SsoUserSyncService>();
+                ctx.HttpContext.Items[SessionAuthenticationHandler.UserItemKey] =
+                    await sync.SyncAsync(
+                        ctx.Principal, ctx.HttpContext.RequestAborted);
+            },
+        };
+    });
+}
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy(Policies.AdminOnly, policy =>
