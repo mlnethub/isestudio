@@ -71,7 +71,8 @@ services:
     restart: unless-stopped
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26
+    # 裸 `26` tag 不存在:官方镜像 tag 必须带 patch 版本(26.2 = 26 系列最新)。
+    image: quay.io/keycloak/keycloak:26.7.2
     # --import-realm:首次启动导入 /opt/keycloak/data/import/ 下的 realm JSON
     # (已导入后 re-run 不重复导入)。--health-enabled 打开 9000 管理端口
     # 供健康检查。
@@ -91,7 +92,9 @@ services:
     ports:
       - "${KEYCLOAK_PORT:-8081}:8080"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://127.0.0.1:9000/health/ready || exit 1"]
+      # Keycloak 26 镜像无 curl/wget;用 bash /dev/tcp 探 9000 管理端口
+      # 的 /health/ready(要求 status UP,端口监听但未就绪时判 DOWN)。
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\n\\r\\n' >&3 && grep -q '\"status\"[[:space:]]*:[[:space:]]*\"UP\"' <&3 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 20
