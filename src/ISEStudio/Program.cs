@@ -376,6 +376,13 @@ builder.Services.AddScoped<ITokenApplicationService, TokenApplicationService>();
 // KSGrants + McpUserTokens so the cascade-on-deactivate / -delete
 // paths run in a single transaction.
 builder.Services.AddScoped<AuthService>();
+// Keycloak SSO 用户同步(每个 JwtBearer OnTokenValidated 调用一次)。
+// Scoped — 与请求 DbContext 共享。
+builder.Services.AddScoped<SsoUserSyncService>();
+// SsoOptions 绑定(spec §4.1)。Authority 为空 = SSO 整体禁用,见
+// AddJwtBearer 条件注册(Task 4)。
+builder.Services.Configure<SsoOptions>(
+    builder.Configuration.GetSection(SsoOptions.SectionName));
 // Application service facade for the five admin-side auth.* dispatcher
 // arms (update_me / list_users / create_user / update_user /
 // delete_user). Scoped — shares the request DbContext with AuthService
