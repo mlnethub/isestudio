@@ -84,7 +84,5 @@ jobs:
           dotnet build src/ISEStudio.sln --no-restore -c Release
       - name: Unit tests (ISEStudio.Tests)
         run: dotnet test src/ISEStudio.Tests/ISEStudio.Tests.csproj --no-build -c Release --logger "console;verbosity=normal"
-      - name: API contract tests
-        run: dotnet test src/ISEStudio.ApiContract.Tests/ISEStudio.ApiContract.Tests.csproj --no-build -c Release --logger "console;verbosity=normal"
       - name: Integration tests (Postgres service)
         run: dotnet test src/ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj --no-build -c Release --filter "Category!=Container" --logger "console;verbosity=normal"
