@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Tests.Authentication;
+using ISEStudio.Tests.Extraction;
 using ISEStudio.Tests.Persistence;
 
 namespace ISEStudio.Tests.Authorization;
@@ -36,7 +37,20 @@ namespace ISEStudio.Tests.Authorization;
 /// output path and the test records the actual status of every
 /// (endpoint, actor) pair to that file instead of asserting — the
 /// resulting map can be diffed against the expected JSON.</para>
+///
+/// <para>The class joins <c>ExtractionTestCollection</c> because the
+/// extract rows POST into the real orchestrator, which resolves the
+/// process-wide <see cref="FakeChatClientFactory.Default"/>. Outside
+/// the collection, an extraction test running in parallel could have a
+/// fake chat client installed at the moment the matrix's extract rows
+/// fire — the orchestrator would then create a real job row (200
+/// instead of the pinned 500) whose pending state leaks a cross-KS 409
+/// into later mutation rows. Inside the collection the matrix serialises
+/// against every factory-mutating test, and the seed step resets the
+/// factory so the extract rows deterministically fail client creation
+/// before a job row exists.</para>
 /// </summary>
+[Collection(ExtractionTestCollection.Name)]
 public sealed class EndpointRoleMatrixTests
 {
     // One shared host for all theory cases: rebuilding the factory per
@@ -225,6 +239,16 @@ public sealed class EndpointRoleMatrixTests
                 if (actor == "owner") s_ownerId = user.Id;
             }
             db.SaveChanges();
+
+            // Detach any fake chat client a previous collection-mate
+            // test installed. The matrix's extract rows expect the
+            // orchestrator to fail client creation (→ 500) BEFORE it
+            // inserts a job row; a leftover installed client would
+            // instead create a real pending job (→ 200) whose active
+            // state then leaks a cross-KS 409 into later rows. The
+            // collection membership above guarantees no parallel test
+            // re-installs a client while the matrix runs.
+            FakeChatClientFactory.Default.Reset();
 
             s_seeded = true;
         }
