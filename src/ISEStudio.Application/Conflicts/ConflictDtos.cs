@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace ISEStudio.Conflicts;
+namespace ISEStudio.Application.Conflicts;
 
 // ---------------------------------------------------------------------------
 // Wire DTOs for /api/knowledge/{ks_id}/conflicts* and

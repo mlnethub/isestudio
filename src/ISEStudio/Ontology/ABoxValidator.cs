@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using ISEStudio.Application.Ontology;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;

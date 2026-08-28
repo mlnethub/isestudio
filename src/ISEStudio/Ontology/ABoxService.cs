@@ -1,8 +1,11 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Application.Integration;
+using ISEStudio.Application.Ontology;
 using ISEStudio.Authorization;
 using ISEStudio.Extraction;
+using ISEStudio.Integration;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Knowledge;
@@ -964,6 +967,11 @@ public static class ABoxServiceCollectionExtensions
     public static IServiceCollection AddAboxServices(this IServiceCollection services)
     {
         services.AddScoped<ABoxService>();
+        // Application-service layer over ABoxService: unpacks the
+        // InternalRequest envelope (path / query / body / actor) and
+        // returns strongly-typed DTOs to the dispatcher. Wired here so
+        // the existing Program.cs call site picks it up transparently.
+        services.AddScoped<IABoxApplicationService, ABoxApplicationService>();
         return services;
     }
 }

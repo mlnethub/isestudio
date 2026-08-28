@@ -1,3 +1,4 @@
+using ISEStudio.Application.Ontology;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;

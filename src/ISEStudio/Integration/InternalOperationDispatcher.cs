@@ -3,8 +3,9 @@ using Microsoft.EntityFrameworkCore;
 using ISEStudio.Api;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Application.Integration;
+using ISEStudio.Application.Ontology;
+using ISEStudio.Application.Conflicts;
 using ISEStudio.Authentication;
-using ISEStudio.Conflicts;
 using ISEStudio.Documents;
 using ISEStudio.EntityResolution;
 using ISEStudio.Exports;
@@ -1585,231 +1586,113 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     //   translates it to the { "detail": "..." } envelope the Python
     //   backend emits.
 
-    private ConflictService? ResolveConflictService() =>
-        _services.GetService(typeof(ConflictService)) as ConflictService;
+    // -- conflicts ----------------------------------------------------------
+    // Real CRUD via ConflictApplicationService. Each helper below is a
+    // one-line delegate through InvokeConflictAsync; the application
+    // service owns envelope unpacking (KnowledgeSystemGuid / ResourceId /
+    // body) and the deterministic + agentic detect fanout
+    // (ConflictDetectionOrchestrator). On a missing app service OR a
+    // null domain return, the dispatcher emits the same schema-compatible
+    // fallback envelope the openapi-baseline contract test expects.
+
+    private Task<object?> InvokeConflictListAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeConflictAsync(request, ct,
+            async app => (object?)await app.ListAsync(request, ct).ConfigureAwait(false),
+            onMissing: Array.Empty<object>);
+
+    private Task<object?> InvokeConflictDetectAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeConflictAsync(request, ct,
+            async app => (object?)await app.DetectAsync(request, ct).ConfigureAwait(false),
+            onMissing: Array.Empty<object>);
+
+    private Task<object?> InvokeConflictGetContextAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeConflictAsync(request, ct,
+            async app => (object?)await app.GetContextAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyConflict);
+
+    private Task<object?> InvokeConflictDismissAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeConflictAsync(request, ct,
+            async app => (object?)await app.DismissAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyConflict);
+
+    private Task<object?> InvokeConflictReopenAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeConflictAsync(request, ct,
+            async app => (object?)await app.ReopenAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyConflict);
+
+    private Task<object?> InvokeConflictResolveAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeConflictAsync(request, ct,
+            async app => (object?)await app.ResolveAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyConflict,
+            onNull: () => new
+            {
+                resolved_cid = Guid.Empty,
+                open_conflicts = Array.Empty<object>(),
+                view = new { },
+            });
+
+    private Task<object?> InvokeConflictListReconciliationsAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeConflictAsync(request, ct,
+            async app => (object?)await app.ListReconciliationsAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyListResponse);
+
+    private Task<object?> InvokeConflictRevokeReconciliationAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeConflictAsync(request, ct,
+            async app => (object?)await app.RevokeReconciliationAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { ok = false },
+            onNull: () => new { deleted = 0 });
+
+    private Task<object?> InvokeConflictEditReconciliationReasonAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeConflictAsync(request, ct,
+            async app =>
+            {
+                // Project to {id, reason} to match the Python
+                // /api/knowledge/{id}/reconciliation/{reconciliationId}
+                // wire shape rather than the full ReconciliationOut
+                // record (which carries 11 fields).
+                var result = await app.EditReconciliationReasonAsync(request, ct).ConfigureAwait(false);
+                if (result is null) return EmptyReconciliation();
+                return (object?)new { id = result.Value.Id, reason = result.Value.Reason };
+            },
+            onMissing: EmptyReconciliation);
 
     /// <summary>
-    /// Parse the optional <c>status</c> / <c>ctype</c> query params. Python
-    /// accepts <c>all</c> as a sentinel that bypasses the default
-    /// <c>status="open"</c> filter; pass that through unchanged.
+    /// Common envelope for the nine <c>conflicts.*</c> helpers: resolve
+    /// the application service, hand off to the typed
+    /// <paramref name="call"/>, and collapse a null result (service not
+    /// wired OR envelope missing OR domain service returned null) to the
+    /// <paramref name="onMissing"/> fallback envelope &mdash; or, when the
+    /// caller distinguishes a "real null" from a "service-missing" case
+    /// (e.g. <c>conflicts.resolve</c>, <c>conflicts.revoke_reconciliation</c>),
+    /// to the <paramref name="onNull"/> envelope instead. Keeps each
+    /// helper a one-line expression so the dispatcher switch arm at
+    /// lines 152&ndash;160 stays shape-stable.
     /// </summary>
-    private static (string Status, string? Ctype) ReadConflictFilters(InternalRequest request)
+    private Task<object?> InvokeConflictAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IConflictApplicationService, Task<object?>> call,
+        Func<object> onMissing,
+        Func<object>? onNull = null)
     {
-        var status = "open";
-        string? ctype = null;
-        if (request.Query is not null)
+        var app = ResolveConflictAppService();
+        if (app is null)
         {
-            if (request.Query.TryGetValue("status", out var s) && !string.IsNullOrEmpty(s))
+            return Task.FromResult<object?>(onMissing());
+        }
+        return WrapAsync(async () =>
+        {
+            var out_ = await call(app).ConfigureAwait(false);
+            if (out_ is null)
             {
-                status = s!;
+                return (onNull ?? onMissing)();
             }
-            if (request.Query.TryGetValue("ctype", out var c) && !string.IsNullOrEmpty(c))
-            {
-                ctype = c;
-            }
-        }
-        return (status, ctype);
-    }
-
-    private Task<object?> InvokeConflictListAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        var (status, ctype) = ReadConflictFilters(request);
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.ListAsync(request.KnowledgeSystemGuid.Value, status, ctype, ct)
-                .ConfigureAwait(false);
-            return (object?)rows;
+            return out_;
         });
     }
 
-    private Task<object?> InvokeConflictDetectAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(Array.Empty<object>());
-        }
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.DetectAsync(request.KnowledgeSystemGuid.Value, ct)
-                .ConfigureAwait(false);
-
-            // Python conflicts.py runs the agentic triage right after the
-            // sync pass: resolve_open_conflicts_bg attaches recommendations
-            // to open duplicate / predicate_specialization conflicts (it
-            // never auto-applies). The agent self-gates on the
-            // agentic_conflict_resolution setting and on extraction_active,
-            // and swallows every LLM error, so the detect response is never
-            // affected. The returned rows are the pre-triage snapshot —
-            // matching Python, where the recommendation lands in the payload
-            // and surfaces on the next list/context read.
-            var agent = _services.GetService(typeof(ConflictAgent)) as ConflictAgent;
-            if (agent is not null)
-            {
-                await agent.TriageAsync(request.KnowledgeSystemGuid.Value, ct).ConfigureAwait(false);
-            }
-            // Python conflicts.py then runs structure_agent.attach_isolated_bg
-            // (same not-extraction_active gate): attach classes the LLM left
-            // unrooted under a broader kind. Self-gated on
-            // agentic_isolated_classes + extraction-active, swallows every
-            // LLM error, and its writes land in the graph (not the response),
-            // so the detect rows stay the pre-agent snapshot.
-            var structure = _services.GetService(typeof(StructureAgent)) as StructureAgent;
-            if (structure is not null)
-            {
-                await structure.AttachIsolatedAsync(request.KnowledgeSystemGuid.Value, model: null, ct)
-                    .ConfigureAwait(false);
-            }
-            return (object?)rows;
-        });
-    }
-
-    private Task<object?> InvokeConflictGetContextAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var conflictId))
-        {
-            return Task.FromResult<object?>(EmptyConflict());
-        }
-        return WrapAsync(async () =>
-        {
-            var ctx = await svc.GetContextAsync(request.KnowledgeSystemGuid.Value, conflictId, ct)
-                .ConfigureAwait(false);
-            return (object?)(ctx ?? EmptyConflict());
-        });
-    }
-
-    private Task<object?> InvokeConflictDismissAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var conflictId))
-        {
-            return Task.FromResult<object?>(EmptyConflict());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.DismissAsync(request.KnowledgeSystemGuid.Value, conflictId,
-                request.Actor.UserId, ct).ConfigureAwait(false);
-            return (object?)(row ?? EmptyConflict());
-        });
-    }
-
-    private Task<object?> InvokeConflictReopenAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var conflictId))
-        {
-            return Task.FromResult<object?>(EmptyConflict());
-        }
-        return WrapAsync(async () =>
-        {
-            var row = await svc.ReopenAsync(request.KnowledgeSystemGuid.Value, conflictId,
-                request.Actor.UserId, ct).ConfigureAwait(false);
-            return (object?)(row ?? EmptyConflict());
-        });
-    }
-
-    private Task<object?> InvokeConflictResolveAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveConflictService();
-        var body = DeserializeBody<ResolveConflictRequest>(request);
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var conflictId)
-            || body is null || string.IsNullOrEmpty(body.ResolutionId))
-        {
-            if (body is null || string.IsNullOrEmpty(body.ResolutionId))
-            {
-                throw new InvalidOperationException(
-                    "Request body with resolution_id is required for conflicts.resolve.");
-            }
-            return Task.FromResult<object?>(EmptyConflict());
-        }
-        return WrapAsync(async () =>
-        {
-            var response = await svc.ResolveAsync(request.KnowledgeSystemGuid.Value, conflictId,
-                body.ResolutionId, request.Actor.UserId, ct).ConfigureAwait(false);
-            if (response is null)
-            {
-                return (object?)new
-                {
-                    resolved_cid = Guid.Empty,
-                    open_conflicts = Array.Empty<object>(),
-                    view = new { },
-                };
-            }
-            return (object?)response;
-        });
-    }
-
-    private Task<object?> InvokeConflictListReconciliationsAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(EmptyListResponse());
-        }
-        var query = request.Query is not null && request.Query.TryGetValue("q", out var q) ? q : null;
-        var limit = request.Query is not null && request.Query.TryGetValue("limit", out var l)
-            && int.TryParse(l, out var lp) ? lp : 50;
-        var offset = request.Query is not null && request.Query.TryGetValue("offset", out var o)
-            && int.TryParse(o, out var op) ? op : 0;
-        return WrapAsync(async () =>
-        {
-            var rows = await svc.ListReconciliationsAsync(request.KnowledgeSystemGuid.Value,
-                query, limit, offset, ct).ConfigureAwait(false);
-            return (object?)rows;
-        });
-    }
-
-    private Task<object?> InvokeConflictRevokeReconciliationAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveConflictService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var reconciliationId))
-        {
-            return Task.FromResult<object?>(new { ok = false });
-        }
-        return WrapAsync(async () =>
-        {
-            var deleted = await svc.RevokeReconciliationAsync(request.KnowledgeSystemGuid.Value,
-                reconciliationId, request.Actor.UserId, ct).ConfigureAwait(false);
-            return (object?)new { deleted = deleted.HasValue ? 1 : 0 };
-        });
-    }
-
-    private Task<object?> InvokeConflictEditReconciliationReasonAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveConflictService();
-        var body = DeserializeBody<EditReconciliationReasonRequest>(request);
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || !Guid.TryParse(request.ResourceId, out var reconciliationId))
-        {
-            return Task.FromResult<object?>(EmptyReconciliation());
-        }
-        var reason = body?.Reason ?? string.Empty;
-        return WrapAsync(async () =>
-        {
-            var result = await svc.EditReconciliationReasonAsync(request.KnowledgeSystemGuid.Value,
-                reconciliationId, reason, request.Actor.UserId, ct).ConfigureAwait(false);
-            if (result is null)
-            {
-                return (object?)EmptyReconciliation();
-            }
-            return (object?)new
-            {
-                id = result.Value.Id,
-                reason = result.Value.Reason,
-            };
-        });
-    }
+    private IConflictApplicationService? ResolveConflictAppService() =>
+        _services.GetService(typeof(IConflictApplicationService)) as IConflictApplicationService;
 
     private static object EmptyQueryResponse() => new
     {
@@ -2562,254 +2445,123 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
     }
 
     // ----- abox helpers -----
-    // Real implementations for the individual-CRUD half of the ABox
-    // surface. Reads land directly (Viewer role gate inside the service);
-    // writes run through RunWithExtractionGuardAsync (B7a slice) so a
-    // mutation that lands during a running extraction is rejected with
-    // 409 + job_id envelope. Reset / validate / fix_violation /
-    // validation_decisions stay on placeholder factory methods until B7c
-    // wires ABoxValidator.ApplyFix + ValidationDecisionService.
+    // Pilot slice of the dispatcher → application-service split.
+    //
+    // Each helper now delegates to <see cref="IABoxApplicationService"/>
+    // (the envelope unpacking — query parsing, body deserialization, the
+    // loose `"_"` body key, `ExtractIriFromBody` — has moved into
+    // <see cref="ABoxApplicationService"/>). The dispatcher keeps ownership
+    // of three transport-level concerns:
+    //
+    //   1. The service-locator null-degrade branch (hand-built dispatcher
+    //      in <c>FacadeSmokeTests</c> doesn't register
+    //      <see cref="ABoxApplicationService"/>).
+    //   2. The anonymous snake_case fallback envelopes (`{classes:[],
+    //      total:0}`, `{items:[],total:0}`, `EmptyIndividualRef()`,
+    //      `{removed:0}`, `EmptyResetAboxResponse()`,
+    //      `EmptyValidateReport()`, `EmptyListResponse()`,
+    //      `{revoked:Guid.Empty}`) — these are pinned byte-for-byte by
+    //      <c>InternalApiContractTests</c> and don't match the typed DTO
+    //      JSON shape, so they can't be baked into the app service.
+    //   3. The <c>RunWithExtractionGuardAsync</c> wrapper on the six
+    //      write arms (lives at the switch arm, not the helper).
+    //
+    // The helper signature stays `Task<object?>` so the switch arm keeps
+    // its one-line shape — see lines 186–204.
 
-    private ABoxService? ResolveAboxService() =>
-        _services.GetService(typeof(ABoxService)) as ABoxService;
+    private IABoxApplicationService? ResolveAboxAppService() =>
+        _services.GetService(typeof(IABoxApplicationService)) as IABoxApplicationService;
 
-    private Task<object?> InvokeAboxListClassesAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(new { classes = Array.Empty<object>(), total = 0 });
-        }
-        return WrapAsync(async () =>
-        {
-            var out_ = await svc.ListClassesAsync(request.KnowledgeSystemGuid.Value, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)out_ is null
-                ? new { classes = Array.Empty<object>(), total = 0 }
-                : out_;
-        });
-    }
+    private Task<object?> InvokeAboxListClassesAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.ListClassesAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { classes = Array.Empty<object>(), total = 0 });
 
-    private Task<object?> InvokeAboxListIndividualsAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(new { items = Array.Empty<object>(), total = 0 });
-        }
-        var classIri = request.Query is not null && request.Query.TryGetValue("class_iri", out var ci)
-            ? ci : null;
-        var q = request.Query is not null && request.Query.TryGetValue("q", out var qq) ? qq : null;
-        var limit = request.Query is not null && request.Query.TryGetValue("limit", out var l)
-            && int.TryParse(l, out var lp) ? lp : 20;
-        var offset = request.Query is not null && request.Query.TryGetValue("offset", out var o)
-            && int.TryParse(o, out var op) ? op : 0;
-        return WrapAsync(async () =>
-        {
-            var out_ = await svc.ListIndividualsAsync(
-                request.KnowledgeSystemGuid.Value, classIri, q, limit, offset, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)out_ is null
-                ? new { items = Array.Empty<object>(), total = 0 }
-                : out_;
-        });
-    }
+    private Task<object?> InvokeAboxListIndividualsAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.ListIndividualsAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { items = Array.Empty<object>(), total = 0 });
 
-    private Task<object?> InvokeAboxGetIndividualAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        var iri = request.Query is not null && request.Query.TryGetValue("iri", out var v) ? v : null;
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(iri))
-        {
-            return Task.FromResult<object?>(EmptyIndividualRef());
-        }
-        return WrapAsync(async () =>
-        {
-            var ind = await svc.GetIndividualAsync(
-                request.KnowledgeSystemGuid.Value, iri!, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(ind ?? EmptyIndividualRef());
-        });
-    }
+    private Task<object?> InvokeAboxGetIndividualAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.GetIndividualAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyIndividualRef);
 
-    private Task<object?> InvokeAboxCreateIndividualAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
-        {
-            return Task.FromResult<object?>(EmptyIndividualRef());
-        }
-        var body = DeserializeBody<CreateIndividualRequest>(request);
-        if (body is null)
-        {
-            return Task.FromResult<object?>(EmptyIndividualRef());
-        }
-        return WrapAsync(async () =>
-        {
-            var ind = await svc.CreateIndividualAsync(
-                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(ind ?? EmptyIndividualRef());
-        });
-    }
+    private Task<object?> InvokeAboxCreateIndividualAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.CreateIndividualAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyIndividualRef);
 
-    private Task<object?> InvokeAboxDeleteIndividualAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        var iri = ExtractIriFromBody(request);
-        if (svc is null || request.KnowledgeSystemGuid is null || string.IsNullOrEmpty(iri))
-        {
-            return Task.FromResult<object?>(new { removed = 0 });
-        }
-        return WrapAsync(async () =>
-        {
-            var resp = await svc.DeleteIndividualAsync(
-                request.KnowledgeSystemGuid.Value, iri!, request.Actor, ct).ConfigureAwait(false);
-            return (object?)resp is null
-                ? new { removed = 0 }
-                : resp;
-        });
-    }
+    private Task<object?> InvokeAboxDeleteIndividualAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.DeleteIndividualAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { removed = 0 });
 
-    private Task<object?> InvokeAboxAddAssertionAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
-        {
-            return Task.FromResult<object?>(EmptyIndividualRef());
-        }
-        var body = DeserializeBody<AssertionRequest>(request);
-        if (body is null)
-        {
-            return Task.FromResult<object?>(EmptyIndividualRef());
-        }
-        return WrapAsync(async () =>
-        {
-            var ind = await svc.AddAssertionAsync(
-                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(ind ?? EmptyIndividualRef());
-        });
-    }
+    private Task<object?> InvokeAboxAddAssertionAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.AddAssertionAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyIndividualRef);
 
-    private Task<object?> InvokeAboxRemoveAssertionAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
-        {
-            return Task.FromResult<object?>(EmptyIndividualRef());
-        }
-        var body = DeserializeBody<AssertionRequest>(request);
-        if (body is null)
-        {
-            return Task.FromResult<object?>(EmptyIndividualRef());
-        }
-        return WrapAsync(async () =>
-        {
-            var ind = await svc.RemoveAssertionAsync(
-                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(ind ?? EmptyIndividualRef());
-        });
-    }
+    private Task<object?> InvokeAboxRemoveAssertionAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.RemoveAssertionAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyIndividualRef);
 
     // ----------------------------------------------------------------------
     // B7c — reset / validate / fix_violation / validation decisions
     // ----------------------------------------------------------------------
 
-    private Task<object?> InvokeAboxResetAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
-        {
-            return Task.FromResult<object?>(EmptyResetAboxResponse());
-        }
-        var body = DeserializeBody<ResetAboxRequest>(request);
-        if (body is null)
-        {
-            return Task.FromResult<object?>(EmptyResetAboxResponse());
-        }
-        return WrapAsync(async () =>
-        {
-            var resp = await svc.ResetAsync(
-                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(resp ?? EmptyResetAboxResponse());
-        });
-    }
+    private Task<object?> InvokeAboxResetAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.ResetAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyResetAboxResponse);
 
-    private Task<object?> InvokeAboxValidateAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(EmptyValidateReport());
-        }
-        return WrapAsync(async () =>
-        {
-            var resp = await svc.ValidateAsync(
-                request.KnowledgeSystemGuid.Value, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(resp ?? EmptyValidateReport());
-        });
-    }
+    private Task<object?> InvokeAboxValidateAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.ValidateAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyValidateReport);
 
-    private Task<object?> InvokeAboxFixViolationAsync(InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null || request.Body is null)
-        {
-            return Task.FromResult<object?>(EmptyValidateReport());
-        }
-        var body = DeserializeBody<FixViolationRequest>(request);
-        if (body is null)
-        {
-            return Task.FromResult<object?>(EmptyValidateReport());
-        }
-        return WrapAsync(async () =>
-        {
-            var resp = await svc.FixViolationAsync(
-                request.KnowledgeSystemGuid.Value, body, request.Actor, ct).ConfigureAwait(false);
-            return (object?)(resp ?? EmptyValidateReport());
-        });
-    }
+    private Task<object?> InvokeAboxFixViolationAsync(InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.FixViolationAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyValidateReport);
 
     private Task<object?> InvokeAboxListValidationDecisionsAsync(
-        InternalRequest request, CancellationToken ct)
-    {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null)
-        {
-            return Task.FromResult<object?>(EmptyListResponse());
-        }
-        var q = request.Query is not null && request.Query.TryGetValue("q", out var qq) ? qq : null;
-        var limit = (int)ParseLongOrDefault(
-            request.Query is not null && request.Query.TryGetValue("limit", out var l) ? l : null,
-            50);
-        var offset = (int)ParseLongOrDefault(
-            request.Query is not null && request.Query.TryGetValue("offset", out var o) ? o : null,
-            0);
-        return WrapAsync(async () =>
-        {
-            var resp = await svc.ListValidationDecisionsAsync(
-                request.KnowledgeSystemGuid.Value, q, limit, offset, request.Actor, ct)
-                .ConfigureAwait(false);
-            return (object?)(resp ?? EmptyListResponse());
-        });
-    }
+        InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.ListValidationDecisionsAsync(request, ct).ConfigureAwait(false),
+            onMissing: EmptyListResponse);
 
     private Task<object?> InvokeAboxRevokeValidationDecisionAsync(
-        InternalRequest request, CancellationToken ct)
+        InternalRequest request, CancellationToken ct) =>
+        InvokeAboxAsync(request, ct,
+            async app => (object?)await app.RevokeValidationDecisionAsync(request, ct).ConfigureAwait(false),
+            onMissing: () => new { revoked = Guid.Empty });
+
+    /// <summary>
+    /// Common envelope for the twelve <c>abox.*</c> helpers: resolve the
+    /// app service, hand off to the typed <paramref name="call"/>, and
+    /// collapse a null result (service not wired OR envelope missing OR
+    /// domain service returned null) to the
+    /// <paramref name="onMissing"/> fallback envelope. Keeps each helper a
+    /// one-line expression so the dispatcher switch arm at lines
+    /// 186&ndash;204 stays shape-stable.
+    /// </summary>
+    private Task<object?> InvokeAboxAsync(
+        InternalRequest request,
+        CancellationToken ct,
+        Func<IABoxApplicationService, Task<object?>> call,
+        Func<object> onMissing)
     {
-        var svc = ResolveAboxService();
-        if (svc is null || request.KnowledgeSystemGuid is null
-            || string.IsNullOrEmpty(request.ResourceId)
-            || !Guid.TryParse(request.ResourceId, out var did))
+        var app = ResolveAboxAppService();
+        if (app is null)
         {
-            return Task.FromResult<object?>(new { revoked = Guid.Empty });
+            return Task.FromResult<object?>(onMissing());
         }
         return WrapAsync(async () =>
         {
-            var resp = await svc.RevokeValidationDecisionAsync(
-                request.KnowledgeSystemGuid.Value, did, request.Actor, ct)
-                .ConfigureAwait(false);
-            return resp is null
-                ? (object?)new { revoked = Guid.Empty }
-                : resp;
+            var out_ = await call(app).ConfigureAwait(false);
+            return out_ ?? onMissing();
         });
     }
 

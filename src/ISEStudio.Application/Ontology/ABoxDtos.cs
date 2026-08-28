@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace ISEStudio.Ontology;
+namespace ISEStudio.Application.Ontology;
 
 /// <summary>
 /// A single class entry for the ABox sidebar. <see cref="Count"/> is the
@@ -135,7 +135,7 @@ public sealed record ResetAboxResponse(
 /// <summary>
 /// Request body for <c>POST /abox/validate/fix</c>. Mirrors the Python
 /// <c>FixRequest</c> Pydantic model: <see cref="Op"/> is the raw fix
-/// payload dispatched by <see cref="ABoxValidator"/> (kind + per-kind
+/// payload dispatched by <c>ABoxValidator</c> (kind + per-kind
 /// fields like <c>iri</c> / <c>prop</c> / <c>target</c>), and
 /// <see cref="Summary"/> becomes the audit row's human-readable
 /// summary. The fix-op values are <see cref="JsonElement"/> because
@@ -165,7 +165,7 @@ public static class FixOpHelpers
 }
 
 /// <summary>
-/// One violation surfaced by <see cref="ABoxValidator.Validate"/>.
+/// One violation surfaced by <c>ABoxValidator.Validate</c>.
 /// Carries the individual ref + a non-empty <see cref="Fixes"/> list of
 /// one-click remediation ops (matches Python <c>violations[]</c>
 /// shape: <c>{id, type, severity, individual:{iri,label}, summary, fixes}</c>).

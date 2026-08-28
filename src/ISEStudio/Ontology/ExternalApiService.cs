@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Application.Ontology;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using Oxigraph;
