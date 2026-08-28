@@ -21,14 +21,14 @@
          Microsoft.Extensions.AI 10.7.0 -> Microsoft.Extensions.Hosting.Abstractions
          10.0.10 -> Microsoft.Extensions.Logging.Abstractions >= 10.0.10).
          NU1605 downgrade detection fails the restore otherwise. -->
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
-    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.10" />
-    <PackageReference Include="Npgsql" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.11" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.11" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
     <!-- AWSSDK.S3 is what the existing MinioBlobStore uses; the blob
          migration entry point builds an AmazonS3Client from CLI args so
          the PowerShell wrapper can wire MinIO without forcing the rest
          of the project to take a transitive SDK dependency. -->
-    <PackageReference Include="AWSSDK.S3" Version="3.7.*" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.102.4" />
     <!-- Oxigraph 0.5.8: the data-cutover RDF layer (Task 2) consumes the
          same disk-backed store wrapper the rest of ISEStudio already uses.
          The Migration project deliberately does NOT depend on
