@@ -7,6 +7,9 @@ using ISEStudio.Extraction.Dovetail.ABox;
 using ISEStudio.Extraction.Dovetail.ABox.Steps;
 using ISEStudio.Extraction.Dovetail.Adapters;
 using ISEStudio.Extraction.Dovetail.AgentChain.Steps;
+using ISEStudio.Extraction.Dovetail.Job;
+using ISEStudio.Extraction.Dovetail.Job.Pipelines;
+using ISEStudio.Extraction.Dovetail.Job.Steps;
 using ISEStudio.Extraction.Dovetail.TBox;
 using ISEStudio.Extraction.Dovetail.TBox.Steps;
 using ISEStudio.Extraction.Dovetail.Terminology.Steps;
@@ -153,6 +156,21 @@ public static class DovetailPipelineRegistrations
                     options: sp.GetRequiredService<IOptions<ISEStudioOptions>>(),
                     logger: sp.GetRequiredService<ILogger<ProposalStep>>());
         });
+
+        // 9. Job slice 5 step classes + 3 pipelines + router (per spec §6.1).
+        //    SCOPED: orchestrator resolves JobPipeline from per-job scope (Slice 3 R2 lifecycle).
+        //    NoOpAgentStep / PerPhaseCatchStep<TOut> / ChainAdapter / NoOpSegment3 are static
+        //    factories or generic types — created inline inside pipelines, NOT registered.
+        services.AddScoped<TBoxLayerStep>();
+        services.AddScoped<ABoxLayerStep>();
+        services.AddScoped<AgentStep>();
+        services.AddScoped<CorpusStep>();
+        services.AddScoped<HierarchyStep>();
+        services.AddScoped<TerminologyStep>();
+        services.AddScoped<TBoxOnlyJobPipeline>();
+        services.AddScoped<ABoxOnlyJobPipeline>();
+        services.AddScoped<CombinedJobPipeline>();
+        services.AddScoped<JobPipelineRouter>();
 
         return services;
     }
