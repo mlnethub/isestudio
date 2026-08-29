@@ -1,0 +1,108 @@
+<html>
+  <head>
+    <title>ISEStudio | Dovetail Report</title>
+
+    <link rel="stylesheet" href="vendor/pico.indigo.min.css">
+
+    <style>
+      .mermaid {
+        background-color: transparent;
+
+        :is(p, dl, ol, ul, table) {
+          color: inherit;
+        }
+      }
+
+      table, hr {
+        margin: 0;
+
+        th, td {
+          background-color: transparent;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="container">
+      <nav aria-label="Pipelines">
+        <ul>
+          <li>
+            <a href="index.html">
+        <svg height="32" viewBox="2 16 96 68" role="img" aria-label="Dovetail">
+          <defs>
+            <linearGradient id="dovetailLogoGradient" x1="0%" y1="0%" x2="100%" y2="0%" gradientUnits="userSpaceOnUse" gradientTransform="rotate(45)">
+              <stop offset="0%" stop-color="#FF7D00" />
+              <stop offset="100%" stop-color="#8A4FA8" />
+            </linearGradient>
+          </defs>
+          <path d="M12,50 L28,50 L20,26 L48,26 L40,50 L60,50 L52,74 L80,74 L72,50 L88,50"
+                fill="none" stroke="url(#dovetailLogoGradient)" stroke-width="7"
+                stroke-linecap="round" stroke-linejoin="round" />
+          <circle cx="12" cy="50" r="6" fill="url(#dovetailLogoGradient)" />
+          <circle cx="28" cy="50" r="6" fill="url(#dovetailLogoGradient)" />
+          <circle cx="20" cy="26" r="6" fill="url(#dovetailLogoGradient)" />
+          <circle cx="48" cy="26" r="6" fill="url(#dovetailLogoGradient)" />
+          <circle cx="40" cy="50" r="6" fill="url(#dovetailLogoGradient)" />
+          <circle cx="60" cy="50" r="6" fill="url(#dovetailLogoGradient)" />
+          <circle cx="52" cy="74" r="6" fill="url(#dovetailLogoGradient)" />
+          <circle cx="80" cy="74" r="6" fill="url(#dovetailLogoGradient)" />
+          <circle cx="72" cy="50" r="6" fill="url(#dovetailLogoGradient)" />
+          <circle cx="88" cy="50" r="6" fill="url(#dovetailLogoGradient)" />
+        </svg>
+              <strong>ISEStudio</strong>
+            </a>
+          </li>
+        </ul>
+        <ul>
+          <li>
+            <details class="dropdown">
+              <summary>Pipelines</summary>
+              <ul dir="rtl">
+                <li><a href="ISEStudio.Extraction.Dovetail.ABox.ABoxJobPipeline.html">ISEStudio.Extraction.Dovetail.ABox.ABoxJobPipeline</a></li>
+                <li><a href="ISEStudio.Extraction.Dovetail.TBox.TBoxChunkPipeline.html">ISEStudio.Extraction.Dovetail.TBox.TBoxChunkPipeline</a></li>
+                <li><a href="ISEStudio.Extraction.Dovetail.TBox.TBoxJobPipeline.html">ISEStudio.Extraction.Dovetail.TBox.TBoxJobPipeline</a></li>
+              </ul>
+            </details>
+          </li>
+        </ul>
+      </nav>
+    </header>
+
+    <main class="container">
+      <div class="grid">
+        <div>
+          <table>
+            <thead><tr><th>Pipelines</th></tr></thead>
+            <tbody>
+              <tr><td><a href="ISEStudio.Extraction.Dovetail.ABox.ABoxJobPipeline.html">ISEStudio.Extraction.Dovetail.ABox.ABoxJobPipeline</a></td></tr>
+              <tr><td><a href="ISEStudio.Extraction.Dovetail.TBox.TBoxChunkPipeline.html">ISEStudio.Extraction.Dovetail.TBox.TBoxChunkPipeline</a></td></tr>
+              <tr><td><a href="ISEStudio.Extraction.Dovetail.TBox.TBoxJobPipeline.html">ISEStudio.Extraction.Dovetail.TBox.TBoxJobPipeline</a></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <article>
+            <hr/>
+            <table>
+              <tbody>
+                <tr><th scope="row">Source project</th><td>ISEStudio.csproj</td></tr>
+                <tr><th scope="row">Pipelines discovered</th><td>3</td></tr>
+                <tr><th scope="row">Dovetail version</th><td>1.0.0.0</td></tr>
+                <tr><th scope="row">Dovetail.Report version</th><td>1.0.0.0</td></tr>
+                <tr><th scope="row">Generated</th><td>2026-08-29 03:40 UTC</td></tr>
+              </tbody>
+            </table>
+          </article>
+        </div>
+      </div>
+    </main>
+
+    <script>
+      document.querySelector("nav").addEventListener("click", (e) => {
+        if (e.target.tagName === "A") {
+          e.target.closest("details")?.removeAttribute("open");
+        }
+      });
+    </script>
+  </body>
+</html>
