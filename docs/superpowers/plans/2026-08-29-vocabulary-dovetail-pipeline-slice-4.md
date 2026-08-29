@@ -36,6 +36,7 @@
 | Layer | File | Responsibility |
 |------|------|----------------|
 | Records | `src/ISEStudio/Extraction/Dovetail/Terminology/TerminologyInputs.cs` | `TerminologyInput` + `TermSyncCarry`(spec §4 verbatim) |
+| Carries | `src/ISEStudio/Extraction/Dovetail/Terminology/TerminologyCarries.cs` | 3 per-stage marker wrappers(`EntitySyncCarry`/`AliasCarry`/`BroaderCarry`)— DOVE017 shape uniqueness |
 | Service split | `src/ISEStudio/Extraction/TerminologyService.cs` (modify) | SyncCore 拆 6 internal 成员,SyncAsync body 重写 |
 | Step 1 | `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/StaleMappingStep.cs` | 1 input → carry;PrepareCarry + Pass 1 + try/catch |
 | Step 2 | `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/EntitySyncStep.cs` | 2 inputs → carry;Pass 2 |
@@ -664,6 +665,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 ### Task 3: 4 pass step classes + 8 tests
 
 **Files:**
+- Create: `src/ISEStudio/Extraction/Dovetail/Terminology/TerminologyCarries.cs`
 - Create: `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/StaleMappingStep.cs`
 - Create: `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/EntitySyncStep.cs`
 - Create: `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/AliasStep.cs`
@@ -678,6 +680,8 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Produces: 4 step classes implementing `IPipelineSegment<...>`(Task 5 pipeline + Task 6 DI 使用)
 
 **行为契约(spec §5 D5)**:每个 pass step 的 `ExecuteAsync`:`catch (OperationCanceledException) { throw; } catch (Exception ex) { return new TermSyncCarry(null, null, null, 0, Error: ex.Message, Skipped: true); }`。短路判定在 pass 方法内部(不重复);step 层只做 try/catch。
+
+**Ruling note (DOVE017 — SDD 执行期发现的框架约束,预检只查了 DOVE006)**:Dovetail 1.0.0 的 `AddPipelines()` 为每个 segment 按其接口形状注册,两个 segment 共享同一 `(TIn, TCtx, TOut)` 形状时编译报 DOVE017(无 opt-out 特性)。brief 原文的 EntitySyncStep/AliasStep/BroaderStep 共享 `IPipelineSegment<TerminologyInput, TermSyncCarry, TermSyncCarry>` → 项目无法编译。修正(scratch 项目验证通过):3 个 per-stage wrapper record(`EntitySyncCarry`/`AliasCarry`/`BroaderCarry(TermSyncCarry Carry)`)使每个 segment 形状唯一;步骤在委托边界 unwrap via `carry.Carry`;行为零变化。Task 4 的 ProposalStep 输入相应改为 `BroaderCarry`(见 Task 4)。
 
 - [ ] **Step 1: Write 8 failing tests**
 
@@ -849,10 +853,10 @@ public class EntitySyncStepTests : IClassFixture<TerminologyServiceFixture>, IAs
         var step = new EntitySyncStep(svc, NullLogger<EntitySyncStep>.Instance);
         var carry = step.ExecuteAsync(input, init, CancellationToken.None);
 
-        Assert.Null(carry.Error);
-        Assert.Equal(2, carry.TermsAdded);
-        Assert.Equal(2, carry.TermsMapped);
-        Assert.Equal(0, carry.MappingConflicts);
+        Assert.Null(carry.Carry.Error);
+        Assert.Equal(2, carry.Carry.TermsAdded);
+        Assert.Equal(2, carry.Carry.TermsMapped);
+        Assert.Equal(0, carry.Carry.MappingConflicts);
 
         var view = new SkosManager(_fx.Store).BuildView(_ks);
         Assert.Equal(2, view.Stats.ConceptCount);
@@ -876,9 +880,9 @@ public class EntitySyncStepTests : IClassFixture<TerminologyServiceFixture>, IAs
             malformed,
             CancellationToken.None);
 
-        Assert.NotNull(carry.Error);
-        Assert.True(carry.Skipped);
-        Assert.Null(carry.SchemeIri);
+        Assert.NotNull(carry.Carry.Error);
+        Assert.True(carry.Carry.Skipped);
+        Assert.Null(carry.Carry.SchemeIri);
     }
 
     // SeedClasses / SeedMutation helpers — identical to StaleMappingStepTests.
@@ -972,9 +976,9 @@ public class AliasStepTests : IClassFixture<TerminologyServiceFixture>, IAsyncLi
         var step = new AliasStep(svc, NullLogger<AliasStep>.Instance);
         var carry = step.ExecuteAsync(input, synced, CancellationToken.None);
 
-        Assert.Null(carry.Error);
-        Assert.Equal(1, carry.AliasesAdded);
-        Assert.Equal(0, carry.TermsAdded);
+        Assert.Null(carry.Carry.Error);
+        Assert.Equal(1, carry.Carry.AliasesAdded);
+        Assert.Equal(0, carry.Carry.TermsAdded);
 
         var view = manager.BuildView(_ks);
         var concept = view.Concepts.Single(c => c.MappedEntityIri == pumpIri);
@@ -991,16 +995,16 @@ public class AliasStepTests : IClassFixture<TerminologyServiceFixture>, IAsyncLi
         // pass, and the step converts it to an Error carry (D5).
         var svc = new TerminologyService(_fx.Store);
         var step = new AliasStep(svc, NullLogger<AliasStep>.Instance);
-        var malformed = new TermSyncCarry("http://x/scheme", null, null, 0);
+        var malformed = new AliasCarry(new TermSyncCarry("http://x/scheme", null, null, 0));
 
         var carry = step.ExecuteAsync(
             new TerminologyInput(_ks, Guid.NewGuid(), null, false),
             malformed,
             CancellationToken.None);
 
-        Assert.NotNull(carry.Error);
-        Assert.True(carry.Skipped);
-        Assert.Null(carry.SchemeIri);
+        Assert.NotNull(carry.Carry.Error);
+        Assert.True(carry.Carry.Skipped);
+        Assert.Null(carry.Carry.SchemeIri);
     }
 
     private void SeedDefaultScheme(SkosManager manager) =>
@@ -1096,9 +1100,9 @@ public class BroaderStepTests : IClassFixture<TerminologyServiceFixture>, IAsync
         var step = new BroaderStep(svc, NullLogger<BroaderStep>.Instance);
         var carry = step.ExecuteAsync(input, aliased, CancellationToken.None);
 
-        Assert.Null(carry.Error);
-        Assert.Equal(1, carry.BroaderAdded);
-        Assert.Equal(2, carry.TermsAdded);
+        Assert.Null(carry.Carry.Error);
+        Assert.Equal(1, carry.Carry.BroaderAdded);
+        Assert.Equal(2, carry.Carry.TermsAdded);
 
         var view = new SkosManager(_fx.Store).BuildView(_ks);
         var child = view.Concepts.Single(c => c.DisplayLabel == "Centrifugal Pump");
@@ -1114,16 +1118,16 @@ public class BroaderStepTests : IClassFixture<TerminologyServiceFixture>, IAsync
         // pass, and the step converts it to an Error carry (D5).
         var svc = new TerminologyService(_fx.Store);
         var step = new BroaderStep(svc, NullLogger<BroaderStep>.Instance);
-        var malformed = new TermSyncCarry("http://x/scheme", null, null, 0);
+        var malformed = new BroaderCarry(new TermSyncCarry("http://x/scheme", null, null, 0));
 
         var carry = step.ExecuteAsync(
             new TerminologyInput(_ks, Guid.NewGuid(), null, false),
             malformed,
             CancellationToken.None);
 
-        Assert.NotNull(carry.Error);
-        Assert.True(carry.Skipped);
-        Assert.Null(carry.SchemeIri);
+        Assert.NotNull(carry.Carry.Error);
+        Assert.True(carry.Carry.Skipped);
+        Assert.Null(carry.Carry.SchemeIri);
     }
 
     // SeedMutation helper — identical to StaleMappingStepTests.
@@ -1149,7 +1153,32 @@ public class BroaderStepTests : IClassFixture<TerminologyServiceFixture>, IAsync
 Run: `dotnet test --no-restore src/ISEStudio.Tests/ISEStudio.Tests.csproj --filter "FullyQualifiedName~Dovetail.Terminology.Steps" --nologo`
 Expected: FAIL with `CS0246: 未能找到类型或命名空间名"StaleMappingStep"`(and similar)
 
-- [ ] **Step 3: Write the 4 step classes**
+- [ ] **Step 3: Write the 3 stage-carrier records + 4 step classes**
+
+Create `src/ISEStudio/Extraction/Dovetail/Terminology/TerminologyCarries.cs`:
+
+```csharp
+namespace ISEStudio.Extraction.Dovetail.Terminology;
+
+/// <summary>
+/// Per-stage carrier records for the terminology DAG. Dovetail 1.0.0's
+/// <c>AddPipelines()</c> generator registers every segment against its
+/// interface shape and raises DOVE017 when two segments share one — the
+/// three sync passes would otherwise all be
+/// <c>IPipelineSegment&lt;TerminologyInput, TermSyncCarry, TermSyncCarry&gt;</c>.
+/// Each stage therefore returns a thin marker wrapper around the shared
+/// <see cref="TermSyncCarry"/>; steps unwrap via <c>Carry</c> at the
+/// delegation boundary, so the deterministic behavior is unchanged
+/// (SDD ruling — plan pre-flight checked DOVE006 but missed DOVE017).
+/// </summary>
+public sealed record EntitySyncCarry(TermSyncCarry Carry);
+
+/// <summary>Stage marker for the alias pass (DOVE017 shape uniqueness).</summary>
+public sealed record AliasCarry(TermSyncCarry Carry);
+
+/// <summary>Stage marker for the broader pass (DOVE017 shape uniqueness).</summary>
+public sealed record BroaderCarry(TermSyncCarry Carry);
+```
 
 Create `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/StaleMappingStep.cs`:
 
@@ -1218,7 +1247,7 @@ namespace ISEStudio.Extraction.Dovetail.Terminology.Steps;
 /// becomes an <c>Error</c>+<c>Skipped</c> carry so every downstream step
 /// short-circuits (spec §5 D5).
 /// </summary>
-public sealed class EntitySyncStep : IPipelineSegment<TerminologyInput, TermSyncCarry, TermSyncCarry>
+public sealed class EntitySyncStep : IPipelineSegment<TerminologyInput, TermSyncCarry, EntitySyncCarry>
 {
     private readonly TerminologyService _terminology;
     private readonly ILogger<EntitySyncStep> _logger;
@@ -1229,7 +1258,7 @@ public sealed class EntitySyncStep : IPipelineSegment<TerminologyInput, TermSync
         _logger = logger;
     }
 
-    public Task<TermSyncCarry> ExecuteAsync(
+    public Task<EntitySyncCarry> ExecuteAsync(
         TerminologyInput input,
         TermSyncCarry carry,
         CancellationToken cancellationToken)
@@ -1237,7 +1266,8 @@ public sealed class EntitySyncStep : IPipelineSegment<TerminologyInput, TermSync
         try
         {
             return Task.FromResult(
-                _terminology.PassEntitySync(input.Ks, carry, cancellationToken));
+                new EntitySyncCarry(
+                    _terminology.PassEntitySync(input.Ks, carry, cancellationToken)));
         }
         catch (OperationCanceledException)
         {
@@ -1247,7 +1277,8 @@ public sealed class EntitySyncStep : IPipelineSegment<TerminologyInput, TermSync
         {
             _logger.LogWarning(ex, "EntitySyncStep: pass 2 failed (fail-soft carry)");
             return Task.FromResult(
-                new TermSyncCarry(null, null, null, 0, Error: ex.Message, Skipped: true));
+                new EntitySyncCarry(
+                    new TermSyncCarry(null, null, null, 0, Error: ex.Message, Skipped: true)));
         }
     }
 }
@@ -1269,7 +1300,7 @@ namespace ISEStudio.Extraction.Dovetail.Terminology.Steps;
 /// <c>Error</c>+<c>Skipped</c> carry so every downstream step
 /// short-circuits (spec §5 D5).
 /// </summary>
-public sealed class AliasStep : IPipelineSegment<TerminologyInput, TermSyncCarry, TermSyncCarry>
+public sealed class AliasStep : IPipelineSegment<TerminologyInput, EntitySyncCarry, AliasCarry>
 {
     private readonly TerminologyService _terminology;
     private readonly ILogger<AliasStep> _logger;
@@ -1280,15 +1311,16 @@ public sealed class AliasStep : IPipelineSegment<TerminologyInput, TermSyncCarry
         _logger = logger;
     }
 
-    public Task<TermSyncCarry> ExecuteAsync(
+    public Task<AliasCarry> ExecuteAsync(
         TerminologyInput input,
-        TermSyncCarry carry,
+        EntitySyncCarry carry,
         CancellationToken cancellationToken)
     {
         try
         {
             return Task.FromResult(
-                _terminology.PassAliasAdditions(input.Ks, carry, cancellationToken));
+                new AliasCarry(
+                    _terminology.PassAliasAdditions(input.Ks, carry.Carry, cancellationToken)));
         }
         catch (OperationCanceledException)
         {
@@ -1298,7 +1330,8 @@ public sealed class AliasStep : IPipelineSegment<TerminologyInput, TermSyncCarry
         {
             _logger.LogWarning(ex, "AliasStep: pass 3 failed (fail-soft carry)");
             return Task.FromResult(
-                new TermSyncCarry(null, null, null, 0, Error: ex.Message, Skipped: true));
+                new AliasCarry(
+                    new TermSyncCarry(null, null, null, 0, Error: ex.Message, Skipped: true)));
         }
     }
 }
@@ -1320,7 +1353,7 @@ namespace ISEStudio.Extraction.Dovetail.Terminology.Steps;
 /// <c>Error</c>+<c>Skipped</c> carry so every downstream step
 /// short-circuits (spec §5 D5).
 /// </summary>
-public sealed class BroaderStep : IPipelineSegment<TerminologyInput, TermSyncCarry, TermSyncCarry>
+public sealed class BroaderStep : IPipelineSegment<TerminologyInput, AliasCarry, BroaderCarry>
 {
     private readonly TerminologyService _terminology;
     private readonly ILogger<BroaderStep> _logger;
@@ -1331,15 +1364,16 @@ public sealed class BroaderStep : IPipelineSegment<TerminologyInput, TermSyncCar
         _logger = logger;
     }
 
-    public Task<TermSyncCarry> ExecuteAsync(
+    public Task<BroaderCarry> ExecuteAsync(
         TerminologyInput input,
-        TermSyncCarry carry,
+        AliasCarry carry,
         CancellationToken cancellationToken)
     {
         try
         {
             return Task.FromResult(
-                _terminology.PassBroaderAdditions(input.Ks, carry, cancellationToken));
+                new BroaderCarry(
+                    _terminology.PassBroaderAdditions(input.Ks, carry.Carry, cancellationToken)));
         }
         catch (OperationCanceledException)
         {
@@ -1349,7 +1383,8 @@ public sealed class BroaderStep : IPipelineSegment<TerminologyInput, TermSyncCar
         {
             _logger.LogWarning(ex, "BroaderStep: pass 4 failed (fail-soft carry)");
             return Task.FromResult(
-                new TermSyncCarry(null, null, null, 0, Error: ex.Message, Skipped: true));
+                new BroaderCarry(
+                    new TermSyncCarry(null, null, null, 0, Error: ex.Message, Skipped: true)));
         }
     }
 }
@@ -1384,10 +1419,10 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - Create: `src/ISEStudio.Tests/Extraction/Dovetail/Terminology/Steps/ProposalStepTests.cs`
 
 **Interfaces:**
-- Consumes: `TerminologyInput` + `TermSyncCarry` (Task 1), `TerminologyService.FoldCarry` (Task 2), `TerminologyAgent.SuggestAsync` (P3-1, unchanged)
+- Consumes: `TerminologyInput` + `TermSyncCarry` (Task 1), `BroaderCarry` (Task 3, DOVE017 ruling), `TerminologyService.FoldCarry` (Task 2), `TerminologyAgent.SuggestAsync` (P3-1, unchanged)
 - Produces: `ProposalStep` implementing `IPipelineSegment<TerminologyInput, TermSyncCarry, TerminologyResult>`(Task 5 + Task 6 使用)
 
-**行为契约(spec §5 D6 + D7)**:gating(`input.SuggestEnabled && carry.Error is null && carry.SchemeIri 非空`)在 step 内判;agent 异常**不吞**,原样传播(P1-4 行为一致 — orchestrator 外层 catch → `QuadChangeCapture.MarkError()`);`_agent` null(hand-built)时 fail-soft 折叠。
+**行为契约(spec §5 D6 + D7)**:gating(`input.SuggestEnabled && carry.Error is null && carry.SchemeIri 非空`)在 step 内判;agent 异常**不吞**,原样传播(P1-4 行为一致 — orchestrator 外层 catch → `QuadChangeCapture.MarkError()`);`_agent` null(hand-built)时 fail-soft 折叠。**Task 3 ruling 的延续:输入为 `BroaderCarry`(DOVE017 wrapper),step 首行 `var carry = broaderCarry.Carry;` 解包后逻辑与 brief 原文一致。**
 
 - [ ] **Step 1: Write 3 failing tests**
 
@@ -1445,7 +1480,7 @@ public sealed class ProposalStepTests : IDisposable
         // Sub-case 1: SuggestEnabled=false — the operator switch is off.
         var r1 = await step.ExecuteAsync(
             new TerminologyInput(ks, _ksId, "fake-model", SuggestEnabled: false),
-            new TermSyncCarry($"{GraphIri}/vocabulary#scheme-extracted", null, null, 0, TermsAdded: 2),
+            new BroaderCarry(new TermSyncCarry($"{GraphIri}/vocabulary#scheme-extracted", null, null, 0, TermsAdded: 2)),
             CancellationToken.None);
         Assert.Equal(0, r1.ProposalsQueued);
         Assert.Equal(2, r1.TermsAdded);
@@ -1453,7 +1488,7 @@ public sealed class ProposalStepTests : IDisposable
         // Sub-case 2: Error carry — the deterministic sync errored.
         var r2 = await step.ExecuteAsync(
             new TerminologyInput(ks, _ksId, "fake-model", SuggestEnabled: true),
-            new TermSyncCarry($"{GraphIri}/vocabulary#scheme-extracted", null, null, 0, Error: "boom"),
+            new BroaderCarry(new TermSyncCarry($"{GraphIri}/vocabulary#scheme-extracted", null, null, 0, Error: "boom")),
             CancellationToken.None);
         Assert.Equal("boom", r2.Error);
         Assert.Equal(0, r2.ProposalsQueued);
@@ -1461,7 +1496,7 @@ public sealed class ProposalStepTests : IDisposable
         // Sub-case 3: no SchemeIri — the deterministic sync short-circuited.
         var r3 = await step.ExecuteAsync(
             new TerminologyInput(ks, _ksId, "fake-model", SuggestEnabled: true),
-            new TermSyncCarry(null, null, null, 0, TermsAdded: 2),
+            new BroaderCarry(new TermSyncCarry(null, null, null, 0, TermsAdded: 2)),
             CancellationToken.None);
         Assert.Equal(0, r3.ProposalsQueued);
         Assert.Equal(2, r3.TermsAdded);
@@ -1491,7 +1526,7 @@ public sealed class ProposalStepTests : IDisposable
 
         var result = await step.ExecuteAsync(
             new TerminologyInput(new KsContext(GraphIri, BaseIri), _ksId, "fake-model", SuggestEnabled: true),
-            new TermSyncCarry($"{GraphIri}/vocabulary#scheme-extracted", null, null, 0, TermsAdded: 2),
+            new BroaderCarry(new TermSyncCarry($"{GraphIri}/vocabulary#scheme-extracted", null, null, 0, TermsAdded: 2)),
             CancellationToken.None);
 
         Assert.Null(result.Error);
@@ -1529,7 +1564,7 @@ public sealed class ProposalStepTests : IDisposable
         await Assert.ThrowsAnyAsync<Exception>(() =>
             step.ExecuteAsync(
                 new TerminologyInput(new KsContext(GraphIri, BaseIri), _ksId, "fake-model", SuggestEnabled: true),
-                new TermSyncCarry($"{GraphIri}/vocabulary#scheme-extracted", null, null, 0),
+                new BroaderCarry(new TermSyncCarry($"{GraphIri}/vocabulary#scheme-extracted", null, null, 0)),
                 CancellationToken.None));
     }
 
@@ -1631,7 +1666,7 @@ namespace ISEStudio.Extraction.Dovetail.Terminology.Steps;
 /// (P1-4 parity — the orchestrator's outer catch marks the capture), and a
 /// null agent (hand-built step tests) folds fail-soft.
 /// </summary>
-public sealed class ProposalStep : IPipelineSegment<TerminologyInput, TermSyncCarry, TerminologyResult>
+public sealed class ProposalStep : IPipelineSegment<TerminologyInput, BroaderCarry, TerminologyResult>
 {
     private readonly TerminologyAgent? _agent;
     private readonly ISEStudioDbContext _db;
@@ -1652,9 +1687,10 @@ public sealed class ProposalStep : IPipelineSegment<TerminologyInput, TermSyncCa
 
     public async Task<TerminologyResult> ExecuteAsync(
         TerminologyInput input,
-        TermSyncCarry carry,
+        BroaderCarry broaderCarry,
         CancellationToken cancellationToken)
     {
+        var carry = broaderCarry.Carry;
         var folded = TerminologyService.FoldCarry(carry);
 
         if (!input.SuggestEnabled || carry.Error is not null || string.IsNullOrEmpty(carry.SchemeIri))
@@ -2721,6 +2757,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 - `TermSyncCarry(SchemeIri, View?, PreView?, PropertyCount, …counters, Error, Skipped)` defined Task 1, used Tasks 2, 3, 4, 7.
 - `TerminologyService.PrepareCarry/PassStaleMappings/PassEntitySync/PassAliasAdditions/PassBroaderAdditions/FoldCarry` defined Task 2, used Tasks 3, 4.
 - Step ctors: `(TerminologyService, ILogger<T>)` defined Task 3, used Tasks 5, 6; `(TerminologyAgent?, ISEStudioDbContext, IOptions<ISEStudioOptions>, ILogger<ProposalStep>)` defined Task 4, used Tasks 5, 6.
+- Segment shapes (DOVE017 ruling — every triple unique): `StaleMappingStep (TerminologyInput → TermSyncCarry)`; `EntitySyncStep (TerminologyInput, TermSyncCarry → EntitySyncCarry)`; `AliasStep (TerminologyInput, EntitySyncCarry → AliasCarry)`; `BroaderStep (TerminologyInput, AliasCarry → BroaderCarry)`; `ProposalStep (TerminologyInput, BroaderCarry → TerminologyResult)` — defined Tasks 3+4, consumed by Task 5's generated DAG.
 - `TerminologyPipeline` ctor: 5 `[Segment]` params defined Task 5, used Tasks 6, 7.
 - `RunTerminologyPipelineIfAvailableAsync` defined Task 7 step 2, called Task 7 step 2 (same task).
 
