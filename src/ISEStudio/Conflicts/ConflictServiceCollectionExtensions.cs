@@ -31,6 +31,10 @@ public static class ConflictServiceCollectionExtensions
         services.AddScoped<DuplicateJudge>();
         services.AddScoped<ConflictService>();
         services.AddScoped<ConflictAgent>();
+        // Slice 3 spec §5 D6: the Dovetail agent-chain steps and the
+        // orchestrator fallback resolve via IConflictAgent; forward to the
+        // scoped concrete so both keys share one instance.
+        services.AddScoped<IConflictAgent>(sp => sp.GetRequiredService<ConflictAgent>());
         services.AddScoped<ConflictDetectionOrchestrator>();
         services.AddScoped<IConflictApplicationService, ConflictApplicationService>();
         return services;

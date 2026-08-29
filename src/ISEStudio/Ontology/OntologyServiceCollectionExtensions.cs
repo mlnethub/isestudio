@@ -20,6 +20,9 @@ public static class OntologyServiceCollectionExtensions
     {
         services.AddScoped<OntologyService>();
         services.AddScoped<StructureAgent>();
+        // Slice 3 spec §5 D6: interface-keyed resolution for the Dovetail
+        // agent-chain StructureAgentStep; forward to the same scoped instance.
+        services.AddScoped<IStructureAgent>(sp => sp.GetRequiredService<StructureAgent>());
         services.AddScoped<OntologyProvenanceService>();
         services.AddScoped<HistoryService>();
         services.AddScoped<PublishedOntologyService>();
@@ -37,6 +40,11 @@ public static class OntologyServiceCollectionExtensions
         // and ABoxService — the orchestrator path uses the scope
         // factory to materialize it on demand.
         services.AddScoped<KnowledgeStatsService>();
+        // Slice 3 spec §5 D6: interface-keyed resolution for the Dovetail
+        // agent-chain StatsRefreshStep; forward to the same scoped instance
+        // (several services inject the concrete type via ctor — see
+        // KnowledgeService / ABoxService / HistoryService / OntologyService).
+        services.AddScoped<IKnowledgeStatsService>(sp => sp.GetRequiredService<KnowledgeStatsService>());
         // The release-typed ontology view reads the curated TBox shard
         // directly from disk, so it needs the artifact store. The store
         // lives under the same Storage:RdfRoot as the Oxigraph handle but
