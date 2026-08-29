@@ -8,6 +8,7 @@ using ISEStudio.Conflicts;
 using ISEStudio.Extraction.Dovetail.ABox;
 using ISEStudio.Extraction.Dovetail.AgentChain;
 using ISEStudio.Extraction.Dovetail.TBox;
+using ISEStudio.Extraction.Dovetail.Terminology;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Knowledge;
 using ISEStudio.Llm;
@@ -135,6 +136,15 @@ public sealed class ExtractionOrchestrator
     private readonly AgentChainPipeline? _agentChainPipeline;
 
     /// <summary>
+    /// Dovetail-generated terminology pipeline (StaleMapping → EntitySync →
+    /// Alias → Broader → Proposal). Preferred over the P1-4 chain when the
+    /// per-job scope resolves one (production); the P1-4 chain (SyncAsync +
+    /// scoped TerminologyAgent) is the fallback for hand-built test
+    /// orchestrators and DI failures.
+    /// </summary>
+    private readonly TerminologyPipeline? _terminologyPipeline;
+
+    /// <summary>
     /// Legacy <see cref="DuplicateJudge"/> service. Used as the fallback path
     /// when <see cref="_aboxPipeline"/> is null (hand-built test orchestrators
     /// that bypass DI). Per spec §4 D1 thin-shell rule, NOT deleted.
@@ -179,7 +189,8 @@ public sealed class ExtractionOrchestrator
         TBoxChunkPipeline? chunkPipeline = null,
         ABoxJobPipeline? aboxPipeline = null,
         DuplicateJudge? duplicateJudge = null,
-        AgentChainPipeline? agentChainPipeline = null)
+        AgentChainPipeline? agentChainPipeline = null,
+        TerminologyPipeline? terminologyPipeline = null)
     {
         ArgumentNullException.ThrowIfNull(jobs);
         ArgumentNullException.ThrowIfNull(blobs);
@@ -217,6 +228,7 @@ public sealed class ExtractionOrchestrator
         _aboxPipeline = aboxPipeline;
         _duplicateJudge = duplicateJudge;
         _agentChainPipeline = agentChainPipeline;
+        _terminologyPipeline = terminologyPipeline;
     }
 
     // ------------------------------------------------------------------
@@ -542,7 +554,14 @@ public sealed class ExtractionOrchestrator
             .ConfigureAwait(false);
         try
         {
-            var term = _terminology.SyncAsync(ctx.KsContext, CancellationToken.None);
+            // Dovetail pipeline preferred when the per-job scope resolves
+            // one (production — resolved per job so the scoped steps +
+            // agent + DbContext live per job, the Slice 3 R2 lifecycle).
+            // The P1-4 chain (SyncAsync + scoped TerminologyAgent) is the
+            // fallback for hand-built test orchestrators and DI failures.
+            var dagResult = await RunTerminologyPipelineIfAvailableAsync(ctx).ConfigureAwait(false);
+            var term = dagResult ?? _terminology.SyncAsync(ctx.KsContext, CancellationToken.None);
+
             await _jobs.UpdateProgressAsync(ctx.JobId,
                 processedChunks: totalProcessed,
                 phase: ExtractionPhase.Terminology.ToWire(),
@@ -555,15 +574,19 @@ public sealed class ExtractionOrchestrator
             // TerminologyAgent to suggest pending TermProposal rows. The
             // agent is Scoped (own DbContext), so we resolve it from a
             // fresh scope the same way the post-TBox agent chain
-            // (RunAgentChainAsync) does.
+            // (RunAgentChainAsync) does. When the DAG ran, the proposal
+            // pass already happened inside the pipeline — this block only
+            // serves the fallback path.
             //
             // Skipped when:
+            //   * the DAG path already ran the proposal pass
             //   * the operator opted out via ISEStudioOptions
             //     (terminology_suggest_during_extraction)
             //   * no scope factory is wired (hand-built test orchestrators)
             //   * the deterministic sync short-circuited (no SchemeIri) or
             //     errored (term.Error is set)
-            if (_options.TerminologySuggestDuringExtraction
+            if (dagResult is null
+                && _options.TerminologySuggestDuringExtraction
                 && _scopes is not null
                 && term.Error is null
                 && !string.IsNullOrEmpty(term.SchemeIri))
@@ -577,6 +600,46 @@ public sealed class ExtractionOrchestrator
         {
             termCapture.MarkError();
         }
+    }
+
+    /// <summary>
+    /// Resolve the Dovetail <see cref="TerminologyPipeline"/> from a fresh
+    /// per-job scope (scope resolution first — the ctor seam only serves
+    /// hand-built orchestrators whose scope cannot resolve one). Returns
+    /// <c>null</c> when no scope factory is wired or the pipeline cannot be
+    /// resolved, so the caller falls back to the P1-4 chain.
+    /// </summary>
+    private async Task<TerminologyResult?> RunTerminologyPipelineIfAvailableAsync(JobRunContext ctx)
+    {
+        if (_scopes is null) return null;
+
+        using var scope = _scopes.CreateScope();
+        var services = scope.ServiceProvider;
+
+        // A DI activation failure (a step's dependency is not registered —
+        // e.g. TerminologyService missing in a hand-built fixture) surfaces
+        // as an InvalidOperationException from the generated
+        // GetRequiredService-based factory rather than a null pipeline.
+        // Treat it as "no pipeline" so the caller falls back to the P1-4
+        // chain instead of the terminology phase being swallowed by the
+        // outer catch.
+        TerminologyPipeline? pipeline;
+        try
+        {
+            pipeline = services.GetService<TerminologyPipeline>() ?? _terminologyPipeline;
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        if (pipeline is null) return null;
+
+        return await pipeline.ExecuteAsync(new TerminologyInput(
+            Ks: ctx.KsContext,
+            KnowledgeSystemId: ctx.Request.KnowledgeSystemId,
+            Model: ctx.Request.Model,
+            SuggestEnabled: _options.TerminologySuggestDuringExtraction),
+            CancellationToken.None).ConfigureAwait(false);
     }
 
     /// <summary>
