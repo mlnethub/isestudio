@@ -1,4 +1,5 @@
 using ISEStudio.Application.Vocabulary;
+using ISEStudio.Extraction.Dovetail.Terminology;
 using ISEStudio.Ontology;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
@@ -111,6 +112,13 @@ public sealed class TerminologyService : ITerminologySync
     }
 
     /// <summary>Run one sync pass against the TBox graph and vocabulary graph.</summary>
+    /// <remarks>
+    /// <para>The body sequences the four deterministic passes through the
+    /// internal carry members below; the Dovetail terminology pipeline
+    /// (<see cref="Dovetail.Terminology.TerminologyPipeline"/>) runs the
+    /// same members as segments. Both paths fold through
+    /// <see cref="FoldCarry"/>, so the public shape is identical.</para>
+    /// </remarks>
     public TerminologyResult SyncAsync(KsContext ks, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(ks);
@@ -118,7 +126,12 @@ public sealed class TerminologyService : ITerminologySync
 
         try
         {
-            return SyncCore(ks, cancellationToken);
+            var carry = PrepareCarry(ks, cancellationToken);
+            carry = PassStaleMappings(ks, carry, cancellationToken);
+            carry = PassEntitySync(ks, carry, cancellationToken);
+            carry = PassAliasAdditions(ks, carry, cancellationToken);
+            carry = PassBroaderAdditions(ks, carry, cancellationToken);
+            return FoldCarry(carry);
         }
         catch (OperationCanceledException)
         {
@@ -130,14 +143,24 @@ public sealed class TerminologyService : ITerminologySync
         }
     }
 
-    private TerminologyResult SyncCore(KsContext ks, CancellationToken cancellationToken)
+    /// <summary>
+    /// Build the shared state the four deterministic passes read: the TBox
+    /// view, the resolved default ConceptScheme, and the vocabulary SKOS
+    /// pre-view. Returns a <c>Skipped</c> carry on the zero paths where no
+    /// view can be built (<c>_store</c> null — contract-test path) or the
+    /// ontology has no entities; <see cref="FoldCarry"/> restores the
+    /// original <see cref="TerminologyResult"/> shape from it.
+    /// </summary>
+    internal TermSyncCarry PrepareCarry(KsContext ks, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (_store is null)
         {
             // No graph store wired (contract-test path) — vocabulary
             // layer has nothing to scan or write, so report the
             // deterministic zero summary.
-            return TerminologyResult.Zero;
+            return new TermSyncCarry(null, null, null, 0, Skipped: true);
         }
         var view = SchemaBuilder.BuildView(ks.TBoxGraph, _store);
 
@@ -151,7 +174,8 @@ public sealed class TerminologyService : ITerminologySync
         foreach (var p in view.DataProperties) ontologyIris.Add(p.Iri);
         var propertyCount = view.ObjectProperties.Count + view.DataProperties.Count;
 
-        if (ontologyIris.Count == 0) return TerminologyResult.Zero;
+        if (ontologyIris.Count == 0)
+            return new TermSyncCarry(null, view, null, propertyCount, Skipped: true);
 
         // Ensure a default ConceptScheme exists so the vocabulary view has a
         // scheme to anchor the concepts this pass creates. Mirrors the Python
@@ -162,23 +186,33 @@ public sealed class TerminologyService : ITerminologySync
         // fully-populated concept list, leaving the "New term" button
         // permanently disabled (empty selectedSchemeIri).
         var schemeIri = EnsureScheme(ks, view);
-        if (schemeIri is null)
-        {
-            return new TerminologyResult(0, 0, 0, null, null,
-                Properties: propertyCount, AliasesAdded: 0, BroaderAdded: 0,
-                StaleMappingsRemoved: 0, MappingConflicts: 0);
-        }
 
         var skos = new SkosManager(_store);
+        var preView = skos.BuildView(ks);
+        return new TermSyncCarry(schemeIri, view, preView, propertyCount);
+    }
 
-        // ---- Pass 1: stale mappings ----
-        // Mirrors Python `terminology_sync.sync_from_ontology` lines 122-130:
-        // any concept whose `mappedEntityIri` no longer exists in either the
-        // ontology or the ABox gets its mapping cleared (but the concept row
-        // itself is preserved so a human can remap or deprecate it).
-        // `valid_mapping_iris = ontology_iris | abox_iris` — the ABox half
-        // reads the subject set of the `…/abox` named graph (every instance
-        // IRI), mirroring `store.read_triples(abox_iri)`.
+    /// <summary>
+    /// Pass 1 — stale mappings. Mirrors Python `terminology_sync.sync_from_ontology`
+    /// lines 122-130: any concept whose `mappedEntityIri` no longer exists in
+    /// either the ontology or the ABox gets its mapping cleared (but the
+    /// concept row itself is preserved so a human can remap or deprecate it).
+    /// `valid_mapping_iris = ontology_iris | abox_iris` — the ABox half reads
+    /// the subject set of the `…/abox` named graph (every instance IRI),
+    /// mirroring `store.read_triples(abox_iri)`. <c>ontologyIris</c> is
+    /// rebuilt here from the carry's view (pure traversal of the snapshot the
+    /// init step captured — identical result to the original monolith).
+    /// </summary>
+    internal TermSyncCarry PassStaleMappings(KsContext ks, TermSyncCarry carry, CancellationToken cancellationToken)
+    {
+        if (_store is null || carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+
+        var view = carry.View!;
+        var ontologyIris = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var c in view.Classes) ontologyIris.Add(c.Iri);
+        foreach (var p in view.ObjectProperties) ontologyIris.Add(p.Iri);
+        foreach (var p in view.DataProperties) ontologyIris.Add(p.Iri);
+
         var aboxIris = new HashSet<string>(StringComparer.Ordinal);
         foreach (var q in _store.Match(graph: new OntoNamedNode(ks.ABoxGraph)))
         {
@@ -188,7 +222,7 @@ public sealed class TerminologyService : ITerminologySync
         validMappingIris.UnionWith(aboxIris);
 
         var staleMappingsRemoved = 0;
-        var preView = skos.BuildView(ks);
+        var preView = carry.PreView!;
         foreach (var concept in preView.Concepts)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -208,22 +242,37 @@ public sealed class TerminologyService : ITerminologySync
             staleMappingsRemoved++;
         }
 
-        // ---- Pass 2: entity sync ----
-        // Python decision tree per entity (mirrors `terminology_sync`):
-        //   1. `concept_by_mapping[iri]` exists → entity already has a
-        //      mapped concept; nothing to create, the alias pass below
-        //      attaches the entity label if it's missing.
-        //   2. the entity's label is owned by a mapped concept pointing at a
-        //      different IRI → `mapping_conflicts += 1; continue`.
-        //   3. the entity's label exists as a pref-label on an unmapped
-        //      concept → map that concept onto the entity (`terms_mapped`).
-        //   4. otherwise create a fresh mapped concept (`terms_added` and
-        //      `terms_mapped`).
-        //
-        // `conceptByMapping` mirrors Python's `concept_by_mapping` dict;
-        // `mappedIndex` mirrors the mapped subset of `label_owner`
-        // (via MappedAliases). Both are refreshed after each create so a
-        // re-encountered entity in the same pass sees the new state.
+        return carry with { StaleMappingsRemoved = staleMappingsRemoved };
+    }
+
+    /// <summary>
+    /// Pass 2 — entity sync. Python decision tree per entity (mirrors
+    /// `terminology_sync`):
+    /// <list type="number">
+    /// <item><c>concept_by_mapping[iri]</c> exists → entity already has a
+    /// mapped concept; nothing to create, the alias pass below attaches the
+    /// entity label if it's missing.</item>
+    /// <item>the entity's label is owned by a mapped concept pointing at a
+    /// different IRI → <c>mapping_conflicts += 1; continue</c>.</item>
+    /// <item>the entity's label exists as a pref-label on an unmapped
+    /// concept → map that concept onto the entity (<c>terms_mapped</c>).</item>
+    /// <item>otherwise create a fresh mapped concept (<c>terms_added</c> and
+    /// <c>terms_mapped</c>).</item>
+    /// </list>
+    /// <c>conceptByMapping</c> mirrors Python's <c>concept_by_mapping</c> dict;
+    /// <c>mappedIndex</c> mirrors the mapped subset of <c>label_owner</c>
+    /// (via MappedAliases). Both are refreshed after each create so a
+    /// re-encountered entity in the same pass sees the new state.
+    /// </summary>
+    internal TermSyncCarry PassEntitySync(KsContext ks, TermSyncCarry carry, CancellationToken cancellationToken)
+    {
+        if (_store is null || carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+
+        var view = carry.View!;
+        var preView = carry.PreView!;
+        var schemeIri = carry.SchemeIri!;
+
+        var skos = new SkosManager(_store);
         var conceptByMapping = new Dictionary<string, string>(StringComparer.Ordinal);
         var mappedIndex = new Dictionary<string, string>(skos.MappedAliases(ks), StringComparer.Ordinal);
         foreach (var c in preView.Concepts)
@@ -298,22 +347,42 @@ public sealed class TerminologyService : ITerminologySync
             conceptByMapping[iri] = concept.Value;
         }
 
-        // ---- Pass 3: alias additions ----
-        // For every mapped concept, ensure its entity's normalised label is
-        // attached as at least one of `pref_labels` / `alt_labels` /
-        // `hidden_labels`. Mirrors Python's
-        // `result["aliases_added"] += 1` increment after the
-        // `existing_keys / label_owner` dedup loop.
-        //
-        // Python parity notes:
-        // - `label_owner` contains only labels of concepts in the resolved
-        //   scheme, so an alias that another concept in the SAME scheme
-        //   already owns is skipped (`key not in label_owner`).
-        // - Python rewrites the whole concept via update_concept; we add the
-        //   single `skos:altLabel` triple directly. Final graph state is
-        //   identical and the minimal write avoids SkosManager's
-        //   single-prefLabel round-trip (which would drop extra-language
-        //   pref labels on concepts this sync did not create).
+        return carry with
+        {
+            TermsAdded = added,
+            TermsMapped = mapped,
+            MappingConflicts = mappingConflicts,
+        };
+    }
+
+    /// <summary>
+    /// Pass 3 — alias additions. For every mapped concept, ensure its
+    /// entity's normalised label is attached as at least one of
+    /// <c>pref_labels</c> / <c>alt_labels</c> / <c>hidden_labels</c>. Mirrors
+    /// Python's <c>result["aliases_added"] += 1</c> increment after the
+    /// <c>existing_keys / label_owner</c> dedup loop.
+    /// </summary>
+    /// <remarks>
+    /// <para>Python parity notes:</para>
+    /// <list type="bullet">
+    /// <item><c>label_owner</c> contains only labels of concepts in the
+    /// resolved scheme, so an alias that another concept in the SAME scheme
+    /// already owns is skipped (<c>key not in label_owner</c>).</item>
+    /// <item>Python rewrites the whole concept via update_concept; we add the
+    /// single <c>skos:altLabel</c> triple directly. Final graph state is
+    /// identical and the minimal write avoids SkosManager's
+    /// single-prefLabel round-trip (which would drop extra-language
+    /// pref labels on concepts this sync did not create).</item>
+    /// </list>
+    /// </remarks>
+    internal TermSyncCarry PassAliasAdditions(KsContext ks, TermSyncCarry carry, CancellationToken cancellationToken)
+    {
+        if (_store is null || carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+
+        var view = carry.View!;
+        var schemeIri = carry.SchemeIri!;
+
+        var skos = new SkosManager(_store);
         var aliasesAdded = 0;
         var postView = skos.BuildView(ks);
         var labelOwners = new HashSet<(string Norm, string Lang)>(NormLangOrdinalComparer.Instance);
@@ -355,16 +424,28 @@ public sealed class TerminologyService : ITerminologySync
             labelOwners.Add(key);
         }
 
-        // ---- Pass 4: broader additions ----
-        // For every class with a superclass relation, add the corresponding
-        // mapped parent concept's IRI to its `skos:broader` set (mirrors
-        // Python `result["broader_added"] += len(additions)`).
-        // Relations spanning different schemes, self-loops, and already-
-        // present entries are skipped. Python funnels the whole batch
-        // through update_concept (cycle check); we add each triple directly
-        // because the same-scheme + non-self filters above already exclude
-        // every relation the SKOS validator would reject except a cycle,
-        // which the schema builder's subclass view does not produce.
+        return carry with { AliasesAdded = aliasesAdded };
+    }
+
+    /// <summary>
+    /// Pass 4 — broader additions. For every class with a superclass
+    /// relation, add the corresponding mapped parent concept's IRI to its
+    /// <c>skos:broader</c> set (mirrors Python
+    /// <c>result["broader_added"] += len(additions)</c>). Relations spanning
+    /// different schemes, self-loops, and already-present entries are
+    /// skipped. Python funnels the whole batch through update_concept (cycle
+    /// check); we add each triple directly because the same-scheme +
+    /// non-self filters above already exclude every relation the SKOS
+    /// validator would reject except a cycle, which the schema builder's
+    /// subclass view does not produce.
+    /// </summary>
+    internal TermSyncCarry PassBroaderAdditions(KsContext ks, TermSyncCarry carry, CancellationToken cancellationToken)
+    {
+        if (_store is null || carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+
+        var view = carry.View!;
+
+        var skos = new SkosManager(_store);
         var broaderAdded = 0;
         var finalView = skos.BuildView(ks);
         foreach (var cls in view.Classes)
@@ -397,17 +478,43 @@ public sealed class TerminologyService : ITerminologySync
             broaderAdded += additions.Count;
         }
 
+        return carry with { BroaderAdded = broaderAdded };
+    }
+
+    /// <summary>
+    /// Fold the carry into the public result shape. Shared by
+    /// <see cref="SyncAsync"/> (legacy whole-sync path) and the Dovetail
+    /// <see cref="Dovetail.Terminology.Steps.ProposalStep"/> so both paths
+    /// produce identical <see cref="TerminologyResult"/> shapes:
+    /// <list type="bullet">
+    /// <item><c>Skipped</c> + no error → <see cref="TerminologyResult.Zero"/>
+    /// (the <c>_store</c>-null / empty-ontology short circuits);</item>
+    /// <item><c>Skipped</c> + error → <c>(0, 0, 0, Error, null)</c> (the
+    /// <see cref="SyncAsync"/> catch shape);</item>
+    /// <item>otherwise → the counter summary with <c>ProposalsQueued: 0</c>
+    /// (the proposal count is added by <see cref="Dovetail.Terminology.Steps.ProposalStep"/>).</item>
+    /// </list>
+    /// </summary>
+    internal static TerminologyResult FoldCarry(TermSyncCarry carry)
+    {
+        if (carry.Skipped)
+        {
+            return carry.Error is null
+                ? TerminologyResult.Zero
+                : new TerminologyResult(0, 0, 0, carry.Error, null);
+        }
+
         return new TerminologyResult(
-            TermsAdded: added,
-            TermsMapped: mapped,
+            TermsAdded: carry.TermsAdded,
+            TermsMapped: carry.TermsMapped,
             ProposalsQueued: 0,
-            Error: null,
-            SchemeIri: schemeIri,
-            Properties: propertyCount,
-            AliasesAdded: aliasesAdded,
-            BroaderAdded: broaderAdded,
-            StaleMappingsRemoved: staleMappingsRemoved,
-            MappingConflicts: mappingConflicts);
+            Error: carry.Error,
+            SchemeIri: carry.SchemeIri,
+            Properties: carry.PropertyCount,
+            AliasesAdded: carry.AliasesAdded,
+            BroaderAdded: carry.BroaderAdded,
+            StaleMappingsRemoved: carry.StaleMappingsRemoved,
+            MappingConflicts: carry.MappingConflicts);
     }
 
     /// <summary>
