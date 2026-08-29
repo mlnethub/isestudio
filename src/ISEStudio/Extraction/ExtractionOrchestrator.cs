@@ -639,7 +639,7 @@ public sealed class ExtractionOrchestrator
     /// <c>terminology_proposals</c> stays at zero, matching the Python
     /// backend's "best-effort" semantics.</para>
     /// </summary>
-    private async Task<JobState> RunTerminologyAsync(
+    internal async Task<JobState> RunTerminologyAsync(
         JobState state,
         KsContext ksContext,
         ExtractionRequest request,
@@ -843,7 +843,7 @@ public sealed class ExtractionOrchestrator
     /// committed TBox layer — exactly like Python, where the agents run
     /// after <c>cap.diff()</c> already released the capture.</para>
     /// </summary>
-    private async Task<JobState> RunAgentChainAsync(
+    internal async Task<JobState> RunAgentChainAsync(
         JobState state,
         ExtractionRequest request,
         CancellationToken cancellationToken)
@@ -980,7 +980,7 @@ public sealed class ExtractionOrchestrator
     /// verify result alongside the merger — used by the TBox phase to feed
     /// the corpus / hierarchy recovery passes.
     /// </summary>
-    private async Task<JobState> RunLayerAsync(
+    internal async Task<JobState> RunLayerAsync(
         JobState state,
         IReadOnlyList<ChunkSpan> chunks,
         EndpointCapacityKey capacityKey,
@@ -1279,7 +1279,7 @@ public sealed class ExtractionOrchestrator
     /// extraction (Python <c>logger.warning</c> only — extract.py:1349-1354,
     /// :1612-1616).
     /// </summary>
-    private async Task<JobState> RunCorpusRecoveryAsync(
+    internal async Task<JobState> RunCorpusRecoveryAsync(
         JobState state,
         KsContext ksContext,
         IReadOnlyList<ChunkVerifyOutcome> perChunk,
@@ -1355,7 +1355,7 @@ public sealed class ExtractionOrchestrator
     /// independent critics. Like the corpus pass, skipped when not wired
     /// and failures are swallowed.
     /// </summary>
-    private async Task<JobState> RunHierarchyRecoveryAsync(
+    internal async Task<JobState> RunHierarchyRecoveryAsync(
         JobState state,
         KsContext ksContext,
         ExtractionRequest request,
