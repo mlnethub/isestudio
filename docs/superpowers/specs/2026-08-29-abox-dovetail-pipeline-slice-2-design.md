@@ -157,7 +157,7 @@ DOVE006 自动保证 input type 必须是 pipeline input 或上一步 output 类
 public sealed class ISEStudioOptions
 {
     // ... 现有 AutoApplyFloor (P3-11 conflict agent 用) ...
-    public double DuplicateAutoApplyFloor { get; set; } = 0.90;  // 新增,默认 0.90 更严
+    public double DuplicateAutoApplyFloor { get; set; } = 0.90;  // 新增,LOCKED 默认 0.90
 }
 ```
 
@@ -166,12 +166,12 @@ public sealed class ISEStudioOptions
 - LLM judge 输出已是 0/1(same / not-same)二值,没有 "confidence 0.92" 这种连续输出,所以 floor 实际是「LLM 是否通过」二值开关,不用 float
 - 0.90 = 跟 Python `DUP_THRESHOLD = 0.86` 字符串阈值 + embedding cosine 0.85 + LLM 通过 三层 AND 后才 auto-apply,跟 P3-11 的单层 confidence 语义不同
 
-**实际 Slice 2 行为**(评审时可改):
+**Slice 2 行为**(LOCKED 评审决定):
 - LLM 通过 + cosine >= 0.85 + jaccard >= 0.86 → auto-apply (三层 AND)
 - LLM 通过但 cosine < 0.85 或 jaccard < 0.86 → emit conflict 给 triage
 - LLM 不通过 → 跳过此 pair
 
-`DuplicateAutoApplyFloor` 字段先建,默认值先按 0.0(永远 auto-apply LLM 通过的),待 Slice 2 review 阶段用户拍板是否要更高门槛。
+`DuplicateAutoApplyFloor = 0.90`(LOCKED)对应三层 AND 之上再加一道 confidence 阈值门槛,只有最强信号才 auto-apply,弱信号全部进 triage。
 
 ### D4:Optional / FailSoft 适配器复用
 
@@ -180,13 +180,20 @@ public sealed class ISEStudioOptions
 - `MergeApplyStep` 内部分流:`confidence >= DuplicateAutoApplyFloor` → auto-apply;否则 → emit conflict,无第三方依赖,无 `OptionalSegment` 包装
 - `CascadeRetypeStep` 接受 `OntologyEditor?` nullable;editor 总是 DI 注册,**不必 OptionalSegment 包装**(只有 Editor 注册失败才退化,但 Production 必注册)
 
-### D5:MergeApply 写图事务安全(沿用 P3-11 fix 模式)
+### D5:MergeApply 写图事务安全(沿用 P3-11 fix 模式,LOCKED 每个 merge 一个 capture)
 
 `MergeApplyStep` 内部:
-1. `QuadChangeCapture` capture on ABox graph (`revertOnError: false`,符合 P3-29af563 fix)
-2. 对每个 kept pair 调 `OntologyEditor.ApplyClassMergeAsync(source, target)`(一个 merge 一个 capture?或一批 merge 一个 capture?评审时定)
-3. 失败 `try/catch MarkError(...)` + audit log + cascade 跳过
-4. 全部 success → audit `merged` event + CascadeRetypeStage 接续
+
+1. 每个 kept pair 一个 `QuadChangeCapture` capture on ABox graph (`revertOnError: false`,符合 P3-29af563 fix)
+2. `OntologyEditor.ApplyClassMergeAsync(source, target)` 调一次
+3. 失败 `try/catch MarkError(...)` + audit log + 该 pair 的 CascadeRetypeStage 跳过;**其他 pair 不受影响**(per-merge capture 隔离)
+4. 全部 success → audit `merged` event + 该 merge 进 CascadeRetypeStage
+
+**为何每个 merge 一个 capture**(LOCKED 评审决定):
+
+- 安全边界:单个 merge 失败不回滚已成功的 merge,符合「单 merge 单事务」原则
+- 性能成本:对 N 个 merge 是 N 次 capture,但单 merge 在 ABox graph 上通常 <100 写,QuadChangeCapture 开销可接受
+- 回滚粒度:若需回滚所有合并,逐 merge 调 `capture.Revert()`(API 已存在)
 
 **不引入新事务原语**(已用 QuadChangeCapture),不改 GraphWriteCoordinator。
 
@@ -291,7 +298,7 @@ src/ISEStudio.Tests/Extraction/Dovetail/ABox/
 
 | 文件 | 改动 |
 |---|---|
-| `src/ISEStudio/Configuration/ISEStudioOptions.cs` | 加 `DuplicateAutoApplyFloor` 字段(默认 0.0) |
+| `src/ISEStudio/Configuration/ISEStudioOptions.cs` | 加 `DuplicateAutoApplyFloor` 字段(默认 0.90,LOCKED) |
 | `src/ISEStudio/Extraction/Dovetail/DovetailPipelineRegistrations.cs` | `AddDovetailPipelines()` 内追加 ABox 步骤注册 + ABoxJobPipeline(auto via AddPipelines()) |
 | `src/ISEStudio/Extraction/ExtractionOrchestrator.cs` | 加 `_aboxPipeline` field + ctor 尾参 + `RunABoxLayerAsync(...)` 新方法(走 pipeline 优先 / DuplicateJudge fallback) |
 | `src/ISEStudio/Conflicts/ConflictService.cs` | `DetectAsync` 改 forwarder → `_extraction.RunABoxLayerAsync(...)`;移除 `DuplicateJudge?` 直接依赖 |
@@ -396,9 +403,9 @@ public sealed record ABoxJobResult(
 | 2 | 落 ExtractionOrchestrator,ConflictService 改 forwarder | 用户选 B;跟 slice 1 模式一致 | A (ConflictService 同位置) |
 | 3 | auto-apply 高置信 + emit conflict 低置信 | 用户选 A;P3-11 已有先例 | B (auto-apply all kept),C (dry-run only) |
 | 4 | DAG 输入显式 StoreWrapper + GraphIri + Chat + Embedder | 用户选 A;Stage 4-5 写图需要 transaction context | B (KnowledgeSystemId only) |
-| 5 | `DuplicateAutoApplyFloor` 独立阈值(默认 0.0,评审时定) | duplicate merge 不可逆 + 影响 instance retype | 复用 P3-11 AutoApplyFloor(0.85) |
+| 5 | `DuplicateAutoApplyFloor = 0.90` LOCKED | duplicate merge 不可逆 + 影响 instance retype | 复用 P3-11 AutoApplyFloor(0.85) |
 | 6 | Dovetail multi-input 接口(沿用 Slice 1 + DOVE006 fix) | bundle record 不兼容;5 段每段 input 都能由上一步 output 满足 | bundle record(已否决) |
-| 7 | MergeApply 写图:每个 merge 一个 capture(默认) | 安全;失败回滚不影响已应用的 | 一批 merge 一个 capture(快但难回滚) |
+| 7 | MergeApply 写图:每个 merge 一个 capture LOCKED | 安全;失败回滚不影响已应用的 | 一批 merge 一个 capture(快但难回滚) |
 | 8 | LLMJudge fail-soft → 全 kept(非空集合) | 退回 cosine + jaccard 双层过滤,比 Python fail-closed 更安全 | 沿用 Python fail-closed(空集合) |
 | 9 | ExtractionOrchestrator 不再 inject ConflictService,直接 inject DuplicateJudge + OntologyEditor + AuditLogService | 避免循环依赖;切片边界清晰 | 通过 Lazy/Factory 注入(过度工程) |
 | 10 | ABoxJobPipeline 不加 GuardedSegment | 沿用 slice 1 决策;slice 5 顶层 wrap | 加 GuardedSegment(过早) |
@@ -410,8 +417,8 @@ public sealed record ABoxJobResult(
 ### 10.1 Placeholder scan
 
 - ✅ 无 "TBD" / "TODO" / "待定"
-- ⚠️ §4 D3 `DuplicateAutoApplyFloor` 默认值评审阶段定 — 已在决策日志 #5 标记
-- ⚠️ §8 MergeApply capture 粒度 — 已在决策日志 #7 标记
+- ✅ §4 D3 `DuplicateAutoApplyFloor = 0.90` 已 LOCKED(评审决定)
+- ✅ §4 D5 MergeApply capture 粒度 = 每个 merge 一个 capture 已 LOCKED(评审决定)
 
 ### 10.2 Internal consistency
 
