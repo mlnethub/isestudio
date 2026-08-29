@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using ISEStudio.Conflicts;
 using ISEStudio.Configuration;
 using ISEStudio.Extraction;
+using ISEStudio.Extraction.Dovetail;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Knowledge;
@@ -275,6 +276,40 @@ public sealed class ExtractionAgentChainTests : IDisposable
         // Python's agents run after cap.diff() already committed the TBox
         // capture — the extracted layer stays, only the job row fails.
         Assert.True(ClassCount() > 4);
+    }
+
+    [Fact]
+    [Trait("Category", "Extraction")]
+    public async Task Scope_resolved_agent_chain_dag_runs_without_ctor_pipeline()
+    {
+        // Final-review MEDIUM fix: production resolves the pipeline from the
+        // per-job scope (the ctor param is a hand-built-test seam), so the
+        // steps + agents + DbContext live per job. This fixture passes NO
+        // ctor pipeline and registers the Dovetail pipelines — the scope
+        // path must run the chain end-to-end with the real agents.
+        using var dagServices = BuildServices(services =>
+        {
+            // The §7 step factories require ILogger<T> (AddDovetailPipelines
+            // does not add logging; the fixture's BuildServices omits it).
+            services.AddLogging();
+            services.AddDovetailPipelines();
+        });
+        var orchestrator = BuildOrchestrator(dagServices.GetRequiredService<IServiceScopeFactory>());
+        FakeChat.Enqueue(TBoxDelta);
+        FakeChat.Enqueue(ConflictFinish);
+        FakeChat.Enqueue(StructureProposal);
+
+        var job = await orchestrator.StartTBoxAsync(Request, CancellationToken.None);
+        var finished = await Jobs.WaitAsync(job.Id);
+
+        Assert.Equal("completed", finished.Status);
+        Assert.Equal(
+            new[] { "tbox", "conflicts", "structure", "terminology", "finalizing" },
+            ExtractionJobLog.Phases(finished.Log));
+        await using var db = _contexts.CreateDbContext();
+        var ks = await db.KnowledgeSystems.SingleAsync(k => k.Id == _ksId);
+        Assert.Equal(6, ks.ClassCount);
+        Assert.Equal(1, ks.PropertyCount);
     }
 
     // ------------------------------------------------------------------

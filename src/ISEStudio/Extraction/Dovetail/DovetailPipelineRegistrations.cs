@@ -89,13 +89,16 @@ public static class DovetailPipelineRegistrations
         services.AddSingleton<FinalMergeStep>();
 
         // 7. AgentChain slice 3 step classes (per spec §6.2 + §5 D6 —
-        // interface-keyed concrete factory). Each step takes a nullable
-        // interface dep, and the factory returns null when the underlying
-        // agent / stats service is not registered so the pipeline can be
-        // null-tested and `AgentChainPipeline` fails fast (its [Segment]
-        // ctor params are non-nullable). When all deps are registered
-        // (production runtime), the steps and pipeline resolve normally.
-        services.AddSingleton<ConflictAgentStep>(sp =>
+        // interface-keyed concrete factory). SCOPED on purpose (final-review
+        // MEDIUM fix): the orchestrator resolves AgentChainPipeline from the
+        // per-job scope, so the steps, the agents behind them, and their
+        // shared DbContext live per job — the P1-4 lifecycle — instead of
+        // one root-captured instance for the process. Each factory returns
+        // null when the underlying interface is not registered so the
+        // registration tests can assert a missing agent surfaces as a null
+        // step (the pipeline itself then fails at ExecuteAsync, not at
+        // resolution — latent; production always wires the forwarders).
+        services.AddScoped<ConflictAgentStep>(sp =>
         {
             var agent = sp.GetService<IConflictAgent>();
             return agent is null
@@ -105,7 +108,7 @@ public static class DovetailPipelineRegistrations
                     logger: sp.GetRequiredService<ILogger<ConflictAgentStep>>());
         });
 
-        services.AddSingleton<StructureAgentStep>(sp =>
+        services.AddScoped<StructureAgentStep>(sp =>
         {
             var agent = sp.GetService<IStructureAgent>();
             return agent is null
@@ -115,7 +118,7 @@ public static class DovetailPipelineRegistrations
                     logger: sp.GetRequiredService<ILogger<StructureAgentStep>>());
         });
 
-        services.AddSingleton<StatsRefreshStep>(sp =>
+        services.AddScoped<StatsRefreshStep>(sp =>
         {
             var stats = sp.GetService<IKnowledgeStatsService>();
             return stats is null

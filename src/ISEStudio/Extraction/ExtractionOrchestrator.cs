@@ -649,7 +649,9 @@ public sealed class ExtractionOrchestrator
     /// its own writes.
     ///
     /// <para>When the Dovetail <see cref="AgentChainPipeline"/> is registered
-    /// in DI (production) it is preferred: the three typed segments
+    /// in DI (production) it is preferred, resolved from the per-job scope
+    /// so the steps and the scoped agents behind them live per job (the
+    /// ctor param stays a hand-built-test seam): the three typed segments
     /// (ConflictAgent → StructureAgent → StatsRefresh) run the same agent
     /// methods with the same <c>skipActiveExtractionGate: true</c> semantics
     /// (spec §5 D3). When the pipeline is null (hand-built test
@@ -710,13 +712,22 @@ public sealed class ExtractionOrchestrator
             Conflicts: Array.Empty<ConflictDetection.DetectedConflict>(),
             Model: ctx.Request.Model);
 
-        if (_agentChainPipeline is not null)
+        // Per-job scope resolution FIRST (final-review MEDIUM fix): the ctor
+        // param stays as the hand-built-test seam, but in production the
+        // orchestrator is a singleton — ctor-injecting the pipeline would
+        // capture the root-resolved steps + scoped agents + DbContext for
+        // the process lifetime. Resolving from the per-job scope restores
+        // P1-4's per-job lifecycle: the steps are registered scoped
+        // (DovetailPipelineRegistrations §7), so the agents and their
+        // DbContext live and die with this job's scope.
+        var pipeline = services.GetService<AgentChainPipeline>() ?? _agentChainPipeline;
+        if (pipeline is not null)
         {
             // Dovetail pipeline preferred when registered in DI. Each step
             // passes skipActiveExtractionGate: true (Python's _bg variants
             // carry no gate; the job's running row would otherwise no-op
             // the pass) and StatsRefreshStep fail-softs internally.
-            await _agentChainPipeline.ExecuteAsync(input, CancellationToken.None)
+            await pipeline.ExecuteAsync(input, CancellationToken.None)
                 .ConfigureAwait(false);
             return;
         }

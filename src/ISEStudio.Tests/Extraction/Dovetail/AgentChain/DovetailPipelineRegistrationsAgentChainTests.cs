@@ -85,6 +85,26 @@ public class DovetailPipelineRegistrationsAgentChainTests
         var pipeline = sp.GetService<AgentChainPipeline>();
         Assert.NotNull(pipeline);
     }
+
+    [Fact]
+    public void AgentChainSteps_AreScoped_NotProcessSingleton()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(Options.Create(new ISEStudioOptions()));
+        services.AddSingleton<IConflictAgent, FakeConflictAgent>();
+        services.AddSingleton<IStructureAgent, FakeStructureAgent>();
+        services.AddSingleton<IKnowledgeStatsService, FakeKnowledgeStatsService>();
+        services.AddDovetailPipelines();
+        using var sp = services.BuildServiceProvider();
+
+        using var scope1 = sp.CreateScope();
+        using var scope2 = sp.CreateScope();
+        var step1 = scope1.ServiceProvider.GetRequiredService<ConflictAgentStep>();
+        var step2 = scope2.ServiceProvider.GetRequiredService<ConflictAgentStep>();
+
+        Assert.NotSame(step1, step2);
+    }
 }
 
 /// <summary>
