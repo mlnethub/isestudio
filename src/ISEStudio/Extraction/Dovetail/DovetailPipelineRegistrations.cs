@@ -1,14 +1,19 @@
 using Dovetail;
 using ISEStudio.Audit;
+using ISEStudio.Conflicts;
+using ISEStudio.Configuration;
 using ISEStudio.Extraction;
 using ISEStudio.Extraction.Dovetail.ABox;
 using ISEStudio.Extraction.Dovetail.ABox.Steps;
 using ISEStudio.Extraction.Dovetail.Adapters;
+using ISEStudio.Extraction.Dovetail.AgentChain.Steps;
 using ISEStudio.Extraction.Dovetail.TBox;
 using ISEStudio.Extraction.Dovetail.TBox.Steps;
+using ISEStudio.Knowledge;
 using ISEStudio.Ontology;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace ISEStudio.Extraction.Dovetail;
 
@@ -82,6 +87,43 @@ public static class DovetailPipelineRegistrations
         services.AddSingleton<CascadeRetypeStep>(sp =>
             new CascadeRetypeStep(sp.GetService<OntologyEditor>(), sp.GetService<AuditLogService>()));
         services.AddSingleton<FinalMergeStep>();
+
+        // 7. AgentChain slice 3 step classes (per spec §6.2 + §5 D6 —
+        // interface-keyed concrete factory). Each step takes a nullable
+        // interface dep, and the factory returns null when the underlying
+        // agent / stats service is not registered so the pipeline can be
+        // null-tested and `AgentChainPipeline` fails fast (its [Segment]
+        // ctor params are non-nullable). When all deps are registered
+        // (production runtime), the steps and pipeline resolve normally.
+        services.AddSingleton<ConflictAgentStep>(sp =>
+        {
+            var agent = sp.GetService<IConflictAgent>();
+            return agent is null
+                ? null!
+                : new ConflictAgentStep(
+                    agent: agent,
+                    logger: sp.GetRequiredService<ILogger<ConflictAgentStep>>());
+        });
+
+        services.AddSingleton<StructureAgentStep>(sp =>
+        {
+            var agent = sp.GetService<IStructureAgent>();
+            return agent is null
+                ? null!
+                : new StructureAgentStep(
+                    agent: agent,
+                    logger: sp.GetRequiredService<ILogger<StructureAgentStep>>());
+        });
+
+        services.AddSingleton<StatsRefreshStep>(sp =>
+        {
+            var stats = sp.GetService<IKnowledgeStatsService>();
+            return stats is null
+                ? null!
+                : new StatsRefreshStep(
+                    stats: stats,
+                    logger: sp.GetRequiredService<ILogger<StatsRefreshStep>>());
+        });
 
         return services;
     }
