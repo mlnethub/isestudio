@@ -100,11 +100,15 @@ public sealed record TerminologyInput(
 /// builds its conceptByMapping index from it). The per-pass counters
 /// accumulate; <c>Error</c> is set by a pass step's catch and makes every
 /// downstream step short-circuit (mirrors SyncAsync's whole-pass try/catch).
+/// <c>Skipped</c> marks the zero paths where no view can be built
+/// (<c>_store</c> null — contract-test path — or an empty ontology), in which
+/// case <c>View</c>/<c>PreView</c> are null; <see cref="FoldCarry"/> restores
+/// the original <see cref="TerminologyResult.Zero"/> shape from it.
 /// </summary>
 public sealed record TermSyncCarry(
     string? SchemeIri,
-    OntologyView View,
-    SkosView PreView,
+    OntologyView? View,
+    SkosView? PreView,
     int PropertyCount,
     int StaleMappingsRemoved = 0,
     int TermsAdded = 0,
@@ -112,7 +116,8 @@ public sealed record TermSyncCarry(
     int MappingConflicts = 0,
     int AliasesAdded = 0,
     int BroaderAdded = 0,
-    string? Error = null);
+    string? Error = null,
+    bool Skipped = false);
 ```
 
 输出复用现有 `ISEStudio.Extraction.TerminologyResult`(不新增 output record — orchestrator 的 `RecordTerminologyAsync` 与三个 runner 零改动)。
@@ -131,7 +136,7 @@ pass 间共享状态(view / preView / schemeIri / 计数 / Error)全部放进 `T
 
 ### D3 — init 段内化(无"第 0 段")
 
-SyncCore 头部(view 构建 + ontologyIris + EnsureScheme + preView)抽成 `internal PrepareCarry(ks, ct)`。**Step 1 内部先调 PrepareCarry 再调 Pass 1** — DAG 第一步不能吃不存在的 carry,DOVE006 约束决定 init 必须段内化。PrepareCarry 处理的短路语义(`_store is null` → 零 carry、`ontologyIris.Count == 0` → 零 carry、EnsureScheme null → carry.SchemeIri null)由 FoldCarry 还原出与原 SyncCore 相同的 TerminologyResult 形状。
+SyncCore 头部(view 构建 + ontologyIris + EnsureScheme + preView)抽成 `internal PrepareCarry(ks, ct)`。**Step 1 内部先调 PrepareCarry 再调 Pass 1** — DAG 第一步不能吃不存在的 carry,DOVE006 约束决定 init 必须段内化。PrepareCarry 处理的短路语义:`_store is null`(contract-test 路径)→ `Skipped: true` 的零 carry(无 view 可构建);`ontologyIris.Count == 0` → `Skipped: true`;EnsureScheme null → `carry.SchemeIri null`(非 Skipped,保留 PropertyCount)。三个形状由 FoldCarry 还原出与原 SyncCore 完全相同的 TerminologyResult(§5 D7)。`ontologyIris` 不放进 carry — Pass 1 内部从 `carry.View` 重建(纯函数遍历,结果与原 SyncCore 相同)。
 
 ### D4 — TerminologyService 外科拆分,public 行为零变化
 
@@ -142,18 +147,23 @@ SyncCore 头部(view 构建 + ontologyIris + EnsureScheme + preView)抽成 `inte
 
 ### D5 — 错误语义:step 内 catch → carry.Error,下游短路
 
-每个 pass step 的 ExecuteAsync:`catch (OperationCanceledException) { throw; } catch (Exception ex) { return carry with { Error = ex.Message }; }`。下游 step 首行判 `carry.Error is not null → return carry`。等价现 `SyncAsync` 整体 catch(任何 pass 抛 → 后续 pass 不执行 → 结果带 Error)。orchestrator 外层 `QuadChangeCapture.MarkError()` 保留。
+每个 pass step 的 ExecuteAsync:`catch (OperationCanceledException) { throw; } catch (Exception ex) { return new TermSyncCarry(null, null, null, 0, Error: ex.Message, Skipped: true); }`(Step 1 的 PrepareCarry 可能先抛 — 统一形状,不依赖 `carry with`)。短路判定在 **pass 方法内部首行**(`carry.Skipped || carry.Error is not null || carry.SchemeIri is null → return carry` — 原 SyncCore 的 EnsureScheme null 分支同样不进任何 pass),step 层不做短路判断。等价现 `SyncAsync` 整体 catch(任何 pass 抛 → 后续 pass 不执行 → 结果带 Error)。orchestrator 外层 `QuadChangeCapture.MarkError()` 保留。
 
 ### D6 — ProposalStep gating 在 step 内判
 
 - gating 条件:`input.SuggestEnabled && carry.Error is null && carry.SchemeIri 非空`
 - `_scopes is not null` 条件在 DAG 路径内恒真(只有 scope 存在 orchestrator 才会走 DAG 路径),step 省略 — 记录于本节
 - step 内部逻辑 = 现 `RunTerminologyAgentAsync` 的搬移:AsNoTracking 查 `KnowledgeSystemEntity` → Join Documents 查 chunkIds(ordered,Take `TerminologySuggestionMaxChunks`)→ `agent.SuggestAsync(ks, carry.SchemeIri!, chunkIds, input.Model, ct)` → 折叠
+- **agent 异常不吞,原样传播** — 与 P1-4 行为一致(RunTerminologyAgentAsync 抛 → orchestrator 外层 catch → `QuadChangeCapture.MarkError()`,job 行不记录 terminology 列)。ProposalStep 只做 fold + count,不捕获 agent 异常
 - `TerminologyAgent` 为 nullable ctor 参数(hand-built 测试不注册 agent 时 fail-soft 折叠 — 与 Slice 2/3 的 nullable service 模式一致);生产恒非空
 
 ### D7 — FoldCarry 双路径复用
 
-`internal static TerminologyResult FoldCarry(TermSyncCarry carry)` 由 `SyncAsync`(fallback 路径)与 `ProposalStep`(DAG 路径)共用,保证两条路径产出的 `TerminologyResult` 形状严格一致。折叠规则:全零 carry → 与现 `TerminologyResult.Zero` 逐字段一致;SchemeIri null → `(0,0,0,null,null,Properties: carry.PropertyCount, 0,0,0,0)`(现 EnsureScheme null 分支形状)。
+`internal static TerminologyResult FoldCarry(TermSyncCarry carry)` 由 `SyncAsync`(fallback 路径)与 `ProposalStep`(DAG 路径)共用,保证两条路径产出的 `TerminologyResult` 形状严格一致。折叠规则:
+
+- `Skipped: true` 且 `Error: null` → `TerminologyResult.Zero`(现 `_store null` / 空本体分支)
+- `Skipped: true` 且 `Error` 非空 → `new TerminologyResult(0, 0, 0, Error, null)`(现 SyncAsync catch 形状)
+- `Skipped: false` → `(TermsAdded, TermsMapped, 0, Error, SchemeIri, PropertyCount, AliasesAdded, BroaderAdded, StaleMappingsRemoved, MappingConflicts)` — SchemeIri null(EnsureScheme null 分支)自然落入此形状,与现 line 167-169 一致
 
 ### D8 — Orchestrator 接线:scope 解析优先(R2 模式)
 
@@ -195,7 +205,7 @@ SyncCore 头部(view 构建 + ontologyIris + EnsureScheme + preView)抽成 `inte
 | ------ | ------ |
 | `src/ISEStudio/Extraction/TerminologyService.cs` | SyncCore body 拆为 6 个 internal 成员 + SyncAsync body 重写(§5 D4) |
 | `src/ISEStudio/Extraction/Dovetail/DovetailPipelineRegistrations.cs` | 追加 5 个 step 注册(AddScoped,ProposalStep 的 agent 为 `GetService<TerminologyAgent>()` nullable factory) |
-| `src/ISEStudio/Extraction/ExtractionOrchestrator.cs` | `_terminologyPipeline` 字段 + ctor tail param + `RunTerminologyAsync` body 替换 + `RunTerminologyAgentAsync` 删除(逻辑搬入 ProposalStep) |
+| `src/ISEStudio/Extraction/ExtractionOrchestrator.cs` | `_terminologyPipeline` 字段 + ctor tail param + `RunTerminologyAsync` body 替换(**`RunTerminologyAgentAsync` 保留** — fallback 路径复用;DAG 路径的 agent 逻辑在 ProposalStep 内,fallback 路径行为零变化) |
 | P1-4 词汇相关测试(hand-built orchestrator 走 fallback 整包 SyncAsync) | 预期零改动;仅当某测试断言依赖被删除的 `RunTerminologyAgentAsync` 具体行为时才最小改写(不删断言) |
 
 ### 6.3 不动
@@ -211,7 +221,7 @@ SyncCore 头部(view 构建 + ontologyIris + EnsureScheme + preView)抽成 `inte
 
 - **Records (2)**:`TerminologyInput_EmptyConstruction_*`、`TermSyncCarry_DefaultConstruction_AllZero`
 - **Pass steps (8)**:每个 pass step 2 tests — 真实 `TerminologyService` + 内存 store 小 fixture(现 TerminologyServiceTests 的 fixture 模式复用):happy-path(carry 计数推进 + quads 落盘)与 fail-soft(pass 抛 → carry.Error,下游短路)
-- **ProposalStep (3)**:gating 不过(Error 非空 / SchemeIri null / SuggestEnabled false)→ FoldCarry;happy-path(fake agent 返回 rows → ProposalsQueued);agent 抛 → Error carry
+- **ProposalStep (3)**:gating 不过(Error 非空 / SchemeIri null / SuggestEnabled false)→ FoldCarry;happy-path(真实 agent + FakeChat 返回 rows → ProposalsQueued);agent 抛 → 异常传播(step 不吞,P1-4 行为一致 — 外层 MarkError)
 - **Pipeline (1)**:`TerminologyPipeline_DovetailEmitsExecuteAsync`(source-gen emit verify)
 - **DI (4)**:5 steps resolvable(接口/具体注册齐全)+ ProposalStep 在 agent 缺失时 null(如沿用 Slice 3 的 `null!` 工厂口径)+ pipeline resolvable + 负向
 - **Orchestrator (2)**:`TerminologyPipeline_IsResolvable_FromOrchestratorServices`(positive)+ `ResolveFails_WhenAddDovetailPipelinesOmitted`(negative)
