@@ -1,8 +1,12 @@
 using Dovetail;
+using ISEStudio.Audit;
 using ISEStudio.Extraction;
+using ISEStudio.Extraction.Dovetail.ABox;
+using ISEStudio.Extraction.Dovetail.ABox.Steps;
 using ISEStudio.Extraction.Dovetail.Adapters;
 using ISEStudio.Extraction.Dovetail.TBox;
 using ISEStudio.Extraction.Dovetail.TBox.Steps;
+using ISEStudio.Ontology;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -62,6 +66,22 @@ public static class DovetailPipelineRegistrations
         // AddSingleton<CorpusRecoveryStep>(...) /
         // AddSingleton<HierarchyRecoveryStep>(...) on lines 48-51 are what
         // the pipeline actually resolves. (See Slice 1 final review F-1.)
+
+        // 6. ABox-level step classes (Slice 2). All nullable service
+        // dependencies — DI registers them with whatever services are
+        // available; missing services yield steps with null service refs
+        // (fail-soft path; see spec §4 D4).
+        services.AddSingleton<CandidateGatherStep>(sp =>
+            new CandidateGatherStep(sp.GetService<DuplicateJudge>()));
+        services.AddSingleton<EmbeddingMatchStep>(sp =>
+            new EmbeddingMatchStep(sp.GetService<DuplicateJudge>()));
+        services.AddSingleton<LLMJudgeStep>(sp =>
+            new LLMJudgeStep(sp.GetService<DuplicateJudge>()));
+        services.AddSingleton<MergeApplyStep>(sp =>
+            new MergeApplyStep(sp.GetService<OntologyEditor>(), sp.GetService<AuditLogService>()));
+        services.AddSingleton<CascadeRetypeStep>(sp =>
+            new CascadeRetypeStep(sp.GetService<OntologyEditor>(), sp.GetService<AuditLogService>()));
+        services.AddSingleton<FinalMergeStep>();
 
         return services;
     }

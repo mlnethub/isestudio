@@ -104,6 +104,16 @@ public sealed class ISEStudioOptions
     public double AutoApplyFloor { get; set; } = 0.85;
 
     /// <summary>
+    /// Confidence floor for auto-applying duplicate-class merges in the
+    /// ABox Dovetail pipeline (Slice 2). Below this threshold the pipeline
+    /// emits a DetectedConflict for triage instead of auto-applying.
+    /// Default 0.90 (LOCKED in slice 2 spec §4 D3) — stricter than the
+    /// P3-11 conflict-agent's AutoApplyFloor (0.85) because duplicate-class
+    /// merges cascade into ABox individual retype.
+    /// </summary>
+    public double DuplicateAutoApplyFloor { get; set; } = 0.90;
+
+    /// <summary>
     /// Whether the conflict detector runs the embedding + LLM-judge
     /// semantic-duplicate pass in addition to the cheap string-similarity
     /// pass. Mirrors the Python backend's
