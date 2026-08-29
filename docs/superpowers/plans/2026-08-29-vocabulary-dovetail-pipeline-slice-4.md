@@ -1535,7 +1535,7 @@ public sealed class ProposalStepTests : IDisposable
 
         await using var check = _contexts.CreateDbContext();
         var row = Assert.Single(await check.TermProposals.ToListAsync());
-        Assert.Equal("Term 0", row.Term);
+        Assert.Equal("Impeller", row.Term);
         Assert.Equal("pending", row.Status);
     }
 
@@ -1634,7 +1634,7 @@ public sealed class ProposalStepTests : IDisposable
 }
 ```
 
-NOTE: `FakeChat.EnqueueTerminologyProposal(1, new[] { chunkId })` produces a proposal whose `preferred_label` is `"Term 0"` and whose `source_chunk_ids` cite the seeded chunk's Guid PK — the agent's grounding filter accepts it. `FakeChatClientFactory` with no client installed throws `InvalidOperationException` from `Create(...)` — that is the deterministic throw for the third test. Both helpers are verified against `src/ISEStudio.Tests/Extraction/FakeChat.cs` + `FakeChatClientFactory.cs`.
+NOTE: The verbatim happy-path enqueue `FakeChat.EnqueueTerminologyProposal(1, new[] { chunkId })` produces `preferred_label = "Term 0"`, but **`IsTermGroundedInChunks` (TerminologyAgent.cs:468 / 690-711) requires the label to be an OrdinalIgnoreCase substring of the cited chunk's text**, so `"Term 0"` against the seeded `"A centrifugal pump uses an impeller..."` chunk is rejected and `SuggestAsync` returns 0 rows. The grounded-label pattern used by `TerminologyAgentOrchestrationTests` (`ProposeReply(ChunkId)` → `"Impeller"`) is the canonical fix — the happy-path test must enqueue a grounded reply (e.g. `preferred_label: "Impeller"` via `_chat.Enqueue(...)`) and assert `row.Term == "Impeller"`. `FakeChatClientFactory` with no client installed throws `InvalidOperationException` from `Create(...)` — that is the deterministic throw for the third test. Both helpers are verified against `src/ISEStudio.Tests/Extraction/FakeChat.cs` + `FakeChatClientFactory.cs`; only the `EnqueueTerminologyProposal` label/text pairing fails the agent's grounding, which the original NOTE did not account for.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1990,7 +1990,14 @@ public class DovetailPipelineRegistrationsTerminologyTests
         services.AddDovetailPipelines();
         using var sp = services.BuildServiceProvider();
 
-        Assert.Null(sp.GetService<TerminologyPipeline>());
+        // AddDovetailPipelines() registers TerminologyPipeline (Dovetail
+        // generator transient), but the pipeline's first ctor param
+        // (StaleMappingStep) cannot activate without the singleton
+        // TerminologyService. MS.DI throws InvalidOperationException for
+        // a registered type whose ctor deps are missing — Assert.Null
+        // can never pass here.
+        Assert.Throws<InvalidOperationException>(
+            () => sp.GetService<TerminologyPipeline>());
     }
 }
 ```
