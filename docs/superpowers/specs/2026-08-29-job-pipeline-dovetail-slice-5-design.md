@@ -1,8 +1,9 @@
 # Dovetail 顶层 Job 流水线设计(Slice 5)
 
+**版本**:v1.1(2026-08-30 实施后修正,DOVE017 wrapper records + canonical chain + 4-field JobState 扩展 + DI fix)
 **日期**:2026-08-29
 **作者**:Claude / ISEStudio
-**状态**:设计 / 待用户审核
+**状态**:实施完成 / v1.1 修正已合入
 **范围**:`ExtractionOrchestrator.RunJobSafelyAsync` → 顶层 `ExtractionJobPipeline` 薄壳(3 变体)+ 5 phase-runner-as-segment + 409 envelope 提到 pipeline 顶层 + `JobRunContext`(mutable struct)→ `JobState`(immutable record)。**A 方案纯薄壳**,沿父 spec §5 roadmap 第 5 项。
 
 **父 spec**:`docs/superpowers/specs/2026-08-28-extraction-dovetail-pipeline-design.md`(v1.0)
@@ -98,17 +99,22 @@ HTTP POST /api/knowledge/{id}/extract*
 
 ### 3.1 3 个 JobPipeline 变体
 
-| Pipeline | 段数 | 顺序 | 输入 record |
-|----------|------|------|------------|
-| `TBoxOnlyJobPipeline` | 5 | Layer(TBox) → Corpus → Hierarchy → Agent → Terminology | `JobInput(JobKind.TBoxOnly)` |
-| `ABoxOnlyJobPipeline` | 2 | Layer(ABox) → Terminology | `JobInput(JobKind.ABoxOnly)` |
-| `CombinedJobPipeline` | 6 | Layer(TBox) → Agent → Corpus → Hierarchy → Layer(ABox) → Terminology | `JobInput(JobKind.Combined)` |
+| Pipeline | 段数 | 顺序 | Shape |
+|----------|------|------|-------|
+| `TBoxOnlyJobPipeline` | 6 | `JobState → TBoxLayerCarry → AgentCarry → CorpusCarry → HierarchyCarry → ABoxLayerCarry → TerminologyCarry` | `IPipeline<JobState, TerminologyCarry>` |
+| `ABoxOnlyJobPipeline` | 6 | 同上 canonical chain,前 4 段 `NoOpSegment<,,>` 替换 | `IPipeline<JobState, TerminologyCarry>` |
+| `CombinedJobPipeline` | 6 | canonical chain 全部启用 | `IPipeline<JobState, TerminologyCarry>` |
 
-**DOVE002 合规**:3 个 pipeline 各自 1 个 `IPipeline<JobInput, JobResult>`,合法。
+**v1.1 修正(2026-08-30 实施)**:
+- 实际 pipeline shape = `IPipeline<JobState, TerminologyCarry>`,**不是** spec v1.0 草稿写错的 `IPipeline<JobInput, JobResult>`。3 变体共享 canonical chain shape,JobInput→JobState 与 JobState→JobResult 投影由 `JobPipelineRouter` 完成(避免 `JobInput`/`JobResult` 污染 Dovetail generic arg 域;Dovetail static-typed DAG 只接收 JobState,JobInput/JobResult 是 orchestrator-boundary DTO)。
+- canonical chain order = `CombinedRunnerAsync` 真实顺序(`ExtractionOrchestrator.cs:580-598`):`Layer(TBox) → Agent → Corpus → Hierarchy → Layer(ABox) → Terminology`(R7 LOCKED)。
+- canonical chain + NoOp 替换 + `NoOpAgentStep` 静态工厂,**不**需要 6 个 step 变体 7 个 task 实现(R8 LOCKED;TBoxOnlyPipeline 跳过 Agent + ABoxLayer;ABoxOnlyPipeline 跳过前 4 段)。
 
-**DOVE006 合规**:每个 pipeline 内部 5/2/6 段 sequential,每段输入 = pipeline input 或 prior output,合法。
+**DOVE002 合规**:3 个 pipeline 各自 1 个 `IPipeline<JobState, TerminologyCarry>`,合法。
 
-**DOVE017 合规**:5 phase sequential 形状天然唯一(每段 fold 不同字段子集到 `JobState`),**无需 wrapper record**(与 Slice 4 DOVE017 wrapper 模式区别已说明)。
+**DOVE006 合规**:每个 pipeline 内部 6 段 sequential(前 2 段或前 4 段 NoOp 替换为 identity),每段输入 = pipeline input 或 prior output,合法。
+
+**DOVE017 触发**:6 段 sequential 形状虽 fold 不同字段,**但** assembly-wide interface type-argument uniqueness 强制 2 段同 `(JobState, JobState) → JobState` 编译失败,因此需要 `JobCarries.cs` 6 个 wrapper records(`TBoxLayerCarry` / `AgentCarry` / `CorpusCarry` / `HierarchyCarry` / `ABoxLayerCarry` / `TerminologyCarry`),每个 1-line `sealed record Xxx(JobState State)`(详见 §5.1)。
 
 ---
 
@@ -141,6 +147,13 @@ public sealed record JobState
     public JobKind Kind { get; init; }
     public IReadOnlyList<string>? InitialVocabulary { get; init; }
 
+    // v1.1 实施后扩展(R11 LOCKED):Dovetail static-typed DAG 无 runtime closure injection,
+    // per-job closure arguments(KsContext + Request + Chunks + PerChunk)必须在 state 里
+    public KnowledgeSystemContext KsContext { get; init; } = null!;            // Task 4 R11
+    public ExtractionJobRequest Request { get; init; } = null!;                 // Task 4 R11
+    public IReadOnlyList<ChunkRecord> Chunks { get; init; } = Array.Empty<ChunkRecord>(); // Task 4 R11
+    public IReadOnlyDictionary<int, PerChunkState> PerChunk { get; init; } = ImmutableDictionary<int, PerChunkState>.Empty; // Task 4 R11
+
     // Phase outputs (mutated by steps via 'with' expressions)
     public IReadOnlyList<ChunkResult> TBoxChunkResults { get; init; } = Array.Empty<ChunkResult>();
     public IReadOnlyList<ChunkResult> ABoxChunkResults { get; init; } = Array.Empty<ChunkResult>();
@@ -170,6 +183,12 @@ public sealed record JobState
 ```
 
 **JobState 修改契约**:每个 phase step 内部对 `JobState` 的"读取 + 修改"通过 `state with { ... }` 表达式返回新 record。orchestrator 现有 5 phase-runner 方法签名内部修 `JobRunContext`(mutable struct)→ 改为读/返 `JobState`(immutable record)。这是 Slice 5 **唯一**的中量业务逻辑改动。
+
+**v1.1 修正字段集合**:
+- spec v1.0 草稿:13 字段(JobId/KnowledgeSystemId/ChunkIds/Chat/Kind/InitialVocabulary + 6 phase outputs + Error/CancellationToken)
+- 实际实施(v1.1):**17 字段**(13 + R11 扩展 4 字段 `KsContext`/`Request`/`Chunks`/`PerChunk`)
+- R11 rationale:Dovetail partial ctor 实例化 step 时只有 state 可以传;runtime closure(per-job JobRequest + KnowledgeSystemContext + chunk records + per-chunk state)无法用 ctor 注入 → state 必须承载这些字段
+- 字段类型:`KnowledgeSystemContext` 是 ISEStudio 既有 value type(分层服务上下文的基线),`ExtractionJobRequest` 是 dispatcher DTO,`ChunkRecord`/`PerChunkState` 是 chunk 维度 tracking record
 
 ### 4.3 5 phase IO record
 
@@ -210,7 +229,10 @@ public sealed record JobResult(
 ### 4.5 支持 record
 
 ```csharp
-public sealed record ChunkResult(int ChunkId, IReadOnlyList<TBoxClass> ClassesAdded, IReadOnlyList<TBoxProperty> PropertiesAdded, IReadOnlyList<TBoxAxiom> AxiomsAdded);
+// v1.1 修正(Task 1 Ruling):spec v1.0 草稿引用不存在的 `TBoxClass` / `TBoxProperty` / `TBoxAxiom` types
+// (这些是 P1-5 系列后续切片才落地的 strongly-typed domain types,本切片尚未存在)
+// 实施后 canonical shape = `IReadOnlyList<object>` 占位,typed consumer 可在后续切片引入
+public sealed record ChunkResult(int ChunkId, IReadOnlyList<object> Added, IReadOnlyList<object> PropertiesAdded, IReadOnlyList<object> AxiomsAdded);
 
 public sealed record JobTerminology(long TermsAdded, long TermsMapped, long ProposalsQueued, string? Error);
 ```
@@ -241,6 +263,28 @@ public sealed record JobTerminology(long TermsAdded, long TermsMapped, long Prop
 **`NoOpAgentStep`**:`IPipelineSegment<JobState, JobState>`,返 input 零修改(`state`,无字段 fold)。DI 注册 `AddScoped<AgentStep>(sp => sp.GetService<IServiceScopeFactory>() is null ? new NoOpAgentStep() : new AgentStep(...))` — last-registration-wins + slice 1-4 `null!` 模式复用。
 
 **`PerPhaseCatchStep<TIn, TOut>`**(Dovetail adapter):包 try/catch,失败返 fallback。封装为 `IPipelineSegment<TIn, TOut>` 装饰器。`OptionalSegment` 父 spec D4 已定义;`PerPhaseCatchStep` 是 Slice 5 新引入(语义对齐 Slice 1-4 orchestrator helper try/catch 模式)。
+
+### 5.2 DOVE017 wrapper records ruling(2026-08-30 实施裁定)
+
+**spec v1.0 错误假设**:5 phase sequential 形状天然唯一(每段 fold 不同字段子集到 `JobState`),无需 wrapper record。**实际** §3.1 实施后,6 段 sequential 中 `TBoxLayerStep` 与 `ABoxLayerStep` 共享 `(JobState, JobState) → JobState` 接口形状,DOVE017 触发:**2 段同 shape → CS 编译错误**,Dovetail source generator 不容忍 assembly-wide interface type-argument 重复。
+
+**v1.1 修正:6 个 wrapper records 在 `JobCarries.cs`**(Task 3 提交 `652d795`,切片 Slice 4 v1.2 `TerminologyCarries.cs` precedent 复用):
+
+```csharp
+// src/ISEStudio/Extraction/Dovetail/Job/JobCarries.cs(每个 1-line)
+public sealed record TBoxLayerCarry(JobState State);
+public sealed record AgentCarry(JobState State);
+public sealed record CorpusCarry(JobState State);
+public sealed record HierarchyCarry(JobState State);
+public sealed record ABoxLayerCarry(JobState State);
+public sealed record TerminologyCarry(JobState State);
+```
+
+**variant 裁决**:每段自己的 wrapper record,**不**复用 `SliceCarry(State)` 共享类型(语义不清晰,后续读代码的人不知道哪个 carry 对应哪段);保持命名 stack 与 chain order 一致(`TBoxLayerCarry → AgentCarry → CorpusCarry → HierarchyCarry → ABoxLayerCarry → TerminologyCarry`,canonical chain)。
+
+**生产代码 fold**:step 内 `state with { ... }` 直接修改 `TerminologyCarry.State`,不显式 `.Carry.State` 解包(Dovetail partial ctor `IPipelineSegment<JobState, XxxCarry, NextCarry>` 自动透传)。**测试代码**构造 stub state 时显式 `new XxxCarry(new JobState { ... })`。
+
+**Task 4 Ruling(影响**:Task 4 引入 3 个 `ChainAdapter<TIn, T1, TOut>` + `NoOpSegment3`(DOVE008 architectural compromise,2-arity step → 3-arity pipeline segment 包装层);Task 5 DI fix(R15)显式 register `typeof(NoOpSegment<,,>)` + `typeof(ChainAdapter<,,>)` MS.DI open-generic self-registration。
 
 ---
 
@@ -280,27 +324,30 @@ docs/superpowers/diagrams/
 ### 6.1 DovetailPipelineRegistrations §9 注册块
 
 ```csharp
-// 9. Job slice 5 (per spec §5 + §6).
+// 9. Job slice 5 (per spec §5 + §6)。
 // SCOPED: orchestrator resolves JobPipeline from per-job scope(Slice 3 R2 lifecycle)。
-// AgentStep 用 Slice 1-4 null! factory 口径(_scopes null → NoOp 替代)。
-services.AddScoped<LayerStep<TBoxChunkPipeline>>();
-services.AddScoped<LayerStep<ABoxJobPipeline>>();
+// v1.0 草稿错把 NoOpAgentStep 入 DI(实际是 static factory);v1.1 仅 6 step classes 入 DI
+services.AddScoped<TBoxLayerStep>();
+services.AddScoped<ABoxLayerStep>();
 services.AddScoped<CorpusStep>();
 services.AddScoped<HierarchyStep>();
 services.AddScoped<TerminologyStep>();
-services.AddScoped<NoOpAgentStep>();
-services.AddScoped<AgentStep>(sp =>
-{
-    var scopes = sp.GetService<IServiceScopeFactory>();
-    return scopes is null
-        ? null!
-        : new AgentStep(sp.GetRequiredService<AgentChainPipeline>());
-});
+services.AddScoped<AgentStep>();  // NoOp 替换在构造函数内部做(sp.GetService<IServiceScopeFactory>() is null → NoOpAgentStep)
 
 services.AddScoped<TBoxOnlyJobPipeline>();
 services.AddScoped<ABoxOnlyJobPipeline>();
 services.AddScoped<CombinedJobPipeline>();
 services.AddScoped<JobPipelineRouter>();
+
+// v1.1 实施(Task 6 R15 DI fix):Dovetail source generator 只 register 2-arity `NoOpSegment<,>`
+// open generic,**没有**为 3-arity `NoOpSegment<,,>` 和 `ChainAdapter<,,>`(Task 4 引入的 DOVE008
+// architectural compromise 助手)生成 DI registration。Pipeline partial ctor 内部 `ChainAdapter<TIn, T1, TOut>`
+// + `NoOpSegment<TIn, T1, TOut>` 实例化需要 MS.DI 显式 open-generic self-registration。
+// MS.DI supports open-generic self-registration(用 `typeof()` 显式)→ pipeline partial ctor 内部激活
+// generic types 时能找到 ctor。
+// 12 总注册:10 scoped + 2 open-generic self-registration(self-register 通用 helpers for DOVE008 助手)
+services.AddScoped(typeof(NoOpSegment<,,>));
+services.AddScoped(typeof(ChainAdapter<,,>));
 ```
 
 ---
