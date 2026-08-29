@@ -89,26 +89,49 @@ AgentChainPipeline (DOVE006 多输入)
 ```csharp
 namespace ISEStudio.Extraction.Dovetail.AgentChain;
 
+/// <summary>
+/// Input to the agent chain Dovetail pipeline. Conflicts are detected
+/// externally by <c>ConflictService.DetectAsync</c> (per §5 D1) and passed
+/// in here. The pipeline runs ConflictAgent → StructureAgent → StatsRefresh
+/// as three typed segments.
+/// </summary>
 public sealed record AgentChainInput(
     Guid JobId,
     Guid KnowledgeSystemId,
     IReadOnlyList<ConflictDetection.DetectedConflict> Conflicts,
     string? Model);
 
+/// <summary>
+/// Output of <c>ConflictAgentStep</c>. Holds the job-log summary lines
+/// produced by <see cref="ISEStudio.Conflicts.ConflictAgent.TriageAsync"/>.
+/// Note: P1-1's agent returns <c>Task&lt;IReadOnlyList&lt;string&gt;&gt;</c>
+/// (job-log summary, NOT a typed count). Records faithfully wrap the
+/// real return shape so DOVE006 is satisfied without semantic distortion.
+/// </summary>
 public sealed record ConflictTriageResult(
-    IReadOnlyList<ConflictDetection.DetectedConflict> TriagedConflicts,
-    int RecommendationsAttached);
+    IReadOnlyList<string> TriageLog);
 
+/// <summary>
+/// Output of <c>StructureAgentStep</c>. Holds the job-log summary lines
+/// produced by <see cref="ISEStudio.Ontology.StructureAgent.AttachIsolatedAsync"/>.
+/// Same caveat as <see cref="ConflictTriageResult"/>: real agent returns
+/// <c>Task&lt;IReadOnlyList&lt;string&gt;&gt;</c>.
+/// </summary>
 public sealed record StructureAttachResult(
-    int IsolatedAttached,
-    int NewClassesCreated);
+    IReadOnlyList<string> AttachLog);
 
+/// <summary>
+/// Final output of <c>AgentChainPipeline</c>. Bundles the two intermediate
+/// results for the orchestrator to log/expose.
+/// </summary>
 public sealed record AgentChainResult(
     ConflictTriageResult Triage,
     StructureAttachResult Structure);
 ```
 
 注:`ConflictDetection.DetectedConflict` 在 `ISEStudio.Ontology` 命名空间(Slice 2 已确认)。
+
+**Records 变更记录**:初版 spec §4 把 `ConflictTriageResult` / `StructureAttachResult` 设计成 `int` 计数 records(`RecommendationsAttached` / `IsolatedAttached` + `NewClassesCreated`),Task 2 BLOCKED 发现 P1-1 / P1-3 agents 实际返回 `Task<IReadOnlyList<string>>` job log。变更后 records 改为持有 job log,语义忠实于实际 agents。变更由 Task 2 BLOCKED ruling 触发(ledger Ruling §4),Phase A.1 commit 待落地。
 
 ---
 
@@ -162,9 +185,9 @@ DAG 不 propagate stats 刷新失败。**WHY**:P1-4 现状(Python 会让 job fai
 
 `ExtractionOrchestrator._scopes` 字段 + ctor tail param 保留(hand-built 测试传 null → chain 整体跳过)。**WHY**:同 P1-4。`AgentChainPipeline` 不需要直接拿 scope(每步拿 scoped DbContext 是 step 内部通过 constructor 注入 — pipeline 本身 singleton)。
 
-### D6 — DI 注册走 concrete step type factory
+### D6 — DI 注册走 interface-keyed concrete type factory
 
-`DovetailPipelineRegistrations` 追加 3 个 step 注册,使用 `sp.GetService<T>()` factory 模式(nullable service deps)。**WHY**:Slice 1 F-1 教训 — 不用 `IPipelineSegment<...>` factory,因为 pipeline ctor 拿 concrete types。
+`DovetailPipelineRegistrations` 追加 3 个 step 注册,使用 `sp.GetService<IFoo>()` factory 模式(nullable interface deps)。底层 agent / service 类需新增 3 个 interface (`IConflictAgent` / `IStructureAgent` / `IKnowledgeStatsService`),现有 `ConflictAgent` / `StructureAgent` / `KnowledgeStatsService`(`public sealed class`)只需在声明加 `: IFoo` 一行(方法已匹配 interface shape)。**WHY**:实际代码中三个底层 service 都是 `sealed class` + 非虚方法,没有 mocking framework(无 Moq / NSubstitute),加 interface 是唯一干净的单元测试路径(对照 Task 2 BLOCKED ruling)。Slice 1 F-1 教训仍适用 — step ctor 不取 `IPipelineSegment<...>`,仍取 concrete step type。
 
 ### D7 — 无新 ISEStudioOptions 字段
 
