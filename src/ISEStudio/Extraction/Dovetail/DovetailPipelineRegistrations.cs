@@ -9,6 +9,8 @@ using ISEStudio.Extraction.Dovetail.Adapters;
 using ISEStudio.Extraction.Dovetail.AgentChain.Steps;
 using ISEStudio.Extraction.Dovetail.TBox;
 using ISEStudio.Extraction.Dovetail.TBox.Steps;
+using ISEStudio.Extraction.Dovetail.Terminology.Steps;
+using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Knowledge;
 using ISEStudio.Ontology;
 using Microsoft.Extensions.DependencyInjection;
@@ -126,6 +128,29 @@ public static class DovetailPipelineRegistrations
                 : new StatsRefreshStep(
                     stats: stats,
                     logger: sp.GetRequiredService<ILogger<StatsRefreshStep>>());
+        });
+
+        // 8. Terminology slice 4 step classes (per spec §6.2 + §5 D9).
+        // SCOPED for the same per-job lifecycle reason as §7: the
+        // orchestrator resolves TerminologyPipeline from the per-job scope,
+        // so the steps live per job. The four pass steps depend only on the
+        // singleton TerminologyService (registered plainly); ProposalStep
+        // holds the scoped TerminologyAgent + DbContext and reuses the §7
+        // null! factory pattern so a missing agent surfaces as a null step.
+        services.AddScoped<StaleMappingStep>();
+        services.AddScoped<EntitySyncStep>();
+        services.AddScoped<AliasStep>();
+        services.AddScoped<BroaderStep>();
+        services.AddScoped<ProposalStep>(sp =>
+        {
+            var agent = sp.GetService<TerminologyAgent>();
+            return agent is null
+                ? null!
+                : new ProposalStep(
+                    agent: agent,
+                    db: sp.GetRequiredService<ISEStudioDbContext>(),
+                    options: sp.GetRequiredService<IOptions<ISEStudioOptions>>(),
+                    logger: sp.GetRequiredService<ILogger<ProposalStep>>());
         });
 
         return services;
