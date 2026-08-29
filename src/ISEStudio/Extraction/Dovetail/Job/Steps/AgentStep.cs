@@ -7,12 +7,11 @@ namespace ISEStudio.Extraction.Dovetail.Job.Steps;
 /// <see cref="ExtractionOrchestrator.RunAgentChainAsync"/> (conflict triage +
 /// structure attach + stats refresh, Slice 3 sub-DAG).
 ///
-/// <para>Task 3 placeholder: the <see cref="ExtractionRequest"/> the runner
-/// needs is not derivable from <see cref="JobState"/> alone and is supplied
-/// as <c>default!</c> until Task 4 wires the per-job closure through the Job
-/// pipeline router. The runner short-circuits to the input state when the
-/// scope factory is absent, so the placeholder never dereferences the null
-/// request.</para>
+/// <para>Slice 5 Task 4 R12: forwards the per-job closure's
+/// <see cref="ISEStudio.Extraction.ExtractionRequest"/> from
+/// <see cref="JobState.Request"/>; the runner short-circuits to the input
+/// state when the scope factory is absent (hand-built test orchestrators
+/// skip the chain entirely, the P1-4 seam).</para>
 /// </summary>
 public sealed class AgentStep : IPipelineSegment<JobState, AgentCarry>
 {
@@ -23,9 +22,8 @@ public sealed class AgentStep : IPipelineSegment<JobState, AgentCarry>
 
     public async Task<AgentCarry> ExecuteAsync(JobState input, CancellationToken cancellationToken)
     {
-        // Task 4: request comes from the per-job closure the router builds.
         var state = await _orchestrator
-            .RunAgentChainAsync(input, default!, cancellationToken)
+            .RunAgentChainAsync(input, input.Request, cancellationToken)
             .ConfigureAwait(false);
         return new AgentCarry(state);
     }

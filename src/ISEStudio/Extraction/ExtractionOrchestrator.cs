@@ -36,7 +36,7 @@ internal sealed record VerifiedTBox(TBoxDelta Delta, TBoxVerifyResult? Verify);
 /// rest of the verdict (adjudicator reasons, denotation stats) lives inside
 /// the per-chunk <see cref="ExtractionMergeResult"/> for the audit trail.
 /// </summary>
-internal sealed record ChunkVerifyOutcome(
+public sealed record ChunkVerifyOutcome(
     int ChunkId,
     string Text,
     IReadOnlyList<RejectedClass> Rejected);
@@ -310,9 +310,10 @@ public sealed class ExtractionOrchestrator
 
         // SLICE 5: JobInput carries the immutable job entry shape; JobState
         // (built inside RunJobSafelyAsync via JobState.From(input)) carries
-        // the per-phase tracked state. Chunks/Request/KsContext are passed
-        // alongside as execution context — JobState does NOT carry them
-        // (Task 1 record is locked) but phase-runners still need them.
+        // the per-phase tracked state. Task 4 R11 extended JobInput with
+        // the per-job closure arguments (KsContext / Request / Chunks /
+        // PerChunk) so the Dovetail Job pipeline's static-typed steps can
+        // forward them to the phase runners.
         var input = new JobInput(
             JobId: job.Id,
             KnowledgeSystemId: request.KnowledgeSystemId,
@@ -320,7 +321,11 @@ public sealed class ExtractionOrchestrator
             Chat: chat,
             Kind: kind,
             InitialVocabulary: null,
-            CancellationToken: CancellationToken.None);
+            CancellationToken: CancellationToken.None,
+            KsContext: ksContext,
+            Request: request,
+            Chunks: chunks,
+            PerChunk: Array.Empty<ChunkVerifyOutcome>());
 
         // SuppressFlow keeps the chat capacity coordinator's AsyncLocal
         // re-entry tracking from leaking in from the caller's flow. Without
@@ -1095,6 +1100,66 @@ public sealed class ExtractionOrchestrator
                 .ConfigureAwait(false);
         return new VerifiedTBox(verified.Delta, verified);
     }
+
+    // ------------------------------------------------------------------
+    // Slice 5 Task 4 R12: forwarder helpers for the Dovetail Job layer
+    // steps. The step's extractor / merger / recordMergeAsync lambdas
+    // delegate back to the orchestrator's private collaborators so the
+    // legacy CombinedRunnerAsync / TBoxOnlyRunnerAsync / ABoxOnlyRunnerAsync
+    // control flow stays the single source of truth.
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Forwarder for the TBox layer step's extractor lambda. Routes through
+    /// the orchestrator's private <see cref="ExtractAndVerifyAsync"/> so
+    /// the <see cref="TBoxExtractionService"/>, <see cref="TBoxVerifyService"/>
+    /// and <see cref="TBoxChunkPipeline"/> collaborators stay private.
+    /// </summary>
+    internal Task<VerifiedTBox> ExtractAndVerifyForStepAsync(
+        JobState state, KsContext ksContext, ChunkSpan chunk, CancellationToken cancellationToken) =>
+        ExtractAndVerifyAsync(state, ksContext, chunk, cancellationToken);
+
+    /// <summary>
+    /// Forwarder for the TBox layer step's merger lambda.
+    /// </summary>
+    internal ExtractionMergeResult MergeTBoxForStep(
+        KsContext ks, TBoxDelta delta, TBoxVerifyResult? verify) =>
+        _merger.MergeTBox(ks, delta, verify);
+
+    /// <summary>
+    /// Forwarder for the TBox layer step's recordMergeAsync lambda.
+    /// </summary>
+    internal Task RecordTBoxMergeForStepAsync(
+        Guid jobId, ExtractionMergeResult result, CancellationToken cancellationToken) =>
+        _jobs.RecordTBoxMergeAsync(jobId, result, cancellationToken);
+
+    /// <summary>
+    /// Forwarder for the ABox layer step's extractor lambda.
+    /// </summary>
+    internal Task<ABoxDelta> ExtractABoxForStepAsync(
+        JobState state, KsContext ksContext, ChunkSpan chunk, IReadOnlyCollection<string> labels, CancellationToken cancellationToken) =>
+        _abox.ExtractAsync(state.Chat, ksContext, chunk, labels, cancellationToken);
+
+    /// <summary>
+    /// Forwarder for the ABox layer step's merger lambda.
+    /// </summary>
+    internal ExtractionMergeResult MergeABoxForStep(KsContext ks, ABoxDelta delta) =>
+        _merger.MergeABox(ks, delta);
+
+    /// <summary>
+    /// Forwarder for the ABox layer step's recordMergeAsync lambda.
+    /// </summary>
+    internal Task RecordABoxMergeForStepAsync(
+        Guid jobId, ExtractionMergeResult result, CancellationToken cancellationToken) =>
+        _jobs.RecordABoxMergeAsync(jobId, result, cancellationToken);
+
+    /// <summary>
+    /// Forwarder for the ABox layer step's label-set read (the live class
+    /// labels the ABox extractor grounds against). Routes through the
+    /// orchestrator's private <see cref="ExistingClassLabels"/> helper.
+    /// </summary>
+    internal IReadOnlyCollection<string> ExistingClassLabelsForStep(KsContext ksContext) =>
+        ExistingClassLabels(ksContext);
 
     /// <summary>
     /// Run the ABox duplicate-class detection pipeline (Dovetail

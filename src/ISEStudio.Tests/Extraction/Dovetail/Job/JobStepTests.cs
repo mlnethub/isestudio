@@ -33,7 +33,19 @@ public sealed class JobStepTests : IDisposable
         Chat: null!,
         Kind: JobKind.TBoxOnly,
         InitialVocabulary: null,
-        CancellationToken: CancellationToken.None));
+        CancellationToken: CancellationToken.None,
+        KsContext: new KsContext("http://test.local/ks/step", "http://test.local/ks/step#"),
+        Request: new ExtractionRequest(
+            KnowledgeSystemId: Guid.NewGuid(),
+            BlobSha: string.Empty,
+            FileName: "step.txt",
+            Provider: "openai",
+            Model: "fake-model",
+            Endpoint: "https://fake.test/v1",
+            ApiKey: null,
+            ConcurrencyLimit: 2),
+        Chunks: Array.Empty<ChunkSpan>(),
+        PerChunk: Array.Empty<ChunkVerifyOutcome>()));
 
     /// <summary>
     /// The orchestrator ctor null-checks all 13 mandatory dependencies, so

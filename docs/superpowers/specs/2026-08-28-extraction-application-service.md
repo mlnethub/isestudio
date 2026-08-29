@@ -1,3 +1,4 @@
+
 # Extraction 应用服务抽取 + dispatcher → application-service 拆分(7/13)
 
 **状态**: 已完成(7/13 slice 落地,850 unit + 167 contract 全绿)

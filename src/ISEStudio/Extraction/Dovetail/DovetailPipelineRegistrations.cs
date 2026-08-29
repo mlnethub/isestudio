@@ -44,6 +44,7 @@ public static class DovetailPipelineRegistrations
         services.AddSingleton<IRunWithExtractionGuard, ExtractionGuard>();
 
         // 3. Chunk-level step classes — all public sealed with TBoxVerifyService.
+        
         services.AddSingleton<CriticStep>();
         services.AddSingleton<AdjudicatorStep>();
         services.AddSingleton<DenotationStep>();

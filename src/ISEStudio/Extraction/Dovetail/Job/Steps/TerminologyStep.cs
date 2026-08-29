@@ -9,10 +9,9 @@ namespace ISEStudio.Extraction.Dovetail.Job.Steps;
 /// <c>totalProcessed</c> argument folds from
 /// <see cref="JobState.ProcessedChunks"/>.
 ///
-/// <para>Task 3 placeholder: <c>KsContext</c> / <see cref="ExtractionRequest"/>
-/// are not derivable from <see cref="JobState"/> alone and are supplied as
-/// <c>default!</c> until Task 4 wires the per-job closure through the Job
-/// pipeline router.</para>
+/// <para>Slice 5 Task 4 R12: forwards <see cref="JobState.KsContext"/> and
+/// <see cref="JobState.Request"/> from the per-job closure the router
+/// built.</para>
 /// </summary>
 public sealed class TerminologyStep : IPipelineSegment<JobState, TerminologyCarry>
 {
@@ -23,9 +22,9 @@ public sealed class TerminologyStep : IPipelineSegment<JobState, TerminologyCarr
 
     public async Task<TerminologyCarry> ExecuteAsync(JobState input, CancellationToken cancellationToken)
     {
-        // Task 4: ksContext + request come from the per-job closure.
         var state = await _orchestrator
-            .RunTerminologyAsync(input, default!, default!, input.ProcessedChunks, cancellationToken)
+            .RunTerminologyAsync(
+                input, input.KsContext, input.Request, input.ProcessedChunks, cancellationToken)
             .ConfigureAwait(false);
         return new TerminologyCarry(state);
     }

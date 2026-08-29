@@ -16,11 +16,14 @@ namespace ISEStudio.Extraction.Dovetail.Job.Steps;
 /// the layer step is split into two non-generic classes, which is also the
 /// design doc's documented DOVE017 fallback.</para>
 ///
-/// <para>Task 3 placeholder: <c>RunLayerAsync</c> takes 11 arguments (chunk
-/// spans, capacity key, graph IRI, extractor / merger / merge-record /
-/// on-chunk delegates) that only the per-job closure can produce. The body
-/// is an identity fold until Task 4 wires those delegates through the Job
-/// pipeline router.</para>
+/// <para>Slice 5 Task 4 R12: forwards to
+/// <see cref="ExtractionOrchestrator.RunLayerAsync"/> with the TBox-specific
+/// extractor (extract + verify), merger (<c>MergeTBox</c>), merge-record
+/// (<c>RecordTBoxMergeAsync</c>) and on-chunk (capture
+/// <see cref="ChunkVerifyOutcome"/> list for downstream recovery passes).
+/// The perChunk list is folded back into <see cref="JobState.PerChunk"/>
+/// when RunLayerAsync returns so the downstream <see cref="CorpusStep"/> /
+/// <see cref="HierarchyStep"/> see the populated list.</para>
 /// </summary>
 public sealed class TBoxLayerStep : IPipelineSegment<JobState, TBoxLayerCarry>
 {
@@ -29,13 +32,50 @@ public sealed class TBoxLayerStep : IPipelineSegment<JobState, TBoxLayerCarry>
     public TBoxLayerStep(ExtractionOrchestrator orchestrator) =>
         _orchestrator = orchestrator ?? throw new ArgumentNullException(nameof(orchestrator));
 
-    public Task<TBoxLayerCarry> ExecuteAsync(JobState input, CancellationToken cancellationToken)
+    public async Task<TBoxLayerCarry> ExecuteAsync(JobState input, CancellationToken cancellationToken)
     {
-        // Task 4: forwards to _orchestrator.RunLayerAsync(input, chunks,
-        // capacityKey, graphIri, ExtractionPhase.TBox, baseProcessedOffset: 0,
-        // extractor, merger, recordMergeAsync, onChunk, cancellationToken).
-        _ = _orchestrator;
-        _ = cancellationToken;
-        return Task.FromResult(new TBoxLayerCarry(input));
+        // R12: capture perChunk inside the onChunk delegate so the
+        // downstream Corpus / Hierarchy recovery passes see the populated
+        // list. The list is appended to via the closure the runner invokes
+        // once per chunk, so it must be a List<T> (IReadOnlyList cannot
+        // grow). The captured list is folded back into the returned state
+        // when RunLayerAsync finishes.
+        var perChunk = new List<ChunkVerifyOutcome>();
+        var state = await _orchestrator.RunLayerAsync(
+            input,
+            input.Chunks,
+            capacityKey: input.Request.CapacityKey,
+            graphIri: input.KsContext.TBoxGraph,
+            phase: ExtractionPhase.TBox,
+            baseProcessedOffset: 0,
+            extractor: async (chunk, ct) =>
+                (object)await _orchestrator.ExtractAndVerifyForStepAsync(
+                    input, input.KsContext, chunk, ct).ConfigureAwait(false),
+            merger: item => _orchestrator.MergeTBoxForStep(
+                input.KsContext,
+                ((VerifiedTBox)item).Delta,
+                ((VerifiedTBox)item).Verify),
+            recordMergeAsync: (id, result, ct) =>
+                _orchestrator.RecordTBoxMergeForStepAsync(id, result, ct),
+            onChunk: (i, item) =>
+            {
+                var verified = (VerifiedTBox)item;
+                perChunk.Add(new ChunkVerifyOutcome(
+                    input.Chunks[i].Idx,
+                    input.Chunks[i].Text,
+                    verified.Verify?.Rejections ?? Array.Empty<RejectedClass>()));
+                return default;
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        // R12 ruling on perChunk tracking: replace JobState.PerChunk with
+        // the captured list so downstream recovery steps observe the
+        // populated outcome. Use AsReadOnly so the contract stays an
+        // IReadOnlyList.
+        if (!ReferenceEquals(state.PerChunk, perChunk))
+        {
+            state = state with { PerChunk = perChunk.AsReadOnly() };
+        }
+        return new TBoxLayerCarry(state);
     }
 }

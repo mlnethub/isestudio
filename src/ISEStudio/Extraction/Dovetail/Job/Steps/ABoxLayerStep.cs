@@ -14,9 +14,13 @@ namespace ISEStudio.Extraction.Dovetail.Job.Steps;
 /// <see cref="TBoxLayerStep"/> — see that type for why the plan's generic
 /// <c>LayerStep&lt;TPipeline&gt;</c> was split.</para>
 ///
-/// <para>Task 3 placeholder: the body is an identity fold until Task 4
-/// wires the 11-argument <c>RunLayerAsync</c> call through the Job pipeline
-/// router's per-job closure.</para>
+/// <para>Slice 5 Task 4 R12: forwards to
+/// <see cref="ExtractionOrchestrator.RunLayerAsync"/> with the
+/// ABox-specific extractor (<c>_abox.ExtractAsync</c>), merger
+/// (<c>MergeABox</c>) and merge-record (<c>RecordABoxMergeAsync</c>).
+/// ABox does not capture a perChunk list (no verify pass) and the
+/// <c>onChunk</c> callback is <c>null</c>, matching the legacy
+/// <c>ABoxOnlyRunnerAsync</c>.</para>
 /// </summary>
 public sealed class ABoxLayerStep : IPipelineSegment<JobState, ABoxLayerCarry>
 {
@@ -33,14 +37,31 @@ public sealed class ABoxLayerStep : IPipelineSegment<JobState, ABoxLayerCarry>
     internal static int BaseProcessedOffset(JobState state) =>
         state.Kind == JobKind.Combined ? state.ChunkIds.Count : 0;
 
-    public Task<ABoxLayerCarry> ExecuteAsync(JobState input, CancellationToken cancellationToken)
+    public async Task<ABoxLayerCarry> ExecuteAsync(JobState input, CancellationToken cancellationToken)
     {
-        // Task 4: forwards to _orchestrator.RunLayerAsync(input, chunks,
-        // capacityKey, graphIri, ExtractionPhase.ABox,
-        // BaseProcessedOffset(input), extractor, merger, recordMergeAsync,
-        // onChunk, cancellationToken).
-        _ = _orchestrator;
-        _ = cancellationToken;
-        return Task.FromResult(new ABoxLayerCarry(input));
+        // ABox extraction needs the existing class labels so the LLM can
+        // ground the extracted individuals against the schema. Pull the
+        // live labels off the KsContext's TBox graph via the orchestrator's
+        // forwarder (ExistingClassLabels is private).
+        var labels = _orchestrator.ExistingClassLabelsForStep(input.KsContext);
+
+        var state = await _orchestrator.RunLayerAsync(
+            input,
+            input.Chunks,
+            capacityKey: input.Request.CapacityKey,
+            graphIri: input.KsContext.ABoxGraph,
+            phase: ExtractionPhase.ABox,
+            baseProcessedOffset: BaseProcessedOffset(input),
+            extractor: async (chunk, ct) =>
+                (object)await _orchestrator.ExtractABoxForStepAsync(
+                    input, input.KsContext, chunk, labels, ct).ConfigureAwait(false),
+            merger: delta => _orchestrator.MergeABoxForStep(
+                input.KsContext, (ABoxDelta)delta),
+            recordMergeAsync: (id, result, ct) =>
+                _orchestrator.RecordABoxMergeForStepAsync(id, result, ct),
+            onChunk: null,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        return new ABoxLayerCarry(state);
     }
 }

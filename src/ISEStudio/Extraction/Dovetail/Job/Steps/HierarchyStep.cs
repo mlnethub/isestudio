@@ -9,10 +9,9 @@ namespace ISEStudio.Extraction.Dovetail.Job.Steps;
 /// already failed — the spec §5.1 runtime skip condition, equivalent to the
 /// pre-Dovetail control flow.
 ///
-/// <para>Task 3 placeholder: <c>KsContext</c> / <see cref="ExtractionRequest"/>
-/// and the per-chunk verify outcomes are not derivable from
-/// <see cref="JobState"/> alone and are supplied as <c>default!</c> until
-/// Task 4 wires the per-job closure through the Job pipeline router.</para>
+/// <para>Slice 5 Task 4 R12: forwards <see cref="JobState.KsContext"/>,
+/// <see cref="JobState.Request"/>, and <see cref="JobState.PerChunk"/> from
+/// the per-job closure the router built.</para>
 /// </summary>
 public sealed class HierarchyStep : IPipelineSegment<JobState, HierarchyCarry>
 {
@@ -25,9 +24,9 @@ public sealed class HierarchyStep : IPipelineSegment<JobState, HierarchyCarry>
     {
         if (input.ShouldSkipRemaining) return new HierarchyCarry(input);
 
-        // Task 4: ksContext + request + perChunk come from the per-job closure.
         var state = await _orchestrator
-            .RunHierarchyRecoveryAsync(input, default!, default!, default!, cancellationToken)
+            .RunHierarchyRecoveryAsync(
+                input, input.KsContext, input.Request, input.PerChunk, cancellationToken)
             .ConfigureAwait(false);
         return new HierarchyCarry(state);
     }

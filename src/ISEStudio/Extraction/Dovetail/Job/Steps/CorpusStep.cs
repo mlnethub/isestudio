@@ -9,10 +9,9 @@ namespace ISEStudio.Extraction.Dovetail.Job.Steps;
 /// upstream phase already failed — the spec §5.1 runtime skip condition,
 /// equivalent to the pre-Dovetail control flow.
 ///
-/// <para>Task 3 placeholder: <c>KsContext</c> and the per-chunk verify
-/// outcomes are not derivable from <see cref="JobState"/> alone and are
-/// supplied as <c>default!</c> until Task 4 wires the per-job closure
-/// through the Job pipeline router.</para>
+/// <para>Slice 5 Task 4 R12: forwards <see cref="JobState.KsContext"/> and
+/// <see cref="JobState.PerChunk"/> from the per-job closure the router
+/// built.</para>
 /// </summary>
 public sealed class CorpusStep : IPipelineSegment<JobState, CorpusCarry>
 {
@@ -25,9 +24,8 @@ public sealed class CorpusStep : IPipelineSegment<JobState, CorpusCarry>
     {
         if (input.ShouldSkipRemaining) return new CorpusCarry(input);
 
-        // Task 4: ksContext + perChunk come from the per-job closure.
         var state = await _orchestrator
-            .RunCorpusRecoveryAsync(input, default!, default!, cancellationToken)
+            .RunCorpusRecoveryAsync(input, input.KsContext, input.PerChunk, cancellationToken)
             .ConfigureAwait(false);
         return new CorpusCarry(state);
     }
