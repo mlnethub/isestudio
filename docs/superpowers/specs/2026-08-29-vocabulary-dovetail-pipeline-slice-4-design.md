@@ -72,6 +72,8 @@ TerminologyPipeline (DOVE006 多输入)
 
 每段输入 = pipeline input 或前序 output,无 bundle record(共享状态全部在 carry record 内 — 父 spec D3"每段产出一个 record"约定)。✓ DOVE006 通过。
 
+> **v1.2 修订注记(DOVE017 形状唯一性裁决)**:以上 DAG 形状在概念层正确,但实现层 3 个 pass 段(2-4)的 carry 输出类型被显式拆为 per-stage wrapper record(`EntitySyncCarry`、`AliasCarry`、`BroaderCarry`),以便 Dovetail 1.0.0 生成器按接口形状注册时各段形状唯一。详见 §6.1 `TerminologyCarries.cs` 与 ledger 裁决条目。
+
 ## 4. Records(verbatim)
 
 ```csharp
@@ -122,7 +124,7 @@ public sealed record TermSyncCarry(
 
 输出复用现有 `ISEStudio.Extraction.TerminologyResult`(不新增 output record — orchestrator 的 `RecordTerminologyAsync` 与三个 runner 零改动)。
 
-**注**:`OntologyView` / `SkosView` 均为 `ISEStudio.Ontology` 命名空间(SchemaBuilder.BuildView / SkosManager.BuildView 返回类型)。
+**注**:`OntologyView` 位于 `ISEStudio.Ontology` 命名空间(SchemaBuilder.BuildView 返回类型);`SkosView` 位于 `ISEStudio.Application.Vocabulary` 命名空间(SkosDtos.cs — SkosManager.BuildView 返回类型)。v1.0 注记将两者一并标注为 `ISEStudio.Ontology` 系实施时发现的错误(v1.2 修正)。
 
 ## 5. Decisions
 
@@ -183,12 +185,13 @@ SyncCore 头部(view 构建 + ontologyIris + EnsureScheme + preView)抽成 `inte
 | 文件 | 说明 |
 | ------ | ------ |
 | `src/ISEStudio/Extraction/Dovetail/Terminology/TerminologyInputs.cs` | `TerminologyInput` + `TermSyncCarry`(§4 verbatim) |
+| `src/ISEStudio/Extraction/Dovetail/Terminology/TerminologyCarries.cs` | 3 个 per-stage wrapper record(`EntitySyncCarry`/`AliasCarry`/`BroaderCarry`,各持 `TermSyncCarry Carry`)— DOVE017 形状唯一性(v1.2 增补) |
 | `src/ISEStudio/Extraction/Dovetail/Terminology/TerminologyPipeline.cs` | `public partial class` + 5 `[Segment]` ctor params + `IPipeline<TerminologyInput, TerminologyResult>` |
 | `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/StaleMappingStep.cs` | `IPipelineSegment<TerminologyInput, TermSyncCarry>`;PrepareCarry + Pass 1 + try/catch |
-| `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/EntitySyncStep.cs` | `IPipelineSegment<TerminologyInput, TermSyncCarry, TermSyncCarry>`;Error 短路 + Pass 2 + try/catch |
-| `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/AliasStep.cs` | 同上形状,Pass 3 |
-| `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/BroaderStep.cs` | 同上形状,Pass 4 |
-| `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/ProposalStep.cs` | `IPipelineSegment<TerminologyInput, TermSyncCarry, TerminologyResult>`;gating + agent 搬移 + FoldCarry |
+| `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/EntitySyncStep.cs` | `IPipelineSegment<TerminologyInput, TermSyncCarry, EntitySyncCarry>`;Error 短路 + Pass 2 + try/catch(v1.2 输出类型:wrapper) |
+| `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/AliasStep.cs` | `IPipelineSegment<TerminologyInput, EntitySyncCarry, AliasCarry>`;Pass 3 + try/catch(v1.2 输入/输出:wrapper) |
+| `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/BroaderStep.cs` | `IPipelineSegment<TerminologyInput, AliasCarry, BroaderCarry>`;Pass 4 + try/catch(v1.2 输入/输出:wrapper) |
+| `src/ISEStudio/Extraction/Dovetail/Terminology/Steps/ProposalStep.cs` | `IPipelineSegment<TerminologyInput, BroaderCarry, TerminologyResult>`;gating + agent 搬移 + FoldCarry(v1.2 输入:wrapper,首行 `.Carry` 解包) |
 | `src/ISEStudio.Tests/Extraction/Dovetail/Terminology/TerminologyInputsTests.cs` | 2 record shape tests |
 | `src/ISEStudio.Tests/Extraction/Dovetail/Terminology/Steps/StaleMappingStepTests.cs` | 2 tests |
 | `src/ISEStudio.Tests/Extraction/Dovetail/Terminology/Steps/EntitySyncStepTests.cs` | 2 tests |
@@ -316,3 +319,5 @@ SyncCore 头部(view 构建 + ontologyIris + EnsureScheme + preView)抽成 `inte
 ## 15. 版本与变更
 
 - **v1.0** (2026-08-29):初始设计,基于 Slice 1/2/3 已确立的 Dovetail 模式 + 用户锁定的"四遍拆 4 段"决策
+- **v1.1** (728d8dd, 2026-08-29):carry Skipped + 可空 View/PreView + D5 catch 形状统一 + D6 agent 异常传播 + D7 FoldCarry 规则 + §6.2 RunTerminologyAgentAsync 保留 + §7.1 test 3
+- **v1.2** (2026-08-29 收尾):DOVE017 形状唯一性裁决 — 3 个 per-stage wrapper record(`EntitySyncCarry`/`AliasCarry`/`BroaderCarry`)、ProposalStep `BroaderCarry` 输入 + `.Carry` 解包、§4 注记 `SkosView` 命名空间修正为 `ISEStudio.Application.Vocabulary`(SkosDtos.cs)。落地结果与 ledger 裁决一致,无设计层回退。
