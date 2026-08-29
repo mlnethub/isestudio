@@ -7,6 +7,7 @@ using ISEStudio.Configuration;
 using ISEStudio.Conflicts;
 using ISEStudio.Extraction.Dovetail.ABox;
 using ISEStudio.Extraction.Dovetail.AgentChain;
+using ISEStudio.Extraction.Dovetail.Job;
 using ISEStudio.Extraction.Dovetail.TBox;
 using ISEStudio.Extraction.Dovetail.Terminology;
 using ISEStudio.Infrastructure.Persistence;
@@ -18,19 +19,6 @@ using ISEStudio.Storage;
 using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Extraction;
-
-/// <summary>
-/// Internal carrier passed from <see cref="ExtractionOrchestrator.StartAsync"/>
-/// into the per-kind runner. Captures the parsed chunks once so the runner
-/// (which may run as multiple phases for <c>kind="both"</c>) does not have
-/// to re-fetch the blob from object storage on each phase.
-/// </summary>
-internal sealed record JobRunContext(
-    Guid JobId,
-    ExtractionRequest Request,
-    KsContext KsContext,
-    IReadOnlyList<ChunkSpan> Chunks,
-    IChatClient Chat);
 
 /// <summary>
 /// One chunk's verified TBox candidate set: the merged delta plus the full
@@ -239,13 +227,13 @@ public sealed class ExtractionOrchestrator
     public Task<Infrastructure.Persistence.Entities.ExtractionJobEntity> StartTBoxAsync(
         ExtractionRequest request,
         CancellationToken cancellationToken) =>
-        StartAsync(request, ExtractionWire.KindTBox, TBoxOnlyRunnerAsync, cancellationToken);
+        StartAsync(request, JobKind.TBoxOnly, cancellationToken);
 
     /// <summary>Start an ABox-only extraction run.</summary>
     public Task<Infrastructure.Persistence.Entities.ExtractionJobEntity> StartABoxAsync(
         ExtractionRequest request,
         CancellationToken cancellationToken) =>
-        StartAsync(request, ExtractionWire.KindABox, ABoxOnlyRunnerAsync, cancellationToken);
+        StartAsync(request, JobKind.ABoxOnly, cancellationToken);
 
     /// <summary>
     /// Start a combined TBox+ABox run. The job row reports a single
@@ -255,7 +243,7 @@ public sealed class ExtractionOrchestrator
     public Task<Infrastructure.Persistence.Entities.ExtractionJobEntity> StartCombinedAsync(
         ExtractionRequest request,
         CancellationToken cancellationToken) =>
-        StartAsync(request, ExtractionWire.KindBoth, CombinedRunnerAsync, cancellationToken);
+        StartAsync(request, JobKind.Combined, cancellationToken);
 
     // ------------------------------------------------------------------
     // Boot — common to every public entry point
@@ -263,13 +251,10 @@ public sealed class ExtractionOrchestrator
 
     private async Task<Infrastructure.Persistence.Entities.ExtractionJobEntity> StartAsync(
         ExtractionRequest request,
-        string kind,
-        Func<JobRunContext, Task<bool>> runner,
+        JobKind kind,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(request);
-        ArgumentException.ThrowIfNullOrEmpty(kind);
-        ArgumentNullException.ThrowIfNull(runner);
 
         var (chunks, _) = await ReadDocumentAsync(request, cancellationToken).ConfigureAwait(false);
         var chunkIds = chunks.Select(c => c.Idx).ToList();
@@ -288,7 +273,14 @@ public sealed class ExtractionOrchestrator
         // Combined runs walk every chunk twice (once per layer), so the
         // total chunks progress counter must reflect that — otherwise the
         // progress bar never reaches 100% on a successful combined run.
-        var totalChunks = kind == ExtractionWire.KindBoth ? chunkIds.Count * 2 : chunkIds.Count;
+        var kindWire = kind switch
+        {
+            JobKind.TBoxOnly => ExtractionWire.KindTBox,
+            JobKind.ABoxOnly => ExtractionWire.KindABox,
+            JobKind.Combined => ExtractionWire.KindBoth,
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown JobKind."),
+        };
+        var totalChunks = kind == JobKind.Combined ? chunkIds.Count * 2 : chunkIds.Count;
 
         // Validate provider configuration before inserting a pending job.
         // Otherwise a synchronous client-construction failure leaves an
@@ -298,7 +290,7 @@ public sealed class ExtractionOrchestrator
         try
         {
             job = await _jobs.CreateAsync(
-                request.KnowledgeSystemId, kind, request.Model, chunkIds, totalChunks, cancellationToken)
+                request.KnowledgeSystemId, kindWire, request.Model, chunkIds, totalChunks, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch
@@ -315,7 +307,20 @@ public sealed class ExtractionOrchestrator
         // worker — sharing state across requests would let two independent
         // extractions oversubscribe the same endpoint.
         var ksContext = new KsContext(GraphIri: ksEntity.GraphIri, BaseIri: ksEntity.BaseIri, Name: ksEntity.Name);
-        var runContext = new JobRunContext(job.Id, request, ksContext, chunks, chat);
+
+        // SLICE 5: JobInput carries the immutable job entry shape; JobState
+        // (built inside RunJobSafelyAsync via JobState.From(input)) carries
+        // the per-phase tracked state. Chunks/Request/KsContext are passed
+        // alongside as execution context — JobState does NOT carry them
+        // (Task 1 record is locked) but phase-runners still need them.
+        var input = new JobInput(
+            JobId: job.Id,
+            KnowledgeSystemId: request.KnowledgeSystemId,
+            ChunkIds: chunks.Select(c => c.Idx).ToArray(),
+            Chat: chat,
+            Kind: kind,
+            InitialVocabulary: null,
+            CancellationToken: CancellationToken.None);
 
         // SuppressFlow keeps the chat capacity coordinator's AsyncLocal
         // re-entry tracking from leaking in from the caller's flow. Without
@@ -330,7 +335,8 @@ public sealed class ExtractionOrchestrator
             {
                 try
                 {
-                    await RunJobSafelyAsync(runContext, runner).ConfigureAwait(false);
+                    await RunJobSafelyAsync(input, request, ksContext, chunks, CancellationToken.None)
+                        .ConfigureAwait(false);
                 }
                 finally
                 {
@@ -343,32 +349,83 @@ public sealed class ExtractionOrchestrator
     }
 
     /// <summary>
-    /// Wrap the user-supplied runner so any uncaught exception still leaves
-    /// the job in a terminal failed state. The runner itself is responsible
-    /// for atomic RDF/SQL rollback within its own phase; this catch-all is
-    /// the last-line-of-defence safety net for failures before or after the
-    /// capture block (e.g. blob read, parser crash).
+    /// Wrap the per-kind pipeline so any uncaught exception still leaves
+    /// the job in a terminal failed state. The pipeline itself is
+    /// responsible for atomic RDF/SQL rollback within its own phase; this
+    /// catch-all is the last-line-of-defence safety net for failures before
+    /// or after the capture block (e.g. blob read, parser crash).
     /// </summary>
     private async Task RunJobSafelyAsync(
-        JobRunContext context,
-        Func<JobRunContext, Task<bool>> runner)
+        JobInput input,
+        ExtractionRequest request,
+        KsContext ksContext,
+        IReadOnlyList<ChunkSpan> chunks,
+        CancellationToken cancellationToken)
     {
-        await _jobs.MarkRunningAsync(context.JobId, CancellationToken.None).ConfigureAwait(false);
+        await _jobs.MarkRunningAsync(input.JobId, CancellationToken.None).ConfigureAwait(false);
+
+        // SLICE 5 TASK 2 PLACEHOLDER: 真正的 pipeline 在 Task 6 接入。
+        // 这里只是把现有 TBoxOnlyRunnerAsync / ABoxOnlyRunnerAsync / CombinedRunnerAsync
+        // 改为内部直接调 5 phase-runner(用 JobState 透传),保持现状控制流。
+        // Task 6 把这块替换为 JobPipelineRouter.Resolve(input.Kind).ExecuteAsync(...).
+        var state = JobState.From(input);
 
         try
         {
-            var succeeded = await runner(context).ConfigureAwait(false);
-            if (!succeeded) return; // runner already marked the job failed.
-            await _jobs.MarkCompletedAsync(context.JobId, CancellationToken.None).ConfigureAwait(false);
+            var result = await RunTopLevelAsync(
+                input.Kind, state, request, ksContext, chunks, cancellationToken)
+                .ConfigureAwait(false);
+            if (!result.Succeeded) return; // pipeline already marked the job failed.
+            await _jobs.MarkCompletedAsync(input.JobId, CancellationToken.None).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
-            await SafeMarkFailedAsync(context.JobId, "Cancelled.").ConfigureAwait(false);
+            await SafeMarkFailedAsync(input.JobId, "Cancelled.").ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            await SafeMarkFailedAsync(context.JobId, ex.Message).ConfigureAwait(false);
+            await SafeMarkFailedAsync(input.JobId, ex.Message).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Top-level dispatch: route the <see cref="JobState"/> through the
+    /// per-kind sequence of 5 phase-runners, preserving the existing
+    /// control flow of the legacy <c>TBoxOnlyRunnerAsync</c> /
+    /// <c>ABoxOnlyRunnerAsync</c> / <c>CombinedRunnerAsync</c> methods.
+    /// Task 6 replaces this body with
+    /// <c>JobPipelineRouter.Resolve(kind).ExecuteAsync(...)</c>.
+    /// </summary>
+    private async Task<JobResult> RunTopLevelAsync(
+        JobKind kind,
+        JobState state,
+        ExtractionRequest request,
+        KsContext ksContext,
+        IReadOnlyList<ChunkSpan> chunks,
+        CancellationToken cancellationToken)
+    {
+        // MarkRunningAsync returns Task (not Task<long>) — the legacy
+        // ProcessedChunks reader is not available, so we seed 0 and let
+        // each phase-runner's UpdateProgressAsync writes track the real
+        // value in the job row.
+        state = state with { ProcessedChunks = 0 };
+
+        switch (kind)
+        {
+            case JobKind.TBoxOnly:
+                state = await TBoxOnlyRunnerAsync(state, request, ksContext, chunks, cancellationToken)
+                    .ConfigureAwait(false);
+                break;
+            case JobKind.ABoxOnly:
+                state = await ABoxOnlyRunnerAsync(state, request, ksContext, chunks, cancellationToken)
+                    .ConfigureAwait(false);
+                break;
+            case JobKind.Combined:
+                state = await CombinedRunnerAsync(state, request, ksContext, chunks, cancellationToken)
+                    .ConfigureAwait(false);
+                break;
+        }
+        return JobResult.FromJobState(state);
     }
 
     private async Task SafeMarkFailedAsync(Guid jobId, string error)
@@ -397,63 +454,83 @@ public sealed class ExtractionOrchestrator
     /// sync runs after it so the job row reports <c>terms_added</c> /
     /// <c>terms_mapped</c> even on single-layer runs.
     /// </summary>
-    private async Task<bool> TBoxOnlyRunnerAsync(JobRunContext ctx)
+    private async Task<JobState> TBoxOnlyRunnerAsync(
+        JobState state,
+        ExtractionRequest request,
+        KsContext ksContext,
+        IReadOnlyList<ChunkSpan> chunks,
+        CancellationToken cancellationToken)
     {
         var promptSnapshot = _promptSnapshot.SnapshotAsync(BuildTBoxPromptSnapshot());
         var perChunk = new List<ChunkVerifyOutcome>();
-        var succeeded = await RunLayerAsync(
-            ctx,
-            graphIri: ctx.KsContext.TBoxGraph,
+        state = await RunLayerAsync(
+            state,
+            chunks,
+            capacityKey: request.CapacityKey,
+            graphIri: ksContext.TBoxGraph,
             phase: ExtractionPhase.TBox,
             baseProcessedOffset: 0,
             extractor: async (chunk, ct) =>
-                (object)await ExtractAndVerifyAsync(ctx, chunk, ct).ConfigureAwait(false),
-            merger: item => _merger.MergeTBox(ctx.KsContext, ((VerifiedTBox)item).Delta, ((VerifiedTBox)item).Verify),
+                (object)await ExtractAndVerifyAsync(state, ksContext, chunk, ct).ConfigureAwait(false),
+            merger: item => _merger.MergeTBox(ksContext, ((VerifiedTBox)item).Delta, ((VerifiedTBox)item).Verify),
             recordMergeAsync: (id, result, ct) => _jobs.RecordTBoxMergeAsync(id, result, ct),
             onChunk: (i, item) =>
             {
                 var verified = (VerifiedTBox)item;
                 perChunk.Add(new ChunkVerifyOutcome(
-                    ctx.Chunks[i].Idx,
-                    ctx.Chunks[i].Text,
+                    chunks[i].Idx,
+                    chunks[i].Text,
                     verified.Verify?.Rejections ?? Array.Empty<RejectedClass>()));
                 return default;
             },
-            cancellationToken: CancellationToken.None).ConfigureAwait(false);
-        if (!succeeded) return false;
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!state.Succeeded) return state;
 
-        await RunCorpusRecoveryAsync(ctx, perChunk).ConfigureAwait(false);
-        await RunHierarchyRecoveryAsync(ctx, perChunk).ConfigureAwait(false);
+        state = await RunCorpusRecoveryAsync(state, ksContext, perChunk, cancellationToken)
+            .ConfigureAwait(false);
+        if (!state.Succeeded) return state;
 
-        await RunAgentChainAsync(ctx).ConfigureAwait(false);
-        await RunTerminologyAsync(ctx, totalProcessed: ctx.Chunks.Count).ConfigureAwait(false);
-        await _jobs.SetPromptSnapshotAsync(ctx.JobId, promptSnapshot, CancellationToken.None).ConfigureAwait(false);
-        return true;
+        state = await RunHierarchyRecoveryAsync(state, ksContext, request, perChunk, cancellationToken)
+            .ConfigureAwait(false);
+
+        state = await RunAgentChainAsync(state, request, cancellationToken).ConfigureAwait(false);
+        state = await RunTerminologyAsync(state, ksContext, request, totalProcessed: chunks.Count, cancellationToken)
+            .ConfigureAwait(false);
+        await _jobs.SetPromptSnapshotAsync(state.JobId, promptSnapshot, CancellationToken.None).ConfigureAwait(false);
+        return state;
     }
 
     /// <summary>ABox-only runner. Same contract as <see cref="TBoxOnlyRunnerAsync"/>.</summary>
-    private async Task<bool> ABoxOnlyRunnerAsync(JobRunContext ctx)
+    private async Task<JobState> ABoxOnlyRunnerAsync(
+        JobState state,
+        ExtractionRequest request,
+        KsContext ksContext,
+        IReadOnlyList<ChunkSpan> chunks,
+        CancellationToken cancellationToken)
     {
-        var labels = ExistingClassLabels(ctx.KsContext);
+        var labels = ExistingClassLabels(ksContext);
         var promptSnapshot = _promptSnapshot.SnapshotAsync(
             new Dictionary<string, string> { [ABoxExtractionService.PromptKey] = _abox.ResolveSystemPrompt() });
-        var succeeded = await RunLayerAsync(
-            ctx,
-            graphIri: ctx.KsContext.ABoxGraph,
+        state = await RunLayerAsync(
+            state,
+            chunks,
+            capacityKey: request.CapacityKey,
+            graphIri: ksContext.ABoxGraph,
             phase: ExtractionPhase.ABox,
             baseProcessedOffset: 0,
             extractor: async (chunk, ct) =>
                 (object)await _abox.ExtractAsync(
-                    ctx.Chat, ctx.KsContext, chunk, labels, ct).ConfigureAwait(false),
-            merger: delta => _merger.MergeABox(ctx.KsContext, (ABoxDelta)delta),
+                    state.Chat, ksContext, chunk, labels, ct).ConfigureAwait(false),
+            merger: delta => _merger.MergeABox(ksContext, (ABoxDelta)delta),
             recordMergeAsync: (id, result, ct) => _jobs.RecordABoxMergeAsync(id, result, ct),
             onChunk: null,
-            cancellationToken: CancellationToken.None).ConfigureAwait(false);
-        if (!succeeded) return false;
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!state.Succeeded) return state;
 
-        await RunTerminologyAsync(ctx, totalProcessed: ctx.Chunks.Count).ConfigureAwait(false);
-        await _jobs.SetPromptSnapshotAsync(ctx.JobId, promptSnapshot, CancellationToken.None).ConfigureAwait(false);
-        return true;
+        state = await RunTerminologyAsync(state, ksContext, request, totalProcessed: chunks.Count, cancellationToken)
+            .ConfigureAwait(false);
+        await _jobs.SetPromptSnapshotAsync(state.JobId, promptSnapshot, CancellationToken.None).ConfigureAwait(false);
+        return state;
     }
 
     /// <summary>
@@ -462,9 +539,14 @@ public sealed class ExtractionOrchestrator
     /// N..2N. The terminology sync runs after both layers, on a different
     /// graph (the vocabulary graph), so it gets its own capture.
     /// </summary>
-    private async Task<bool> CombinedRunnerAsync(JobRunContext ctx)
+    private async Task<JobState> CombinedRunnerAsync(
+        JobState state,
+        ExtractionRequest request,
+        KsContext ksContext,
+        IReadOnlyList<ChunkSpan> chunks,
+        CancellationToken cancellationToken)
     {
-        var labels = ExistingClassLabels(ctx.KsContext);
+        var labels = ExistingClassLabels(ksContext);
         var promptSnapshot = _promptSnapshot.SnapshotAsync(
             new Dictionary<string, string>(BuildTBoxPromptSnapshot())
             {
@@ -472,63 +554,73 @@ public sealed class ExtractionOrchestrator
             });
 
         var perChunk = new List<ChunkVerifyOutcome>();
-        var tboxOk = await RunLayerAsync(
-            ctx,
-            graphIri: ctx.KsContext.TBoxGraph,
+        state = await RunLayerAsync(
+            state,
+            chunks,
+            capacityKey: request.CapacityKey,
+            graphIri: ksContext.TBoxGraph,
             phase: ExtractionPhase.TBox,
             baseProcessedOffset: 0,
             extractor: async (chunk, ct) =>
-                (object)await ExtractAndVerifyAsync(ctx, chunk, ct).ConfigureAwait(false),
-            merger: item => _merger.MergeTBox(ctx.KsContext, ((VerifiedTBox)item).Delta, ((VerifiedTBox)item).Verify),
+                (object)await ExtractAndVerifyAsync(state, ksContext, chunk, ct).ConfigureAwait(false),
+            merger: item => _merger.MergeTBox(ksContext, ((VerifiedTBox)item).Delta, ((VerifiedTBox)item).Verify),
             recordMergeAsync: (id, result, ct) => _jobs.RecordTBoxMergeAsync(id, result, ct),
             onChunk: (i, item) =>
             {
                 var verified = (VerifiedTBox)item;
                 perChunk.Add(new ChunkVerifyOutcome(
-                    ctx.Chunks[i].Idx,
-                    ctx.Chunks[i].Text,
+                    chunks[i].Idx,
+                    chunks[i].Text,
                     verified.Verify?.Rejections ?? Array.Empty<RejectedClass>()));
                 return default;
             },
-            cancellationToken: CancellationToken.None).ConfigureAwait(false);
-        if (!tboxOk) return false;
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!state.Succeeded) return state;
 
         // Agent chain runs between the layers, exactly where Python's
         // _run_combined_extraction_job places it: predicate merges the
         // conflict agent recommends must act on a still-empty ABox, and the
         // structure agent's attached classes must exist before ABox chunks
         // type against them.
-        await RunAgentChainAsync(ctx).ConfigureAwait(false);
+        state = await RunAgentChainAsync(state, request, cancellationToken).ConfigureAwait(false);
 
         // Corpus + hierarchy recovery run between TBox and ABox, mirroring
         // Python extract.py:1629-1708: the agents may have merged / attached
         // classes that change the vocabulary the recovery prompts see, and
         // the edges / classes it produces must exist before ABox chunks type
         // against them.
-        await RunCorpusRecoveryAsync(ctx, perChunk).ConfigureAwait(false);
-        await RunHierarchyRecoveryAsync(ctx, perChunk).ConfigureAwait(false);
+        state = await RunCorpusRecoveryAsync(state, ksContext, perChunk, cancellationToken)
+            .ConfigureAwait(false);
+        if (!state.Succeeded) return state;
+
+        state = await RunHierarchyRecoveryAsync(state, ksContext, request, perChunk, cancellationToken)
+            .ConfigureAwait(false);
+        if (!state.Succeeded) return state;
 
         // After TBox completes, refresh the label set so ABox chunks see the
         // newly minted classes.
-        labels = ExistingClassLabels(ctx.KsContext);
+        labels = ExistingClassLabels(ksContext);
 
-        var aboxOk = await RunLayerAsync(
-            ctx,
-            graphIri: ctx.KsContext.ABoxGraph,
+        state = await RunLayerAsync(
+            state,
+            chunks,
+            capacityKey: request.CapacityKey,
+            graphIri: ksContext.ABoxGraph,
             phase: ExtractionPhase.ABox,
-            baseProcessedOffset: ctx.Chunks.Count,
+            baseProcessedOffset: chunks.Count,
             extractor: async (chunk, ct) =>
                 (object)await _abox.ExtractAsync(
-                    ctx.Chat, ctx.KsContext, chunk, labels, ct).ConfigureAwait(false),
-            merger: delta => _merger.MergeABox(ctx.KsContext, (ABoxDelta)delta),
+                    state.Chat, ksContext, chunk, labels, ct).ConfigureAwait(false),
+            merger: delta => _merger.MergeABox(ksContext, (ABoxDelta)delta),
             recordMergeAsync: (id, result, ct) => _jobs.RecordABoxMergeAsync(id, result, ct),
             onChunk: null,
-            cancellationToken: CancellationToken.None).ConfigureAwait(false);
-        if (!aboxOk) return false;
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!state.Succeeded) return state;
 
-        await RunTerminologyAsync(ctx, totalProcessed: ctx.Chunks.Count * 2).ConfigureAwait(false);
-        await _jobs.SetPromptSnapshotAsync(ctx.JobId, promptSnapshot, CancellationToken.None).ConfigureAwait(false);
-        return true;
+        state = await RunTerminologyAsync(state, ksContext, request, totalProcessed: chunks.Count * 2, cancellationToken)
+            .ConfigureAwait(false);
+        await _jobs.SetPromptSnapshotAsync(state.JobId, promptSnapshot, CancellationToken.None).ConfigureAwait(false);
+        return state;
     }
 
     /// <summary>
@@ -547,10 +639,15 @@ public sealed class ExtractionOrchestrator
     /// <c>terminology_proposals</c> stays at zero, matching the Python
     /// backend's "best-effort" semantics.</para>
     /// </summary>
-    private async Task RunTerminologyAsync(JobRunContext ctx, int totalProcessed)
+    private async Task<JobState> RunTerminologyAsync(
+        JobState state,
+        KsContext ksContext,
+        ExtractionRequest request,
+        long totalProcessed,
+        CancellationToken cancellationToken)
     {
         await using var termCapture = await _store.CaptureAsync(
-            ctx.KsContext.VocabularyGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+            ksContext.VocabularyGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
             .ConfigureAwait(false);
         try
         {
@@ -559,11 +656,12 @@ public sealed class ExtractionOrchestrator
             // agent + DbContext live per job, the Slice 3 R2 lifecycle).
             // The P1-4 chain (SyncAsync + scoped TerminologyAgent) is the
             // fallback for hand-built test orchestrators and DI failures.
-            var dagResult = await RunTerminologyPipelineIfAvailableAsync(ctx).ConfigureAwait(false);
-            var term = dagResult ?? _terminology.SyncAsync(ctx.KsContext, CancellationToken.None);
+            var dagResult = await RunTerminologyPipelineIfAvailableAsync(
+                state, ksContext, request, cancellationToken).ConfigureAwait(false);
+            var term = dagResult ?? _terminology.SyncAsync(ksContext, CancellationToken.None);
 
-            await _jobs.UpdateProgressAsync(ctx.JobId,
-                processedChunks: totalProcessed,
+            await _jobs.UpdateProgressAsync(state.JobId,
+                processedChunks: (int)totalProcessed,
                 phase: ExtractionPhase.Terminology.ToWire(),
                 appendPhaseToLog: ExtractionPhase.Terminology.ToWire(),
                 cancellationToken: CancellationToken.None).ConfigureAwait(false);
@@ -591,14 +689,24 @@ public sealed class ExtractionOrchestrator
                 && term.Error is null
                 && !string.IsNullOrEmpty(term.SchemeIri))
             {
-                term = await RunTerminologyAgentAsync(ctx, term).ConfigureAwait(false);
+                term = await RunTerminologyAgentAsync(state, request, term).ConfigureAwait(false);
             }
 
-            await _jobs.RecordTerminologyAsync(ctx.JobId, term, CancellationToken.None).ConfigureAwait(false);
+            await _jobs.RecordTerminologyAsync(state.JobId, term, CancellationToken.None).ConfigureAwait(false);
+            return state with
+            {
+                Terminology = new JobTerminology(
+                    TermsAdded: term.TermsAdded,
+                    TermsMapped: term.TermsMapped,
+                    ProposalsQueued: term.ProposalsQueued,
+                    Error: term.Error),
+                ProcessedChunks = totalProcessed,
+            };
         }
         catch
         {
             termCapture.MarkError();
+            return state;
         }
     }
 
@@ -609,7 +717,11 @@ public sealed class ExtractionOrchestrator
     /// <c>null</c> when no scope factory is wired or the pipeline cannot be
     /// resolved, so the caller falls back to the P1-4 chain.
     /// </summary>
-    private async Task<TerminologyResult?> RunTerminologyPipelineIfAvailableAsync(JobRunContext ctx)
+    private async Task<TerminologyResult?> RunTerminologyPipelineIfAvailableAsync(
+        JobState state,
+        KsContext ksContext,
+        ExtractionRequest request,
+        CancellationToken cancellationToken)
     {
         if (_scopes is null) return null;
 
@@ -635,9 +747,9 @@ public sealed class ExtractionOrchestrator
         if (pipeline is null) return null;
 
         return await pipeline.ExecuteAsync(new TerminologyInput(
-            Ks: ctx.KsContext,
-            KnowledgeSystemId: ctx.Request.KnowledgeSystemId,
-            Model: ctx.Request.Model,
+            Ks: ksContext,
+            KnowledgeSystemId: request.KnowledgeSystemId,
+            Model: request.Model,
             SuggestEnabled: _options.TerminologySuggestDuringExtraction),
             CancellationToken.None).ConfigureAwait(false);
     }
@@ -654,7 +766,8 @@ public sealed class ExtractionOrchestrator
     /// job.
     /// </summary>
     private async Task<TerminologyResult> RunTerminologyAgentAsync(
-        JobRunContext ctx,
+        JobState state,
+        ExtractionRequest request,
         TerminologyResult term)
     {
         using var scope = _scopes!.CreateScope();
@@ -662,7 +775,7 @@ public sealed class ExtractionOrchestrator
         var db = services.GetRequiredService<ISEStudioDbContext>();
 
         var ks = await db.KnowledgeSystems.AsNoTracking()
-            .FirstOrDefaultAsync(k => k.Id == ctx.Request.KnowledgeSystemId, CancellationToken.None)
+            .FirstOrDefaultAsync(k => k.Id == request.KnowledgeSystemId, CancellationToken.None)
             .ConfigureAwait(false);
         if (ks is null)
         {
@@ -696,7 +809,7 @@ public sealed class ExtractionOrchestrator
 
         var agent = services.GetRequiredService<TerminologyAgent>();
         var proposals = await agent.SuggestAsync(
-            ks, term.SchemeIri!, chunkIds, ctx.Request.Model, CancellationToken.None)
+            ks, term.SchemeIri!, chunkIds, request.Model, CancellationToken.None)
             .ConfigureAwait(false);
         return term with { ProposalsQueued = proposals.Count };
     }
@@ -730,12 +843,15 @@ public sealed class ExtractionOrchestrator
     /// committed TBox layer — exactly like Python, where the agents run
     /// after <c>cap.diff()</c> already released the capture.</para>
     /// </summary>
-    private async Task RunAgentChainAsync(JobRunContext ctx)
+    private async Task<JobState> RunAgentChainAsync(
+        JobState state,
+        ExtractionRequest request,
+        CancellationToken cancellationToken)
     {
         if (_scopes is null)
         {
             // P1-4 seam: hand-built test orchestrators skip the chain entirely.
-            return;
+            return state;
         }
 
         using var scope = _scopes.CreateScope();
@@ -744,8 +860,8 @@ public sealed class ExtractionOrchestrator
         // The chain's services are scoped and share one DbContext instance
         // within this scope, so the conflicts DetectAsync just wrote are
         // visible to the agent's triage query right after.
-        await _jobs.UpdateProgressAsync(ctx.JobId,
-            processedChunks: ctx.Chunks.Count,
+        await _jobs.UpdateProgressAsync(state.JobId,
+            processedChunks: state.ChunkIds.Count,
             phase: ExtractionPhase.Conflicts.ToWire(),
             appendPhaseToLog: ExtractionPhase.Conflicts.ToWire(),
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
@@ -754,11 +870,11 @@ public sealed class ExtractionOrchestrator
         // entry the ABox pipeline also uses (Slice 2), and the agent chain
         // input carries the detected conflicts through for auditability.
         var conflictService = services.GetRequiredService<ConflictService>();
-        await conflictService.DetectAsync(ctx.Request.KnowledgeSystemId, CancellationToken.None)
+        await conflictService.DetectAsync(request.KnowledgeSystemId, CancellationToken.None)
             .ConfigureAwait(false);
 
-        await _jobs.UpdateProgressAsync(ctx.JobId,
-            processedChunks: ctx.Chunks.Count,
+        await _jobs.UpdateProgressAsync(state.JobId,
+            processedChunks: state.ChunkIds.Count,
             phase: ExtractionPhase.Structure.ToWire(),
             appendPhaseToLog: ExtractionPhase.Structure.ToWire(),
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
@@ -770,10 +886,10 @@ public sealed class ExtractionOrchestrator
         // consumes it. Model flows through so the agents keep using the
         // job's requested model (P1-4 behavior).
         var input = new AgentChainInput(
-            JobId: ctx.JobId,
-            KnowledgeSystemId: ctx.Request.KnowledgeSystemId,
+            JobId: state.JobId,
+            KnowledgeSystemId: request.KnowledgeSystemId,
             Conflicts: Array.Empty<ConflictDetection.DetectedConflict>(),
-            Model: ctx.Request.Model);
+            Model: request.Model);
 
         // Per-job scope resolution FIRST (final-review MEDIUM fix): the ctor
         // param stays as the hand-built-test seam, but in production the
@@ -792,7 +908,7 @@ public sealed class ExtractionOrchestrator
             // the pass) and StatsRefreshStep fail-softs internally.
             await pipeline.ExecuteAsync(input, CancellationToken.None)
                 .ConfigureAwait(false);
-            return;
+            return state;
         }
 
         // Fallback: P1-4 hand-written chain (hand-built test orchestrators
@@ -812,17 +928,17 @@ public sealed class ExtractionOrchestrator
         if (conflictAgent is not null)
         {
             await conflictAgent.TriageAsync(
-                ctx.Request.KnowledgeSystemId,
+                request.KnowledgeSystemId,
                 CancellationToken.None,
-                model: ctx.Request.Model,
+                model: request.Model,
                 skipActiveExtractionGate: true).ConfigureAwait(false);
         }
 
         if (structureAgent is not null)
         {
             await structureAgent.AttachIsolatedAsync(
-                ctx.Request.KnowledgeSystemId,
-                ctx.Request.Model,
+                request.KnowledgeSystemId,
+                request.Model,
                 CancellationToken.None,
                 skipActiveExtractionGate: true).ConfigureAwait(false);
         }
@@ -836,7 +952,7 @@ public sealed class ExtractionOrchestrator
         {
             try
             {
-                await stats.RefreshAsync(ctx.Request.KnowledgeSystemId, CancellationToken.None)
+                await stats.RefreshAsync(request.KnowledgeSystemId, CancellationToken.None)
                     .ConfigureAwait(false);
             }
             catch
@@ -844,6 +960,8 @@ public sealed class ExtractionOrchestrator
                 // Swallowed — MarkCompletedAsync refreshes again at completion.
             }
         }
+
+        return state;
     }
 
     // ------------------------------------------------------------------
@@ -862,8 +980,10 @@ public sealed class ExtractionOrchestrator
     /// verify result alongside the merger — used by the TBox phase to feed
     /// the corpus / hierarchy recovery passes.
     /// </summary>
-    private async Task<bool> RunLayerAsync(
-        JobRunContext ctx,
+    private async Task<JobState> RunLayerAsync(
+        JobState state,
+        IReadOnlyList<ChunkSpan> chunks,
+        EndpointCapacityKey capacityKey,
         string graphIri,
         ExtractionPhase phase,
         int baseProcessedOffset,
@@ -873,8 +993,7 @@ public sealed class ExtractionOrchestrator
         Func<int, object, ValueTask>? onChunk,
         CancellationToken cancellationToken)
     {
-        var jobId = ctx.JobId;
-        var chunks = ctx.Chunks;
+        var jobId = state.JobId;
 
         await _jobs.UpdateProgressAsync(jobId,
             processedChunks: baseProcessedOffset,
@@ -898,7 +1017,7 @@ public sealed class ExtractionOrchestrator
                 // which knowledge system they write into. Two jobs pointed
                 // at different endpoints flow through independent buckets.
                 await using (var lease = await _capacity.AcquireAsync(
-                    ctx.Request.CapacityKey,
+                    capacityKey,
                     permits: 1,
                     cancellationToken).ConfigureAwait(false))
                 {
@@ -917,19 +1036,19 @@ public sealed class ExtractionOrchestrator
         {
             capture.MarkError();
             await SafeMarkFailedAsync(jobId, "Cancelled.").ConfigureAwait(false);
-            return false;
+            return state with { Error = "Cancelled." };
         }
         catch (Exception ex)
         {
             capture.MarkError();
             await SafeMarkFailedAsync(jobId, ex.Message).ConfigureAwait(false);
-            return false;
+            return state with { Error = ex.Message };
         }
 
         // Commit phase's RDF writes — only reached when every chunk
         // merged without throwing. The capture disposes without
         // MarkError so the graph snapshot is not restored.
-        return true;
+        return state with { ProcessedChunks = baseProcessedOffset + chunks.Count };
     }
 
     // ------------------------------------------------------------------
@@ -957,9 +1076,9 @@ public sealed class ExtractionOrchestrator
     /// that bypass DI registration.</para>
     /// </summary>
     private async Task<VerifiedTBox> ExtractAndVerifyAsync(
-        JobRunContext ctx, ChunkSpan chunk, CancellationToken cancellationToken)
+        JobState state, KsContext ksContext, ChunkSpan chunk, CancellationToken cancellationToken)
     {
-        var delta = await _tbox.ExtractAsync(ctx.Chat, ctx.KsContext, chunk, cancellationToken)
+        var delta = await _tbox.ExtractAsync(state.Chat, ksContext, chunk, cancellationToken)
             .ConfigureAwait(false);
         if (_verify is null)
         {
@@ -970,9 +1089,9 @@ public sealed class ExtractionOrchestrator
         // orchestrators). Both paths return TBoxVerifyResult.
         var verified = _chunkPipeline is not null
             ? await _chunkPipeline.ExecuteAsync(
-                new TBoxChunkInput(chunk.Idx, chunk.Text, delta, ctx.Chat),
+                new TBoxChunkInput(chunk.Idx, chunk.Text, delta, state.Chat),
                 cancellationToken).ConfigureAwait(false)
-            : await _verify.VerifyAsync(ctx.Chat, chunk.Text, delta, cancellationToken)
+            : await _verify.VerifyAsync(state.Chat, chunk.Text, delta, cancellationToken)
                 .ConfigureAwait(false);
         return new VerifiedTBox(verified.Delta, verified);
     }
@@ -1160,20 +1279,24 @@ public sealed class ExtractionOrchestrator
     /// extraction (Python <c>logger.warning</c> only — extract.py:1349-1354,
     /// :1612-1616).
     /// </summary>
-    private async Task RunCorpusRecoveryAsync(JobRunContext ctx, IReadOnlyList<ChunkVerifyOutcome> perChunk)
+    private async Task<JobState> RunCorpusRecoveryAsync(
+        JobState state,
+        KsContext ksContext,
+        IReadOnlyList<ChunkVerifyOutcome> perChunk,
+        CancellationToken cancellationToken)
     {
-        if (_corpus is null || _verify is null) return;
-        if (perChunk.Count == 0) return;
+        if (_corpus is null || _verify is null) return state;
+        if (perChunk.Count == 0) return state;
 
         try
         {
-            await _jobs.UpdateProgressAsync(ctx.JobId,
-                processedChunks: ctx.Chunks.Count,
+            await _jobs.UpdateProgressAsync(state.JobId,
+                processedChunks: state.ChunkIds.Count,
                 phase: ExtractionPhase.TBox.ToWire(),
                 appendPhaseToLog: "corpus-recovery",
                 cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
-            var existingNorms = SchemaBuilder.BuildView(ctx.KsContext.TBoxGraph, _store).Classes
+            var existingNorms = SchemaBuilder.BuildView(ksContext.TBoxGraph, _store).Classes
                 .Select(c => TBoxVerifyService.LabelNorm(c.Label))
                 .ToHashSet(StringComparer.Ordinal);
 
@@ -1182,23 +1305,28 @@ public sealed class ExtractionOrchestrator
                 .ToList();
 
             var recovered = await _corpus.RecoverAsync(
-                ctx.Chat, recoveryChunks, existingNorms, CancellationToken.None).ConfigureAwait(false);
+                state.Chat, recoveryChunks, existingNorms, CancellationToken.None).ConfigureAwait(false);
 
             if (recovered.Classes.Count > 0)
             {
-                await MergeCorpusRecoveredAsync(ctx, recovered).ConfigureAwait(false);
+                await MergeCorpusRecoveredAsync(state, ksContext, recovered).ConfigureAwait(false);
             }
+            return state;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Fail-soft: Python's recovery never fails the job.
+            return state;
         }
     }
 
-    private async Task MergeCorpusRecoveredAsync(JobRunContext ctx, CorpusRecoveryResult recovered)
+    private async Task MergeCorpusRecoveredAsync(
+        JobState state,
+        KsContext ksContext,
+        CorpusRecoveryResult recovered)
     {
         await using var capture = await _store.CaptureAsync(
-            ctx.KsContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+            ksContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
             .ConfigureAwait(false);
         try
         {
@@ -1209,8 +1337,8 @@ public sealed class ExtractionOrchestrator
                     Array.Empty<PropertyMutation>(),
                     Array.Empty<PropertyMutation>(),
                     Array.Empty<AxiomMutation>());
-                var result = _merger.MergeTBox(ctx.KsContext, delta, verify: null);
-                await _jobs.RecordTBoxMergeAsync(ctx.JobId, result, CancellationToken.None)
+                var result = _merger.MergeTBox(ksContext, delta, verify: null);
+                await _jobs.RecordTBoxMergeAsync(state.JobId, result, CancellationToken.None)
                     .ConfigureAwait(false);
             }
         }
@@ -1227,17 +1355,22 @@ public sealed class ExtractionOrchestrator
     /// independent critics. Like the corpus pass, skipped when not wired
     /// and failures are swallowed.
     /// </summary>
-    private async Task RunHierarchyRecoveryAsync(JobRunContext ctx, IReadOnlyList<ChunkVerifyOutcome> perChunk)
+    private async Task<JobState> RunHierarchyRecoveryAsync(
+        JobState state,
+        KsContext ksContext,
+        ExtractionRequest request,
+        IReadOnlyList<ChunkVerifyOutcome> perChunk,
+        CancellationToken cancellationToken)
     {
-        if (_hierarchy is null || _verify is null) return;
-        if (perChunk.Count == 0) return;
+        if (_hierarchy is null || _verify is null) return state;
+        if (perChunk.Count == 0) return state;
 
-        var labels = ExistingClassLabels(ctx.KsContext);
+        var labels = ExistingClassLabels(ksContext);
 
         try
         {
-            await _jobs.UpdateProgressAsync(ctx.JobId,
-                processedChunks: ctx.Chunks.Count,
+            await _jobs.UpdateProgressAsync(state.JobId,
+                processedChunks: state.ChunkIds.Count,
                 phase: ExtractionPhase.TBox.ToWire(),
                 appendPhaseToLog: "hierarchy-recovery",
                 cancellationToken: CancellationToken.None).ConfigureAwait(false);
@@ -1247,7 +1380,7 @@ public sealed class ExtractionOrchestrator
                 try
                 {
                     await using var lease = await _capacity.AcquireAsync(
-                        ctx.Request.CapacityKey,
+                        request.CapacityKey,
                         permits: 1,
                         cancellationToken: CancellationToken.None).ConfigureAwait(false);
                     var grounded = labels
@@ -1256,8 +1389,8 @@ public sealed class ExtractionOrchestrator
                         .ToList();
                     if (grounded.Count == 0) continue;
                     var recovered = await _hierarchy.RecoverAsync(
-                        ctx.Chat, outcome.Text, grounded, CancellationToken.None).ConfigureAwait(false);
-                    await MergeHierarchyRecoveredAsync(ctx, recovered).ConfigureAwait(false);
+                        state.Chat, outcome.Text, grounded, CancellationToken.None).ConfigureAwait(false);
+                    await MergeHierarchyRecoveredAsync(state, ksContext, recovered).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -1265,18 +1398,23 @@ public sealed class ExtractionOrchestrator
                     // the rest, mirroring Python extract.py:1699.
                 }
             }
+            return state;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // Fail-soft at the outer level.
+            return state;
         }
     }
 
-    private async Task MergeHierarchyRecoveredAsync(JobRunContext ctx, HierarchyRecoveryResult recovered)
+    private async Task MergeHierarchyRecoveredAsync(
+        JobState state,
+        KsContext ksContext,
+        HierarchyRecoveryResult recovered)
     {
         if (recovered.Classes.Count == 0 && recovered.Edges.Count == 0) return;
         await using var capture = await _store.CaptureAsync(
-            ctx.KsContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+            ksContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
             .ConfigureAwait(false);
         try
         {
@@ -1286,8 +1424,8 @@ public sealed class ExtractionOrchestrator
                 Array.Empty<PropertyMutation>(),
                 recovered.Edges.Select(e => new AxiomMutation(
                     Type: "subclass", Sub: e.Sub, Super: e.Super)).ToList());
-            var result = _merger.MergeTBox(ctx.KsContext, delta, verify: null);
-            await _jobs.RecordTBoxMergeAsync(ctx.JobId, result, CancellationToken.None)
+            var result = _merger.MergeTBox(ksContext, delta, verify: null);
+            await _jobs.RecordTBoxMergeAsync(state.JobId, result, CancellationToken.None)
                 .ConfigureAwait(false);
         }
         catch
