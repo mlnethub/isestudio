@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Conflicts;
 using ISEStudio.Extraction.Dovetail.ABox;
+using ISEStudio.Extraction.Dovetail.AgentChain;
 using ISEStudio.Extraction.Dovetail.TBox;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Knowledge;
@@ -125,6 +126,15 @@ public sealed class ExtractionOrchestrator
     private readonly ABoxJobPipeline? _aboxPipeline;
 
     /// <summary>
+    /// Dovetail-generated agent chain pipeline (ConflictAgent → StructureAgent
+    /// → StatsRefresh). Preferred over the manual chain when registered in DI
+    /// (production); the manual chain is the fallback for hand-built test
+    /// orchestrators and DI failures. Null in hand-built test orchestrators
+    /// that bypass DI registration.
+    /// </summary>
+    private readonly AgentChainPipeline? _agentChainPipeline;
+
+    /// <summary>
     /// Legacy <see cref="DuplicateJudge"/> service. Used as the fallback path
     /// when <see cref="_aboxPipeline"/> is null (hand-built test orchestrators
     /// that bypass DI). Per spec §4 D1 thin-shell rule, NOT deleted.
@@ -168,7 +178,8 @@ public sealed class ExtractionOrchestrator
         IServiceScopeFactory? scopes = null,
         TBoxChunkPipeline? chunkPipeline = null,
         ABoxJobPipeline? aboxPipeline = null,
-        DuplicateJudge? duplicateJudge = null)
+        DuplicateJudge? duplicateJudge = null,
+        AgentChainPipeline? agentChainPipeline = null)
     {
         ArgumentNullException.ThrowIfNull(jobs);
         ArgumentNullException.ThrowIfNull(blobs);
@@ -205,6 +216,7 @@ public sealed class ExtractionOrchestrator
         _chunkPipeline = chunkPipeline;
         _aboxPipeline = aboxPipeline;
         _duplicateJudge = duplicateJudge;
+        _agentChainPipeline = agentChainPipeline;
     }
 
     // ------------------------------------------------------------------
@@ -636,6 +648,15 @@ public sealed class ExtractionOrchestrator
     /// committed when this runs, so each agent opens its own capture for
     /// its own writes.
     ///
+    /// <para>When the Dovetail <see cref="AgentChainPipeline"/> is registered
+    /// in DI (production) it is preferred: the three typed segments
+    /// (ConflictAgent → StructureAgent → StatsRefresh) run the same agent
+    /// methods with the same <c>skipActiveExtractionGate: true</c> semantics
+    /// (spec §5 D3). When the pipeline is null (hand-built test
+    /// orchestrators that bypass DI, or a DI failure) the P1-4 hand-written
+    /// chain is the fallback. Conflict detection stays outside the DAG
+    /// (spec §5 D1) in both paths.</para>
+    ///
     /// <para>The chain runs only when a scope factory is wired (production
     /// DI); hand-built test orchestrators pass null and skip it — the same
     /// optional-seam pattern <see cref="ExtractionJobStore"/> uses for its
@@ -648,6 +669,7 @@ public sealed class ExtractionOrchestrator
     {
         if (_scopes is null)
         {
+            // P1-4 seam: hand-built test orchestrators skip the chain entirely.
             return;
         }
 
@@ -663,20 +685,12 @@ public sealed class ExtractionOrchestrator
             appendPhaseToLog: ExtractionPhase.Conflicts.ToWire(),
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
+        // Spec §5 D1: DetectAsync stays OUTSIDE the DAG — it is the shared
+        // entry the ABox pipeline also uses (Slice 2), and the agent chain
+        // input carries the detected conflicts through for auditability.
         var conflictService = services.GetRequiredService<ConflictService>();
         await conflictService.DetectAsync(ctx.Request.KnowledgeSystemId, CancellationToken.None)
             .ConfigureAwait(false);
-
-        // Python resolve_open_conflicts_bg carries no extraction_active
-        // gate (the guard lives in the detect endpoint only), so the
-        // pipeline call must skip the agent's own job-active check — the
-        // job's running row would otherwise no-op the pass.
-        var conflictAgent = services.GetRequiredService<ConflictAgent>();
-        await conflictAgent.TriageAsync(
-            ctx.Request.KnowledgeSystemId,
-            CancellationToken.None,
-            model: ctx.Request.Model,
-            skipActiveExtractionGate: true).ConfigureAwait(false);
 
         await _jobs.UpdateProgressAsync(ctx.JobId,
             processedChunks: ctx.Chunks.Count,
@@ -684,27 +698,77 @@ public sealed class ExtractionOrchestrator
             appendPhaseToLog: ExtractionPhase.Structure.ToWire(),
             cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
-        var structureAgent = services.GetRequiredService<StructureAgent>();
-        await structureAgent.AttachIsolatedAsync(
-            ctx.Request.KnowledgeSystemId,
-            ctx.Request.Model,
-            CancellationToken.None,
-            skipActiveExtractionGate: true).ConfigureAwait(false);
+        // NOTE: DetectAsync's return is a wire DTO (ConflictOut), not the
+        // pipeline's ConflictDetection.DetectedConflict shape, and both
+        // agents re-query conflicts internally (Task 2 BLOCKED finding) —
+        // so the DAG input's Conflicts list is carried empty; no step
+        // consumes it. Model flows through so the agents keep using the
+        // job's requested model (P1-4 behavior).
+        var input = new AgentChainInput(
+            JobId: ctx.JobId,
+            KnowledgeSystemId: ctx.Request.KnowledgeSystemId,
+            Conflicts: Array.Empty<ConflictDetection.DetectedConflict>(),
+            Model: ctx.Request.Model);
+
+        if (_agentChainPipeline is not null)
+        {
+            // Dovetail pipeline preferred when registered in DI. Each step
+            // passes skipActiveExtractionGate: true (Python's _bg variants
+            // carry no gate; the job's running row would otherwise no-op
+            // the pass) and StatsRefreshStep fail-softs internally.
+            await _agentChainPipeline.ExecuteAsync(input, CancellationToken.None)
+                .ConfigureAwait(false);
+            return;
+        }
+
+        // Fallback: P1-4 hand-written chain (hand-built test orchestrators
+        // or DI failure). Real agent signatures (Task 2 BLOCKED finding):
+        //   IConflictAgent.TriageAsync(Guid ksId, CancellationToken ct,
+        //       string? model = null, bool skipActiveExtractionGate = false)
+        //   IStructureAgent.AttachIsolatedAsync(Guid ksId, string? model,
+        //       CancellationToken ct, bool skipActiveExtractionGate = false)
+        //   IKnowledgeStatsService.RefreshAsync(Guid ksId, CancellationToken ct)
+        // Conflicts are queried inside TriageAsync — caller does NOT pass
+        // them; maxSameParent is read inside AttachIsolatedAsync — not a
+        // parameter. Interface-keyed per spec §5 D6.
+        var conflictAgent = services.GetService<IConflictAgent>();
+        var structureAgent = services.GetService<IStructureAgent>();
+        var stats = services.GetService<IKnowledgeStatsService>();
+
+        if (conflictAgent is not null)
+        {
+            await conflictAgent.TriageAsync(
+                ctx.Request.KnowledgeSystemId,
+                CancellationToken.None,
+                model: ctx.Request.Model,
+                skipActiveExtractionGate: true).ConfigureAwait(false);
+        }
+
+        if (structureAgent is not null)
+        {
+            await structureAgent.AttachIsolatedAsync(
+                ctx.Request.KnowledgeSystemId,
+                ctx.Request.Model,
+                CancellationToken.None,
+                skipActiveExtractionGate: true).ConfigureAwait(false);
+        }
 
         // Re-sync cached class/property/axiom counts after the agents may
         // have merged / added classes (Python refresh_ks_stats at
         // extraction.py:344/558). Best-effort like the completion-time
         // refresh in ExtractionJobStore.MarkCompletedAsync: a stats
         // failure must not fail an otherwise-successful extraction.
-        try
+        if (stats is not null)
         {
-            var stats = services.GetRequiredService<KnowledgeStatsService>();
-            await stats.RefreshAsync(ctx.Request.KnowledgeSystemId, CancellationToken.None)
-                .ConfigureAwait(false);
-        }
-        catch
-        {
-            // Swallowed — MarkCompletedAsync refreshes again at completion.
+            try
+            {
+                await stats.RefreshAsync(ctx.Request.KnowledgeSystemId, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // Swallowed — MarkCompletedAsync refreshes again at completion.
+            }
         }
     }
 

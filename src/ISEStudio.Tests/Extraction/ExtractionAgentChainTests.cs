@@ -300,10 +300,16 @@ public sealed class ExtractionAgentChainTests : IDisposable
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton(Options.Create(new ISEStudioOptions()));
         services.AddScoped<ConflictService>();
-        services.AddScoped<ConflictAgent>();
-        services.AddScoped<StructureAgent>();
+        // Interface-keyed (spec §5 D6): the orchestrator's fallback chain
+        // resolves the agents via GetService<IConflictAgent> /
+        // GetService<IStructureAgent> / GetService<IKnowledgeStatsService>.
+        // These hand-built orchestrators pass no AgentChainPipeline (it
+        // defaults to null), so they exercise the P1-4 fallback path — the
+        // same agents, same signatures, same assertions.
+        services.AddScoped<IConflictAgent, ConflictAgent>();
+        services.AddScoped<IStructureAgent, StructureAgent>();
         services.AddSingleton<OntologyViewBuilder>();
-        services.AddScoped<KnowledgeStatsService>();
+        services.AddScoped<IKnowledgeStatsService, KnowledgeStatsService>();
         configure?.Invoke(services);
         return services.BuildServiceProvider();
     }
