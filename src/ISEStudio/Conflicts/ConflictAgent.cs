@@ -49,7 +49,7 @@ namespace ISEStudio.Conflicts;
 /// service so the dispatcher can resolve it per request and the EF
 /// <see cref="ISEStudioDbContext"/> flows through naturally.</para>
 /// </summary>
-public sealed class ConflictAgent
+public sealed class ConflictAgent : IConflictAgent
 {
     /// <summary>
     /// Prompt registry key this agent consumes. Matches the Python

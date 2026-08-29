@@ -26,7 +26,7 @@ namespace ISEStudio.Knowledge;
 /// for parity &mdash; we follow that conservatism so a stale row
 /// can't survive a destructive operation.</para>
 /// </summary>
-public sealed class KnowledgeStatsService
+public sealed class KnowledgeStatsService : IKnowledgeStatsService
 {
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;

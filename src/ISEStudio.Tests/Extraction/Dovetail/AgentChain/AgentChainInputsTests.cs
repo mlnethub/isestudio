@@ -7,19 +7,17 @@ namespace ISEStudio.Tests.Extraction.Dovetail.AgentChain;
 public class AgentChainInputsTests
 {
     [Fact]
-    public void ConflictTriageResult_EmptyConstruction_HasEmptyTriagedAndZeroAttached()
+    public void ConflictTriageResult_EmptyConstruction_HasEmptyTriageLog()
     {
-        var result = new ConflictTriageResult(Array.Empty<ConflictDetection.DetectedConflict>(), 0);
-        Assert.Empty(result.TriagedConflicts);
-        Assert.Equal(0, result.RecommendationsAttached);
+        var result = new ConflictTriageResult(Array.Empty<string>());
+        Assert.Empty(result.TriageLog);
     }
 
     [Fact]
-    public void StructureAttachResult_EmptyConstruction_HasZeroAttachedAndZeroCreated()
+    public void StructureAttachResult_EmptyConstruction_HasEmptyAttachLog()
     {
-        var result = new StructureAttachResult(0, 0);
-        Assert.Equal(0, result.IsolatedAttached);
-        Assert.Equal(0, result.NewClassesCreated);
+        var result = new StructureAttachResult(Array.Empty<string>());
+        Assert.Empty(result.AttachLog);
     }
 
     [Fact]
@@ -38,12 +36,12 @@ public class AgentChainInputsTests
     [Fact]
     public void AgentChainResult_AllSubresultsRoundTrip()
     {
-        var triage = new ConflictTriageResult(Array.Empty<ConflictDetection.DetectedConflict>(), 3);
-        var structure = new StructureAttachResult(5, 2);
+        var triage = new ConflictTriageResult(new[] { "log1", "log2" });
+        var structure = new StructureAttachResult(new[] { "log3" });
         var result = new AgentChainResult(triage, structure);
         Assert.Same(triage, result.Triage);
         Assert.Same(structure, result.Structure);
-        Assert.Equal(3, result.Triage.RecommendationsAttached);
-        Assert.Equal(5, result.Structure.IsolatedAttached);
+        Assert.Equal(2, result.Triage.TriageLog.Count);
+        Assert.Single(result.Structure.AttachLog);
     }
 }

@@ -36,7 +36,7 @@ namespace ISEStudio.Ontology;
 /// service so the dispatcher can resolve it per request and the EF
 /// <see cref="ISEStudioDbContext"/> flows through naturally.</para>
 /// </summary>
-public sealed class StructureAgent
+public sealed class StructureAgent : IStructureAgent
 {
     /// <summary>
     /// Prompt registry key this agent consumes. Matches the Python

@@ -15,20 +15,22 @@ public sealed record AgentChainInput(
     string? Model);
 
 /// <summary>
-/// Output of <c>ConflictAgentStep</c>. Holds the triaged conflicts plus
-/// the count of conflicts to which a recommendation was attached.
+/// Output of <c>ConflictAgentStep</c>. Holds the job-log summary lines
+/// produced by <see cref="ISEStudio.Conflicts.ConflictAgent.TriageAsync"/>.
+/// Note: P1-1's agent returns <c>Task&lt;IReadOnlyList&lt;string&gt;&gt;</c>
+/// (job-log summary, NOT a typed count). Records faithfully wrap the real
+/// return shape so DOVE006 is satisfied without semantic distortion.
 /// </summary>
 public sealed record ConflictTriageResult(
-    IReadOnlyList<ConflictDetection.DetectedConflict> TriagedConflicts,
-    int RecommendationsAttached);
+    IReadOnlyList<string> TriageLog);
 
 /// <summary>
-/// Output of <c>StructureAgentStep</c>. Counts of isolated classes that
-/// were attached to a parent + new parent classes created.
+/// Output of <c>StructureAgentStep</c>. Holds the job-log summary lines
+/// produced by <see cref="ISEStudio.Ontology.StructureAgent.AttachIsolatedAsync"/>.
+/// Same caveat as <see cref="ConflictTriageResult"/>.
 /// </summary>
 public sealed record StructureAttachResult(
-    int IsolatedAttached,
-    int NewClassesCreated);
+    IReadOnlyList<string> AttachLog);
 
 /// <summary>
 /// Final output of <c>AgentChainPipeline</c>. Bundles the two intermediate
