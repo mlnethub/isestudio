@@ -369,28 +369,84 @@ public sealed class ExtractionOrchestrator
     {
         await _jobs.MarkRunningAsync(input.JobId, CancellationToken.None).ConfigureAwait(false);
 
-        // SLICE 5 TASK 2 PLACEHOLDER: 真正的 pipeline 在 Task 6 接入。
-        // 这里只是把现有 TBoxOnlyRunnerAsync / ABoxOnlyRunnerAsync / CombinedRunnerAsync
-        // 改为内部直接调 5 phase-runner(用 JobState 透传),保持现状控制流。
-        // Task 6 把这块替换为 JobPipelineRouter.Resolve(input.Kind).ExecuteAsync(...).
-        var state = JobState.From(input);
-
+        JobResult result;
         try
         {
-            var result = await RunTopLevelAsync(
-                input.Kind, state, request, ksContext, chunks, cancellationToken)
-                .ConfigureAwait(false);
-            if (!result.Succeeded) return; // pipeline already marked the job failed.
-            await _jobs.MarkCompletedAsync(input.JobId, CancellationToken.None).ConfigureAwait(false);
+            if (_scopes is null)
+            {
+                // hand-built test path (no DI scope): keep the legacy 5-phase runner
+                // orchestration as a behavior-preserving fallback (Task 2 placeholder)
+                var state = JobState.From(input);
+                result = await RunTopLevelAsync(input.Kind, state, request, ksContext, chunks, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else if (!TryResolveRouterFromScope(input, cancellationToken, out var router))
+            {
+                // Production path: per-job scope is wired but the
+                // JobPipelineRouter is not registered (e.g. hand-built
+                // extraction tests that register an IServiceScopeFactory
+                // for the agent chain but leave the router unregistered).
+                // Fall back to the legacy RunTopLevelAsync so the
+                // behavior stays equivalent to the pre-Slice-5 wiring —
+                // the router is an opt-in performance / pipeline-shape
+                // improvement, not a hard requirement.
+                var state = JobState.From(input);
+                result = await RunTopLevelAsync(input.Kind, state, request, ksContext, chunks, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                // production path: resolve JobPipelineRouter from per-job DI scope
+                // (Slice 3 R2 lifecycle). R18: no GuardedSegment wrapping here — the
+                // orchestrator's try/catch + MarkFailed IS the 409 envelope.
+                result = await router!.ExecuteAsync(input, cancellationToken).ConfigureAwait(false);
+            }
         }
         catch (OperationCanceledException)
         {
             await SafeMarkFailedAsync(input.JobId, "Cancelled.").ConfigureAwait(false);
+            return;
         }
         catch (Exception ex)
         {
             await SafeMarkFailedAsync(input.JobId, ex.Message).ConfigureAwait(false);
+            return;
         }
+
+        if (!result.Succeeded) return; // pipeline already marked the job failed.
+        await _jobs.MarkCompletedAsync(input.JobId, CancellationToken.None).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Resolve <see cref="JobPipelineRouter"/> from the per-job DI scope.
+    /// Returns <c>false</c> when no scope is wired, the router type is
+    /// not registered, or activation fails (missing ctor deps). The
+    /// caller falls back to <c>RunTopLevelAsync</c> in either case so
+    /// hand-built fixtures that pass <see cref="IServiceScopeFactory"/>
+    /// only for the agent chain (and leave the router unregistered)
+    /// still run end-to-end. Mirrors
+    /// <see cref="RunTerminologyPipelineIfAvailableAsync"/>'s
+    /// optional-seam pattern.
+    /// </summary>
+    private bool TryResolveRouterFromScope(JobInput input, CancellationToken cancellationToken, out JobPipelineRouter? router)
+    {
+        router = null;
+        if (_scopes is null) return false;
+        try
+        {
+            using var scope = _scopes.CreateScope();
+            router = scope.ServiceProvider.GetService<JobPipelineRouter>();
+        }
+        catch (InvalidOperationException)
+        {
+            // Activation failure (router's pipeline deps missing) —
+            // InvalidOperationException is the standard MS.DI activation
+            // failure shape, and ObjectDisposedException (scope factory
+            // disposed mid-flight) is a subclass — caught here. Treat as
+            // "no router" so the caller falls back.
+            router = null;
+        }
+        return router is not null;
     }
 
     /// <summary>

@@ -124,20 +124,17 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // Five arms routed through IExtractionApplicationService
             // (B7d pilot slice): three extraction.run* (TBox / combined /
             // ABox) + extraction.list_jobs + extraction.get_job. The three
-            // run* arms still wrap RunWithExtractionGuardAsync at the
-            // switch arm layer so a running extraction job turns 409 with
-            // the {detail:{job_id,...}} envelope the brief's "抽取进行中
-            // 的修改返回 409" requirement mandates — the application
-            // service throws no guard of its own.
-            "extraction.run" => RunWithExtractionGuardAsync(
-                request, cancellationToken,
-                () => InvokeExtractionRunAsync(request, "extraction.run", cancellationToken)),
-            "extraction.run_combined" => RunWithExtractionGuardAsync(
-                request, cancellationToken,
-                () => InvokeExtractionRunAsync(request, "extraction.run_combined", cancellationToken)),
-            "extraction.run_instances" => RunWithExtractionGuardAsync(
-                request, cancellationToken,
-                () => InvokeExtractionRunAsync(request, "extraction.run_instances", cancellationToken)),
+            // run* arms no longer wrap RunWithExtractionGuardAsync at the
+            // switch arm layer (Slice 5 Task 6 R21) — the 409 envelope is
+            // now the orchestrator's responsibility (try/catch +
+            // SafeMarkFailedAsync). The cross-KS lock still fires as the
+            // first statement inside InvokeExtractionRunAsync (calls
+            // RejectIfExtractionActiveAsync directly), which preserves the
+            // GraphWriteConflictException → HTTP 409 contract the
+            // existing extraction.* contract tests assert.
+            "extraction.run" => InvokeExtractionRunAsync(request, "extraction.run", cancellationToken),
+            "extraction.run_combined" => InvokeExtractionRunAsync(request, "extraction.run_combined", cancellationToken),
+            "extraction.run_instances" => InvokeExtractionRunAsync(request, "extraction.run_instances", cancellationToken),
             "extraction.list_jobs" => InvokeExtractionListJobsAsync(request, cancellationToken),
             "extraction.get_job" => InvokeExtractionGetJobAsync(request, cancellationToken),
 
@@ -1497,11 +1494,27 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
 
     // ----- extraction run* (TBox / combined / ABox) -----
 
-    private Task<object?> InvokeExtractionRunAsync(
-        InternalRequest request, string runKind, CancellationToken ct) =>
-        InvokeExtractionAsync(request, ct,
+    private async Task<object?> InvokeExtractionRunAsync(
+        InternalRequest request, string runKind, CancellationToken ct)
+    {
+        // Slice 5 Task 6 R21: the cross-KS lock previously lived in
+        // RunWithExtractionGuardAsync wrapping the three extraction.run*
+        // switch arms. With the wrapper removed (the orchestrator's
+        // try/catch is now the only 409 envelope for failed jobs) the
+        // RejectIfExtractionActiveAsync check still needs to fire here so
+        // a second concurrent extraction start on the same knowledge
+        // system surfaces as a 409 with the {detail:{job_id,...}} envelope
+        // the brief's "抽取进行中的修改返回 409" requirement mandates.
+        // RejectIfExtractionActiveAsync is the exact same helper
+        // RunWithExtractionGuardAsync used to invoke — calling it
+        // directly here is the minimal change that preserves the
+        // GraphWriteConflictException → HTTP 409 contract.
+        await RejectIfExtractionActiveAsync(request, ct).ConfigureAwait(false);
+        return await InvokeExtractionAsync(request, ct,
             async app => (object?)await app.RunAsync(request, runKind, ct).ConfigureAwait(false),
-            onMissing: () => new { ok = false, error = "extraction service not registered" });
+            onMissing: () => new { ok = false, error = "extraction service not registered" })
+            .ConfigureAwait(false);
+    }
 
     // ----- extraction reads (list_jobs / get_job) -----
 

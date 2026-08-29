@@ -172,6 +172,12 @@ public static class DovetailPipelineRegistrations
         services.AddScoped<CombinedJobPipeline>();
         services.AddScoped<JobPipelineRouter>();
 
+        // Register 3-arity adapters used by Job pipelines (DOVE008 compliance, Task 4
+        // architectural compromise). MS.DI open-generic self-registration enables
+        // Dovetail-generated pipeline partial ctors to instantiate these.
+        services.AddScoped(typeof(NoOpSegment<,,>));
+        services.AddScoped(typeof(ChainAdapter<,,>));
+
         return services;
     }
 }
