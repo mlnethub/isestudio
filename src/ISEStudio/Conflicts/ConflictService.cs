@@ -37,6 +37,18 @@ public sealed class ConflictService
     /// </summary>
     private readonly DuplicateJudge? _duplicateJudge;
 
+    /// <summary>
+    /// Slice 2 forwarder target. When wired (production DI), the semantic
+    /// pass goes through <see cref="ExtractionOrchestrator.RunABoxLayerAsync"/>,
+    /// which prefers the Dovetail <c>ABoxJobPipeline</c> and falls back to
+    /// <see cref="DuplicateJudge"/> if the pipeline is not registered. The
+    /// orchestrator owns the graph writes for high-confidence merges +
+    /// cascade retypes. <c>null</c> in hand-built test factories that
+    /// bypass DI — the legacy <see cref="_duplicateJudge"/> path runs
+    /// instead.
+    /// </summary>
+    private readonly ExtractionOrchestrator? _extraction;
+
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
 
@@ -45,13 +57,15 @@ public sealed class ConflictService
         TimeProvider clock,
         ExtractionJobStore? jobs = null,
         StoreWrapper? store = null,
-        DuplicateJudge? duplicateJudge = null)
+        DuplicateJudge? duplicateJudge = null,
+        ExtractionOrchestrator? extraction = null)
     {
         _db = db;
         _clock = clock;
         _jobs = jobs;
         _store = store;
         _duplicateJudge = duplicateJudge;
+        _extraction = extraction;
     }
 
     // ----------------------------------------------------------------------
@@ -118,17 +132,36 @@ public sealed class ConflictService
         }
 
         var detected = ConflictDetection.Detect(_store, ks.GraphIri, semantic: true);
-        // The semantic duplicate-class pass (P1-1:83): runs after the
-        // structural detectors and merges its candidates into the queue
-        // by signature. When the optional DuplicateJudge service is not
-        // wired (contract-test factory), we stay structural-only.
-        if (_duplicateJudge is not null)
+        // The semantic duplicate-class pass (P1-1:83 + Slice 2): runs after
+        // the structural detectors and merges its candidates into the queue
+        // by signature. Slice 2 prefers the orchestrator's Dovetail
+        // ABoxJobPipeline (high-confidence merges auto-apply + cascade
+        // retype); when the orchestrator is not wired (contract-test
+        // factory or pre-Slice-2 DI), falls back to the legacy
+        // DuplicateJudge. When neither is wired, we stay structural-only.
+        IReadOnlyList<ConflictDetection.DetectedConflict> semantic;
+        if (_extraction is not null)
         {
-            var semantic = await _duplicateJudge.DetectAsync(_store, ks.GraphIri, ct).ConfigureAwait(false);
-            foreach (var d in semantic)
-            {
-                detected = detected.Append(d).ToList();
-            }
+            var outcome = await _extraction.RunABoxLayerAsync(
+                knowledgeSystemId: ks.Id,
+                graphIri: ks.GraphIri,
+                store: _store,
+                chat: null,
+                embedder: null,
+                cancellationToken: ct).ConfigureAwait(false);
+            semantic = outcome.Remaining.Conflicts;
+        }
+        else if (_duplicateJudge is not null)
+        {
+            semantic = await _duplicateJudge.DetectAsync(_store, ks.GraphIri, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            semantic = Array.Empty<ConflictDetection.DetectedConflict>();
+        }
+        foreach (var d in semantic)
+        {
+            detected = detected.Append(d).ToList();
         }
         var bySig = detected.ToDictionary(d => d.Signature, StringComparer.Ordinal);
         var existing = await _db.Conflicts

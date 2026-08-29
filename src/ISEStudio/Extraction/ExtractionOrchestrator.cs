@@ -5,6 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Conflicts;
+using ISEStudio.Extraction.Dovetail.ABox;
 using ISEStudio.Extraction.Dovetail.TBox;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Knowledge;
@@ -115,6 +116,22 @@ public sealed class ExtractionOrchestrator
     private readonly TBoxChunkPipeline? _chunkPipeline;
 
     /// <summary>
+    /// Dovetail-generated ABox job-level pipeline (candidate gather →
+    /// embedding match → LLM judge → merge apply → cascade retype → final
+    /// merge). Preferred over <see cref="_duplicateJudge"/> when registered
+    /// in DI; the judge is the legacy fallback path. Null in hand-built test
+    /// orchestrators that bypass DI.
+    /// </summary>
+    private readonly ABoxJobPipeline? _aboxPipeline;
+
+    /// <summary>
+    /// Legacy <see cref="DuplicateJudge"/> service. Used as the fallback path
+    /// when <see cref="_aboxPipeline"/> is null (hand-built test orchestrators
+    /// that bypass DI). Per spec §4 D1 thin-shell rule, NOT deleted.
+    /// </summary>
+    private readonly DuplicateJudge? _duplicateJudge;
+
+    /// <summary>
     /// Job-level corpus recovery pass (Python
     /// <c>_recover_rejected_classes</c>): revisits every per-chunk rejection
     /// with cross-chunk evidence and re-decides them. Like
@@ -149,7 +166,9 @@ public sealed class ExtractionOrchestrator
         CorpusRecoveryService? corpus = null,
         HierarchyRecoveryService? hierarchy = null,
         IServiceScopeFactory? scopes = null,
-        TBoxChunkPipeline? chunkPipeline = null)
+        TBoxChunkPipeline? chunkPipeline = null,
+        ABoxJobPipeline? aboxPipeline = null,
+        DuplicateJudge? duplicateJudge = null)
     {
         ArgumentNullException.ThrowIfNull(jobs);
         ArgumentNullException.ThrowIfNull(blobs);
@@ -184,6 +203,8 @@ public sealed class ExtractionOrchestrator
         _hierarchy = hierarchy;
         _scopes = scopes;
         _chunkPipeline = chunkPipeline;
+        _aboxPipeline = aboxPipeline;
+        _duplicateJudge = duplicateJudge;
     }
 
     // ------------------------------------------------------------------
@@ -816,6 +837,142 @@ public sealed class ExtractionOrchestrator
             : await _verify.VerifyAsync(ctx.Chat, chunk.Text, delta, cancellationToken)
                 .ConfigureAwait(false);
         return new VerifiedTBox(verified.Delta, verified);
+    }
+
+    /// <summary>
+    /// Run the ABox duplicate-class detection pipeline (Dovetail
+    /// <c>ABoxJobPipeline</c>: candidate gather → embedding match → LLM
+    /// judge → merge apply → cascade retype → final merge). When the
+    /// pipeline is registered in DI (production) it is preferred; when
+    /// null (hand-built test orchestrators that bypass DI), falls back to
+    /// the legacy <see cref="DuplicateJudge.DetectAsync"/> and synthesises
+    /// a minimal <see cref="ABoxJobResult"/> from the detected conflicts.
+    /// <para>The orchestrator already owns an <see cref="_chatFactory"/>
+    /// (TBox layer), but the post-TBox agent chain (the current caller
+    /// here, <see cref="ConflictService"/>) has no chat in scope — the
+    /// extraction chat was disposed at job end. When the caller does not
+    /// supply a chat / embedder, the orchestrator builds defaults from
+    /// <see cref="ISEStudioOptions"/> (operator-configured
+    /// <c>extract_model</c> / <c>embedding_model</c> + <c>iri_root</c>) so
+    /// the HTTP conflict-detect path — which never had a chat to begin
+    /// with — can still drive the Dovetail pipeline. The pipeline's
+    /// <c>FailSoftSegment</c> / <c>OptionalSegment</c> adapters still
+    /// degrade gracefully if the resulting LLM call fails (a flaky
+    /// embedding round yields an empty candidate cosine map, a flaky
+    /// judge yields <c>judge_unavailable</c> + all kept).</para>
+    /// </summary>
+    public async Task<ABoxJobResult> RunABoxLayerAsync(
+        Guid knowledgeSystemId,
+        string graphIri,
+        StoreWrapper store,
+        IChatClient? chat,
+        IEmbeddingGenerator<string, Embedding<float>>? embedder,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(graphIri);
+        ArgumentNullException.ThrowIfNull(store);
+
+        if (_aboxPipeline is not null)
+        {
+            var resolvedChat = chat ?? CreateDefaultChatClient();
+            var resolvedEmbedder = embedder ?? CreateDefaultEmbeddingGenerator();
+            // Fail-soft: when the operator's LLM / embedding factories
+            // cannot build a client (no API key, fake factory in the
+            // contract-test path with no client installed, etc.), fall
+            // through to the legacy DuplicateJudge path instead of
+            // throwing 500 — the HTTP detect endpoint must keep working
+            // even when the Dovetail pipeline is mid-DI but the LLM is
+            // not configured.
+            if (resolvedChat is not null && resolvedEmbedder is not null)
+            {
+                var input = new ABoxJobInput(
+                    JobId: Guid.NewGuid(),
+                    KnowledgeSystemId: knowledgeSystemId,
+                    GraphIri: graphIri,
+                    Store: store,
+                    Chat: resolvedChat,
+                    Embedder: resolvedEmbedder,
+                    MinConfidence: _options.DuplicateAutoApplyFloor);
+                return await _aboxPipeline.ExecuteAsync(input, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // Fallback: invoke the legacy DuplicateJudge and synthesise a
+        // minimal ABoxJobResult. No graph writes happen here — only the
+        // duplicate-class candidate list survives into the result's
+        // Remaining bucket. The Dovetail pipeline is the only path that
+        // actually applies merges + cascade retypes (Slice 2 §3 D4-D5).
+        if (_duplicateJudge is null)
+        {
+            throw new InvalidOperationException(
+                "ABox pipeline fallback requires DuplicateJudge to be registered.");
+        }
+        var conflicts = await _duplicateJudge.DetectAsync(store, graphIri, cancellationToken)
+            .ConfigureAwait(false);
+        return new ABoxJobResult(
+            Applied: new AppliedMerges(Array.Empty<MergedClassPair>()),
+            Remaining: new RemainingConflicts(conflicts),
+            Cascade: new CascadeResult(Array.Empty<Guid>()));
+    }
+
+    /// <summary>
+    /// Default chat client for the ABox pipeline when the caller did not
+    /// supply one. Mirrors <see cref="DuplicateJudge.JudgeDuplicatesAsync"/>'s
+    /// config shape (operator <c>extract_model</c> against <c>iri_root</c>'s
+    /// sibling <c>/v1</c> endpoint). Null when the factory throws on
+    /// build — the caller treats null as "pipeline unusable, fall back".
+    /// </summary>
+    private IChatClient? CreateDefaultChatClient()
+    {
+        if (_chatFactory is null) return null;
+        try
+        {
+            return _chatFactory.Create(new LlmProviderConfig
+            {
+                Provider = "openai-compatible",
+                Endpoint = _options.IriRoot.Replace("/ks", "/v1"),
+                Model = _options.ExtractModel,
+                ApiKey = _options.LlmApiKey,
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Default embedding generator for the ABox pipeline when the caller
+    /// did not supply one. Resolved from the scoped
+    /// <c>EmbeddingGeneratorFactory</c> — production DI registers it in
+    /// <c>ConflictServiceCollectionExtensions</c> so it is always in scope
+    /// for this orchestrator call. Null when the factory throws on build.
+    /// </summary>
+    private IEmbeddingGenerator<string, Embedding<float>>? CreateDefaultEmbeddingGenerator()
+    {
+        // EmbeddingGeneratorFactory is a Scoped service owned by the
+        // Conflicts DI graph; we resolve it from the orchestrator's own
+        // IServiceScopeFactory seam. When the seam is null (hand-built
+        // test orchestrator), we return null and let the caller's null
+        // throw branch decide.
+        if (_scopes is null) return null;
+        try
+        {
+            using var scope = _scopes.CreateScope();
+            var factory = scope.ServiceProvider.GetService<EmbeddingGeneratorFactory>();
+            if (factory is null) return null;
+            return factory.Create(new LlmProviderConfig
+            {
+                Provider = "openai-compatible",
+                Endpoint = _options.IriRoot.Replace("/ks", "/v1"),
+                Model = _options.EmbeddingModel,
+                ApiKey = _options.LlmApiKey,
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
     }
 
     /// <summary>
