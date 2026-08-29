@@ -70,6 +70,29 @@ public sealed class ProposalStepTests : IDisposable
         Assert.Equal(0, r3.ProposalsQueued);
         Assert.Equal(2, r3.TermsAdded);
 
+        // Sub-case 4: Skipped+Error — the production step-catch shape
+        // (mirrors BroaderStep's fail-soft return). FoldCarry must surface
+        // the error and zero every counter; gating doesn't change this.
+        var r4 = await step.ExecuteAsync(
+            new TerminologyInput(ks, _ksId, "fake-model", SuggestEnabled: true),
+            new BroaderCarry(new TermSyncCarry(null, null, null, 0, Error: "boom", Skipped: true)),
+            CancellationToken.None);
+        Assert.Equal("boom", r4.Error);
+        Assert.Equal(0, r4.TermsAdded);
+        Assert.Null(r4.SchemeIri);
+        Assert.Equal(0, r4.ProposalsQueued);
+
+        // Sub-case 5: gating passed (SuggestEnabled=true, non-empty
+        // SchemeIri, no carry error) but the agent is null — fail-soft
+        // fold preserves the deterministic counters without touching the
+        // chat layer.
+        var r5 = await step.ExecuteAsync(
+            new TerminologyInput(ks, _ksId, "fake-model", SuggestEnabled: true),
+            new BroaderCarry(new TermSyncCarry($"{GraphIri}/vocabulary#scheme-extracted", null, null, 0, TermsAdded: 2)),
+            CancellationToken.None);
+        Assert.Equal(0, r5.ProposalsQueued);
+        Assert.Equal(2, r5.TermsAdded);
+
         // Gating never reached the chat layer.
         Assert.Equal(0, _chat.CallCount);
     }
