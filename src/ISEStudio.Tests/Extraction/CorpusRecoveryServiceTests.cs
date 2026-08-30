@@ -445,7 +445,7 @@ public sealed class CorpusRecoveryServiceTests
         // Drive RecoverAsync with a single rejected candidate + chat
         // client that throws OCE. The first CallAsync that fires is the
         // "EvidenceSelector" stage (line 110). Note: RecoverAsync's
-        // outer catch swallows OCE when callerTokenCancelled == false
+        // outer catch swallows OCE when isCallerCancelled == false
         // (SDK-timeout shape) — that's why this test asserts on the
         // warning rather than a rethrow. The helper still fires before
         // the swallow, which is the whole point of routing through it.

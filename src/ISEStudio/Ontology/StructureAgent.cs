@@ -462,7 +462,7 @@ public sealed class StructureAgent : IStructureAgent
                     model: chat.GetService<ChatClientMetadata>()?.DefaultModelId ?? "unknown",
                     elapsedSeconds: sw.Elapsed.TotalSeconds,
                     configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
-                    callerTokenCancelled: ct.IsCancellationRequested,
+                    isCallerCancelled: ct.IsCancellationRequested,
                     exception: oce);
                 throw;
             }

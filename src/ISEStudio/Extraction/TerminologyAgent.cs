@@ -224,7 +224,7 @@ public sealed class TerminologyAgent
                         model: resolvedModel,
                         elapsedSeconds: sw.Elapsed.TotalSeconds,
                         configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
-                        callerTokenCancelled: ct.IsCancellationRequested,
+                        isCallerCancelled: ct.IsCancellationRequested,
                         exception: oce);
                     throw;
                 }

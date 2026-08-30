@@ -46,7 +46,7 @@ public static class LlmCallDiagnostics
     /// paired with <paramref name="elapsedSeconds"/> to detect SDK timeout
     /// hits. <c>0</c> means "no override; SDK default in effect".
     /// </param>
-    /// <param name="callerTokenCancelled">Whether the caller-supplied
+    /// <param name="isCallerCancelled">Whether the caller-supplied
     /// <see cref="CancellationToken"/> was already cancelled when the OCE
     /// fired. <c>true</c> points at host shutdown / user abort;
     /// <c>false</c> + elapsed ≈ configuredTimeout points at an SDK
@@ -60,7 +60,7 @@ public static class LlmCallDiagnostics
         string model,
         double elapsedSeconds,
         int configuredTimeoutSec,
-        bool callerTokenCancelled,
+        bool isCallerCancelled,
         OperationCanceledException exception)
     {
         ArgumentNullException.ThrowIfNull(logger);
@@ -73,16 +73,25 @@ public static class LlmCallDiagnostics
         // no inner).
         var innerType = exception.InnerException?.GetType().FullName ?? "<none>";
 
+        // Field name `IsCallerCancelled` deliberately avoids the substring
+        // "token" — see [[ontopilot-llmcall-redaction-collision]] for the
+        // production incident. SecretRedactionProcessor's keyword list
+        // includes "token", which would scrub the structured property's
+        // value to ***REDACTED*** and make the diagnostic disappear from
+        // any sink that filters on the structured side (some Datadog
+        // indexes do this). The rendered message body still contains
+        // the literal "isCallerCancelled=" so old grep queries that
+        // match the body continue to work.
         logger.LogWarning(
             "LLM {OperationName} cancelled after {ElapsedSeconds:F2}s (provider={Provider}, model={Model}, " +
-            "configuredTimeoutSec={ConfiguredTimeoutSec}, callerTokenCancelled={CallerTokenCancelled}, " +
+            "configuredTimeoutSec={ConfiguredTimeoutSec}, isCallerCancelled={IsCallerCancelled}, " +
             "exceptionType={ExceptionType}, innerType={InnerType}, message={Message})",
             operationName,
             elapsedSeconds,
             provider,
             model,
             configuredTimeoutSec,
-            callerTokenCancelled,
+            isCallerCancelled,
             exception.GetType().FullName,
             innerType,
             exception.Message);

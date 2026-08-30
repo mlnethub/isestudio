@@ -633,7 +633,7 @@ public sealed class TBoxVerifyService
                         model: model,
                         elapsedSeconds: sw.Elapsed.TotalSeconds,
                         configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
-                        callerTokenCancelled: cancellationToken.IsCancellationRequested,
+                        isCallerCancelled: cancellationToken.IsCancellationRequested,
                         exception: oce);
                     throw;
                 }

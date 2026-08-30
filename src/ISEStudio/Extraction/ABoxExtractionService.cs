@@ -137,7 +137,7 @@ public sealed class ABoxExtractionService
                         model: model,
                         elapsedSeconds: sw.Elapsed.TotalSeconds,
                         configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
-                        callerTokenCancelled: cancellationToken.IsCancellationRequested,
+                        isCallerCancelled: cancellationToken.IsCancellationRequested,
                         exception: oce);
                     throw;
                 }
