@@ -1,5 +1,8 @@
 using System.ClientModel;
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Llm;
@@ -36,11 +39,15 @@ public sealed class TBoxExtractionService
     public const string PromptKey = "tbox.extract.rag";
 
     private readonly ISEStudioOptions _options;
+    private readonly ILogger<TBoxExtractionService> _logger;
 
-    public TBoxExtractionService(IOptions<ISEStudioOptions> options)
+    public TBoxExtractionService(
+        IOptions<ISEStudioOptions> options,
+        ILogger<TBoxExtractionService>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
+        _logger = logger ?? NullLogger<TBoxExtractionService>.Instance;
     }
 
     /// <summary>
@@ -110,13 +117,39 @@ public sealed class TBoxExtractionService
                         $"Knowledge system: {ks.GraphIri}\nBase IRI: {ks.BaseIri}\nChunk #{chunk.Idx} text:\n{chunk.Text}"),
                 };
 
+                // Stopwatch lets the diagnostic capture how long the call ran
+                // before it was cancelled — pairing elapsed seconds with the
+                // configured LlmNetworkTimeoutSeconds tells us whether the SDK
+                // hit its internal pipeline timeout (NetworkTimeout) versus a
+                // user-initiated cancellation. Without this we'd see "Cancelled
+                // (TaskCanceledException)." with no clue whether to bump the
+                // timeout or chase the user.
+                var sw = Stopwatch.StartNew();
                 ChatResponse response;
                 try
                 {
                     response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException oce)
                 {
+                    // Log everything needed to triage from the server log alone —
+                    // provider/model, configured timeout, elapsed seconds, the
+                    // exact exception type, inner exception (if any), and whether
+                    // the caller's token was already cancelled (vs the SDK's
+                    // internal CTS triggering the throw).
+                    var innerType = oce.InnerException?.GetType().FullName ?? "<none>";
+                    _logger.LogWarning(
+                        "LLM Extract cancelled after {ElapsedSeconds:F2}s (provider={Provider}, model={Model}, " +
+                        "configuredTimeoutSec={ConfiguredTimeoutSec}, callerTokenCancelled={CallerTokenCancelled}, " +
+                        "exceptionType={ExceptionType}, innerType={InnerType}, message={Message})",
+                        sw.Elapsed.TotalSeconds,
+                        provider,
+                        model,
+                        _options.LlmNetworkTimeoutSeconds,
+                        cancellationToken.IsCancellationRequested,
+                        oce.GetType().FullName,
+                        innerType,
+                        oce.Message);
                     throw;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or IOException)
