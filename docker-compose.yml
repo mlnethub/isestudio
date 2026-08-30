@@ -45,9 +45,22 @@ services:
       timeout: 5s
       retries: 5
     restart: unless-stopped
+    # S3 API (9000) stays inter-container only — the backend reaches it
+    # via `minio:9000` (ISEStudio__Storage__Endpoint) and exposing it to
+    # the host would publish S3 credentials' blast radius to anyone on the
+    # host network. `expose:` keeps it reachable from other containers in
+    # the same compose network without binding on the host loopback.
     expose:
-      - "9000"   # S3 API
-      - "9001"   # Console
+      - "9000"   # S3 API (inter-container)
+    # Console (9001) is published to the host so operators can drive
+    # buckets / object inspection via http://localhost:9001. Same
+    # BIND_ADDRESS / PORT env var convention as POSTGRES / KEYCLOAK /
+    # ISESTUDIO; default 0.0.0.0:9001 matches `--console-address ":9001"`
+    # above. Set MINIO_CONSOLE_BIND_ADDRESS=127.0.0.1 to lock the console
+    # to loopback only (LAN devices won't reach it; useful when running
+    # the stack on a shared host).
+    ports:
+      - "${MINIO_CONSOLE_BIND_ADDRESS:-0.0.0.0}:${MINIO_CONSOLE_PORT:-9001}:9001"
 
   # ---- Keycloak (SSO, D6 必选服务) ----
   # 浏览器经宿主 ${KEYCLOAK_PORT:-8081} 直连 Keycloak;后端容器内经
