@@ -530,6 +530,25 @@ public sealed class DuplicateJudge
                     exception: oce);
                 throw;
             }
+            catch (Exception ex)
+            {
+                // Non-OCE failures (401 / 403 / 503, retry-exhausted
+                // ClientResultException, malformed JSON upstream, etc.) used
+                // to bubble up into the outer catch where they were silently
+                // swallowed → the duplicate-judge returned an empty set with
+                // no operator-visible signal. Log the diagnostic here, then
+                // rethrow so the outer catch preserves its fail-closed return
+                // empty-set contract (matches the existing comment that a
+                // flaky LLM judge adds no noise to the conflict queue).
+                LlmCallDiagnostics.LogFailure(
+                    _logger,
+                    operationName: "Llm.Conflict.DuplicateJudge",
+                    provider: chat.GetService<ChatClientMetadata>()?.ProviderName ?? "unknown",
+                    model: chat.GetService<ChatClientMetadata>()?.DefaultModelId ?? "unknown",
+                    elapsedSeconds: sw.Elapsed.TotalSeconds,
+                    exception: ex);
+                throw;
+            }
             reply = response.Text ?? string.Empty;
         }
         catch (OperationCanceledException)

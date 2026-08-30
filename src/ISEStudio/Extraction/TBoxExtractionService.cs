@@ -150,9 +150,36 @@ public sealed class TBoxExtractionService
                 }
                 catch (Exception ex) when (ex is HttpRequestException or IOException)
                 {
-                    // Transient provider/network error: log via the orchestrator's
-                    // progress channel and skip this chunk.
+                    // Transient provider/network error: log via the shared
+                    // non-OCE diagnostic so dashboards can correlate the
+                    // fail-soft skip against the upstream provider / model,
+                    // then skip this chunk (the orchestrator's progress channel
+                    // carries the rest of the user-visible signal).
+                    LlmCallDiagnostics.LogFailure(
+                        _logger,
+                        operationName: "Llm.Extract",
+                        provider: provider,
+                        model: model,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        exception: ex);
                     return TBoxDelta.Empty;
+                }
+                catch (Exception ex)
+                {
+                    // Non-transient non-OCE failures (401 / 403 / 503,
+                    // retry-exhausted ClientResultException, malformed JSON
+                    // upstream, etc.) used to bubble up unlogged — the job
+                    // row only showed the raw exception type. Log the full
+                    // diagnostic then rethrow so the orchestrator sees a
+                    // hard failure.
+                    LlmCallDiagnostics.LogFailure(
+                        _logger,
+                        operationName: "Llm.Extract",
+                        provider: provider,
+                        model: model,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        exception: ex);
+                    throw;
                 }
 
                 return ExtractionDeltaParser.ParseTBox(response.Text);

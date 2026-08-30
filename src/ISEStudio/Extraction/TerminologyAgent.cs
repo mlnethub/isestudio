@@ -231,9 +231,34 @@ public sealed class TerminologyAgent
                 catch (Exception ex) when (ex is HttpRequestException or IOException)
                 {
                     // Transient provider/network failure: do not abort the
-                    // whole dispatch. Return an empty proposal set so the
-                    // dispatcher can still surface a (smaller) result.
+                    // whole dispatch. Log the non-OCE diagnostic so dashboards
+                    // see provider / model / elapsed on the fail-soft skip,
+                    // then return an empty proposal set so the dispatcher can
+                    // still surface a (smaller) result.
+                    LlmCallDiagnostics.LogFailure(
+                        _logger,
+                        operationName: "Llm.TermSuggest",
+                        provider: provider,
+                        model: resolvedModel,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        exception: ex);
                     return Array.Empty<JsonElement>();
+                }
+                catch (Exception ex)
+                {
+                    // Non-transient non-OCE failures (401 / 403 / 503,
+                    // retry-exhausted ClientResultException, malformed JSON
+                    // upstream, etc.) used to bubble up unlogged. Log the
+                    // full diagnostic then rethrow so the dispatcher sees a
+                    // hard failure.
+                    LlmCallDiagnostics.LogFailure(
+                        _logger,
+                        operationName: "Llm.TermSuggest",
+                        provider: provider,
+                        model: resolvedModel,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        exception: ex);
+                    throw;
                 }
 
                 return ParseProposals(response.Text);

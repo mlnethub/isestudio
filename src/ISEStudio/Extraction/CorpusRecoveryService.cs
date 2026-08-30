@@ -486,6 +486,24 @@ public sealed class CorpusRecoveryService
                         exception: oce);
                     throw;
                 }
+                catch (Exception ex)
+                {
+                    // Non-OCE failures (401 / 403 / 503, retry-exhausted
+                    // ClientResultException, malformed JSON upstream, etc.)
+                    // used to bubble up unlogged. Route through the shared
+                    // non-OCE diagnostic so dashboards can correlate against
+                    // the per-stage operationName ("Llm.TBoxCorpus.EvidenceSelector" /
+                    // "Llm.TBoxCorpus.CorpusRecovery"), then rethrow so the
+                    // corpus-recovery pipeline sees a hard failure.
+                    LlmCallDiagnostics.LogFailure(
+                        _logger,
+                        operationName: $"Llm.TBoxCorpus.{stage}",
+                        provider: provider,
+                        model: model,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        exception: ex);
+                    throw;
+                }
                 if (!ExtractionDeltaParser.TryReadObject(response.Text, out var root))
                 {
                     throw new InvalidOperationException(
