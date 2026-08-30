@@ -1,0 +1,3 @@
+# CI-generated temporary artifacts (do not track)
+head-dag/
+main-dag/
