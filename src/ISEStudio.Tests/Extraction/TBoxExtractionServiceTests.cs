@@ -72,6 +72,66 @@ public sealed class TBoxExtractionServiceTests
         Assert.Equal(0, logger.Count);
     }
 
+    [Fact]
+    public async Task ExtractAsync_routes_non_OCE_exception_through_LogFailure_and_rethrows()
+    {
+        // Sibling of ExtractAsync_routes_TaskCanceledException_…: a non-OCE
+        // exception (here InvalidOperationException, the stand-in for
+        // 401 / 503 / retry-exhausted ClientResultException) must route
+        // through LlmCallDiagnostics.LogFailure (NOT LogCancellation),
+        // emit a single warning with the "failed after" phrasing, and
+        // rethrow so the orchestrator sees a hard failure.
+        var logger = new LlmCallDiagnosticsTestHelpers.CapturingLogger<TBoxExtractionService>();
+        var chat = new LlmCallDiagnosticsTestHelpers.ThrowingChatClient(
+            delay: TimeSpan.FromMilliseconds(250),
+            exceptionFactory: () => new InvalidOperationException("simulated upstream 503"));
+
+        var sut = new TBoxExtractionService(Options.Create(DefaultOptions()), logger);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await sut.ExtractAsync(chat, SampleKs(), SampleChunk(), CancellationToken.None));
+
+        Assert.NotNull(logger.SingleWarning);
+        var entry = logger.SingleWarning;
+        // Same operationName as the OCE sibling (ExtractAsync fires a single
+        // warning per LLM call regardless of which way it failed) — but the
+        // rendered body now uses "failed after" instead of "cancelled after"
+        // so log-routing rules can branch on the two streams.
+        Assert.Contains("LLM Llm.Extract failed after", entry.Formatted);
+        Assert.DoesNotContain("cancelled after", entry.Formatted);
+        Assert.Contains("exceptionType=System.InvalidOperationException", entry.Formatted);
+        Assert.Contains("message=simulated upstream 503", entry.Formatted);
+        Assert.True(entry.ElapsedSeconds >= 0.25,
+            $"Stopwatch should capture the injected delay, got {entry.ElapsedSeconds:F2}s");
+        Assert.Equal("simulated upstream 503", ex.Message);
+    }
+
+    [Fact]
+    public async Task ExtractAsync_routes_HttpRequestException_through_LogFailure_and_returns_empty_delta()
+    {
+        // The HttpRequestException catch is fail-soft by design (transient
+        // network errors should not abort the whole job — the orchestrator
+        // progresses via its own channel). The new LogFailure call inside
+        // that catch gives operators visibility WITHOUT changing the
+        // fail-soft return contract.
+        var logger = new LlmCallDiagnosticsTestHelpers.CapturingLogger<TBoxExtractionService>();
+        var chat = new LlmCallDiagnosticsTestHelpers.ThrowingChatClient(
+            delay: TimeSpan.FromMilliseconds(150),
+            exceptionFactory: () => new HttpRequestException("transient network blip"));
+
+        var sut = new TBoxExtractionService(Options.Create(DefaultOptions()), logger);
+
+        var delta = await sut.ExtractAsync(chat, SampleKs(), SampleChunk(), CancellationToken.None);
+
+        Assert.True(delta.IsEmpty,
+            "HttpRequestException must still be fail-soft (return empty delta).");
+        Assert.NotNull(logger.SingleWarning);
+        var entry = logger.SingleWarning;
+        Assert.Contains("LLM Llm.Extract failed after", entry.Formatted);
+        Assert.Contains("exceptionType=System.Net.Http.HttpRequestException", entry.Formatted);
+        Assert.Contains("message=transient network blip", entry.Formatted);
+    }
+
     /// <summary>
     /// Tiny <see cref="IChatClient"/> that echoes a fixed assistant reply.
     /// Only used by the success-path test — the cancellation tests use
