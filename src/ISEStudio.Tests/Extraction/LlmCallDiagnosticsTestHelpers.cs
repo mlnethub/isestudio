@@ -62,10 +62,15 @@ internal static class LlmCallDiagnosticsTestHelpers
     /// formatted message + its <c>ElapsedSeconds</c> scalar. Production
     /// services log at most one warning per LLM call, so capturing more
     /// than one throws — surfaces silent double-log regressions.
+    /// Also captures a single information-level entry (overwritten on
+    /// subsequent Information calls) so fail-soft / SDK-timeout
+    /// <see cref="LogLevel.Information"/> paths can be asserted on too —
+    /// see <c>AdjudicatorStep_operational_failure_logs_warning</c>.
     /// </summary>
     internal sealed class CapturingLogger<T> : ILogger<T>
     {
         public LogEntry? SingleWarning { get; private set; }
+        public LogEntry? SingleInformation { get; private set; }
         public int Count { get; private set; }
 
         public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
@@ -78,19 +83,11 @@ internal static class LlmCallDiagnosticsTestHelpers
             Exception? exception,
             Func<TState, Exception?, string> formatter)
         {
-            if (logLevel != LogLevel.Warning) return;
-            Count++;
-            if (SingleWarning is not null)
-            {
-                throw new InvalidOperationException(
-                    $"CapturingLogger expected at most one Warning entry; saw {Count}.");
-            }
-
-            var formatted = formatter(state, exception);
             // The diagnostic template is
             //   "LLM {OperationName} cancelled after {ElapsedSeconds:F2}s ..."
             // Pull the {ElapsedSeconds:F2} scalar so the test can assert
             // "elapsed ≥ 0.25 s" without parsing the formatted string.
+            var formatted = formatter(state, exception);
             var elapsed = 0.0;
             if (state is IReadOnlyList<KeyValuePair<string, object?>> kvs)
             {
@@ -103,7 +100,24 @@ internal static class LlmCallDiagnosticsTestHelpers
                     }
                 }
             }
-            SingleWarning = new LogEntry(formatted, elapsed);
+
+            if (logLevel == LogLevel.Warning)
+            {
+                Count++;
+                if (SingleWarning is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"CapturingLogger expected at most one Warning entry; saw {Count}.");
+                }
+                SingleWarning = new LogEntry(formatted, elapsed);
+            }
+            else if (logLevel == LogLevel.Information)
+            {
+                // Allow overwrite — multiple Information entries are legal
+                // (e.g. retry-loop traces); tests assert on the LAST one.
+                SingleInformation = new LogEntry(formatted, elapsed);
+            }
+            // Debug/Trace/Error/Critical: ignored.
         }
 
         public sealed record LogEntry(string Formatted, double ElapsedSeconds);

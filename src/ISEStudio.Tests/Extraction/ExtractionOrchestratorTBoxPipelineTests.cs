@@ -14,6 +14,7 @@ public class ExtractionOrchestratorTBoxPipelineTests
     public void TBoxChunkPipeline_IsResolvable_FromOrchestratorServices()
     {
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddSingleton(Options.Create(new ISEStudioOptions()));
         services.AddSingleton<TBoxVerifyService>();
         services.AddSingleton<CorpusRecoveryService>();

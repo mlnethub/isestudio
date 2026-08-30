@@ -49,7 +49,10 @@ public static class DovetailPipelineRegistrations
         // 3. Chunk-level step classes — all public sealed with TBoxVerifyService.
         
         services.AddSingleton<CriticStep>();
-        services.AddSingleton<AdjudicatorStep>();
+        services.AddSingleton<AdjudicatorStep>(sp =>
+            new AdjudicatorStep(
+                verify: sp.GetRequiredService<TBoxVerifyService>(),
+                logger: sp.GetRequiredService<ILogger<AdjudicatorStep>>()));
         services.AddSingleton<DenotationStep>();
         services.AddSingleton<ChunkMergeStep>();
 

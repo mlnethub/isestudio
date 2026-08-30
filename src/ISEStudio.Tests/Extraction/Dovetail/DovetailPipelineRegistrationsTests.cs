@@ -20,6 +20,7 @@ public class DovetailPipelineRegistrationsTests
     public void AddDovetailPipelines_RegistersBothPipelines()
     {
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new ISEStudioOptions { AutoApplyFloor = 0.85 }));
         services.AddSingleton<TBoxVerifyService>();
         services.AddDovetailPipelines();
@@ -36,6 +37,7 @@ public class DovetailPipelineRegistrationsTests
     public void AddDovetailPipelines_RegistersAllChunkStepClasses()
     {
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new ISEStudioOptions { AutoApplyFloor = 0.85 }));
         services.AddSingleton<TBoxVerifyService>();
         services.AddDovetailPipelines();
@@ -51,6 +53,7 @@ public class DovetailPipelineRegistrationsTests
     public void AddDovetailPipelines_RegistersAllJobStepClasses()
     {
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new ISEStudioOptions { AutoApplyFloor = 0.85 }));
         services.AddSingleton<TBoxVerifyService>();
         services.AddDovetailPipelines();
@@ -66,6 +69,7 @@ public class DovetailPipelineRegistrationsTests
     public void AddDovetailPipelines_RegistersAdjudicatorStepDirectly()
     {
         var services = new ServiceCollection();
+        services.AddLogging();
         services.AddSingleton(Microsoft.Extensions.Options.Options.Create(new ISEStudioOptions { AutoApplyFloor = 0.85 }));
         services.AddSingleton<TBoxVerifyService>();
         services.AddDovetailPipelines();
@@ -86,6 +90,7 @@ public class DovetailPipelineRegistrationsTests
         // to succeed. Production wires AddExtractionServices which registers
         // it; this unit test exercises AddDovetailPipelines alone and so
         // installs a minimal stub.
+        services.AddLogging();
         services.AddSingleton<IDbContextFactory<ISEStudioDbContext>>(new SqliteContextFactory());
         services.AddSingleton<TimeProvider>(TimeProvider.System);
         services.AddSingleton<ExtractionJobStore>();

@@ -4,6 +4,7 @@ using ISEStudio.Extraction.Dovetail.TBox.Steps;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Extraction.Dovetail.TBox.Steps;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using Xunit;
@@ -17,7 +18,7 @@ public class TBoxChunkPipelineTests
     {
         var verify = new TBoxVerifyService(Options.Create(new ISEStudioOptions { AutoApplyFloor = 0.85 }));
         var critic = new CriticStep(verify);
-        var adjudicator = new AdjudicatorStep(verify);
+        var adjudicator = new AdjudicatorStep(verify, NullLogger<AdjudicatorStep>.Instance);
         var denotation = new DenotationStep(verify);
         var merge = new ChunkMergeStep();
 
@@ -52,7 +53,7 @@ public class TBoxChunkPipelineTests
 
         var pipeline = new TBoxChunkPipeline(
             new CriticStep(verify),
-            new AdjudicatorStep(verify),
+            new AdjudicatorStep(verify, NullLogger<AdjudicatorStep>.Instance),
             new DenotationStep(verify),
             new ChunkMergeStep());
 
