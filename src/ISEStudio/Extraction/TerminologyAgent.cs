@@ -1,10 +1,13 @@
 
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Application.Vocabulary;
 using ISEStudio.Configuration;
@@ -98,6 +101,7 @@ public sealed class TerminologyAgent
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
     private readonly ISEStudioOptions _options;
+    private readonly ILogger<TerminologyAgent> _logger;
 
     /// <summary>
     /// Optional SKOS view source. When wired (production DI), the agent
@@ -114,7 +118,8 @@ public sealed class TerminologyAgent
         ISEStudioDbContext db,
         IOptions<ISEStudioOptions> options,
         TimeProvider? clock = null,
-        Ontology.SkosManager? skos = null)
+        Ontology.SkosManager? skos = null,
+        ILogger<TerminologyAgent>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
         ArgumentNullException.ThrowIfNull(db);
@@ -124,6 +129,7 @@ public sealed class TerminologyAgent
         _options = options.Value;
         _clock = clock ?? TimeProvider.System;
         _skos = skos;
+        _logger = logger ?? NullLogger<TerminologyAgent>.Instance;
     }
 
     /// <summary>
@@ -193,13 +199,33 @@ public sealed class TerminologyAgent
             action: async innerCt =>
             {
                 var messages = BuildMessages(ks, schemeIri, chunks);
+
+                // Stopwatch lets the diagnostic capture how long the call
+                // ran before it was cancelled — pairing elapsed seconds with
+                // the configured LlmNetworkTimeoutSeconds tells us whether
+                // the SDK hit its internal pipeline timeout (NetworkTimeout)
+                // versus a user-initiated cancellation. The OCE rethrow is
+                // the same shape as TBoxExtractionService / ABoxExtraction
+                // — the helper just gives us a structured server-log line
+                // we can grep when a dispatch returns
+                // "Cancelled (TaskCanceledException)." with no other clue.
+                var sw = Stopwatch.StartNew();
                 ChatResponse response;
                 try
                 {
                     response = await chat.GetResponseAsync(messages, options: null, innerCt).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException oce)
                 {
+                    LlmCallDiagnostics.LogCancellation(
+                        _logger,
+                        operationName: "Llm.TermSuggest",
+                        provider: provider,
+                        model: resolvedModel,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
+                        callerTokenCancelled: ct.IsCancellationRequested,
+                        exception: oce);
                     throw;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or IOException)

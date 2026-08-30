@@ -1,13 +1,17 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Llm;
+using ISEStudio.Observability;
 using ISEStudio.Prompts;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -50,13 +54,15 @@ public sealed class StructureAgent : IStructureAgent
     private readonly StoreWrapper? _store;
     private readonly ExtractionJobStore? _jobs;
     private readonly ISEStudioOptions _options;
+    private readonly ILogger<StructureAgent> _logger;
 
     public StructureAgent(
         IChatClientFactory chatFactory,
         ISEStudioDbContext db,
         StoreWrapper? store = null,
         ExtractionJobStore? jobs = null,
-        IOptions<ISEStudioOptions>? options = null)
+        IOptions<ISEStudioOptions>? options = null,
+        ILogger<StructureAgent>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
         ArgumentNullException.ThrowIfNull(db);
@@ -65,6 +71,7 @@ public sealed class StructureAgent : IStructureAgent
         _store = store;
         _jobs = jobs;
         _options = options?.Value ?? new ISEStudioOptions();
+        _logger = logger ?? NullLogger<StructureAgent>.Instance;
     }
 
     /// <summary>
@@ -427,11 +434,38 @@ public sealed class StructureAgent : IStructureAgent
         string reply;
         try
         {
-            var response = await chat.GetResponseAsync(new[]
+            // Stopwatch lets the diagnostic capture how long the call ran
+            // before it was cancelled — pairing elapsed seconds with the
+            // configured LlmNetworkTimeoutSeconds tells us whether the SDK
+            // hit its internal pipeline timeout (NetworkTimeout) versus a
+            // user-initiated cancellation. The structure agent runs many
+            // of these concurrently (one DecideAsync per isolated class
+            // via Task.WhenAll + SemaphoreSlim), so each cancellation is
+            // its own diagnostic — server log will show N warnings when
+            // an SDK timeout trips the whole batch.
+            var sw = Stopwatch.StartNew();
+            ChatResponse response;
+            try
             {
-                new ChatMessage(ChatRole.System, ResolveSystemPrompt()),
-                new ChatMessage(ChatRole.User, user),
-            }, options: null, ct).ConfigureAwait(false);
+                response = await chat.GetResponseAsync(new[]
+                {
+                    new ChatMessage(ChatRole.System, ResolveSystemPrompt()),
+                    new ChatMessage(ChatRole.User, user),
+                }, options: null, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException oce)
+            {
+                LlmCallDiagnostics.LogCancellation(
+                    _logger,
+                    operationName: "Llm.Structure.AttachIsolated.Decide",
+                    provider: chat.GetService<ChatClientMetadata>()?.ProviderName ?? "unknown",
+                    model: chat.GetService<ChatClientMetadata>()?.DefaultModelId ?? "unknown",
+                    elapsedSeconds: sw.Elapsed.TotalSeconds,
+                    configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
+                    callerTokenCancelled: ct.IsCancellationRequested,
+                    exception: oce);
+                throw;
+            }
             reply = response.Text ?? string.Empty;
         }
         catch (OperationCanceledException)

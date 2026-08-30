@@ -1,11 +1,15 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Llm;
+using ISEStudio.Observability;
 using ISEStudio.Prompts;
 
 namespace ISEStudio.Ontology;
@@ -72,16 +76,19 @@ public sealed class DuplicateJudge
     private readonly EmbeddingGeneratorFactory _embeddings;
     private readonly IChatClientFactory? _chats;
     private readonly ISEStudioOptions _options;
+    private readonly ILogger<DuplicateJudge> _logger;
 
     public DuplicateJudge(
         EmbeddingGeneratorFactory embeddings,
         IChatClientFactory? chats = null,
-        IOptions<ISEStudioOptions>? options = null)
+        IOptions<ISEStudioOptions>? options = null,
+        ILogger<DuplicateJudge>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(embeddings);
         _embeddings = embeddings;
         _chats = chats;
         _options = options?.Value ?? new ISEStudioOptions();
+        _logger = logger ?? NullLogger<DuplicateJudge>.Instance;
     }
 
     /// <summary>
@@ -486,14 +493,56 @@ public sealed class DuplicateJudge
         string reply;
         try
         {
-            var response = await chat.GetResponseAsync(
-                messages,
-                new ChatOptions { Temperature = 0f, MaxOutputTokens = 500 },
-                ct).ConfigureAwait(false);
+            // Stopwatch lets the diagnostic capture how long the call ran
+            // before it was cancelled — pairing elapsed seconds with the
+            // configured LlmNetworkTimeoutSeconds tells us whether the SDK
+            // hit its internal pipeline timeout (NetworkTimeout) versus a
+            // user-initiated cancellation.
+            //
+            // OperationCanceledException is split out from the generic
+            // Exception handler below: Python
+            // `_llm_verify_duplicates` (the .NET judge's predecessor)
+            // doesn't catch OCE, so the cancellation surfaces to the
+            // caller — keeping that semantic means a stuck duplicate-judge
+            // call doesn't silently let a job proceed. The fail-closed
+            // (return empty) contract only applies to non-cancellation
+            // errors so a flaky LLM doesn't add noise to the conflict
+            // queue.
+            var sw = Stopwatch.StartNew();
+            ChatResponse response;
+            try
+            {
+                response = await chat.GetResponseAsync(
+                    messages,
+                    new ChatOptions { Temperature = 0f, MaxOutputTokens = 500 },
+                    ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException oce)
+            {
+                LlmCallDiagnostics.LogCancellation(
+                    _logger,
+                    operationName: "Llm.Conflict.DuplicateJudge",
+                    provider: chat.GetService<ChatClientMetadata>()?.ProviderName ?? "unknown",
+                    model: chat.GetService<ChatClientMetadata>()?.DefaultModelId ?? "unknown",
+                    elapsedSeconds: sw.Elapsed.TotalSeconds,
+                    configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
+                    callerTokenCancelled: ct.IsCancellationRequested,
+                    exception: oce);
+                throw;
+            }
             reply = response.Text ?? string.Empty;
+        }
+        catch (OperationCanceledException)
+        {
+            // Logged above; propagate so the conflict pipeline sees the
+            // cancellation and aborts the job rather than running the
+            // merge with a silently-empty duplicate set.
+            throw;
         }
         catch (Exception)
         {
+            // Fail-closed for non-cancellation errors: a flaky LLM judge
+            // adds no noise to the conflict queue.
             return new HashSet<int>();
         }
 

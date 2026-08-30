@@ -1,14 +1,18 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Llm;
+using ISEStudio.Observability;
 using ISEStudio.Ontology;
 using ISEStudio.Prompts;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -70,13 +74,15 @@ public sealed class ConflictAgent : IConflictAgent
     private readonly StoreWrapper? _store;
     private readonly ExtractionJobStore? _jobs;
     private readonly ISEStudioOptions _options;
+    private readonly ILogger<ConflictAgent> _logger;
 
     public ConflictAgent(
         IChatClientFactory chatFactory,
         ISEStudioDbContext db,
         StoreWrapper? store = null,
         ExtractionJobStore? jobs = null,
-        IOptions<ISEStudioOptions>? options = null)
+        IOptions<ISEStudioOptions>? options = null,
+        ILogger<ConflictAgent>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
         ArgumentNullException.ThrowIfNull(db);
@@ -85,6 +91,7 @@ public sealed class ConflictAgent : IConflictAgent
         _store = store;
         _jobs = jobs;
         _options = options?.Value ?? new ISEStudioOptions();
+        _logger = logger ?? NullLogger<ConflictAgent>.Instance;
     }
 
     /// <summary>
@@ -291,7 +298,36 @@ public sealed class ConflictAgent : IConflictAgent
             string reply;
             try
             {
-                var response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
+                // Stopwatch starts fresh each loop iteration so the
+                // diagnostic captures per-turn elapsed — pairing elapsed
+                // seconds with the configured LlmNetworkTimeoutSeconds
+                // tells us whether the SDK hit its internal pipeline
+                // timeout (NetworkTimeout) versus a user-initiated
+                // cancellation. Without this we'd see "Cancelled
+                // (TaskCanceledException)." with no clue whether to bump
+                // the timeout or chase the user. operationName is the
+                // base "Llm.Conflict.DecideStep" — the per-turn step
+                // index isn't folded into the helper signature, so server
+                // log shows one line per cancelled turn.
+                var sw = Stopwatch.StartNew();
+                ChatResponse response;
+                try
+                {
+                    response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException oce)
+                {
+                    LlmCallDiagnostics.LogCancellation(
+                        _logger,
+                        operationName: "Llm.Conflict.DecideStep",
+                        provider: chat.GetService<ChatClientMetadata>()?.ProviderName ?? "unknown",
+                        model: chat.GetService<ChatClientMetadata>()?.DefaultModelId ?? "unknown",
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
+                        callerTokenCancelled: ct.IsCancellationRequested,
+                        exception: oce);
+                    throw;
+                }
                 reply = response.Text ?? string.Empty;
             }
             catch (OperationCanceledException)
