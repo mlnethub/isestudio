@@ -175,7 +175,8 @@ adjudicator 与 denotation 在当前代码中是顺序执行,但其实它们消�
 | **3** | ConflictAgent + StructureAgent(p1-1 + p1-3) | 3-4 |
 | **4** | Vocabulary 流水线(SyncCore 四遍 + Proposals 排入) | 2-3 |
 | **5** | 顶层 5 runner 调度(`ExtractionOrchestrator.RunJobSafelyAsync`) | 2-3 → **8**(2026-08-30 ✅ DONE,commits `2376e8a`→`7a39790`,tests 972→1001/0/1/1002) |
-| **6** | `dovetail-report` 接入 CI + 跨 slice 一致性 lint | 1 |
+| **6a** | `dovetail-report` 接入 GitHub Actions (独立 `pipeline-report` job + PR diff vs main base + artifact + PR comment) | 1 (2026-08-30 🟡 实施中, 详见 `2026-08-30-pipeline-report-ci-slice-6-design.md`) |
+| **7** | 跨 slice 一致性 lint (naming / DI block / JobCarries wrapper pattern, Roslyn analyzer 或 build-time script) | 1 (从 §5 Slice 6 拆分, 推迟) |
 
 **Slice 5 完成总结**(2026-08-30,详见各 slice 子 spec + memory file):
 
@@ -461,6 +462,7 @@ public sealed record TBoxJobResult(
 - **第一个 slice = TBox 子 DAG 最小样例**(用户拍板,2026-08-28)
 - **D9 备选 MAAF 评估 + 混合方案**(2026-08-28,用户追问触发):Dovetail 与 MAAF 语义不兼容(in-process 秒级 vs 长跑可暂停);三种混合路径 A/B/C 中 A/B 污染对方语义,C(DB 状态协调)唯一可行;当前抽取流水线无 HIL 需求,无需混合;未来 HIL 路径推荐 C 不引 MAAF;若坚持用 MAAF 做 reviewer,只在一个边界用,独立 subsystem 与 Dovetail pipeline 通过 DB 协作,无运行时交集(详见 §3.考虑过的备选.混合使用评估)
 - **D12 Slice 5 完成**(2026-08-30):Dovetail extraction pipeline refactor 5-slice roadmap 闭环。详见各 slice 子 spec v1.x + memory entries + spec §5 表格 + 本条完成总结。零生产行为变更,base 972 unit / 46 integration tests 零改全绿,5-slice 累计落地 47 commits。Slice 6(`dovetail-report` CI + 跨切片一致性 lint)规划中。
+- **D13 Slice 6 拆分** (2026-08-30): 原 §5 Slice 6 `dovetail-report` 接入 CI + 跨 slice 一致性 lint 拆为两项 — Slice 6a (本切片, CI 接入) + Slice 7 (后续切片, lint)。理由: CI 接入与 lint 各自独立子系统, 合并 1 slice 范围过宽; CI 单独落地可立即 deliver PR DAG diff 价值, lint 单独切片可深入设计 Roslyn analyzer 或 build-time 脚本。
 
 ---
 
