@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Observability;
@@ -39,15 +42,18 @@ public sealed class HierarchyRecoveryService
 
     private readonly ISEStudioOptions _options;
     private readonly TBoxVerifyService _verify;
+    private readonly ILogger<HierarchyRecoveryService> _logger;
 
     public HierarchyRecoveryService(
         IOptions<ISEStudioOptions> options,
-        TBoxVerifyService verify)
+        TBoxVerifyService verify,
+        ILogger<HierarchyRecoveryService>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(verify);
         _options = options.Value;
         _verify = verify;
+        _logger = logger ?? NullLogger<HierarchyRecoveryService>.Instance;
     }
 
     /// <summary>Resolve one hierarchy-recovery prompt body — same contract as
@@ -306,7 +312,36 @@ public sealed class HierarchyRecoveryService
                     new(ChatRole.System, systemPrompt),
                     new(ChatRole.User, user),
                 };
-                var response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
+
+                // Stopwatch lets the diagnostic capture how long the call
+                // ran before it was cancelled — pairing elapsed seconds with
+                // the configured LlmNetworkTimeoutSeconds tells us whether
+                // the SDK hit its internal pipeline timeout (NetworkTimeout)
+                // versus a user-initiated cancellation. Without this we'd
+                // see "Cancelled (TaskCanceledException)." with no clue
+                // whether to bump the timeout or chase the user. Shared
+                // helper covers every TBox hierarchy stage
+                // ("HierarchyRecovery" / "HierarchyCritic") in one log
+                // format.
+                var sw = Stopwatch.StartNew();
+                ChatResponse response;
+                try
+                {
+                    response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException oce)
+                {
+                    LlmCallDiagnostics.LogCancellation(
+                        _logger,
+                        operationName: $"Llm.TBoxHierarchy.{stage}",
+                        provider: provider,
+                        model: model,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
+                        callerTokenCancelled: cancellationToken.IsCancellationRequested,
+                        exception: oce);
+                    throw;
+                }
                 if (!ExtractionDeltaParser.TryReadObject(response.Text, out var root))
                 {
                     throw new InvalidOperationException(

@@ -1,5 +1,7 @@
 using System.Text.Json;
+using ISEStudio.Configuration;
 using ISEStudio.Extraction;
+using Microsoft.Extensions.Options;
 
 namespace ISEStudio.Tests.Extraction;
 
@@ -431,6 +433,56 @@ public sealed class CorpusRecoveryServiceTests
             floor: 0.85);
 
         Assert.Empty(accepted);
+    }
+
+    // ------------------------------------------------------------------
+    // Cancellation diagnostic — RecoverAsync → CallAsync("EvidenceSelector")
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task RecoverAsync_routes_TaskCanceledException_through_LlmCallDiagnostics_with_stage_EvidenceSelector()
+    {
+        // Drive RecoverAsync with a single rejected candidate + chat
+        // client that throws OCE. The first CallAsync that fires is the
+        // "EvidenceSelector" stage (line 110). Note: RecoverAsync's
+        // outer catch swallows OCE when callerTokenCancelled == false
+        // (SDK-timeout shape) — that's why this test asserts on the
+        // warning rather than a rethrow. The helper still fires before
+        // the swallow, which is the whole point of routing through it.
+        var logger = new LlmCallDiagnosticsTestHelpers.CapturingLogger<CorpusRecoveryService>();
+        var chat = new LlmCallDiagnosticsTestHelpers.ThrowingChatClient(
+            delay: TimeSpan.FromMilliseconds(250),
+            exceptionFactory: () => new TaskCanceledException("simulated corpus timeout"));
+
+        var verify = new TBoxVerifyService(Options.Create(new ISEStudioOptions { LlmNetworkTimeoutSeconds = 180 }));
+        var sut = new CorpusRecoveryService(
+            Options.Create(new ISEStudioOptions { LlmNetworkTimeoutSeconds = 180 }), verify, logger);
+
+        var perChunk = new[]
+        {
+            new CorpusRecoveryChunk(
+                ChunkId: 0,
+                Text: Text,
+                Rejected: new[]
+                {
+                    new RejectedClass("Dog", "individual",
+                        Evidence: "A Dog is an Animal"),
+                }),
+        };
+        var existing = new HashSet<string>(StringComparer.Ordinal);
+
+        var result = await sut.RecoverAsync(chat, perChunk, existing, CancellationToken.None);
+
+        // Outer swallow → RecoverAsync returns Empty (no accepted classes).
+        Assert.NotNull(result);
+        Assert.Empty(result.Classes);
+
+        // But the diagnostic still fired before the swallow.
+        Assert.NotNull(logger.SingleWarning);
+        var entry = logger.SingleWarning;
+        Assert.Contains("LLM Llm.TBoxCorpus.EvidenceSelector cancelled after", entry.Formatted);
+        Assert.True(entry.ElapsedSeconds >= 0.2,
+            $"Stopwatch should capture the injected delay, got {entry.ElapsedSeconds:F2}s");
     }
 
     // ------------------------------------------------------------------

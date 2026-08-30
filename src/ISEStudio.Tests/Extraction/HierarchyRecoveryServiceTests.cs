@@ -1,5 +1,7 @@
 using System.Text.Json;
+using ISEStudio.Configuration;
 using ISEStudio.Extraction;
+using Microsoft.Extensions.Options;
 using ProposedEdge = ISEStudio.Extraction.HierarchyRecoveryService.ProposedEdge;
 
 namespace ISEStudio.Tests.Extraction;
@@ -223,6 +225,40 @@ public sealed class HierarchyRecoveryServiceTests
             Text, proposed, Payload(payload), allowed);
 
         Assert.Empty(accepted);
+    }
+
+    // ------------------------------------------------------------------
+    // Cancellation diagnostic — RecoverAsync → CallAsync("HierarchyRecovery")
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task RecoverAsync_routes_TaskCanceledException_through_LlmCallDiagnostics_with_stage_HierarchyRecovery()
+    {
+        // Drive RecoverAsync end-to-end with a chat client that throws
+        // a TaskCanceledException. CallAsync("HierarchyRecovery") fires
+        // first; the OCE diagnostic must surface before the exception
+        // propagates up. Shared helper, per-stage operationName — the
+        // same shape as TBoxVerifyService.CallAsync tests.
+        var logger = new LlmCallDiagnosticsTestHelpers.CapturingLogger<HierarchyRecoveryService>();
+        var chat = new LlmCallDiagnosticsTestHelpers.ThrowingChatClient(
+            delay: TimeSpan.FromMilliseconds(250),
+            exceptionFactory: () => new TaskCanceledException("simulated hierarchy timeout"));
+
+        // CallAsync takes the (private) path through ResolveSystemPrompt
+        // → WithLlmActivity → GetResponseAsync. We need a TBoxVerifyService
+        // to satisfy the constructor; FakeChat implements the IChatClient
+        // surface that ResolveSystemPrompt pulls from PromptLocales.
+        var verify = new TBoxVerifyService(Options.Create(new ISEStudioOptions { LlmNetworkTimeoutSeconds = 180 }));
+        var sut = new HierarchyRecoveryService(Options.Create(new ISEStudioOptions { LlmNetworkTimeoutSeconds = 180 }), verify, logger);
+
+        await Assert.ThrowsAsync<TaskCanceledException>(async () =>
+            await sut.RecoverAsync(chat, Text, new[] { "Dog" }, CancellationToken.None));
+
+        Assert.NotNull(logger.SingleWarning);
+        var entry = logger.SingleWarning;
+        Assert.Contains("LLM Llm.TBoxHierarchy.HierarchyRecovery cancelled after", entry.Formatted);
+        Assert.True(entry.ElapsedSeconds >= 0.2,
+            $"Stopwatch should capture the injected delay, got {entry.ElapsedSeconds:F2}s");
     }
 
     // ------------------------------------------------------------------
