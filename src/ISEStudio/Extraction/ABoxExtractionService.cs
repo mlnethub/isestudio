@@ -1,4 +1,7 @@
+using System.Diagnostics;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Llm;
@@ -32,11 +35,15 @@ public sealed class ABoxExtractionService
     public const string PromptKey = "abox.extract";
 
     private readonly ISEStudioOptions _options;
+    private readonly ILogger<ABoxExtractionService> _logger;
 
-    public ABoxExtractionService(IOptions<ISEStudioOptions> options)
+    public ABoxExtractionService(
+        IOptions<ISEStudioOptions> options,
+        ILogger<ABoxExtractionService>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
+        _logger = logger ?? NullLogger<ABoxExtractionService>.Instance;
     }
 
     /// <summary>
@@ -85,7 +92,11 @@ public sealed class ABoxExtractionService
         var systemPrompt = ResolveSystemPrompt();
 
         return await Telemetry.LlmSource.WithLlmActivity(
-            operationName: "Llm.Extract",
+            // Distinct from TBoxExtractionService's "Llm.Extract" so ABox
+            // and TBox cancel events stay separable on dashboards — they
+            // have different baselines (ABox fires per-chunk after the
+            // TBox phase; TBox fires per-chunk first).
+            operationName: "Llm.ABoxExtract",
             provider: provider,
             model: model,
             action: async ct =>
@@ -103,13 +114,31 @@ public sealed class ABoxExtractionService
                         $"Chunk #{chunk.Idx} text:\n{chunk.Text}"),
                 };
 
+                // Stopwatch lets the diagnostic capture how long the call
+                // ran before it was cancelled — pairing elapsed seconds with
+                // the configured LlmNetworkTimeoutSeconds tells us whether
+                // the SDK hit its internal pipeline timeout (NetworkTimeout)
+                // versus a user-initiated cancellation. Same shape as
+                // TBoxExtractionService.ExtractAsync; per-service
+                // operationName ("Llm.ABoxExtract") keeps server-log
+                // dashboards separable from the TBox extractor.
+                var sw = Stopwatch.StartNew();
+                ChatResponse response;
                 try
                 {
-                    var response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
-                    return ExtractionDeltaParser.ParseABox(response.Text);
+                    response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException oce)
                 {
+                    LlmCallDiagnostics.LogCancellation(
+                        _logger,
+                        operationName: "Llm.ABoxExtract",
+                        provider: provider,
+                        model: model,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
+                        callerTokenCancelled: cancellationToken.IsCancellationRequested,
+                        exception: oce);
                     throw;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or IOException)
@@ -117,6 +146,7 @@ public sealed class ABoxExtractionService
                     // Transient provider/network error: see TBoxExtractionService.
                     return ABoxDelta.Empty;
                 }
+                return ExtractionDeltaParser.ParseABox(response.Text);
             },
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
