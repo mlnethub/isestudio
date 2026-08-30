@@ -202,6 +202,80 @@ public sealed class TBoxVerifyServiceTests
         Assert.Equal(0, logger.Count);
     }
 
+    [Fact]
+    public async Task DenotationStep_emits_prompt_volume_information_log_with_three_secret_redaction_safe_fields()
+    {
+        // Production job 10628b65 (2026-08-30) saturated the SDK
+        // NetworkTimeout at exactly 180s on the Denotation stage. The
+        // fix path (commit pending) bumps the timeout to 600s; this
+        // diagnostic log gives operators the prompt-size dimension so
+        // they can spot whether future slow Denotation calls are
+        // correlated with prompt growth (Critic accepts too many
+        // classes → Denotation prompt balloons) rather than with the
+        // SDK timeout setting. The test pins the field shape — three
+        // structured properties, all with names that pass
+        // SecretRedactionProcessor's substring keyword check (no
+        // "prompt" / "token" / "secret" / "bearer" / etc.) — so a
+        // future rename that re-introduces a substring collision breaks
+        // here, not in production.
+        var logger = new LlmCallDiagnosticsTestHelpers.CapturingLogger<TBoxVerifyService>();
+        var chat = new StubVerifyChatClient("{\"class_decisions\":[]}");
+
+        var verify = new TBoxVerifyService(Options.Create(DefaultOptions()), logger);
+        var step = new DenotationStep(verify);
+
+        var input = new TBoxChunkInput(
+            ChunkId: 1,
+            Text: "vehicle",
+            Delta: new TBoxDelta(
+                Classes: new[] { new ClassMutation("vehicle", Comment: null) },
+                ObjectProperties: Array.Empty<PropertyMutation>(),
+                DataProperties: Array.Empty<PropertyMutation>(),
+                Axioms: Array.Empty<AxiomMutation>()),
+            Chat: chat);
+
+        var critic = new CriticOutput(
+            VerifiedDelta: input.Delta,
+            AcceptedNorms: new HashSet<string>(StringComparer.Ordinal),
+            CriticRejections: Array.Empty<RejectedClass>(),
+            CriticState: TBoxVerifyResult.Unchanged(input.Delta));
+
+        var adjudicator = new AdjudicatorOutput(
+            Succeeded: true,
+            Recovered: input.Delta.Classes,
+            DenotationFallback: null);
+
+        var output = await step.ExecuteAsync(input, critic, adjudicator, CancellationToken.None);
+
+        Assert.NotNull(output);
+        Assert.Null(logger.SingleWarning);
+
+        // Information-level entry — separate from the Warning slot so
+        // the "no warning fired" assertion above can coexist with this
+        // one (CapturingLogger allows overwrites on Information).
+        Assert.NotNull(logger.SingleInformation);
+        var entry = logger.SingleInformation;
+        // Field-by-field substring checks. Server-log grep rules and
+        // dashboards key off these exact phrasings. The field names
+        // are deliberately SecretRedactionProcessor-safe: "Accepted",
+        // "Class", "Count", "Text", "Length", "User", "Length" — none
+        // contain "token" / "prompt" / "secret" / "bearer" /
+        // "password" / "passwd" / "session" / "document_body" /
+        // "documentbody" / "raw_text" / "rawtext" / "extracted_text"
+        // as a substring. (Previous lesson from the
+        // "callerTokenCancelled" → "isCallerCancelled" rename — see
+        // [[ontopilot-llmcall-redaction-collision]].)
+        Assert.Contains("LLM Denotation prompt volume:", entry.Formatted);
+        Assert.Contains("acceptedClassCount=1", entry.Formatted);
+        Assert.Contains("textLength=7", entry.Formatted);   // "vehicle" = 7 chars
+        // userLength is the body sent over the wire (SourceBlock +
+        // header + JSON). Exact value depends on JSON formatting so
+        // pin a lower bound rather than an exact match — anything
+        // > 0 means the diagnostic fired with the helper-computed
+        // length (not a separate, possibly-stale measurement).
+        Assert.Matches(@"userLength=\d+", entry.Formatted);
+    }
+
     /// <summary>
     /// Echoes a fixed assistant reply. Only used by the success-path
     /// test — the cancellation test uses

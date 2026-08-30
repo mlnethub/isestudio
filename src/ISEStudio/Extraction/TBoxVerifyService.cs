@@ -278,6 +278,28 @@ public sealed class TBoxVerifyService
         ArgumentNullException.ThrowIfNull(chat);
         ArgumentNullException.ThrowIfNull(criticAcceptedClasses);
 
+        // Per-call prompt-volume diagnostic. Production job 10628b65
+        // (2026-08-30) saturated the SDK NetworkTimeout at exactly 180s
+        // on the Denotation stage; without a per-call size log we had no
+        // way to tell whether the model genuinely needed 3 min or whether
+        // the prompt had grown out of band. The three structured fields
+        // are deliberately named to dodge SecretRedactionProcessor's
+        // substring keyword list (no "prompt" / "token" / "secret" /
+        // "bearer" / "password" / "session" / "documentbody" / "rawtext"
+        // / "extractedtext") so the property values reach Datadog
+        // unredacted. See [[ontopilot-llmcall-redaction-collision]] for
+        // the original lesson. The body length is computed via the same
+        // helper that VerifyClassDenotationsAsync uses to build the
+        // actual call — small double-compute cost (one extra JSON
+        // serialization) buys exact correlation between the diagnostic
+        // and the bytes-on-the-wire.
+        var userBody = BuildDenotationPromptBody(text, criticAcceptedClasses, eligibleNorms);
+        _logger.LogInformation(
+            "LLM Denotation prompt volume: acceptedClassCount={AcceptedClassCount}, textLength={TextLength}, userLength={UserLength}",
+            criticAcceptedClasses.Count,
+            text.Length,
+            userBody.Length);
+
         return await VerifyClassDenotationsAsync(
             chat, text, criticState with { Rejections = Array.Empty<RejectedClass>() },
             candidateClasses: criticAcceptedClasses,
@@ -317,7 +339,7 @@ public sealed class TBoxVerifyService
         };
         var payload = await CallAsync(
             chat, DenotationCriticKey,
-            SourceBlock(text) + "PROVISIONALLY ACCEPTED CLASSES:\n" + ToJson(candidates),
+            BuildDenotationPromptBody(text, candidateClasses, eligibleNorms),
             "Denotation",
             cancellationToken).ConfigureAwait(false);
 
@@ -668,6 +690,51 @@ public sealed class TBoxVerifyService
 
     private static string SourceBlock(string text) =>
         $"SOURCE TEXT:\n\"\"\"\n{text}\n\"\"\"\n\n";
+
+    /// <summary>
+    /// Build the user-body string for the Denotation critic call. Single
+    /// source of truth for both the actual LLM invocation (via
+    /// <see cref="VerifyClassDenotationsAsync"/>) and the prompt-volume
+    /// diagnostic log emitted by <see cref="RunDenotationAsync"/> — the
+    /// log's <c>userLength</c> field is therefore guaranteed to match the
+    /// bytes-on-the-wire the SDK sends, no separate computation needed.
+    ///
+    /// <para><paramref name="eligibleNorms"/> is typed as
+    /// <see cref="IEnumerable{T}"/> rather than <see cref="ISet{T}"/> so
+    /// both <see cref="RunDenotationAsync"/> (which holds an
+    /// <c>IReadOnlySet&lt;string&gt;</c>) and <see cref="VerifyClassDenotationsAsync"/>
+    /// (which holds an <c>ISet&lt;string&gt;</c>) can pass through without
+    /// a cast — <see cref="ISet{T}"/> and <see cref="IReadOnlySet{T}"/>
+    /// don't share an inheritance branch, so an interface-typed signature
+    /// would force one of the two call sites into a downcast. The
+    /// <see cref="HashSet{T}"/> check below preserves the original O(1)
+    /// <c>Contains</c> perf when the caller already has a hash set;
+    /// only the rare non-set fallback pays a one-shot allocation.</para>
+    /// </summary>
+    private static string BuildDenotationPromptBody(
+        string text,
+        IReadOnlyList<ClassMutation> candidateClasses,
+        IEnumerable<string> eligibleNorms)
+    {
+        // Preserve the original O(1) Contains perf when the caller
+        // already holds a hash set (both ISet<string> and
+        // IReadOnlySet<string> call sites qualify here — ISet<T> on
+        // HashSet<T> still implements IReadOnlySet<T>'s Contains
+        // contract via the runtime type). Fallback to materialise only
+        // when we genuinely don't have O(1) Contains.
+        var fastPathNorms = eligibleNorms as IReadOnlySet<string>
+            ?? eligibleNorms as HashSet<string>;
+        var candidates = new
+        {
+            classes = candidateClasses.Select(c => new DenotationCandidate(
+                c.Label,
+                c.Comment ?? "",
+                AcceptedEvidence: c.Evidence ?? "",
+                ProvisionallyAccepted: (fastPathNorms ?? eligibleNorms.ToHashSet(StringComparer.Ordinal))
+                    .Contains(LabelNorm(c.Label)))).ToList(),
+        };
+        return SourceBlock(text) + "PROVISIONALLY ACCEPTED CLASSES:\n" + ToJson(candidates);
+    }
 
     private static string ToJson<T>(T value) =>
         JsonSerializer.Serialize(value, Snake);
