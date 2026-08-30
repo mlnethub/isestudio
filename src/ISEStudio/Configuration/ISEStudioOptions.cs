@@ -182,7 +182,7 @@ public sealed class ISEStudioOptions
     /// failing fast on a wedged connection. Set to 0 to fall back to the
     /// SDK default.
     /// </summary>
-    public int LlmNetworkTimeoutSeconds { get; set; } = 180;
+    public int LlmNetworkTimeoutSeconds { get; set; } = 600;
 
     /// <summary>
     /// Maximum retry attempts for transient network failures on
@@ -192,7 +192,7 @@ public sealed class ISEStudioOptions
     /// orchestrator-level error handling decide when a retry is worth
     /// the spend. Set to a positive integer to restore SDK-style retry.
     /// </summary>
-    public int LlmMaxRetries { get; set; } = 0;
+    public int LlmMaxRetries { get; set; } = 2;
 
     /// <summary>
     /// Prefix used by the ISEStudio vocabulary namespace (the <c>op:</c>
