@@ -2,104 +2,90 @@
 
 # ISEStudio
 
-**Human-governed ontology engineering from source documents.**
+**从源文档构建由人治理、可追溯、可发布的本体。**
 
-`Evolves with every review · Learns from every decision`
+`在每次审核中进化 · 从每个决策中学习`
 
-Build, review, version, publish, and serve TBox, SKOS terminology, and ABox data from one self-hosted workspace.
+在一个自托管工作台中完成 TBox、SKOS 术语、ABox 的构建、审阅、版本化、发布与服务。
 
-[简体中文](README.zh-CN.md) · [Documentation](#documentation) · [Architecture](docs/architecture.md) · [Changelog](CHANGELOG.md) · [Roadmap](ROADMAP.md) · [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md) · [Security](SECURITY.md)
+[文档](#文档与接口) · [架构](docs/architecture.md) 
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-007595)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v0.1.0-2563eb)](CHANGELOG.md)
 ![.NET](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
 ![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=111827)
 ![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)
- 
+
 </div>
 
 <details>
-<summary><strong>Contents</strong></summary>
+<summary><strong>目录</strong></summary>
 
-- [Why ISEStudio](#why-isestudio)
-- [Benchmark Highlight](#benchmark-highlight)
-- [Capabilities](#capabilities)
-- [Product Interface](#product-interface)
-- [How It Works](#how-it-works)
-- [Architecture](#architecture)
-- [Quick Start with Docker](#quick-start-with-docker)
-- [MCP and Agent Integration](#mcp-and-agent-integration)
-- [APIs and Documentation](#apis-and-documentation)
-- [Configuration](#configuration)
-- [Source Development](#source-development)
-- [Testing and Benchmarks](#testing-and-benchmarks)
-- [Operations](#operations)
-- [Security and Privacy](#security-and-privacy)
-- [Roadmap](#roadmap)
-- [License](#license)
+- [为什么选择 ISEStudio](#为什么选择-isestudio)
+- [Benchmark 亮点](#benchmark-亮点)
+- [核心能力](#核心能力)
+- [产品界面](#产品界面)
+- [工作流程](#工作流程)
+- [架构](#架构)
+- [Docker 快速启动](#docker-快速启动)
+- [MCP 与 Agent 集成](#mcp-与-agent-集成)
+- [文档与接口](#文档与接口)
+- [配置](#配置)
+- [源码开发](#源码开发)
+- [测试与 Benchmark](#测试与-benchmark)
+- [运维](#运维)
+- [安全与隐私](#安全与隐私)
+- [路线图](#路线图)
+- [开源协议](#开源协议)
 
 </details>
 
-## Why ISEStudio
+## 为什么选择 ISEStudio
 
-ISEStudio is an ontology production workspace for companies and domain teams that need to turn knowledge buried in policies, manuals, product specifications, research, and operational documents into structured ontology data—fast.
+ISEStudio 是面向企业与业务团队的本体生产工作台：把散落在制度、手册、产品资料、研究成果和业务文档中的知识，快速沉淀为结构化、可计算的本体数据。
 
-It goes beyond asking an LLM to “generate an ontology.” ISEStudio puts domain experts, reviewers, and agents on the same production line: **AI reads and drafts at scale, people resolve ambiguity and make accountable decisions, and the platform governs evidence, permissions, versions, and releases.** The result is not a one-off model response, but a living knowledge asset that can be reviewed, published, served, and continuously evolved.
+它不只是让大模型“生成一份本体”。ISEStudio 把领域专家、审核者与 Agent 放进同一条知识生产线：**AI 负责规模化阅读与起草，人负责消除歧义、校准和决策，平台负责证据、权限、版本与发布治理。** 最终交付的不是一次性的模型回答，而是一套能够被审核、被发布、被系统调用，并持续演进的企业知识资产。
 
-- **From documents to computable domain knowledge.** Convert scattered language into a connected TBox, SKOS terminology, and ABox while retaining the source behind every statement.
-- **Human–AI co-creation with governance built in.** Models propose; experts review, correct, and approve through focused queues instead of rebuilding machine output by hand.
-- **Every review makes the agent better.** Suppose one document says “Ocean Explorer One” and another says “OE-1.” Once an expert confirms they are the same vehicle—and records why—ISEStudio retains that decision as reusable resolution memory. The next occurrence can map to the right entity instead of creating a duplicate; new or conflicting variants still return to human review.
-- **From a promising draft to a production asset.** Semantic Diff, immutable releases, rollback, REST APIs, and MCP carry approved knowledge into business systems and agent workflows.
-- **Traceable by design, not by afterthought.** Every decision can be traced to its document chunk, model, prompt snapshot, actor, and review history.
+- **从业务文档到可计算的领域知识。** 将分散的自然语言转化为相互关联的 TBox、SKOS 术语与 ABox，同时保留每条语句的原始依据。
+- **让人机协作真正可治理。** 模型规模化提出候选，专家在聚焦的审核队列中修正与裁决，不必从头返工，也不必盲信生成结果。
+- **每一次审核，都让智能体更懂你的业务。** 假设一份文档写“海洋探测器一号”，另一份写“海探1”。专家确认它们是同一设备并留下判断理由后，ISEStudio 会把这项决策沉淀为可复用的实体消歧记忆；下次再遇到“海探1”时，它会映射到正确实体，而不是重复创建。遇到新的叫法或冲突证据时，仍会回到人工审核。
+- **从“看起来可用”走到生产可用。** 通过语义 Diff、不可变发布、回滚、REST API 与 MCP，把审核后的知识稳定交付给业务系统和 Agent。
+- **可追溯不是补丁，而是底座。** 每项决策都能回到文档 chunk、模型、提示词快照、操作者与完整审核历史。
 
-## Benchmark Highlight
+## 核心能力
 
-### Gains across directly comparable projects
-
-| Protocol F1 | Wine<br>Food & Beverage | GeoNames<br>Geography | OWL-Time<br>Units & Measurements |
-| --- | ---: | ---: | ---: |
-| OntoLearner reference · Qwen3-8B | 18.60% | 19.70% | 14.08% |
-| **ISEStudio evaluation · Qwen3-8B** | **28.95%** | **27.03%** | **16.67%** |
-| **Improvement** | **+10.35 pp / +55.6%** | **+7.33 pp / +37.2%** | **+2.58 pp / +18.3%** |
-| Result | **New SOTA** | Same-model lead | Prompt gain |
-
-See the [benchmark methodology and full results](docs/benchmarks/ontolearner-multidomain.md)
-for evaluation scope, baselines, prompt profiles, and reproducibility details.
-
-## Capabilities
-
-| Area | Included |
+| 领域 | 能力 |
 | --- | --- |
-| Ingestion | PDF, Word, Excel, Markdown, CSV, and text; structure-aware chunking; folders; batch parsing |
-| Ontology extraction | Classes, properties, subclass, disjointness, equivalence, domain, range, and annotations |
-| Instance extraction | Individuals, types, object assertions, data assertions, and entity resolution |
-| Controlled terminology | SKOS schemes and concepts, multilingual labels, aliases, hierarchy, mappings, and proposals |
-| Human review | Conflict, entity-resolution, terminology, and ABox-validation queues with search and filters |
-| Governance | Project roles, editable prompts, prompt history, provenance, audit events, and rollback |
-| Release engineering | Draft → reviewed → published, immutable snapshots, semantic Diff, restore, and deployment |
-| Export | Separate TBox, terminology, and ABox exports; full bundles; asynchronous N-Quads sharding |
-| Serving | Project-scoped API tokens, version-pinned REST, RDF export, and bounded read-only SPARQL |
-| Agent integration | Automatically mounted Streamable HTTP MCP with read, propose, edit, review, and lifecycle tools |
-| Interoperability | RDF import with automatic TBox/ABox classification or explicit target-layer selection |
-| Internationalization | English and Simplified Chinese UI/docs; independently configurable backend prompt language |
+| 文档接入 | PDF、Word、Excel、Markdown、CSV、文本；结构化切分；目录；批量解析 |
+| 本体抽取 | 类、属性、上下位、互斥、等价、定义域、值域和注释 |
+| 实例抽取 | 实例、类型、对象断言、数据断言和实体消歧 |
+| 受控术语 | SKOS 词表与概念、多语言标签、别名、层级、映射和提案 |
+| 人工审核 | 冲突、实体消歧、术语、ABox 验证四个队列，支持搜索和组合筛选 |
+| 治理 | 知识体系角色、可编辑提示词、提示词历史、溯源、审计和回滚 |
+| 发布工程 | 草稿 → 已审核 → 已发布、不可变快照、语义 Diff、恢复与部署 |
+| 导出 | TBox、术语、ABox 分层导出；完整包；异步 N-Quads 分片 |
+| 对外服务 | 知识体系 API Token、固定版本 REST、RDF 导出、受限只读 SPARQL |
+| Agent 集成 | 随后端自动启动的 Streamable HTTP MCP，覆盖读取、建议、修改、审核和生命周期 |
+| 互操作 | RDF 直接导入，支持自动 TBox/ABox 分类或显式选择目标层 |
+| 国际化 | 中英文界面和文档；后端提示词系统语言独立配置 |
 
-## Product Interface
+## 产品界面
 
-The ontology workspace combines class navigation, an interactive relationship graph, and entity details in one view. The project sidebar keeps review queues, releases, documents, history, members, and API access within the same governed workflow.
 
-## How It Works
+本体工作台在同一视图中整合类导航、关系图谱和实体详情；项目侧边栏则将审核队列、发布、文档、历史、成员和 API 访问串联在统一的治理流程中。
+
+## 工作流程
 
 ```mermaid
 flowchart LR
-    SOURCE["1 · Sources<br/>Documents · RDF"] --> BUILD["2 · Build<br/>Parse · extract · guard"]
-    BUILD --> GOVERN["3 · Govern<br/>TBox · SKOS · ABox · review"]
-    GOVERN --> DELIVER["4 · Deliver<br/>Release · REST · RDF · SPARQL"]
-    AGENT["MCP agent"] -->|"read · preview · mutate"| GOVERN
+    SOURCE["1 · 输入<br/>文档 · RDF"] --> BUILD["2 · 构建<br/>解析 · 抽取 · 守卫"]
+    BUILD --> GOVERN["3 · 治理<br/>TBox · SKOS · ABox · 审核"]
+    GOVERN --> DELIVER["4 · 交付<br/>发布 · REST · RDF · SPARQL"]
+    AGENT["MCP Agent"] -->|"读取 · 预览 · 修改"| GOVERN
 ```
 
-The release quality gate blocks approval while blocking conflicts, unresolved entities, pending terminology proposals, or ABox validation errors remain.
+只要仍有阻断性冲突、待消歧实体、待审术语或 ABox 验证错误，发布质量门禁就不会允许审核通过。
 
-## Architecture
+## 架构
 
 ```mermaid
 flowchart LR
@@ -110,7 +96,7 @@ flowchart LR
     API <--> ART["Artifact Storage"]
     API <--> MODEL["Model Endpoints"]
 
-    subgraph LAYERS["Named RDF graphs"]
+    subgraph LAYERS["RDF 命名图"]
       TBOX["TBox"]
       SKOS["SKOS"]
       ABOX["ABox"]
@@ -119,26 +105,26 @@ flowchart LR
     RDF --> LAYERS
 ```
 
-| Component | Responsibility |
+| 组件 | 职责 |
 | --- | --- |
-| React + TypeScript | Governance workspace, graph exploration, review, releases, settings, and documentation |
-| ASP.NET Core 10 | Authentication, project permissions, ingestion, extraction orchestration, review, release, REST, and MCP |
-| PostgreSQL | Users, roles, document/job metadata, prompt snapshots, provenance, review state, audit, and releases |
-| Oxigraph | Mutable TBox/SKOS/ABox graphs plus separate published-release projections |
-| Artifact storage | Source blobs, immutable release snapshots, manifests, provenance JSONL, and export shards |
-| Model endpoints | Administrator-configured OpenAI-compatible chat and embedding services with per-endpoint limits |
+| React + TypeScript | 治理工作台、图谱浏览、审核、发布、设置和文档 |
+| ASP.NET Core 10 | 认证、权限、接入、抽取编排、审核、发布、REST 与 MCP |
+| PostgreSQL | 用户、角色、文档/任务元数据、提示词快照、溯源、审核状态、审计和发布记录 |
+| Oxigraph | 可变 TBox/SKOS/ABox 图，以及独立的已发布版本服务投影 |
+| 制品存储 | 源文件、不可变快照、清单、溯源 JSONL 和导出分片 |
+| 模型端点 | 管理员配置的 OpenAI 兼容对话/向量服务，支持每端点独立限流 |
 
-SQLite is supported for single-process local development. PostgreSQL is the supported shared/Docker deployment path. See [the architecture guide](docs/architecture.md) for trust boundaries, graph separation, provenance, and export design.
+SQLite 适用于单进程本地开发；共享环境和 Docker 部署使用 PostgreSQL。信任边界、图层隔离、溯源和导出设计详见[架构文档](docs/architecture.md)。
 
-## Quick Start with Docker
+## Docker 快速启动
 
-### Requirements
+### 环境要求
 
-- Docker Engine 27+ with Docker Compose v2
-- At least 2 GB of available memory; 4 GB is recommended for smoother Docker builds and startup
-- An OpenAI-compatible API credential for extraction; the application can start without one
+- Docker Engine 27+ 和 Docker Compose v2
+- 至少 2 GB 可用内存；建议使用 4 GB，以便更顺畅地完成 Docker 构建和启动
+- 抽取时需要 OpenAI 兼容 API 凭据；没有凭据时应用仍可启动
 
-### 1. Configure
+### 1. 配置
 
 ```bash
 git clone https://github.com/mlnethub/isestudio.git
@@ -147,18 +133,18 @@ cp .env.example .env
 cp src/.env.example src/.env
 ```
 
-Set at least these values in the top-level `.env`:
+至少修改以下顶层 `.env`：
 
 ```dotenv
 # .env
-POSTGRES_PASSWORD=replace-with-a-strong-random-password
-SYSTEM_LANGUAGE=en
+POSTGRES_PASSWORD=替换为强随机密码
+SYSTEM_LANGUAGE=zh-CN
 MCP_PUBLIC_URL=http://localhost:8080/mcp
 ISESTUDIO_BIND_ADDRESS=0.0.0.0
 ISESTUDIO_PORT=8080
 ```
 
-And in `src/.env`:
+以及 `src/.env`：
 
 ```dotenv
 # src/.env
@@ -166,13 +152,12 @@ ISEStudio__LlmApiKey=sk-or-v1-your-key
 ISEStudio__CookieSecure=false
 ```
 
-The administrator password is mandatory for a new installation. ISEStudio refuses to create the first
-administrator from an empty, common, or published example password; seed the first admin via
-`docker compose --profile bootstrap run --rm seed-admin` and use at least 12 characters.
+全新安装必须设置管理员密码。若管理员密码为空、过短或仍是公开示例值，ISEStudio 会拒绝创建首个管理员；
+请通过 `docker compose --profile bootstrap run --rm seed-admin` 完成首次引导，并使用至少 12 个字符的密码。
 
-`SYSTEM_LANGUAGE` controls built-in model prompts (`en` or `zh-CN`) and is independent of each user's frontend language. Project-specific prompt overrides continue to take precedence.
+`SYSTEM_LANGUAGE` 控制内置模型提示词（`en` 或 `zh-CN`），与每个用户选择的前端语言无关；知识体系级提示词覆盖始终优先。
 
-### 2. Start and verify
+### 2. 启动并检查
 
 ```bash
 docker compose up -d --build
@@ -180,9 +165,9 @@ docker compose ps
 curl --fail http://localhost:8080/api/health
 ```
 
-Open <http://localhost:8080> and sign in with the configured administrator account. Container health can take a short time on the first start.
+打开 <http://localhost:8080>，使用配置的管理员账号登录。首次构建后容器可能需要短暂时间进入健康状态。
 
-For an isolated, loopback-only deployment:
+如需仅本机可访问的隔离部署：
 
 ```dotenv
 ISESTUDIO_BIND_ADDRESS=127.0.0.1
@@ -190,13 +175,13 @@ ISESTUDIO_PORT=18080
 MCP_PUBLIC_URL=http://127.0.0.1:18080/mcp
 ```
 
-### 3. Stop
+### 3. 停止
 
 ```bash
 docker compose down
 ```
 
-This preserves named volumes. `docker compose down -v` permanently deletes the deployment's PostgreSQL and ISEStudio data volumes; use it only when you explicitly want a clean reset.
+该命令保留命名卷。`docker compose down -v` 会永久删除当前部署的 PostgreSQL 和 ISEStudio 数据卷，只有明确需要全新环境时才可使用。
 
 ### Keycloak SSO(可选开关,compose 必带服务)
 
@@ -214,22 +199,22 @@ This preserves named volumes. `docker compose down -v` permanently deletes the d
 - **切 https/生产域名**:改 `ISE_AUTH_AUTHORITY` + realm JSON 的 `redirectUris`/`webOrigins` +
   删 `sslRequired: "none"` + `RequireHttpsMetadata=true`
 
-## First Governed Workflow
+## 第一次完整治理流程
 
-1. Open **Settings → Model endpoints**, configure chat/embedding services, set per-endpoint concurrency, and test them.
-2. Create a knowledge system and invite members as owner, editor, or viewer.
-3. Upload `examples/pump-operations.txt` under **Documents**, then parse it.
-4. Select parsed chunks and run **TBox**, **ABox**, or combined extraction.
-5. Inspect the ontology, controlled vocabulary, instances, source evidence, and extraction jobs.
-6. Clear the four review queues: conflicts, entity resolution, terminology, and validation.
-7. Create a release draft, pass the quality gate, approve, and publish it.
-8. Deploy the published projection or export the complete bundle for downstream use.
+1. 打开 **设置 → 模型端点**，配置对话/向量服务，为每个端点设置独立并发限制并测试连接。
+2. 创建知识体系，以 owner、editor 或 viewer 身份邀请成员。
+3. 在 **文档** 中上传 `examples/pump-operations.txt` 并解析。
+4. 选择已解析 chunk，运行 **TBox**、**ABox** 或组合抽取。
+5. 检查本体、受控术语、实例、来源证据和抽取任务。
+6. 清空冲突、实体消歧、术语和验证四个审核队列。
+7. 创建发布草稿，通过质量门禁，审核并正式发布。
+8. 部署发布投影，或导出完整制品供下游系统使用。
 
-Set `ISEStudio__SeedDemoData=true` before the first backend start to create a deterministic Pump Operations knowledge system without model calls.
+首次启动后端前设置 `ISEStudio__SeedDemoData=true`，可以在不调用模型的情况下创建确定性的 Pump Operations 演示库。
 
-## MCP and Agent Integration
+## MCP 与 Agent 集成
 
-MCP is available by default at `/mcp` and starts inside the normal backend lifecycle—there is no separate MCP service to install or supervise. Each MCP token is bound to one user and one knowledge system. Token scopes and the user's live project role are intersected on every call.
+MCP 默认在 `/mcp` 提供服务，并与后端使用同一个生命周期自动启动，不需要额外安装或守护 MCP 进程。每个 MCP Token 绑定一个用户和一个知识体系；每次调用都取 Token Scope 与用户实时角色的交集。
 
 ```json
 {
@@ -245,39 +230,39 @@ MCP is available by default at `/mcp` and starts inside the normal backend lifec
 }
 ```
 
-| Scope | Minimum project role | Examples |
+| Scope | 最低知识体系角色 | 能力示例 |
 | --- | --- | --- |
-| `mcp:read` | Viewer | Ontology, documents, vocabulary, instances, evidence, queues, history, releases, SPARQL |
-| `mcp:write` | Editor | Preview/apply TBox, ABox, and SKOS changes; decide reviews; start extraction |
-| `mcp:manage` | Owner | Publish/deploy/stop/delete releases and roll back audited changes |
+| `mcp:read` | Viewer | 本体、文档、词表、实例、证据、审核队列、历史、发布、SPARQL |
+| `mcp:write` | Editor | 预览/应用 TBox、ABox、SKOS 修改，处理审核项，启动抽取 |
+| `mcp:manage` | Owner | 发布、部署、停止/删除发布版本、回滚审计变更 |
 
-Mutation tools require an audit reason. Destructive operations require explicit confirmation parameters, and ontology edits can be previewed as exact RDF diffs before they are applied. Create short-lived MCP tokens in the project's API access area; never place a browser cookie or token inside prompts or source control.
+修改 Tool 必须携带审计原因；破坏性操作必须显式确认；本体修改可以先返回精确 RDF Diff，再由用户决定是否执行。请在知识体系的 API 访问区域创建短期 MCP Token，不要把浏览器 Cookie 或 Token 写入提示词、日志或源码。
 
-Read the complete [MCP guide](frontend/src/content/docs/en/mcp.md), including every registered tool and the recommended evidence → preview → approval → apply loop.
+[MCP 中文指南](frontend/src/content/docs/zh-CN/mcp.md)列出了全部已注册 Tool，以及推荐的“读取证据 → 预览 → 用户确认 → 执行”流程。
 
-## APIs and Documentation
+## 文档与接口
 
-After sign-in, the documentation center is available at `/docs`; its left-hand tree loads a separate English or Chinese Markdown file for each topic and renders Mermaid diagrams with the project theme.
+登录后通过 `/docs` 打开文档中心。左侧目录树中的每一项对应独立的中/英文 Markdown，右侧渲染 Markdown 和项目主题色 Mermaid 图。
 
-| Resource | Default URL / file |
+| 资源 | 默认地址 / 文件 |
 | --- | --- |
-| Product and design documentation | <http://localhost:8080/docs> |
-| MCP guide | <http://localhost:8080/docs/mcp> |
+| 产品与设计文档 | <http://localhost:8080/docs> |
+| MCP 指南 | <http://localhost:8080/docs/mcp> |
 | OpenAPI UI | <http://localhost:8080/api/docs> |
 | ReDoc | <http://localhost:8080/api/redoc> |
 | OpenAPI JSON | <http://localhost:8080/api/openapi.json> |
-| Health check | <http://localhost:8080/api/health> |
-| External API guide | [docs/external-api.md](docs/external-api.md) |
-| RDF import guide | [docs/rdf-import.md](docs/rdf-import.md) |
-| Release and export guide | [docs/release-and-export.md](docs/release-and-export.md) |
+| 健康检查 | <http://localhost:8080/api/health> |
+| 外部 API 指南 | [docs/external-api.zh-CN.md](docs/external-api.zh-CN.md) |
+| RDF 导入指南 | [docs/rdf-import.zh-CN.md](docs/rdf-import.zh-CN.md) |
+| 发布和导出指南 | [docs/release-and-export.md](docs/release-and-export.md) |
 
-The browser governance API uses an HttpOnly session cookie. Downstream consumers use revocable project API tokens and versioned paths under `/api/v1/knowledge-systems/{public_id}`. Published consumers should pin a release version; `/published` intentionally follows the newest published release.
+浏览器治理 API 使用 HttpOnly Session Cookie。下游应用使用可吊销的知识体系 API Token，并访问 `/api/v1/knowledge-systems/{public_id}` 下的版本化接口。生产消费者应固定发布版本；`/published` 会有意跟随最新发布版本。
 
-## Release, Serving, and Export Model
+## 发布、服务与导出
 
-Drafts use internal identifiers and receive public `vN` versions only when publishing succeeds. Deleting an unpublished draft therefore does not consume the next public version.
+草稿使用内部标识，只有发布成功才分配公开 `vN` 版本。因此删除未发布草稿不会消耗下一个公开版本号。
 
-Every captured release freezes three RDF layers and provenance:
+每次发布固化三层 RDF 和溯源文件：
 
 ```text
 release/
@@ -290,50 +275,50 @@ release/
 └── abox-provenance.jsonl
 ```
 
-Artifacts are uncompressed by design, enabling HTTP Range delivery, line-oriented processing, independent shard verification, and object-storage/CDN replication. The manifest records SHA-256 checksums. A reverse proxy may still apply transport compression.
+制品有意保持未压缩，以支持 HTTP Range、逐行处理、分片独立校验和对象存储/CDN 复制；清单记录 SHA-256。反向代理仍可启用传输压缩。
 
-## Configuration
+## 配置
 
-The checked-in [.env.example](.env.example) and [src/.env.example](src/.env.example) files are the configuration reference. Important values include:
+仓库中的 [.env.example](.env.example) 和 [src/.env.example](src/.env.example) 是配置参考。
 
-| Variable | Default | Purpose |
+| 变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `POSTGRES_PASSWORD` | required | PostgreSQL password; Compose refuses to start when it is empty |
-| `SYSTEM_LANGUAGE` | `en` | Built-in backend prompt language (`en` or `zh-CN`), independent of UI locale |
-| `ISESTUDIO_BIND_ADDRESS` | `0.0.0.0` | Host interface exposed by the frontend container |
-| `ISESTUDIO_PORT` | `8080` | Host port exposed by the frontend container |
-| `ISEStudio__Persistence__ConnectionString` | Compose-managed PostgreSQL | EF Core connection string; Compose injects PostgreSQL automatically |
-| `ISEStudio__LlmApiKey` | empty | Initial compatible model credential; endpoints can also be managed in Settings |
-| `ISEStudio__ExtractModel` | `deepseek/deepseek-chat` | Initial extraction/agent model |
-| `ISEStudio__EmbeddingModel` | `baai/bge-m3` | Initial embedding model |
-| `MCP_PUBLIC_URL` | `http://localhost:8080/mcp` | Public Streamable HTTP URL advertised by the backend |
-| `ISEStudio__McpTokenTtlMinutes` | `60` | Default delegated MCP-token lifetime |
-| `TOKEN_ENCRYPTION_KEY` | generated in data volume | Encryption key for revealable API-token secrets; back it up |
-| `ISEStudio__CookieSecure` | `false` | Require HTTPS for browser-session cookies |
-| `ISEStudio__SeedDemoData` | `false` | Seed deterministic no-LLM demo data into an empty installation |
-| `ISEStudio__RdfImportMaxBytes` | `26214400` | Direct RDF upload ceiling |
-| `ISEStudio__RdfImportMaxTriples` | `250000` | Direct RDF parsed-statement ceiling |
+| `POSTGRES_PASSWORD` | 必填 | PostgreSQL 密码；为空时 Compose 会拒绝启动 |
+| `SYSTEM_LANGUAGE` | `en` | 内置后端提示词语言（`en` / `zh-CN`），独立于前端语言 |
+| `ISESTUDIO_BIND_ADDRESS` | `0.0.0.0` | 前端容器映射到宿主机的监听地址 |
+| `ISESTUDIO_PORT` | `8080` | 前端容器映射到宿主机的端口 |
+| `ISEStudio__Persistence__ConnectionString` | Compose 管理 PostgreSQL | EF Core 连接串；Compose 会自动注入 PostgreSQL |
+| `ISEStudio__LlmApiKey` | 空 | 初始兼容模型凭据；也可在设置页管理端点 |
+| `ISEStudio__ExtractModel` | `deepseek/deepseek-chat` | 初始抽取/Agent 模型 |
+| `ISEStudio__EmbeddingModel` | `baai/bge-m3` | 初始向量模型 |
+| `MCP_PUBLIC_URL` | `http://localhost:8080/mcp` | 后端向客户端声明的 Streamable HTTP 地址 |
+| `ISEStudio__McpTokenTtlMinutes` | `60` | 委派 MCP Token 默认有效期 |
+| `TOKEN_ENCRYPTION_KEY` | 在数据卷中生成 | 可再次显示的 API Token 密钥加密材料，必须备份 |
+| `ISEStudio__CookieSecure` | `false` | 是否要求浏览器 Session Cookie 只能通过 HTTPS 传输 |
+| `ISEStudio__SeedDemoData` | `false` | 是否向空数据库写入无模型调用的演示数据 |
+| `ISEStudio__RdfImportMaxBytes` | `26214400` | RDF 直接上传大小上限 |
+| `ISEStudio__RdfImportMaxTriples` | `250000` | RDF 解析语句数上限 |
 
-## Source Development
+## 源码开发
 
-### Requirements
+### 环境要求
 
 - .NET SDK 10
 - Node.js 22+
-- Corepack and pnpm 10.2.1 (pinned in `frontend/package.json`)
+- Corepack 与 pnpm 10.2.1（已在 `frontend/package.json` 固定）
 
-### Backend
+### 后端
 
 ```bash
 cp src/.env.example src/.env
 dotnet run --project src/ISEStudio
 ```
 
-The .NET backend listens on `http://localhost:5072` (see `src/ISEStudio/Properties/launchSettings.json`).
-Without `ISEStudio__Persistence__Provider` / `ISEStudio__Persistence__SqliteConnection` overrides, the
-backend stores local development data in `./src/ISEStudio/data/` with SQLite and Oxigraph.
+.NET 后端默认监听 `http://localhost:5072`（见 `src/ISEStudio/Properties/launchSettings.json`）。
+未设置 `ISEStudio__Persistence__Provider` / `ISEStudio__Persistence__SqliteConnection` 覆盖时，
+后端把本地开发数据写入 `./src/ISEStudio/data/`（SQLite + Oxigraph）。
 
-### Frontend
+### 前端
 
 ```bash
 cd frontend
@@ -342,17 +327,17 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-Vite serves <http://localhost:5173> and proxies `/api` and `/mcp` to `http://localhost:5072`. Override the target for an isolated source deployment:
+Vite 默认运行在 <http://localhost:5173>，并把 `/api` 和 `/mcp` 代理到 `http://localhost:5072`。隔离源码部署可以覆盖目标：
 
 ```bash
 VITE_BACKEND_PROXY_TARGET=http://127.0.0.1:18080 pnpm dev --host 127.0.0.1 --port 15173
 ```
 
-On PowerShell, set `$env:VITE_BACKEND_PROXY_TARGET` first and then run `pnpm dev`.
+PowerShell 请先设置 `$env:VITE_BACKEND_PROXY_TARGET`，再执行 `pnpm dev`。
 
-## Testing and Benchmarks
+## 测试与 Benchmark
 
-Run the core test, lint, build, and contract checks:
+运行核心测试、Lint、构建和契约检查：
 
 ```bash
 dotnet test src/ISEStudio.Tests
@@ -366,27 +351,26 @@ cd ..
 docker compose config --quiet
 ```
 
-Integration tests live under `tests/ISEStudio.Integration.Tests` and require a running PostgreSQL and
-MinIO instance; they are soft-skipped in many environments. Run them locally with
-`dotnet test tests/ISEStudio.Integration.Tests` after `docker compose up -d postgres minio`.
+集成测试位于 `tests/ISEStudio.Integration.Tests`，依赖运行中的 PostgreSQL 与 MinIO，在多数环境中被软跳过。
+本机可在 `docker compose up -d postgres minio` 之后执行 `dotnet test tests/ISEStudio.Integration.Tests`。
 
-Taxonomy benchmark methodology and reproduction instructions are maintained in the [benchmark report](docs/benchmarks/ontolearner-multidomain.md).
+Taxonomy 评测方法和复现说明统一维护在 [Benchmark 报告](docs/benchmarks/ontolearner-multidomain.md) 中。
 
-See [docs/acceptance.md](docs/acceptance.md) for the manual end-to-end acceptance path.
+完整人工端到端路径见 [docs/acceptance.md](docs/acceptance.md)。
 
-## Operations
+## 运维
 
-### Back up
+### 备份
 
-Back up these as one consistent recovery set:
+以下内容必须组成一套一致的恢复数据：
 
-- the `isestudio-postgres` volume or a `pg_dump`;
-- the `isestudio-data` volume containing documents, Oxigraph stores, releases, exports, and the generated token key;
-- deployment `.env` files through your secret-management system, not through Git.
+- `isestudio-postgres` 卷，或由 `pg_dump` 生成的备份；
+- `isestudio-data` 卷，其中包含文档、Oxigraph、发布版本、导出和自动生成的 Token 密钥；
+- 通过密钥管理系统保存的部署 `.env`，不得提交到 Git。
 
-Test restores regularly. A database-only restore is incomplete because RDF and artifacts live outside PostgreSQL.
+请定期进行恢复演练。仅恢复数据库是不完整的，因为 RDF 图和制品位于 PostgreSQL 之外。
 
-### Upgrade
+### 升级
 
 ```bash
 git pull --ff-only
@@ -396,62 +380,43 @@ docker compose ps
 curl --fail http://localhost:8080/api/health
 ```
 
-Back up first, review changed example variables, and test pre-1.0 upgrades on a copy of production data.
+升级前先备份，检查示例配置变量变化；1.0 之前应先在生产数据副本上验证。
 
-### Reverse proxy checklist
+### 反向代理检查项
 
-- terminate TLS and set `ISEStudio__CookieSecure=true`;
-- set `MCP_PUBLIC_URL` to the externally reachable HTTPS `/mcp` URL;
-- preserve streaming and disable response buffering for `/mcp`;
-- define upload/body-size, request-rate, and timeout limits appropriate for document ingestion;
-- keep PostgreSQL and backend-only ports off the public network.
+- 终止 TLS，并设置 `ISEStudio__CookieSecure=true`；
+- 把 `MCP_PUBLIC_URL` 设置为外部可访问的 HTTPS `/mcp` 地址；
+- `/mcp` 需要保持流式传输并关闭响应缓冲；
+- 按文档接入需要设置上传大小、限流和超时；
+- PostgreSQL 和后端内部端口不得直接暴露公网。
 
-### Troubleshooting
+### 常见问题
 
-| Symptom | Check |
+| 现象 | 检查项 |
 | --- | --- |
-| Frontend starts but API calls fail | `docker compose ps`, backend health, and Nginx logs |
-| Source frontend calls port 5072 unexpectedly | Set `VITE_BACKEND_PROXY_TARGET` before starting Vite |
-| Extraction is unavailable | Test the selected model endpoint and verify its credential/model/concurrency settings |
-| MCP returns `401` | Use a non-expired `opm_...` token in the `Authorization: Bearer` header |
-| Login loops behind HTTPS | Set `ISEStudio__CookieSecure=true` and verify proxy scheme/host forwarding |
-| Backend cannot open Oxigraph | Ensure only one backend process uses the same data directory and check volume ownership |
+| 前端启动但 API 请求失败 | `docker compose ps`、后端健康状态、Nginx 日志 |
+| 源码前端意外请求 5072 | 启动 Vite 前设置 `VITE_BACKEND_PROXY_TARGET` |
+| 无法抽取 | 测试当前模型端点，检查凭据、模型名和端点并发限制 |
+| MCP 返回 `401` | 在 `Authorization: Bearer` Header 中使用未过期的 `opm_...` Token |
+| HTTPS 后重复登录 | 设置 `ISEStudio__CookieSecure=true`，检查代理的协议和 Host 转发 |
+| 后端无法打开 Oxigraph | 确保同一数据目录只有一个后端进程，并检查数据卷权限 |
 
-## Security and Privacy
+## 安全与隐私
 
-Selected source chunks and bounded ontology context are sent to administrator-configured model providers. Documents, RDF graphs, relational metadata, credentials, and release artifacts otherwise remain in the deployment unless an operator configures external storage or services.
+被选择的源 chunk 和有限的本体上下文会发送给管理员配置的模型供应商。除非运维人员配置外部存储或服务，文档、RDF 图、关系元数据、凭据和发布制品都保留在部署环境内。
 
-Before public exposure:
+公开部署前：
 
-- replace administrator and PostgreSQL defaults;
-- use HTTPS and secure cookies;
-- protect and back up token-encryption material;
-- scope and expire API/MCP tokens, then revoke unused credentials;
-- restrict provider endpoints and reverse-proxy body/rate limits;
-- review [SECURITY.md](SECURITY.md) and report vulnerabilities privately.
+- 配置强管理员密码和 PostgreSQL 密码；
+- 启用 HTTPS 和安全 Cookie；
+- 保护并备份 Token 加密材料；
+- 缩小 API/MCP Token Scope、设置有效期并及时吊销；
+- 限制模型端点、反向代理请求大小和频率；
+- 阅读 [SECURITY.md](SECURITY.md)，并通过私密渠道报告漏洞。
+ 
 
-## Roadmap
-
-The roadmap is directional rather than a release promise. See [ROADMAP.md](ROADMAP.md) for goals, acceptance criteria, and non-goals.
-
-- **Stabilize:** formal migrations and upgrade tests, backup/restore tooling, production observability, accessibility and browser coverage.
-- **Collaborate:** richer review assignment, comments/mentions, notifications, saved filters, and large-team audit workflows.
-- **Agent-assisted governance:** a first-party chat surface that uses short-lived user MCP tokens and always previews mutations before approval.
-- **Integrate:** object-storage adapters, webhooks/event delivery, identity-provider integration, and deployment recipes for common platforms.
-- **Scale and quality:** MinerU and other pluggable parsing frameworks, larger-corpus ingestion, incremental extraction, benchmark expansion, release reproducibility, and performance budgets.
-- **Model and simulate:** spatiotemporal modeling plus governed, versioned, and reproducible sandbox simulations for what-if analysis.
-- **Reach 1.0:** stable public API/MCP/release contracts, documented compatibility policy, migrations, disaster-recovery verification, and security review.
-
-## Project Policy
-
-- Contributions are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
-- Community participation follows the [Code of Conduct](CODE_OF_CONDUCT.md).
-- Security reports must use the private process in [SECURITY.md](SECURITY.md), not public issues.
-- Public interchange changes require compatibility notes, migrations when needed, and regression tests.
-- AI-generated ontology changes remain subject to the same evidence, review, permission, and audit controls as human changes.
-
-## License
+## 开源协议
 
 Copyright 2026 DeepLethe and ISEStudio contributors.
 
-Licensed under the [Apache License 2.0](LICENSE). The repository includes a [NOTICE](NOTICE) file. Unless required by applicable law or agreed in writing, the software is provided **as is**, without warranties or conditions of any kind.
+本项目使用 [Apache License 2.0](LICENSE) 开源，并包含 [NOTICE](NOTICE)。除法律要求或书面约定外，本软件按**现状**提供，不附带任何明示或默示担保。

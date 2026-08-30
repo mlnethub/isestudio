@@ -83,9 +83,9 @@ docker compose up -d isestudio
 | `isestudio-migrate` | `isestudio-backend`(同 image,不同 entrypoint) | 不暴露 | 一次性 EF Core schema 迁移(Exited 0) |
 | `isestudio-seed-admin` | `isestudio-backend`(`--profile bootstrap` 启用) | 不暴露 | 一次性 admin 注入;只在 §1 步骤 4 跑 |
 | `isestudio` | `isestudio-backend` | intra-net `:8080`(走 frontend nginx 暴露到 host) | 主后端进程 |
-| `frontend` | `ontopilot-frontend`(本地 build) | `:8080→:80`(由 `ISESTUDIO_PORT` 控制) | nginx SPA + 反向代理 `/api/*` `/mcp` |
+| `frontend` | `isestudio-frontend`(本地 build) | `:8080→:80`(由 `ISESTUDIO_PORT` 控制) | nginx SPA + 反向代理 `/api/*` `/mcp` |
 
-容器名遵循 `<project-prefix>_<service>-<index>`,默认 project prefix = `docker-compose.yml` 所在目录名,即 `ontopilot_*`(`ontopilot-postgres-1`、`ontopilot-isestudio-1`、`ontopilot-frontend-1` 等)。如果用 `COMPOSE_PROJECT_NAME` 显式覆盖,容器名前缀随之改变。
+容器名遵循 `<project-prefix>_<service>-<index>`,默认 project prefix = `docker-compose.yml` 所在目录名,即 `isestudio_*`(`isestudio-postgres-1`、`isestudio-isestudio-1`、`isestudio-frontend-1` 等)。如果用 `COMPOSE_PROJECT_NAME` 显式覆盖,容器名前缀随之改变。
 
 ## 生产检查清单
 

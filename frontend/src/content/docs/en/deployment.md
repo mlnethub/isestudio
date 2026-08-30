@@ -83,9 +83,9 @@ Administrators can inspect the built-in definitions; knowledge systems can overr
 | `isestudio-migrate` | `isestudio-backend` (same image, different entrypoint) | none | One-shot EF Core schema migration (Exited 0) |
 | `isestudio-seed-admin` | `isestudio-backend` (`--profile bootstrap`) | none | One-shot admin insert; only run in §1 step 4 |
 | `isestudio` | `isestudio-backend` | intra-net `:8080` (fronted by frontend nginx) | Main backend process |
-| `frontend` | `ontopilot-frontend` (local build) | `:8080->:80` (controlled by `ISESTUDIO_PORT`) | nginx SPA + reverse-proxy for `/api/*` `/mcp` |
+| `frontend` | `isestudio-frontend` (local build) | `:8080->:80` (controlled by `ISESTUDIO_PORT`) | nginx SPA + reverse-proxy for `/api/*` `/mcp` |
 
-Container names follow `<project-prefix>_<service>-<index>`. The default project prefix is the directory containing `docker-compose.yml`, i.e. `ontopilot_*` (`ontopilot-postgres-1`, `ontopilot-isestudio-1`, `ontopilot-frontend-1`, ...). Override with `COMPOSE_PROJECT_NAME` to change the prefix globally.
+Container names follow `<project-prefix>_<service>-<index>`. The default project prefix is the directory containing `docker-compose.yml`, i.e. `isestudio_*` (`isestudio-postgres-1`, `isestudio-isestudio-1`, `isestudio-frontend-1`, ...). Override with `COMPOSE_PROJECT_NAME` to change the prefix globally.
 
 ## Production checklist
 
