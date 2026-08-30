@@ -1,3 +1,4 @@
+
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
@@ -5,6 +6,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
+using ISEStudio.Application.Vocabulary;
 using ISEStudio.Configuration;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
@@ -97,11 +99,22 @@ public sealed class TerminologyAgent
     private readonly TimeProvider _clock;
     private readonly ISEStudioOptions _options;
 
+    /// <summary>
+    /// Optional SKOS view source. When wired (production DI), the agent
+    /// includes the scheme's existing concepts in the LLM user message
+    /// so the steward prompt's "Read the current SKOS vocabulary"
+    /// instruction is grounded in real data instead of asking the LLM
+    /// to invent labels that may already exist. Null in hand-built test
+    /// agents that bypass DI.
+    /// </summary>
+    private readonly Ontology.SkosManager? _skos;
+
     public TerminologyAgent(
         IChatClientFactory chatFactory,
         ISEStudioDbContext db,
         IOptions<ISEStudioOptions> options,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        Ontology.SkosManager? skos = null)
     {
         ArgumentNullException.ThrowIfNull(chatFactory);
         ArgumentNullException.ThrowIfNull(db);
@@ -110,6 +123,7 @@ public sealed class TerminologyAgent
         _db = db;
         _options = options.Value;
         _clock = clock ?? TimeProvider.System;
+        _skos = skos;
     }
 
     /// <summary>
@@ -354,7 +368,13 @@ public sealed class TerminologyAgent
     // Message construction
     // ----------------------------------------------------------------------
 
-    private List<ChatMessage> BuildMessages(
+    /// <summary>
+    /// Build the LLM message list for one terminology-suggest call. Marked
+    /// <c>internal</c> so the prompt-shape contract — including the existing
+    /// vocabulary block appended to the user message — can be asserted from
+    /// unit tests without going through the chat client.
+    /// </summary>
+    internal List<ChatMessage> BuildMessages(
         KnowledgeSystemEntity ks,
         string schemeIri,
         IReadOnlyDictionary<Guid, ChunkEntity> chunks)
@@ -366,8 +386,17 @@ public sealed class TerminologyAgent
             sourceBlocks.Add($"[chunk:{chunkId}]\n{excerpt}");
         }
 
+        // Ground the system prompt's "Read the current SKOS vocabulary"
+        // instruction in real data so the steward does not invent create
+        // proposals for labels that already exist (rejected at accept
+        // time with a 422 duplicate-label error). Cap at MaxExistingConcepts
+        // rows to bound the token cost; larger schemes fall back to a
+        // count-only stub plus a sampling hint.
+        var existingBlock = BuildExistingVocabularyBlock(ks, schemeIri);
+
         var prompt =
             "CURRENT CONTROLLED TERMS SCHEME:\n" + schemeIri +
+            existingBlock +
             "\n\nSOURCE EXCERPTS:\n" + string.Join("\n\n", sourceBlocks) +
             "\n\nPropose controlled-terminology changes.";
 
@@ -376,6 +405,102 @@ public sealed class TerminologyAgent
             new(ChatRole.System, ResolveSystemPrompt()),
             new(ChatRole.User, prompt),
         };
+    }
+
+    /// <summary>
+    /// Max number of existing concepts the LLM user message lists in full.
+    /// Beyond this we fall back to a deterministic alphabetical sample
+    /// (<see cref="MaxSampleExistingConcepts"/>) plus a count note. The
+    /// cap protects the token budget on large schemes — Dovetail production
+    /// schemes can hold thousands of curated concepts.
+    /// </summary>
+    private const int MaxExistingConcepts = 200;
+
+    /// <summary>
+    /// Size of the alphabetical sample rendered when a scheme exceeds
+    /// <see cref="MaxExistingConcepts"/>. Chosen so the rendered block
+    /// stays under ~6-10k tokens even with multi-word prefLabels and
+    /// short altLabel lists.
+    /// </summary>
+    private const int MaxSampleExistingConcepts = 80;
+
+    /// <summary>
+    /// Build the "EXISTING CONCEPTS IN THIS SCHEME" block appended to the
+    /// user message. <c>internal</c> so unit tests can assert each branch
+    /// (no SkosManager wired, scheme empty, scheme populated, scheme over
+    /// the <see cref="MaxExistingConcepts"/> cap, read failure) without
+    /// driving the LLM.
+    /// </summary>
+    internal string BuildExistingVocabularyBlock(
+        KnowledgeSystemEntity ks,
+        string schemeIri)
+    {
+        if (_skos is null)
+        {
+            // Test path or DI wiring miss — degrade gracefully rather than
+            // throwing, so a misconfigured test doesn't fail the agent call.
+            return "\n\nEXISTING CONCEPTS IN THIS SCHEME: (vocabulary view unavailable)";
+        }
+        try
+        {
+            var ksc = Ontology.KsContext.FromEntity(ks);
+            var view = _skos.BuildView(ksc);
+            var inScheme = view.Concepts
+                .Where(c => c.SchemeIri == schemeIri)
+                .ToList();
+            if (inScheme.Count == 0)
+            {
+                return "\n\nEXISTING CONCEPTS IN THIS SCHEME: (none — any new concept proposal is acceptable)";
+            }
+
+            // Pick the slice to render: full list when the scheme fits in
+            // one LLM message; otherwise the first N alphabetically with a
+            // count note so the agent still has ground truth to anchor on
+            // (instead of flying blind with just a count).
+            List<SkosConceptView> slice;
+            string header;
+            if (inScheme.Count > MaxExistingConcepts)
+            {
+                slice = inScheme
+                    .OrderBy(c => c.DisplayLabel, StringComparer.OrdinalIgnoreCase)
+                    .Take(MaxSampleExistingConcepts)
+                    .ToList();
+                var remaining = inScheme.Count - MaxSampleExistingConcepts;
+                header =
+                    $"\n\nEXISTING CONCEPTS IN THIS SCHEME: a sample of {MaxSampleExistingConcepts} " +
+                    $"of {inScheme.Count} concepts is shown; the remaining {remaining} are not listed. " +
+                    "Do NOT propose create for any label you cannot verify is absent from this sample " +
+                    "AND from your source chunks. If unsure, prefer add_alias over create.";
+            }
+            else
+            {
+                slice = inScheme;
+                header =
+                    "\n\nEXISTING CONCEPTS IN THIS SCHEME (do NOT propose create for these labels; " +
+                    "use add_alias instead):";
+            }
+
+            var rows = new List<string>(slice.Count + 1)
+            {
+                "prefLabel | altLabels",
+            };
+            foreach (var c in slice)
+            {
+                var pref = c.DisplayLabel ?? string.Empty;
+                var alts = string.Join(", ", c.AltLabels.Select(l => l.Value));
+                rows.Add(string.IsNullOrEmpty(alts)
+                    ? pref
+                    : $"{pref} | {alts}");
+            }
+            return header + "\n" + string.Join("\n", rows);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Don't let a SKOS view read failure block the agent — fall
+            // back to the no-data stub and log at warning. The agent's
+            // dedup safety net is at AcceptProposalAsync time anyway.
+            return $"\n\nEXISTING CONCEPTS IN THIS SCHEME: (read failed: {ex.GetType().Name})";
+        }
     }
 
     // ----------------------------------------------------------------------

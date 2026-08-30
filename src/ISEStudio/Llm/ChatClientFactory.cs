@@ -1,6 +1,9 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
 using OpenAI;
+using ISEStudio.Configuration;
 
 namespace ISEStudio.Llm;
 
@@ -45,6 +48,22 @@ public sealed class ChatClientFactory : IChatClientFactory
     private const string AnthropicDefaultEndpoint = "https://api.anthropic.com";
     private const string GeminiDefaultEndpoint = "https://generativelanguage.googleapis.com";
 
+    private readonly IOptions<ISEStudioOptions> _options;
+
+    public ChatClientFactory(IOptions<ISEStudioOptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        _options = options;
+    }
+
+    /// <summary>
+    /// Convenience for unit tests that need a factory wired with default
+    /// <see cref="ISEStudioOptions"/>. Production code always goes
+    /// through DI; this helper exists only to keep test files short.
+    /// </summary>
+    internal static ChatClientFactory CreateForTest() =>
+        new(Options.Create(new ISEStudioOptions()));
+
     /// <inheritdoc />
     public IChatClient Create(LlmProviderConfig config)
     {
@@ -63,7 +82,7 @@ public sealed class ChatClientFactory : IChatClientFactory
         };
     }
 
-    private static IChatClient CreateOpenAiCompatible(LlmProviderConfig config)
+    private IChatClient CreateOpenAiCompatible(LlmProviderConfig config)
     {
         var endpoint = string.IsNullOrWhiteSpace(config.Endpoint)
             ? OpenAiDefaultEndpoint
@@ -71,7 +90,7 @@ public sealed class ChatClientFactory : IChatClientFactory
         return BuildOpenAiClient(endpoint, config.ApiKey).GetChatClient(config.Model).AsIChatClient();
     }
 
-    private static IChatClient CreateOllama(LlmProviderConfig config)
+    private IChatClient CreateOllama(LlmProviderConfig config)
     {
         var endpoint = string.IsNullOrWhiteSpace(config.Endpoint)
             ? OllamaDefaultEndpoint
@@ -81,7 +100,7 @@ public sealed class ChatClientFactory : IChatClientFactory
         return BuildOpenAiClient(endpoint, config.ApiKey).GetChatClient(config.Model).AsIChatClient();
     }
 
-    private static IChatClient CreateAzureOpenAi(LlmProviderConfig config)
+    private IChatClient CreateAzureOpenAi(LlmProviderConfig config)
     {
         // Azure OpenAI uses the same SDK; the caller supplies the Azure
         // endpoint URL. An api key is required.
@@ -119,15 +138,41 @@ public sealed class ChatClientFactory : IChatClientFactory
             new ChatClientMetadata("gemini", new Uri(endpoint), config.Model));
     }
 
-    private static OpenAIClient BuildOpenAiClient(string endpoint, string? apiKey)
+    private OpenAIClient BuildOpenAiClient(string endpoint, string? apiKey)
     {
-        var options = new OpenAIClientOptions
-        {
-            Endpoint = new Uri(endpoint),
-        };
+        var options = BuildOpenAiClientOptions(endpoint);
         var credential = string.IsNullOrWhiteSpace(apiKey)
             ? new ApiKeyCredential("not-required")
             : new ApiKeyCredential(apiKey);
         return new OpenAIClient(credential, options);
+    }
+
+    /// <summary>
+    /// Build the <see cref="OpenAIClientOptions"/> applied to every
+    /// OpenAI-compatible provider routed through this factory. Exposed
+    /// as <c>internal</c> so the test project can assert the configured
+    /// <see cref="OpenAIClientOptions.NetworkTimeout"/> and
+    /// <see cref="OpenAIClientOptions.RetryPolicy"/> without going
+    /// through a real <see cref="OpenAIClient"/>.
+    /// </summary>
+    internal OpenAIClientOptions BuildOpenAiClientOptions(string endpoint)
+    {
+        var studio = _options.Value;
+        var opts = new OpenAIClientOptions
+        {
+            Endpoint = new Uri(endpoint),
+        };
+        // LlmNetworkTimeoutSeconds == 0 → fall back to the SDK default
+        // (100 s). The default of 180 s is what makes the "Retry failed
+        // after 4 tries ... 0:01:40" failure mode stop recurring for
+        // Dovetail extraction jobs.
+        if (studio.LlmNetworkTimeoutSeconds > 0)
+        {
+            opts.NetworkTimeout = TimeSpan.FromSeconds(studio.LlmNetworkTimeoutSeconds);
+        }
+        // LlmMaxRetries == 0 disables SDK-level retries; the
+        // orchestrator decides when to retry based on the failure shape.
+        opts.RetryPolicy = new ClientRetryPolicy(maxRetries: studio.LlmMaxRetries);
+        return opts;
     }
 }

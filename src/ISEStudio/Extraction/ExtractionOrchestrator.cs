@@ -2,6 +2,8 @@ using System.Text;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Conflicts;
@@ -140,6 +142,14 @@ public sealed class ExtractionOrchestrator
     private readonly DuplicateJudge? _duplicateJudge;
 
     /// <summary>
+    /// Logger for failure diagnostics — records exception type / inner
+    /// exception / message into both the structured log AND the job row's
+    /// <c>Error</c> column so production triage can read the real cause
+    /// from the database instead of just "Cancelled.".
+    /// </summary>
+    private readonly ILogger<ExtractionOrchestrator> _logger;
+
+    /// <summary>
     /// Job-level corpus recovery pass (Python
     /// <c>_recover_rejected_classes</c>): revisits every per-chunk rejection
     /// with cross-chunk evidence and re-decides them. Like
@@ -178,7 +188,8 @@ public sealed class ExtractionOrchestrator
         ABoxJobPipeline? aboxPipeline = null,
         DuplicateJudge? duplicateJudge = null,
         AgentChainPipeline? agentChainPipeline = null,
-        TerminologyPipeline? terminologyPipeline = null)
+        TerminologyPipeline? terminologyPipeline = null,
+        ILogger<ExtractionOrchestrator>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(jobs);
         ArgumentNullException.ThrowIfNull(blobs);
@@ -217,6 +228,10 @@ public sealed class ExtractionOrchestrator
         _duplicateJudge = duplicateJudge;
         _agentChainPipeline = agentChainPipeline;
         _terminologyPipeline = terminologyPipeline;
+        // NullLogger keeps the hand-built test orchestrators (which don't
+        // go through DI) working without forcing every test ctor call to
+        // pass a logger. Production DI supplies the real ILogger.
+        _logger = logger ?? NullLogger<ExtractionOrchestrator>.Instance;
     }
 
     // ------------------------------------------------------------------
@@ -402,14 +417,36 @@ public sealed class ExtractionOrchestrator
                 result = await router!.ExecuteAsync(input, cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
-            await SafeMarkFailedAsync(input.JobId, "Cancelled.").ConfigureAwait(false);
+            // Token was actually triggered (e.g. host shutdown, parent scope
+            // cancel). Log at Information — this is a normal stop signal.
+            _logger.LogInformation(ex, "Job {JobId} cancelled by token after kind {Kind}",
+                input.JobId, input.Kind);
+            await SafeMarkFailedAsync(input.JobId, "Cancelled (token).").ConfigureAwait(false);
+            return;
+        }
+        catch (OperationCanceledException ex)
+        {
+            // OCE without a token trigger is almost always an internal
+            // TaskCanceledException (HttpClient socket timeout, EF Core
+            // command timeout, Npgsql async cancellation, etc.). The base
+            // "Cancelled." message hides the real cause — surface the
+            // exception type into the job row so production triage can
+            // tell a real cancel from a timeout at a glance.
+            var innerType = ex.InnerException?.GetType().Name ?? "none";
+            _logger.LogError(ex,
+                "Job {JobId} cancelled without token trigger (likely internal timeout); inner={InnerType} msg={Msg}",
+                input.JobId, innerType, ex.Message);
+            await SafeMarkFailedAsync(input.JobId, $"Cancelled ({innerType}).").ConfigureAwait(false);
             return;
         }
         catch (Exception ex)
         {
-            await SafeMarkFailedAsync(input.JobId, ex.Message).ConfigureAwait(false);
+            // Generic failure — record both type and message so the job row
+            // is self-describing for the operator looking at the queue UI.
+            _logger.LogError(ex, "Job {JobId} failed during kind {Kind}", input.JobId, input.Kind);
+            await SafeMarkFailedAsync(input.JobId, $"{ex.GetType().Name}: {ex.Message}").ConfigureAwait(false);
             return;
         }
 
@@ -1066,9 +1103,10 @@ public sealed class ExtractionOrchestrator
             graphIri, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60), cancellationToken)
             .ConfigureAwait(false);
 
+        var i = 0;
         try
         {
-            for (var i = 0; i < chunks.Count; i++)
+            for (; i < chunks.Count; i++)
             {
                 var chunk = chunks[i];
                 ExtractionMergeResult merged;
@@ -1093,17 +1131,33 @@ public sealed class ExtractionOrchestrator
                     cancellationToken: cancellationToken).ConfigureAwait(false);
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
         {
             capture.MarkError();
-            await SafeMarkFailedAsync(jobId, "Cancelled.").ConfigureAwait(false);
-            return state with { Error = "Cancelled." };
+            _logger.LogInformation(ex,
+                "Job {JobId} phase {Phase} cancelled by token at chunk {Chunk}/{Total}",
+                jobId, phase, i, chunks.Count);
+            await SafeMarkFailedAsync(jobId, "Cancelled (token).").ConfigureAwait(false);
+            return state with { Error = "Cancelled (token)." };
+        }
+        catch (OperationCanceledException ex)
+        {
+            capture.MarkError();
+            var innerType = ex.InnerException?.GetType().Name ?? "none";
+            _logger.LogError(ex,
+                "Job {JobId} phase {Phase} cancelled without token at chunk {Chunk}/{Total}; inner={InnerType} msg={Msg}",
+                jobId, phase, i, chunks.Count, innerType, ex.Message);
+            await SafeMarkFailedAsync(jobId, $"Cancelled ({innerType}).").ConfigureAwait(false);
+            return state with { Error = $"Cancelled ({innerType})." };
         }
         catch (Exception ex)
         {
             capture.MarkError();
-            await SafeMarkFailedAsync(jobId, ex.Message).ConfigureAwait(false);
-            return state with { Error = ex.Message };
+            _logger.LogError(ex,
+                "Job {JobId} phase {Phase} failed at chunk {Chunk}/{Total}",
+                jobId, phase, i, chunks.Count);
+            await SafeMarkFailedAsync(jobId, $"{ex.GetType().Name}: {ex.Message}").ConfigureAwait(false);
+            return state with { Error = $"{ex.GetType().Name}: {ex.Message}" };
         }
 
         // Commit phase's RDF writes — only reached when every chunk

@@ -171,6 +171,30 @@ public sealed class ISEStudioOptions
     public string IriRoot { get; set; } = "http://goodcrew.local/ks";
 
     /// <summary>
+    /// Per-network-operation timeout applied to every chat / embedding
+    /// call through the OpenAI-compatible providers (openai / deepseek /
+    /// openai-compatible / ollama / azure-openai). The
+    /// <c>System.ClientModel</c> SDK default is 100 s — Dovetail extraction
+    /// pipelines calling reasoning models on long documents regularly
+    /// exceed that and surface as
+    /// <c>"Retry failed after 4 tries ... 0:01:40"</c>. Default 180 s
+    /// (3 minutes) covers the slowest realistic completion while still
+    /// failing fast on a wedged connection. Set to 0 to fall back to the
+    /// SDK default.
+    /// </summary>
+    public int LlmNetworkTimeoutSeconds { get; set; } = 180;
+
+    /// <summary>
+    /// Maximum retry attempts for transient network failures on
+    /// OpenAI-compatible chat / embedding calls. The SDK default is 4 —
+    /// reasonable for free APIs but expensive for paid LLM endpoints
+    /// where each retry burns more tokens. Default 0 lets the
+    /// orchestrator-level error handling decide when a retry is worth
+    /// the spend. Set to a positive integer to restore SDK-style retry.
+    /// </summary>
+    public int LlmMaxRetries { get; set; } = 0;
+
+    /// <summary>
     /// Prefix used by the ISEStudio vocabulary namespace (the <c>op:</c>
     /// shorthand in Turtle). Must end with <c>#</c> — the runtime
     /// concatenates predicate local names (e.g. <c>defaultLanguage</c>,

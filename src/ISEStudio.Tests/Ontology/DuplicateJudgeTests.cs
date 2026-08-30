@@ -215,7 +215,7 @@ public sealed class DuplicateJudgeTests : IDisposable
         // "anthropic" has no embedding endpoint → factory.Create throws
         // InvalidOperationException → DuplicateJudge returns empty list
         // (fail-closed) instead of bubbling.
-        var factory = new EmbeddingGeneratorFactory();
+        var factory = EmbeddingGeneratorFactory.CreateForTest();
         var judge = new DuplicateJudge(
             factory,
             chats: null,
@@ -244,7 +244,7 @@ public sealed class DuplicateJudgeTests : IDisposable
     public async Task JudgeDuplicatesAsync_without_chat_client_returns_empty()
     {
         var judge = new DuplicateJudge(
-            new EmbeddingGeneratorFactory(),
+            EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
 
@@ -259,7 +259,7 @@ public sealed class DuplicateJudgeTests : IDisposable
     public async Task JudgeDuplicatesAsync_with_empty_pair_set_returns_empty()
     {
         var judge = new DuplicateJudge(
-            new EmbeddingGeneratorFactory(),
+            EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
 
@@ -286,7 +286,7 @@ public sealed class DuplicateJudgeTests : IDisposable
         SeedClass(_store, graphIri, $"{baseIri}Station", "Station");
 
         var judge = new DuplicateJudge(
-            new EmbeddingGeneratorFactory(),
+            EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
         var detected = await judge.DetectAsync(_store, graphIri, CancellationToken.None);
@@ -311,7 +311,7 @@ public sealed class DuplicateJudgeTests : IDisposable
         SeedClass(_store, graphIri, $"{baseIri}pumpstation", "PumpStation");
 
         var judge = new DuplicateJudge(
-            new EmbeddingGeneratorFactory(),
+            EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
         var detected = await judge.DetectAsync(_store, graphIri, CancellationToken.None);
@@ -339,7 +339,7 @@ public sealed class DuplicateJudgeTests : IDisposable
         const string graphIri = "http://goodcrew.local/ks/empty";
 
         var judge = new DuplicateJudge(
-            new EmbeddingGeneratorFactory(),
+            EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
         var detected = await judge.DetectAsync(_store, graphIri, CancellationToken.None);
@@ -367,7 +367,7 @@ public sealed class DuplicateJudgeTests : IDisposable
         SeedClass(_store, graphIri, $"{baseIri}B", "pump-station");
 
         var judge = new DuplicateJudge(
-            new EmbeddingGeneratorFactory(),
+            EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions { EnableSemanticConflicts = false }));
         var detected = await judge.DetectAsync(_store, graphIri, CancellationToken.None);

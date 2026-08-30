@@ -1,6 +1,9 @@
 using System.ClientModel;
+using System.ClientModel.Primitives;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Options;
 using OpenAI;
+using ISEStudio.Configuration;
 
 namespace ISEStudio.Llm;
 
@@ -24,6 +27,22 @@ public sealed class EmbeddingGeneratorFactory
     private const string OpenAiDefaultEndpoint = "https://api.openai.com/v1";
     private const string OllamaDefaultEndpoint = "http://localhost:11434/v1";
 
+    private readonly IOptions<ISEStudioOptions> _options;
+
+    public EmbeddingGeneratorFactory(IOptions<ISEStudioOptions> options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        _options = options;
+    }
+
+    /// <summary>
+    /// Convenience for unit tests that need a factory wired with default
+    /// <see cref="ISEStudioOptions"/>. Production code always goes
+    /// through DI; this helper exists only to keep test files short.
+    /// </summary>
+    internal static EmbeddingGeneratorFactory CreateForTest() =>
+        new(Options.Create(new ISEStudioOptions()));
+
     /// <summary>
     /// Build an <see cref="IEmbeddingGenerator{TInput, TEmbedding}"/> for
     /// the provider named in <paramref name="config"/>. Throws
@@ -43,7 +62,7 @@ public sealed class EmbeddingGeneratorFactory
         };
     }
 
-    private static IEmbeddingGenerator<string, Embedding<float>> CreateOpenAiCompatible(
+    private IEmbeddingGenerator<string, Embedding<float>> CreateOpenAiCompatible(
         LlmProviderConfig config,
         string provider)
     {
@@ -57,15 +76,37 @@ public sealed class EmbeddingGeneratorFactory
                 : config.Endpoint,
         };
 
-        var options = new OpenAIClientOptions
-        {
-            Endpoint = new Uri(endpoint),
-        };
+        var options = BuildOpenAiClientOptions(endpoint);
         var credential = string.IsNullOrWhiteSpace(config.ApiKey)
             ? new ApiKeyCredential("not-required")
             : new ApiKeyCredential(config.ApiKey);
 
         var client = new OpenAIClient(credential, options);
         return client.GetEmbeddingClient(config.Model).AsIEmbeddingGenerator();
+    }
+
+    /// <summary>
+    /// Build the <see cref="OpenAIClientOptions"/> applied to every
+    /// embedding call through this factory. Exposed as <c>internal</c>
+    /// so the test project can assert the configured
+    /// <see cref="OpenAIClientOptions.NetworkTimeout"/> and
+    /// <see cref="OpenAIClientOptions.RetryPolicy"/> without going
+    /// through a real embedding request.
+    /// </summary>
+    internal OpenAIClientOptions BuildOpenAiClientOptions(string endpoint)
+    {
+        var studio = _options.Value;
+        var opts = new OpenAIClientOptions
+        {
+            Endpoint = new Uri(endpoint),
+        };
+        // Mirrors ChatClientFactory.BuildOpenAiClientOptions: a
+        // configured 0 falls back to the SDK default.
+        if (studio.LlmNetworkTimeoutSeconds > 0)
+        {
+            opts.NetworkTimeout = TimeSpan.FromSeconds(studio.LlmNetworkTimeoutSeconds);
+        }
+        opts.RetryPolicy = new ClientRetryPolicy(maxRetries: studio.LlmMaxRetries);
+        return opts;
     }
 }
