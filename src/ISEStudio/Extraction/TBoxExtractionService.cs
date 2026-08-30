@@ -132,24 +132,20 @@ public sealed class TBoxExtractionService
                 }
                 catch (OperationCanceledException oce)
                 {
-                    // Log everything needed to triage from the server log alone —
-                    // provider/model, configured timeout, elapsed seconds, the
-                    // exact exception type, inner exception (if any), and whether
-                    // the caller's token was already cancelled (vs the SDK's
-                    // internal CTS triggering the throw).
-                    var innerType = oce.InnerException?.GetType().FullName ?? "<none>";
-                    _logger.LogWarning(
-                        "LLM Extract cancelled after {ElapsedSeconds:F2}s (provider={Provider}, model={Model}, " +
-                        "configuredTimeoutSec={ConfiguredTimeoutSec}, callerTokenCancelled={CallerTokenCancelled}, " +
-                        "exceptionType={ExceptionType}, innerType={InnerType}, message={Message})",
-                        sw.Elapsed.TotalSeconds,
-                        provider,
-                        model,
-                        _options.LlmNetworkTimeoutSeconds,
-                        cancellationToken.IsCancellationRequested,
-                        oce.GetType().FullName,
-                        innerType,
-                        oce.Message);
+                    // Shared observability helper: server-log one-liner carries
+                    // elapsed + configured timeout + caller-cancel + exception
+                    // type so the next "Cancelled (TaskCanceledException)." job
+                    // tells us whether to bump the SDK timeout or chase the
+                    // user. See LlmCallDiagnostics for the field semantics.
+                    LlmCallDiagnostics.LogCancellation(
+                        _logger,
+                        operationName: "Llm.Extract",
+                        provider: provider,
+                        model: model,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
+                        callerTokenCancelled: cancellationToken.IsCancellationRequested,
+                        exception: oce);
                     throw;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or IOException)

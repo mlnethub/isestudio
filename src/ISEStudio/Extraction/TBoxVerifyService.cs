@@ -1,9 +1,12 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Observability;
@@ -43,11 +46,15 @@ public sealed class TBoxVerifyService
     private static readonly Regex WhitespaceRun = new(@"\s+", RegexOptions.Compiled);
 
     private readonly ISEStudioOptions _options;
+    private readonly ILogger<TBoxVerifyService> _logger;
 
-    public TBoxVerifyService(IOptions<ISEStudioOptions> options)
+    public TBoxVerifyService(
+        IOptions<ISEStudioOptions> options,
+        ILogger<TBoxVerifyService>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options.Value;
+        _logger = logger ?? NullLogger<TBoxVerifyService>.Instance;
     }
 
     // ------------------------------------------------------------------
@@ -601,7 +608,36 @@ public sealed class TBoxVerifyService
                     new(ChatRole.System, systemPrompt),
                     new(ChatRole.User, user),
                 };
-                var response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
+
+                // Stopwatch + cancellation diagnostic: the verify pipeline
+                // makes 3 LLM calls per chunk (Boundary / Adjudicator /
+                // Denotation), each of which can hit the SDK's internal
+                // NetworkTimeout. Without per-call elapsed timing we'd see
+                // "Cancelled (TaskCanceledException)." on the job row with
+                // no clue which critic tripped. Routing through the shared
+                // LlmCallDiagnostics helper keeps the field shape identical
+                // to TBoxExtractionService.ExtractAsync so a single grep
+                // covers both pipelines.
+                var sw = Stopwatch.StartNew();
+                ChatResponse response;
+                try
+                {
+                    response = await chat.GetResponseAsync(messages, options: null, ct).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException oce)
+                {
+                    LlmCallDiagnostics.LogCancellation(
+                        _logger,
+                        operationName: $"Llm.TBoxVerify.{stage}",
+                        provider: provider,
+                        model: model,
+                        elapsedSeconds: sw.Elapsed.TotalSeconds,
+                        configuredTimeoutSec: _options.LlmNetworkTimeoutSeconds,
+                        callerTokenCancelled: cancellationToken.IsCancellationRequested,
+                        exception: oce);
+                    throw;
+                }
+
                 if (!ExtractionDeltaParser.TryReadObject(response.Text, out var root))
                 {
                     throw new InvalidOperationException(
