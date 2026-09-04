@@ -3,8 +3,10 @@ using ISEStudio.Infrastructure.Startup;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
+using System.Data.Common;
 
 namespace ISEStudio.IntegrationTests.Graph;
 
@@ -150,6 +152,47 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
             store.InvalidateFactAsync(otherKnowledgeSystemId, fact.Id, DateTimeOffset.UtcNow.AddMinutes(2), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task Invalidate_fact_allows_only_one_concurrent_success_and_one_audit_record()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+        var command = NewEntityObjectFact(evidenceCount: 1);
+
+        await using var seedServices = BuildServices();
+        await using var seedScope = seedServices.CreateAsyncScope();
+        var seedStore = seedScope.ServiceProvider.GetRequiredService<IGraphStore>();
+        var fact = await seedStore.RecordFactAsync(command, CancellationToken.None);
+
+        var barrier = new MatchingCommandBarrierInterceptor(2, IsInvalidateFactCommand);
+        await using var db1 = CreateDbContext(barrier);
+        await using var db2 = CreateDbContext(barrier);
+        var store1 = new GraphStore(db1);
+        var store2 = new GraphStore(db2);
+        var invalidatedAt = DateTimeOffset.UtcNow;
+
+        var outcomes = await Task.WhenAll(
+            AttemptInvalidateAsync(store1, _fixture.KnowledgeSystemId, fact.Id, invalidatedAt),
+            AttemptInvalidateAsync(store2, _fixture.KnowledgeSystemId, fact.Id, invalidatedAt));
+
+        Assert.Equal(1, outcomes.Count(outcome => outcome is null));
+        Assert.IsType<KeyNotFoundException>(Assert.Single(outcomes, outcome => outcome is not null));
+
+        await using var verify = CreateDbContext();
+        Assert.NotNull(await verify.Facts.SingleAsync(item => item.Id == fact.Id && item.InvalidatedAt != null));
+
+        var invalidationAudits = await verify.AuditEvents
+            .Where(item =>
+                item.KnowledgeSystemId == _fixture.KnowledgeSystemId &&
+                item.Action == "graph.fact.invalidated")
+            .ToListAsync();
+
+        Assert.Single(invalidationAudits, item =>
+            item.Detail is not null &&
+            item.Detail.RootElement.TryGetProperty("factId", out var factIdElement) &&
+            factIdElement.GetGuid() == fact.Id);
+    }
+
     private RecordFactCommand NewEntityObjectFact(int evidenceCount)
     {
         return new RecordFactCommand(
@@ -244,11 +287,42 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         return new DateTimeOffset(value.Ticks - (value.Ticks % 10), value.Offset);
     }
 
-    private ISEStudioDbContext CreateDbContext()
+    private static async Task<Exception?> AttemptInvalidateAsync(
+        IGraphStore store,
+        Guid knowledgeSystemId,
+        Guid factId,
+        DateTimeOffset invalidatedAt)
     {
-        var options = new DbContextOptionsBuilder<ISEStudioDbContext>()
-            .UseNpgsql(GetConnectionString())
-            .Options;
+        try
+        {
+            await store.InvalidateFactAsync(knowledgeSystemId, factId, invalidatedAt, CancellationToken.None);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private static bool IsInvalidateFactCommand(DbCommand command)
+    {
+        var sql = command.CommandText.Replace("\r", " ").Replace("\n", " ").Replace("\"", string.Empty, StringComparison.Ordinal).ToLowerInvariant();
+        return sql.Contains("facts", StringComparison.Ordinal) &&
+               sql.Contains("invalidated_at is null", StringComparison.Ordinal) &&
+               (sql.Contains("select", StringComparison.Ordinal) || sql.Contains("update", StringComparison.Ordinal));
+    }
+
+    private ISEStudioDbContext CreateDbContext(DbCommandInterceptor? interceptor = null)
+    {
+        var builder = new DbContextOptionsBuilder<ISEStudioDbContext>()
+            .UseNpgsql(GetConnectionString());
+
+        if (interceptor is not null)
+        {
+            builder.AddInterceptors(interceptor);
+        }
+
+        var options = builder.Options;
         return new ISEStudioDbContext(options);
     }
 
@@ -290,5 +364,42 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         }
 
         public ISEStudioDbContext CreateDbContext() => new(_options);
+    }
+
+    private sealed class MatchingCommandBarrierInterceptor : DbCommandInterceptor
+    {
+        private readonly int _participantCount;
+        private readonly Func<DbCommand, bool> _predicate;
+        private readonly TaskCompletionSource _allParticipantsArrived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _matchCount;
+
+        public MatchingCommandBarrierInterceptor(int participantCount, Func<DbCommand, bool> predicate)
+        {
+            _participantCount = participantCount;
+            _predicate = predicate;
+        }
+
+        public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command,
+            CommandEventData eventData,
+            InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (_predicate(command))
+            {
+                var arrival = Interlocked.Increment(ref _matchCount);
+                if (arrival <= _participantCount)
+                {
+                    if (arrival == _participantCount)
+                    {
+                        _allParticipantsArrived.TrySetResult();
+                    }
+
+                    await _allParticipantsArrived.Task.WaitAsync(cancellationToken);
+                }
+            }
+
+            return await base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
     }
 }

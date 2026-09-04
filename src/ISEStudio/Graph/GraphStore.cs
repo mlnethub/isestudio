@@ -1,7 +1,9 @@
 using System.Text.Json;
+using System.Data;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace ISEStudio.Graph;
 
@@ -125,19 +127,18 @@ public sealed class GraphStore : IGraphStore
     {
         await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
 
-        var fact = await _db.Facts
-            .SingleOrDefaultAsync(item =>
-                item.Id == factId &&
-                item.KnowledgeSystemId == knowledgeSystemId &&
-                item.InvalidatedAt == null,
-                cancellationToken);
+        var factWasInvalidated = await InvalidateLiveFactRowAsync(
+            transaction,
+            knowledgeSystemId,
+            factId,
+            invalidatedAt,
+            cancellationToken);
 
-        if (fact is null)
+        if (!factWasInvalidated)
         {
             throw new KeyNotFoundException($"Fact '{factId}' was not found or already invalidated.");
         }
 
-        fact.InvalidatedAt = invalidatedAt;
         _db.AuditEvents.Add(new AuditEventEntity
         {
             Id = Guid.NewGuid(),
@@ -228,6 +229,46 @@ public sealed class GraphStore : IGraphStore
                     $"Evidence chunk '{chunkId}' does not belong to knowledge system '{knowledgeSystemId}'.");
             }
         }
+    }
+
+    private async Task<bool> InvalidateLiveFactRowAsync(
+        IDbContextTransaction transaction,
+        Guid knowledgeSystemId,
+        Guid factId,
+        DateTimeOffset invalidatedAt,
+        CancellationToken cancellationToken)
+    {
+        var connection = _db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open)
+        {
+            await connection.OpenAsync(cancellationToken);
+        }
+
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction.GetDbTransaction();
+        command.CommandText = """
+            UPDATE facts
+            SET invalidated_at = @invalidatedAt
+            WHERE id = @factId
+              AND knowledge_system_id = @knowledgeSystemId
+              AND invalidated_at IS NULL
+            RETURNING id
+            """;
+
+        command.Parameters.Add(CreateParameter(command, "invalidatedAt", invalidatedAt));
+        command.Parameters.Add(CreateParameter(command, "factId", factId));
+        command.Parameters.Add(CreateParameter(command, "knowledgeSystemId", knowledgeSystemId));
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken);
+    }
+
+    private static IDbDataParameter CreateParameter(IDbCommand command, string name, object value)
+    {
+        var parameter = command.CreateParameter();
+        parameter.ParameterName = name;
+        parameter.Value = value;
+        return parameter;
     }
 
     private static GraphFact MapFact(FactEntity fact, IReadOnlyList<FactEvidenceEntity> evidence)

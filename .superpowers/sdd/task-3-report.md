@@ -123,3 +123,58 @@ dotnet test src/ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj --f
 - 缺失 chunk 与跨知识系统 chunk 都在 `SaveChangesAsync()` 之前失败，因此不会产生事实、证据或审计残留。
 - `InvalidateFactAsync` 仍只允许失效同一知识系统内 `InvalidatedAt == null` 的事实；已失效或知识系统不匹配时抛出 `KeyNotFoundException`。
 - 成功失效路径保留并验证 `graph.fact.invalidated` 审计记录。
+
+## 2026-09-05 第二轮子代理修复追加
+
+### 范围
+
+- 将 `InvalidateFactAsync` 从“先查 live 再保存”改为单条参数化原子 SQL：`UPDATE facts ... WHERE ... invalidated_at IS NULL RETURNING id`。
+- 保持失效更新与 `graph.fact.invalidated` 审计写入在同一数据库事务中；零行返回直接抛出 `KeyNotFoundException`，且不写审计。
+- 新增真实 PostgreSQL 并发集成测试，使用两个独立 `GraphStore`/`ISEStudioDbContext` 实例并发失效同一事实，验证至多一个成功且仅一条失效审计。
+
+### RED
+
+命令：
+
+```powershell
+Set-Location 'E:\GitHub\ontopilot\.worktrees\ultpio-graph-core'
+dotnet test src/ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj --filter FullyQualifiedName~GraphStoreTests
+```
+
+结果：FAIL
+
+关键输出：
+
+- `Invalidate_fact_allows_only_one_concurrent_success_and_one_audit_record`: `Assert.Equal() Failure: Values differ Expected: 1 Actual: 2`
+
+说明：新增并发红测稳定复现了当前竞态，两个并发调用都成功失效同一事实，并且会产生两条失效审计。
+
+### GREEN
+
+命令：
+
+```powershell
+Set-Location 'E:\GitHub\ontopilot\.worktrees\ultpio-graph-core'
+dotnet test src/ISEStudio.IntegrationTests/ISEStudio.IntegrationTests.csproj --filter FullyQualifiedName~GraphStoreTests
+```
+
+结果：PASS
+
+关键输出：
+
+- `测试摘要: 总计: 6, 失败: 0, 成功: 6, 已跳过: 0`
+
+### 改动
+
+- `src/ISEStudio/Graph/GraphStore.cs`
+	- `InvalidateFactAsync` 改为在显式事务内调用单条原子 `UPDATE ... RETURNING`，把“仅 live 事实可失效”下推到数据库条件更新本身。
+	- 仅在原子更新成功后追加 `graph.fact.invalidated` 审计并 `SaveChangesAsync()`；条件更新零行时直接抛出 `KeyNotFoundException`。
+- `src/ISEStudio.IntegrationTests/Graph/GraphStoreTests.cs`
+	- 新增双 `GraphStore`/双 `DbContext` 并发失效同一事实的 PostgreSQL 集成测试。
+	- 新增命令屏障拦截器，把两个并发请求稳定同步到失效 SQL 处，确保红测可重复验证竞态，绿测可验证原子更新已封住竞态。
+
+### 自检
+
+- 同一事实的两次并发 `InvalidateFactAsync` 现在至多一个成功，另一个会因为原子条件更新零行而得到 `KeyNotFoundException`。
+- 失败路径不会写入 `graph.fact.invalidated` 审计，因此数据库对该事实只保留一条失效审计。
+- 既有串行失效测试、知识系统隔离测试和事务边界保持不变。
