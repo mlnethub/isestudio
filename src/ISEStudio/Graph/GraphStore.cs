@@ -52,6 +52,11 @@ public sealed class GraphStore : IGraphStore
                 cancellationToken);
         }
 
+        await EnsureEvidenceChunksInKnowledgeSystemAsync(
+            command.Evidence,
+            command.KnowledgeSystemId,
+            cancellationToken);
+
         if (command.ActorId is Guid actorId)
         {
             var actorExists = await _db.Users.AnyAsync(item => item.Id == actorId, cancellationToken);
@@ -181,6 +186,47 @@ public sealed class GraphStore : IGraphStore
         if (!exists)
         {
             throw new KeyNotFoundException($"Relation type '{predicateId}' was not found in knowledge system '{knowledgeSystemId}'.");
+        }
+    }
+
+    private async Task EnsureEvidenceChunksInKnowledgeSystemAsync(
+        IReadOnlyList<FactEvidenceInput> evidence,
+        Guid knowledgeSystemId,
+        CancellationToken cancellationToken)
+    {
+        if (evidence.Count == 0)
+        {
+            return;
+        }
+
+        var chunkIds = evidence
+            .Select(item => item.SourceChunkId)
+            .Distinct()
+            .ToArray();
+
+        var chunkKnowledgeSystems = await (
+            from chunk in _db.Chunks
+            join document in _db.Documents on chunk.DocumentId equals document.Id
+            where chunkIds.Contains(chunk.Id)
+            select new
+            {
+                chunk.Id,
+                document.KnowledgeSystemId,
+            })
+            .ToDictionaryAsync(item => item.Id, item => item.KnowledgeSystemId, cancellationToken);
+
+        foreach (var chunkId in chunkIds)
+        {
+            if (!chunkKnowledgeSystems.TryGetValue(chunkId, out var chunkKnowledgeSystemId))
+            {
+                throw new InvalidOperationException($"Evidence chunk '{chunkId}' was not found.");
+            }
+
+            if (chunkKnowledgeSystemId != knowledgeSystemId)
+            {
+                throw new InvalidOperationException(
+                    $"Evidence chunk '{chunkId}' does not belong to knowledge system '{knowledgeSystemId}'.");
+            }
         }
     }
 

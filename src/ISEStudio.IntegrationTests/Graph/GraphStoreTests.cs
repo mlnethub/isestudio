@@ -1,6 +1,7 @@
 using ISEStudio.Graph;
 using ISEStudio.Infrastructure.Startup;
 using ISEStudio.Infrastructure.Persistence;
+using ISEStudio.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -58,8 +59,10 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         await using var scope = services.CreateAsyncScope();
         var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
 
-        await Assert.ThrowsAsync<DbUpdateException>(() =>
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             store.RecordFactAsync(command, CancellationToken.None));
+
+        Assert.Contains("chunk", exception.Message, StringComparison.OrdinalIgnoreCase);
 
         await using var verify = CreateDbContext();
         Assert.Empty(await verify.Facts.ToListAsync());
@@ -67,6 +70,84 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         Assert.Empty(await verify.AuditEvents
             .Where(item => item.KnowledgeSystemId == _fixture.KnowledgeSystemId)
             .ToListAsync());
+    }
+
+    [Fact]
+    public async Task Record_fact_rejects_evidence_chunk_from_different_knowledge_system()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+        var foreignChunkId = await CreateForeignChunkAsync();
+        var command = NewEntityObjectFact(evidenceCount: 1) with
+        {
+            Evidence = [new FactEvidenceInput(foreignChunkId, "quote", "predicate")]
+        };
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            store.RecordFactAsync(command, CancellationToken.None));
+
+        Assert.Contains("does not belong to knowledge system", exception.Message, StringComparison.OrdinalIgnoreCase);
+
+        await using var verify = CreateDbContext();
+        Assert.Empty(await verify.Facts.ToListAsync());
+        Assert.Empty(await verify.FactEvidence.ToListAsync());
+        Assert.Empty(await verify.AuditEvents
+            .Where(item => item.KnowledgeSystemId == _fixture.KnowledgeSystemId)
+            .ToListAsync());
+    }
+
+    [Fact]
+    public async Task Invalidate_fact_marks_live_fact_in_same_knowledge_system_and_writes_audit()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+        var command = NewEntityObjectFact(evidenceCount: 1);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+        var fact = await store.RecordFactAsync(command, CancellationToken.None);
+        var invalidatedAt = DateTimeOffset.UtcNow;
+
+        await store.InvalidateFactAsync(_fixture.KnowledgeSystemId, fact.Id, invalidatedAt, CancellationToken.None);
+
+        await using var verify = CreateDbContext();
+        var persistedFact = await verify.Facts.SingleAsync(item => item.Id == fact.Id);
+        Assert.Equal(TruncateToPostgresPrecision(invalidatedAt), persistedFact.InvalidatedAt);
+
+        var audit = await verify.AuditEvents.SingleAsync(item =>
+            item.KnowledgeSystemId == _fixture.KnowledgeSystemId &&
+            item.Action == "graph.fact.invalidated");
+
+        Assert.Equal("graph.fact.invalidated", audit.Action);
+        Assert.NotNull(audit.Detail);
+        Assert.Equal(fact.Id, audit.Detail!.RootElement.GetProperty("factId").GetGuid());
+        Assert.Equal(_fixture.KnowledgeSystemId, audit.Detail.RootElement.GetProperty("knowledgeSystemId").GetGuid());
+    }
+
+    [Fact]
+    public async Task Invalidate_fact_throws_when_fact_is_already_invalidated_or_in_another_knowledge_system()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+        var command = NewEntityObjectFact(evidenceCount: 1);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+        var fact = await store.RecordFactAsync(command, CancellationToken.None);
+        await store.InvalidateFactAsync(_fixture.KnowledgeSystemId, fact.Id, DateTimeOffset.UtcNow, CancellationToken.None);
+        var otherKnowledgeSystemId = await CreateKnowledgeSystemAsync("graph-store-other-ks");
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            store.InvalidateFactAsync(_fixture.KnowledgeSystemId, fact.Id, DateTimeOffset.UtcNow.AddMinutes(1), CancellationToken.None));
+
+        await Assert.ThrowsAsync<KeyNotFoundException>(() =>
+            store.InvalidateFactAsync(otherKnowledgeSystemId, fact.Id, DateTimeOffset.UtcNow.AddMinutes(2), CancellationToken.None));
     }
 
     private RecordFactCommand NewEntityObjectFact(int evidenceCount)
@@ -94,7 +175,73 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         db.FactEvidence.RemoveRange(db.FactEvidence);
         db.Facts.RemoveRange(db.Facts);
         db.AuditEvents.RemoveRange(db.AuditEvents.Where(item => item.KnowledgeSystemId == _fixture.KnowledgeSystemId));
+        db.Chunks.RemoveRange(db.Chunks.Where(item => item.Id != _fixture.ChunkId));
+        db.Documents.RemoveRange(db.Documents.Where(item => item.KnowledgeSystemId != _fixture.KnowledgeSystemId));
+        db.KnowledgeSystems.RemoveRange(db.KnowledgeSystems.Where(item => item.Id != _fixture.KnowledgeSystemId));
         await db.SaveChangesAsync();
+    }
+
+    private async Task<Guid> CreateForeignChunkAsync()
+    {
+        var otherKnowledgeSystemId = await CreateKnowledgeSystemAsync("graph-store-foreign-chunk");
+        var documentId = Guid.NewGuid();
+        var chunkId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+
+        await using var db = CreateDbContext();
+        db.Documents.Add(new DocumentEntity
+        {
+            Id = documentId,
+            KnowledgeSystemId = otherKnowledgeSystemId,
+            Sha256 = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N"),
+            OriginalFilename = "foreign.txt",
+            Folder = "/",
+            Ext = "txt",
+            SizeBytes = 14,
+            StoragePath = $"foreign/{documentId:N}",
+            UploadedAt = now,
+        });
+        db.Chunks.Add(new ChunkEntity
+        {
+            Id = chunkId,
+            DocumentId = documentId,
+            Idx = 0,
+            Text = "foreign chunk",
+            CharStart = 0,
+            CharEnd = 13,
+            TokenEstimate = 2,
+            CreatedAt = now,
+        });
+        await db.SaveChangesAsync();
+
+        return chunkId;
+    }
+
+    private async Task<Guid> CreateKnowledgeSystemAsync(string publicId)
+    {
+        var knowledgeSystemId = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+
+        await using var db = CreateDbContext();
+        db.KnowledgeSystems.Add(new KnowledgeSystemEntity
+        {
+            Id = knowledgeSystemId,
+            PublicId = publicId,
+            Name = publicId,
+            Description = "Fixture knowledge system",
+            GraphIri = $"https://example.test/{publicId}",
+            BaseIri = $"https://example.test/{publicId}#",
+            CreatedAt = now,
+            UpdatedAt = now,
+        });
+        await db.SaveChangesAsync();
+
+        return knowledgeSystemId;
+    }
+
+    private static DateTimeOffset TruncateToPostgresPrecision(DateTimeOffset value)
+    {
+        return new DateTimeOffset(value.Ticks - (value.Ticks % 10), value.Offset);
     }
 
     private ISEStudioDbContext CreateDbContext()
