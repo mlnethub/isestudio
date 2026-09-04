@@ -8,8 +8,8 @@ namespace ISEStudio.IntegrationTests.Persistence;
 
 /// <summary>
 /// Spins up a real PostgreSQL instance via Testcontainers, applies the
-/// <c>InitialCompatibility</c> migration, and asserts the resulting schema
-/// matches the Python backend's 24-table contract: every business table is
+/// current migration set, and asserts the resulting schema matches the
+/// current 33-table contract: every business table is
 /// present, <c>jsonb</c> / <c>bytea</c> column types land correctly, the
 /// three composite uniqueness constraints from the Python source are
 /// enforced, and the database-level FK constraints produced by SQLAlchemy's
@@ -35,11 +35,13 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
     /// <summary>Shared context applied with the migration before any assertion runs.</summary>
     private ISEStudioDbContext _db = null!;
 
-    /// <summary>The 24 Python business tables (lowercased).</summary>
+    /// <summary>The current 33 business tables (lowercased).</summary>
     private static readonly string[] ExpectedTables =
     {
         "users", "authsession", "ksgrant", "document", "chunk", "knowledgesystem",
         "knowledgepromptoverride", "knowledgeapitoken", "mcpusertoken", "provider",
+        "entity_types", "relation_types", "relation_type_domains", "relation_type_ranges",
+        "entity_type_parents", "graph_entities", "facts", "fact_evidence", "fact_conflicts",
         "systemconfig", "extractionjob", "axiomprovenance", "aboxprovenance",
         "auditevent", "ontologyrelease", "releasedeployment",
         "releasestatementprovenance", "exportjob", "conflict", "entityresolution",
@@ -146,12 +148,12 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Asserts that all 24 Python business tables are created by the migration
-    /// with no extras — the public schema should contain exactly the 24 tables
+    /// Asserts that all 33 business tables are created by the migration
+    /// with no extras — the public schema should contain exactly the 33 tables
     /// listed in <see cref="ExpectedTables"/>.
     /// </summary>
     [Fact]
-    public async Task Migration_creates_all_24_business_tables_with_postgres_types()
+    public async Task Migration_creates_all_33_business_tables_with_postgres_types()
     {
         var tables = await GetTableNamesAsync();
 
@@ -315,24 +317,18 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The Python backend declares 49 <c>foreign_key=</c> references in
-    /// <c>backend/app/db/models.py</c>. Each one becomes a real
-    /// <c>ForeignKey</c> column element in SQLAlchemy and produces a Postgres
-    /// <c>REFERENCES</c> constraint at DDL time. After consolidation, 45
-    /// distinct (from_table, from_column) &rarr; (to_table, to_column)
-    /// relationships are expected; this test asserts the structural shape of
-    /// every one and checks a handful of representative ones by name.
+    /// The current EF model emits 64 distinct (from_table, from_column)
+    /// &rarr; (to_table, to_column) foreign keys across the relational schema.
+    /// This test asserts the structural shape of every one and checks a
+    /// representative subset by name.
     /// </summary>
     [Fact]
     public async Task Foreign_key_constraints_match_python_contract()
     {
         var fks = await GetForeignKeysAsync();
 
-        // The total number must match the count our 24 configurations emit.
-        // 45 HasOne<T>().WithMany().HasForeignKey(...) calls were added in
-        // EntityConfigurations.cs. The migration produces one FK constraint
-        // per call.
-        Assert.Equal(45, fks.Count);
+        // The total number must match the count our current configurations emit.
+        Assert.Equal(64, fks.Count);
 
         // Sanity check: every FK must point at the `id` column of a known
         // business table (the principal). No FK should reference the EFMigrationHistory
@@ -354,6 +350,16 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
                                   && fk.ToTable == "users");
         Assert.Contains(fks, fk => fk.FromTable == "chunk" && fk.FromColumn == "DocumentId"
                                   && fk.ToTable == "document");
+        Assert.Contains(fks, fk => fk.FromTable == "entity_types" && fk.FromColumn == "knowledge_system_id"
+                      && fk.ToTable == "knowledgesystem");
+        Assert.Contains(fks, fk => fk.FromTable == "graph_entities" && fk.FromColumn == "entity_type_id"
+                      && fk.ToTable == "entity_types");
+        Assert.Contains(fks, fk => fk.FromTable == "facts" && fk.FromColumn == "subject_entity_id"
+                      && fk.ToTable == "graph_entities");
+        Assert.Contains(fks, fk => fk.FromTable == "fact_evidence" && fk.FromColumn == "source_chunk_id"
+                      && fk.ToTable == "chunk");
+        Assert.Contains(fks, fk => fk.FromTable == "fact_conflicts" && fk.FromColumn == "conflict_id"
+                      && fk.ToTable == "conflict");
         Assert.Contains(fks, fk => fk.FromTable == "knowledgesystem" && fk.FromColumn == "OwnerId"
                                   && fk.ToTable == "users");
         Assert.Contains(fks, fk => fk.FromTable == "knowledgesystem" && fk.FromColumn == "LlmProviderId"

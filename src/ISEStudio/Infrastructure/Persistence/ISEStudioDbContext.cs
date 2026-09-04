@@ -6,7 +6,7 @@ namespace ISEStudio.Infrastructure.Persistence;
 
 /// <summary>
 /// EF Core <see cref="DbContext"/> for ISEStudio's relational metadata store.
-/// Maps the 24 tables that mirror the Python backend's SQLModel schema, with
+/// Maps the 33 tables that mirror the current relational contract, with
 /// <see cref="EntityBase.Id"/> (Guid) as the primary key for every business
 /// entity. (Phase 3: the legacy_id compatibility column was dropped.)
 /// </summary>
@@ -69,6 +69,37 @@ public sealed class ISEStudioDbContext : DbContext
 
     /// <summary>Singleton runtime configuration (IsSingleton = true).</summary>
     public DbSet<SystemConfigEntity> SystemConfigs => Set<SystemConfigEntity>();
+
+    // ---------------------------------------------------------------------
+    // Graph
+    // ---------------------------------------------------------------------
+
+    /// <summary>Governed graph entity types per knowledge system.</summary>
+    public DbSet<EntityTypeEntity> EntityTypes => Set<EntityTypeEntity>();
+
+    /// <summary>Governed graph relation types per knowledge system.</summary>
+    public DbSet<RelationTypeEntity> RelationTypes => Set<RelationTypeEntity>();
+
+    /// <summary>Allowed domain links from relation types to entity types.</summary>
+    public DbSet<RelationTypeDomainEntity> RelationTypeDomains => Set<RelationTypeDomainEntity>();
+
+    /// <summary>Allowed range links from relation types to entity types.</summary>
+    public DbSet<RelationTypeRangeEntity> RelationTypeRanges => Set<RelationTypeRangeEntity>();
+
+    /// <summary>Parent links between entity types.</summary>
+    public DbSet<EntityTypeParentEntity> EntityTypeParents => Set<EntityTypeParentEntity>();
+
+    /// <summary>Concrete graph entities rooted in one knowledge system.</summary>
+    public DbSet<GraphEntityEntity> GraphEntities => Set<GraphEntityEntity>();
+
+    /// <summary>Append-only fact ledger rows.</summary>
+    public DbSet<FactEntity> Facts => Set<FactEntity>();
+
+    /// <summary>Chunk-backed evidence attached to facts.</summary>
+    public DbSet<FactEvidenceEntity> FactEvidence => Set<FactEvidenceEntity>();
+
+    /// <summary>Join rows linking facts to existing conflict records.</summary>
+    public DbSet<FactConflictEntity> FactConflicts => Set<FactConflictEntity>();
 
     // ---------------------------------------------------------------------
     // Provenance & jobs
@@ -160,6 +191,7 @@ public sealed class ISEStudioDbContext : DbContext
         modelBuilder.Entity<Entities.ExportJobEntity>().Property(x => x.Files).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.ConflictEntity>().Property(x => x.Payload).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.EntityResolutionEntity>().Property(x => x.Context).HasColumnType("jsonb");
+        modelBuilder.Entity<Entities.FactEntity>().Property(x => x.ObjectValue).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.TermProposalEntity>().Property(x => x.Payload).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.TermProposalEntity>().Property(x => x.Evidence).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.TermProposalEntity>().Property(x => x.SourceChunkIds).HasColumnType("jsonb");
