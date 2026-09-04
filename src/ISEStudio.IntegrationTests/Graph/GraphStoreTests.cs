@@ -193,6 +193,158 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
             factIdElement.GetGuid() == fact.Id);
     }
 
+    [Fact]
+    public async Task Neighborhood_uses_bounded_traversal_and_effective_time()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var rootEntityId = _fixture.SubjectEntityId;
+        var middleEntityId = _fixture.ObjectEntityId;
+        var leafEntityId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump C");
+
+        await InsertFactAsync(
+            _fixture.KnowledgeSystemId,
+            rootEntityId,
+            middleEntityId,
+            validFrom: new DateTimeOffset(2025, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        await InsertFactAsync(
+            _fixture.KnowledgeSystemId,
+            middleEntityId,
+            leafEntityId,
+            validFrom: new DateTimeOffset(2027, 1, 1, 0, 0, 0, TimeSpan.Zero));
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(
+                _fixture.KnowledgeSystemId,
+                rootEntityId,
+                2,
+                new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+                false),
+            CancellationToken.None);
+
+        Assert.Contains(middleEntityId, result.EntityIds);
+        Assert.DoesNotContain(leafEntityId, result.EntityIds);
+        Assert.Single(result.Facts);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(6)]
+    public async Task Neighborhood_rejects_max_depth_outside_supported_range(int maxDepth)
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var exception = await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            store.GetNeighborhoodAsync(
+                new GraphNeighborhoodQuery(
+                    _fixture.KnowledgeSystemId,
+                    _fixture.SubjectEntityId,
+                    maxDepth,
+                    DateTimeOffset.UtcNow,
+                    false),
+                CancellationToken.None));
+
+        Assert.Equal("MaxDepth", exception.ParamName);
+    }
+
+    [Fact]
+    public async Task Neighborhood_excludes_invalidated_facts_unless_requested()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var rootEntityId = _fixture.SubjectEntityId;
+        var liveNeighborId = _fixture.ObjectEntityId;
+        var invalidatedNeighborId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump C");
+
+        await InsertFactAsync(_fixture.KnowledgeSystemId, rootEntityId, liveNeighborId);
+        var invalidatedFactId = await InsertFactAsync(
+            _fixture.KnowledgeSystemId,
+            rootEntityId,
+            invalidatedNeighborId,
+            invalidatedAt: DateTimeOffset.UtcNow);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var liveOnly = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(_fixture.KnowledgeSystemId, rootEntityId, 1, DateTimeOffset.UtcNow, false),
+            CancellationToken.None);
+        var withInvalidated = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(_fixture.KnowledgeSystemId, rootEntityId, 1, DateTimeOffset.UtcNow, true),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(invalidatedNeighborId, liveOnly.EntityIds);
+        Assert.DoesNotContain(liveOnly.Facts, fact => fact.Id == invalidatedFactId);
+
+        Assert.Contains(invalidatedNeighborId, withInvalidated.EntityIds);
+        Assert.Contains(withInvalidated.Facts, fact => fact.Id == invalidatedFactId && fact.Status == FactStatus.Invalidated);
+    }
+
+    [Fact]
+    public async Task Neighborhood_never_crosses_knowledge_system_boundaries()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var foreignKnowledgeSystemId = await CreateKnowledgeSystemAsync($"graph-store-neighborhood-{Guid.NewGuid():N}");
+        var foreignEntityId = await CreateGraphEntityAsync(foreignKnowledgeSystemId, "Foreign Pump");
+        await InsertFactAsync(_fixture.KnowledgeSystemId, _fixture.SubjectEntityId, foreignEntityId);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(_fixture.KnowledgeSystemId, _fixture.SubjectEntityId, 5, DateTimeOffset.UtcNow, false),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(foreignEntityId, result.EntityIds);
+        Assert.DoesNotContain(result.Facts, fact => fact.ObjectEntityId == foreignEntityId);
+    }
+
+    [Fact]
+    public async Task Neighborhood_excludes_cycle_edges_and_deduplicates_entities()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var rootEntityId = _fixture.SubjectEntityId;
+        var leftEntityId = _fixture.ObjectEntityId;
+        var rightEntityId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump C");
+        var sharedEntityId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump D");
+
+        await InsertFactAsync(_fixture.KnowledgeSystemId, rootEntityId, leftEntityId);
+        await InsertFactAsync(_fixture.KnowledgeSystemId, rootEntityId, rightEntityId);
+        await InsertFactAsync(_fixture.KnowledgeSystemId, leftEntityId, sharedEntityId);
+        await InsertFactAsync(_fixture.KnowledgeSystemId, rightEntityId, sharedEntityId);
+        await InsertFactAsync(_fixture.KnowledgeSystemId, sharedEntityId, rootEntityId);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(_fixture.KnowledgeSystemId, rootEntityId, 5, DateTimeOffset.UtcNow, false),
+            CancellationToken.None);
+
+        Assert.Equal(result.EntityIds.Count, result.EntityIds.Distinct().Count());
+        Assert.Equal(1, result.EntityIds.Count(id => id == sharedEntityId));
+        Assert.DoesNotContain(result.Facts, fact => fact.SubjectEntityId == sharedEntityId && fact.ObjectEntityId == rootEntityId);
+        Assert.Equal(4, result.Facts.Count);
+    }
+
     private RecordFactCommand NewEntityObjectFact(int evidenceCount)
     {
         return new RecordFactCommand(
@@ -280,6 +432,52 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         await db.SaveChangesAsync();
 
         return knowledgeSystemId;
+    }
+
+    private async Task<Guid> CreateGraphEntityAsync(Guid knowledgeSystemId, string label)
+    {
+        var entityId = Guid.NewGuid();
+
+        await using var db = CreateDbContext();
+        db.GraphEntities.Add(new GraphEntityEntity
+        {
+            Id = entityId,
+            KnowledgeSystemId = knowledgeSystemId,
+            Label = label,
+            Description = $"Fixture entity {label}",
+        });
+        await db.SaveChangesAsync();
+
+        return entityId;
+    }
+
+    private async Task<Guid> InsertFactAsync(
+        Guid knowledgeSystemId,
+        Guid subjectEntityId,
+        Guid objectEntityId,
+        DateTimeOffset? validFrom = null,
+        DateTimeOffset? validTo = null,
+        DateTimeOffset? invalidatedAt = null)
+    {
+        var factId = Guid.NewGuid();
+
+        await using var db = CreateDbContext();
+        db.Facts.Add(new FactEntity
+        {
+            Id = factId,
+            KnowledgeSystemId = knowledgeSystemId,
+            SubjectEntityId = subjectEntityId,
+            PredicateId = _fixture.PredicateId,
+            ObjectEntityId = objectEntityId,
+            Confidence = 0.9m,
+            ValidFrom = validFrom,
+            ValidTo = validTo,
+            RecordedAt = DateTimeOffset.UtcNow,
+            InvalidatedAt = invalidatedAt,
+        });
+        await db.SaveChangesAsync();
+
+        return factId;
     }
 
     private static DateTimeOffset TruncateToPostgresPrecision(DateTimeOffset value)

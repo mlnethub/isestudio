@@ -110,7 +110,16 @@ public sealed record GraphNeighborhoodQuery(
     Guid RootEntityId,
     int MaxDepth,
     DateTimeOffset EffectiveAt,
-    bool IncludeInvalidated);
+    bool IncludeInvalidated)
+{
+    public void Validate()
+    {
+        if (MaxDepth is < 1 or > 5)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxDepth), "MaxDepth must be between 1 and 5.");
+        }
+    }
+}
 
 public sealed record GraphNeighborhood(
     IReadOnlyList<Guid> EntityIds,
