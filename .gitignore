@@ -21,6 +21,7 @@ tmp/
 
 # SDD scratch spaces
 .superpowers/
+.worktrees/
 
 # .NET
 **/bin/
