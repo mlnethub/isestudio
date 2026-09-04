@@ -327,6 +327,7 @@ builder.Services.AddDbContextFactory<ISEStudioDbContext>((sp, options) =>
 // `DbContextOptions` graph compatible with both lifetimes.
 builder.Services.AddScoped<ISEStudioDbContext>(sp =>
     sp.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>().CreateDbContext());
+builder.Services.AddGraphStore();
 
 // Singleton so the dispatcher's "find any active extraction" guard does
 // not have to share state with the request-scoped DbContext; the store
