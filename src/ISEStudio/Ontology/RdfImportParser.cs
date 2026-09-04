@@ -120,7 +120,7 @@ public sealed class RdfImportParser
 
     private static IReadOnlyList<OntoTriple> ParseWithDotNetRdf(byte[] data, string format, string? baseIri, int? maxTriples, string blankNodeScope)
     {
-        var graph = new Graph();
+        var graph = new VDS.RDF.Graph();
         if (!string.IsNullOrWhiteSpace(baseIri))
         {
             try { graph.BaseUri = new Uri(baseIri, UriKind.RelativeOrAbsolute); }

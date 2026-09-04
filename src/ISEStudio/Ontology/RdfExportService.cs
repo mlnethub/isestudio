@@ -88,9 +88,9 @@ public sealed class RdfExportService
         return Encoding.UTF8.GetBytes(sw.ToString());
     }
 
-    private static Graph BuildDotNetRdfGraph(IReadOnlyList<OntoQuad> quads)
+    private static VDS.RDF.Graph BuildDotNetRdfGraph(IReadOnlyList<OntoQuad> quads)
     {
-        var graph = new Graph();
+        var graph = new VDS.RDF.Graph();
         foreach (var q in quads)
         {
             var s = ToDotNetRdfNode(graph, q.Subject);
