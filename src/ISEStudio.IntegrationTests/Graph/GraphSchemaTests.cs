@@ -47,6 +47,43 @@ public sealed class GraphSchemaTests : IClassFixture<PostgresGraphFixture>
     }
 
     [Fact]
+    public async Task Graph_migration_uses_postgres_temporal_and_confidence_types()
+    {
+        var columns = await _fixture.GetColumnsAsync("facts");
+
+        Assert.Contains(("confidence", "numeric"), columns);
+        Assert.Contains(("valid_from", "timestamp with time zone"), columns);
+        Assert.Contains(("valid_to", "timestamp with time zone"), columns);
+        Assert.Contains(("recorded_at", "timestamp with time zone"), columns);
+    }
+
+    [Fact]
+    public async Task Graph_migration_creates_all_graph_foreign_keys()
+    {
+        var foreignKeys = await _fixture.GetForeignKeysAsync();
+
+        Assert.Contains(("entity_types", "knowledge_system_id", "knowledgesystem", "id"), foreignKeys);
+        Assert.Contains(("relation_types", "knowledge_system_id", "knowledgesystem", "id"), foreignKeys);
+        Assert.Contains(("relation_type_domains", "relation_type_id", "relation_types", "id"), foreignKeys);
+        Assert.Contains(("relation_type_domains", "entity_type_id", "entity_types", "id"), foreignKeys);
+        Assert.Contains(("relation_type_ranges", "relation_type_id", "relation_types", "id"), foreignKeys);
+        Assert.Contains(("relation_type_ranges", "entity_type_id", "entity_types", "id"), foreignKeys);
+        Assert.Contains(("entity_type_parents", "entity_type_id", "entity_types", "id"), foreignKeys);
+        Assert.Contains(("entity_type_parents", "parent_entity_type_id", "entity_types", "id"), foreignKeys);
+        Assert.Contains(("graph_entities", "knowledge_system_id", "knowledgesystem", "id"), foreignKeys);
+        Assert.Contains(("graph_entities", "entity_type_id", "entity_types", "id"), foreignKeys);
+        Assert.Contains(("facts", "knowledge_system_id", "knowledgesystem", "id"), foreignKeys);
+        Assert.Contains(("facts", "subject_entity_id", "graph_entities", "id"), foreignKeys);
+        Assert.Contains(("facts", "predicate_id", "relation_types", "id"), foreignKeys);
+        Assert.Contains(("facts", "object_entity_id", "graph_entities", "id"), foreignKeys);
+        Assert.Contains(("facts", "supersedes_fact_id", "facts", "id"), foreignKeys);
+        Assert.Contains(("fact_evidence", "fact_id", "facts", "id"), foreignKeys);
+        Assert.Contains(("fact_evidence", "source_chunk_id", "chunk", "id"), foreignKeys);
+        Assert.Contains(("fact_conflicts", "fact_id", "facts", "id"), foreignKeys);
+        Assert.Contains(("fact_conflicts", "conflict_id", "conflict", "id"), foreignKeys);
+    }
+
+    [Fact]
     public async Task Graph_migration_creates_active_fact_lookup_indexes()
     {
         var indexes = await _fixture.GetIndexDefinitionsAsync("facts", "fact_evidence");

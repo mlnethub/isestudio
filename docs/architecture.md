@@ -26,6 +26,22 @@ flowchart TB
 
 SQLite remains a local-development fallback. It is not the recommended shared-deployment database.
 
+## Graph Ledger
+
+PostgreSQL is the sole runtime authority for the knowledge graph ledger. Entity types,
+relation types, entities, facts, evidence, conflicts, validity windows, and audit records
+are stored in the ISEStudio schema and scoped by `KnowledgeSystemId`.
+
+Facts are append-only SPO assertions. Invalidation and supersession preserve the original
+row and its provenance instead of deleting historical facts. Neighborhood reads use a
+parameterized recursive CTE with a maximum depth of five, effective-time filtering, cycle
+guards, and knowledge-system isolation. The active subject/object indexes support these
+bounded traversals.
+
+Oxigraph is not involved in runtime fact storage or graph traversal. It remains an import
+and RDF/OWL boundary for later ontology work; PostgreSQL remains authoritative for the
+operational graph and its governance history.
+
 ## Knowledge-System Graphs
 
 ```mermaid

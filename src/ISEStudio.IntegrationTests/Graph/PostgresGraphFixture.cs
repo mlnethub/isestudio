@@ -1,6 +1,8 @@
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Infrastructure.Startup;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Testcontainers.PostgreSql;
 
@@ -94,6 +96,38 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         return columns;
     }
 
+    public async Task<HashSet<(string Table, string Column, string PrincipalTable, string PrincipalColumn)>> GetForeignKeysAsync()
+    {
+        await using var connection = new NpgsqlConnection(_container.GetConnectionString());
+        await connection.OpenAsync();
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT key_usage.table_name,
+                   key_usage.column_name,
+                   reference_usage.table_name,
+                   reference_usage.column_name
+            FROM information_schema.key_column_usage AS key_usage
+            JOIN information_schema.constraint_column_usage AS reference_usage
+              ON reference_usage.constraint_schema = key_usage.constraint_schema
+             AND reference_usage.constraint_name = key_usage.constraint_name
+            JOIN information_schema.table_constraints AS constraints
+              ON constraints.constraint_schema = key_usage.constraint_schema
+             AND constraints.constraint_name = key_usage.constraint_name
+             AND constraints.table_name = key_usage.table_name
+            WHERE key_usage.table_schema = 'public'
+              AND constraints.constraint_type = 'FOREIGN KEY'";
+
+        await using var reader = await command.ExecuteReaderAsync();
+        var foreignKeys = new HashSet<(string, string, string, string)>();
+        while (await reader.ReadAsync())
+        {
+            foreignKeys.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2), reader.GetString(3)));
+        }
+
+        return foreignKeys;
+    }
+
     public async Task<Dictionary<string, string>> GetIndexDefinitionsAsync(params string[] tables)
     {
         await using var connection = new NpgsqlConnection(_container.GetConnectionString());
@@ -122,6 +156,101 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         var connection = new NpgsqlConnection(_container.GetConnectionString());
         await connection.OpenAsync();
         return connection;
+    }
+
+    public async Task ResetGraphWritesAsync()
+    {
+        await using var connection = await OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            DELETE FROM fact_evidence;
+            DELETE FROM facts;
+            DELETE FROM auditevent WHERE ""Action"" LIKE 'graph.fact.%';
+            DELETE FROM graph_entities WHERE knowledge_system_id = @ks
+              AND id NOT IN (@subject, @object);";
+        command.Parameters.AddWithValue("ks", KnowledgeSystemId);
+        command.Parameters.AddWithValue("subject", SubjectEntityId);
+        command.Parameters.AddWithValue("object", ObjectEntityId);
+        await command.ExecuteNonQueryAsync();
+    }
+
+    public async Task<Guid> CreateTraversalFixtureAsync(int factCount)
+    {
+        if (factCount < 5)
+        {
+            throw new ArgumentOutOfRangeException(nameof(factCount));
+        }
+
+        var chainEntityIds = Enumerable.Range(0, 4).Select(_ => Guid.NewGuid()).ToArray();
+        var chain = new[] { SubjectEntityId, chainEntityIds[0], chainEntityIds[1], chainEntityIds[2], chainEntityIds[3], ObjectEntityId };
+
+        await using var connection = await OpenConnectionAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+        await using (var entities = connection.CreateCommand())
+        {
+            entities.Transaction = transaction;
+            entities.CommandText = @"
+                INSERT INTO graph_entities (id, knowledge_system_id, entity_type_id, label, description)
+                SELECT value, @ks, NULL, 'Traversal entity', 'Performance fixture'
+                FROM unnest(@ids) AS value;";
+            entities.Parameters.AddWithValue("ks", KnowledgeSystemId);
+            entities.Parameters.AddWithValue("ids", chainEntityIds);
+            await entities.ExecuteNonQueryAsync();
+        }
+
+        await using (var facts = connection.CreateCommand())
+        {
+            facts.Transaction = transaction;
+            facts.CommandText = @"
+                INSERT INTO facts (
+                    id, knowledge_system_id, subject_entity_id, predicate_id,
+                      object_value, confidence, recorded_at)
+                  SELECT gen_random_uuid(), @ks, @subject, @predicate,
+                      '""padding""'::jsonb, 0.9, now()
+                FROM generate_series(1, @padding);
+
+                INSERT INTO facts (
+                    id, knowledge_system_id, subject_entity_id, predicate_id,
+                    object_entity_id, confidence, recorded_at)
+                SELECT gen_random_uuid(), @ks, chain.subject_entity_id, @predicate,
+                       chain.object_entity_id, 0.9, now()
+                FROM (VALUES
+                    (@chain0, @chain1),
+                    (@chain1, @chain2),
+                    (@chain2, @chain3),
+                    (@chain3, @chain4),
+                    (@chain4, @chain5)) AS chain(subject_entity_id, object_entity_id);";
+            facts.Parameters.AddWithValue("ks", KnowledgeSystemId);
+            facts.Parameters.AddWithValue("subject", SubjectEntityId);
+            facts.Parameters.AddWithValue("predicate", PredicateId);
+            facts.Parameters.AddWithValue("object", ObjectEntityId);
+            facts.Parameters.AddWithValue("padding", factCount - 5);
+            for (var index = 0; index < chain.Length; index++)
+            {
+                facts.Parameters.AddWithValue($"chain{index}", chain[index]);
+            }
+
+            await facts.ExecuteNonQueryAsync();
+        }
+
+        await transaction.CommitAsync();
+        return SubjectEntityId;
+    }
+
+    public ServiceProvider BuildServices()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IDbContextFactory<ISEStudioDbContext>>(_ =>
+        {
+            var options = new DbContextOptionsBuilder<ISEStudioDbContext>()
+                .UseNpgsql(_container.GetConnectionString())
+                .Options;
+            return new PgDbContextFactory(options);
+        });
+        services.AddScoped<ISEStudioDbContext>(sp =>
+            sp.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>().CreateDbContext());
+        services.AddGraphStore();
+        return services.BuildServiceProvider();
     }
 
     public async Task SeedGraphReferencesAsync()
@@ -198,5 +327,17 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         });
 
         await _db.SaveChangesAsync();
+    }
+
+    private sealed class PgDbContextFactory : IDbContextFactory<ISEStudioDbContext>
+    {
+        private readonly DbContextOptions<ISEStudioDbContext> _options;
+
+        public PgDbContextFactory(DbContextOptions<ISEStudioDbContext> options)
+        {
+            _options = options;
+        }
+
+        public ISEStudioDbContext CreateDbContext() => new(_options);
     }
 }
