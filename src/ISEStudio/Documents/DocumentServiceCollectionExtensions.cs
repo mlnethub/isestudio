@@ -29,6 +29,8 @@ public static class DocumentServiceCollectionExtensions
     public static IServiceCollection AddDocumentServices(this IServiceCollection services)
     {
         services.AddScoped<DocumentService>();
+        services.AddScoped<DocumentVersionStore>();
+        services.AddScoped<PlainTextIngestionService>();
         services.AddScoped<IDocumentApplicationService, DocumentApplicationService>();
         return services;
     }

@@ -10,4 +10,8 @@
 # Ingestion Stage 1
 
 - Document version persistence slice: Stage 1 review fixes complete locally; concurrent winner reload, immutable version/chunk database triggers, composite knowledge-system foreign key, canonical SHA-256 validation, sequential idempotency, and transactional rollback are covered by PostgreSQL integration tests.
-- Later ingestion stages: not started.
+
+# Ingestion Stage 2
+
+- Plain-text application boundary complete: deterministic UTF-8 SHA-256 identity, existing paragraph-aware chunker reuse, ordered chunk metadata persistence, repeated-content idempotency, changed-content versioning, and PostgreSQL integration coverage.
+- Acceptance criteria pass; no migration required and no frontend, Rust, parser, connector, job, API, or graph-core behavior changed.
