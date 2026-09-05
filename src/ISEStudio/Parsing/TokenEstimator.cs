@@ -1,5 +1,4 @@
-using System.Globalization;
-using System.Text.RegularExpressions;
+using System.Text;
 
 namespace ISEStudio.Parsing;
 
@@ -17,13 +16,6 @@ namespace ISEStudio.Parsing;
 /// </summary>
 public static class TokenEstimator
 {
-    // Three alternative classes: CJK ideographs / kana, ASCII alnum runs, single non-whitespace
-    // (catches punctuation + symbols). Must match the Python regex byte-for-byte to keep
-    // parity with the frozen manifest.
-    private static readonly Regex TokenPieces = new(
-        @"[㐀-䶿一-鿿豈-﫿]|[A-Za-z0-9_]+|[^\s]",
-        RegexOptions.Compiled);
-
     public static int Estimate(string? text)
     {
         if (string.IsNullOrEmpty(text))
@@ -32,17 +24,26 @@ public static class TokenEstimator
         }
 
         var sum = 0;
-        foreach (Match? match in TokenPieces.Matches(text))
+        var runes = text.EnumerateRunes().ToList();
+        for (var i = 0; i < runes.Count; i++)
         {
-            if (match is null || match.Length == 0) continue;
-            var piece = match.Value;
-            var first = piece[0];
-            if (first < 128 && (char.IsLetterOrDigit(first) || first == '_'))
+            var rune = runes[i];
+            if (rune.IsAscii && (char.IsLetterOrDigit((char)rune.Value) || rune.Value == '_'))
             {
                 // Latin/numeric/underscore run: ~4 chars per token, floor at 1.
-                sum += Math.Max(1, (int)Math.Ceiling(piece.Length / 4.0));
+                var runLength = 1;
+                while (i + runLength < runes.Count
+                    && runes[i + runLength].IsAscii
+                    && (char.IsLetterOrDigit((char)runes[i + runLength].Value)
+                        || runes[i + runLength].Value == '_'))
+                {
+                    runLength++;
+                }
+
+                sum += Math.Max(1, (int)Math.Ceiling(runLength / 4.0));
+                i += runLength - 1;
             }
-            else
+            else if (!Rune.IsWhiteSpace(rune))
             {
                 // CJK or other single non-whitespace character → 1 token.
                 sum += 1;

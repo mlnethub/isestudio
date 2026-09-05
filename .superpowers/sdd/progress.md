@@ -14,4 +14,5 @@
 # Ingestion Stage 2
 
 - Plain-text application boundary complete: deterministic UTF-8 SHA-256 identity, existing paragraph-aware chunker reuse, ordered chunk metadata persistence, repeated-content idempotency, changed-content versioning, and PostgreSQL integration coverage.
+- Stage 2 Unicode review complete: chunk budgets, safe string boundaries, persisted character offsets, and token estimates now use Unicode scalar/code-point semantics; ASCII parity remains covered.
 - Acceptance criteria pass; no migration required and no frontend, Rust, parser, connector, job, API, or graph-core behavior changed.

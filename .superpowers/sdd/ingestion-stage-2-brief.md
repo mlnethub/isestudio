@@ -13,8 +13,8 @@ records the immutable document version and all version-owned chunks.
   lowercase SHA-256 and persisted chunk count.
 - SHA-256 is computed from the UTF-8 bytes of the exact supplied string.
 - Chunking reuses the existing paragraph-aware `Chunker` with the document
-  defaults, preserving order and emitting absolute character offsets and token
-  estimates.
+  defaults, preserving order and emitting absolute Unicode scalar/code-point
+  character offsets and token estimates.
 
 ## Scope
 
@@ -40,7 +40,8 @@ records the immutable document version and all version-owned chunks.
   versions or chunks.
 - Changed text creates a new version while retaining the prior immutable one.
 - Chunking is deterministic, ordered, rerunnable, and tests cover
-  `char_start`, `char_end`, and `token_estimate`.
+  `char_start`, `char_end`, and `token_estimate` for ASCII and mixed CJK/non-BMP
+  text without splitting surrogate pairs.
 - Version and every chunk are committed atomically; a failed chunk write leaves
   neither a version nor its chunks.
 - Existing knowledge-system isolation, lowercase SHA-256 normalization, and

@@ -17,13 +17,32 @@ the transactional Stage 1 `DocumentVersionStore`.
   `char_end`, `token_estimate`, repeated-content idempotency, and changed
   content producing a new version without changing prior chunks.
 
+## Unicode Defect Review
+
+The initial Stage 2 slice treated .NET UTF-16 string lengths and indexes as
+character offsets. A non-BMP scalar at a hard chunk boundary could therefore
+be split into two invalid surrogate fragments, while `char_start`/`char_end`
+and `token_estimate` counted UTF-16 code units rather than Unicode scalars.
+
+The fix keeps the existing paragraph/sentence algorithm and ASCII behavior,
+but maps Unicode scalar indexes to safe UTF-16 slice boundaries. Public chunk
+offsets and size budgets now use scalar/code-point counts. `TokenEstimator`
+walks `Rune` values so each CJK character and emoji contributes one token under
+the existing rule, while ASCII runs retain the four-characters-per-token
+estimate. PostgreSQL coverage now verifies the corrected metadata after
+persistence for mixed CJK and emoji text.
+
 ## Validation
 
-- Stage 2 narrow tests: 2 passed, 0 failed.
-- All ingestion/document tests: 10 passed, 0 failed.
+- Stage 2 narrow tests: 3 passed, 0 failed (including the Unicode regression).
+- All ingestion/document integration tests: 11 passed, 0 failed.
+- Chunker parity and focused parsing tests: 10 passed, 0 failed.
 - Graph integration tests: 25 passed, 0 failed.
 - Host project build: `src\\ISEStudio\\ISEStudio.csproj` succeeded.
 - `git diff --check`: passed.
+- The broader `ISEStudio.Tests` document filter still has 31 pre-existing
+  SQLite migration failures (`near "~": syntax error`) during test-host setup;
+  no failure reaches the changed Chunker or TokenEstimator code.
 
 ## Migration and Transaction Review
 

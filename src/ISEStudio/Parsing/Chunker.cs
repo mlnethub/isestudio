@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Text;
 
 namespace ISEStudio.Parsing;
 
@@ -50,15 +51,17 @@ public sealed class Chunker
             return Array.Empty<ChunkSpan>();
         }
 
+        var indices = new UnicodeIndexMap(text);
+
         // Replicates Python's split-by-paragraph + offset-tracking loop.
         var paragraphs = new List<(int Start, string Text)>();
-        var pos = 0;
+        var utf16Pos = 0;
         foreach (var part in ParaSplit.Split(text))
         {
-            var start = text.IndexOf(part, pos, StringComparison.Ordinal);
-            if (start < 0) start = pos;
-            paragraphs.Add((start, part));
-            pos = start + part.Length;
+            var utf16Start = text.IndexOf(part, utf16Pos, StringComparison.Ordinal);
+            if (utf16Start < 0) utf16Start = utf16Pos;
+            paragraphs.Add((indices.ToScalar(utf16Start), part));
+            utf16Pos = utf16Start + part.Length;
         }
 
         var chunks = new List<ChunkSpan>();
@@ -69,7 +72,7 @@ public sealed class Chunker
         void Flush()
         {
             if (bufStart is null) return;
-            var span = text.Substring(bufStart.Value, bufEnd - bufStart.Value);
+            var span = indices.Slice(bufStart.Value, bufEnd);
             chunks.Add(new ChunkSpan(idx, span, bufStart.Value, bufEnd, TokenEstimator.Estimate(span)));
             idx++;
             bufStart = null;
@@ -77,7 +80,7 @@ public sealed class Chunker
 
         foreach (var (start, para) in paragraphs)
         {
-            var plen = para.Length;
+            var plen = para.EnumerateRunes().Count();
             if (string.IsNullOrWhiteSpace(para)) continue;
 
             if (plen > Size)
@@ -91,7 +94,7 @@ public sealed class Chunker
                     var hardEnd = Math.Min(segStart + Size, paraEnd);
                     var segEnd = PreferredEnd(text, segStart, hardEnd, Size);
                     if (segEnd <= segStart) segEnd = hardEnd;
-                    var seg = text.Substring(segStart, segEnd - segStart);
+                    var seg = indices.Slice(segStart, segEnd);
                     chunks.Add(new ChunkSpan(idx, seg, segStart, segEnd, TokenEstimator.Estimate(seg)));
                     idx++;
                     segStart = segEnd;
@@ -131,7 +134,7 @@ public sealed class Chunker
                 {
                     newStart = c.CharStart;
                 }
-                var seg = text.Substring(newStart, c.CharEnd - newStart);
+                var seg = indices.Slice(newStart, c.CharEnd);
                 overlapped.Add(new ChunkSpan(c.Idx, seg, newStart, c.CharEnd, TokenEstimator.Estimate(seg)));
             }
             chunks = overlapped;
@@ -191,28 +194,30 @@ public sealed class Chunker
     /// </summary>
     internal static int PreferredEnd(string text, int start, int hardEnd, int size)
     {
-        if (hardEnd >= text.Length) return text.Length;
+        var indices = new UnicodeIndexMap(text);
+        if (hardEnd >= indices.ScalarCount) return indices.ScalarCount;
 
         var floor = start + Math.Max(1, (int)(size * 0.6));
         if (floor >= hardEnd) floor = start + 1;
 
-        var window = text.Substring(floor, hardEnd - floor);
+        var window = indices.Slice(floor, hardEnd);
         var paragraph = window.LastIndexOf("\n\n", StringComparison.Ordinal);
-        if (paragraph >= 0) return floor + paragraph + 2;
+        if (paragraph >= 0) return indices.ToScalar(indices.ToUtf16(floor) + paragraph + 2);
 
         var line = window.LastIndexOf('\n');
-        if (line >= 0) return floor + line + 1;
+        if (line >= 0) return indices.ToScalar(indices.ToUtf16(floor) + line + 1);
 
         var matches = SentenceEnd.Matches(window);
         if (matches.Count > 0)
         {
             var m = matches[matches.Count - 1];
-            return floor + m.Index + m.Length;
+            return indices.ToScalar(indices.ToUtf16(floor) + m.Index + m.Length);
         }
 
-        for (var i = window.Length - 1; i >= 0; i--)
+        var windowRunes = window.EnumerateRunes().ToList();
+        for (var i = windowRunes.Count - 1; i >= 0; i--)
         {
-            if (char.IsWhiteSpace(window[i])) return floor + i + 1;
+            if (Rune.IsWhiteSpace(windowRunes[i])) return floor + i + 1;
         }
 
         return hardEnd;
@@ -226,32 +231,35 @@ public sealed class Chunker
     {
         if (rawStart <= 0) return 0;
 
+        var indices = new UnicodeIndexMap(text);
+
         var searchStart = Math.Max(0, rawStart - 400);
-        var window = text.Substring(searchStart, rawStart - searchStart);
+        var window = indices.Slice(searchStart, rawStart);
 
         var paragraph = window.LastIndexOf("\n\n", StringComparison.Ordinal);
-        if (paragraph >= 0) return searchStart + paragraph + 2;
+        if (paragraph >= 0) return indices.ToScalar(indices.ToUtf16(searchStart) + paragraph + 2);
 
         var matches = SentenceEnd.Matches(window);
         if (matches.Count > 0)
         {
             var m = matches[matches.Count - 1];
-            return searchStart + m.Index + m.Length;
+            return indices.ToScalar(indices.ToUtf16(searchStart) + m.Index + m.Length);
         }
 
         var line = window.LastIndexOf('\n');
-        if (line >= 0) return searchStart + line + 1;
+        if (line >= 0) return indices.ToScalar(indices.ToUtf16(searchStart) + line + 1);
 
-        for (var i = window.Length - 1; i >= 0; i--)
+        var windowRunes = window.EnumerateRunes().ToList();
+        for (var i = windowRunes.Count - 1; i >= 0; i--)
         {
-            if (char.IsWhiteSpace(window[i])) return searchStart + i + 1;
+            if (Rune.IsWhiteSpace(windowRunes[i])) return searchStart + i + 1;
         }
 
         // Long unbroken identifiers are rare. Move forward rather than exposing a broken prefix.
-        var limit = Math.Min(text.Length, rawStart + 240);
+        var limit = Math.Min(indices.ScalarCount, rawStart + 240);
         for (var i = rawStart; i < limit; i++)
         {
-            if (char.IsWhiteSpace(text[i])) return i + 1;
+            if (Rune.IsWhiteSpace(text.EnumerateRunes().ElementAt(i))) return i + 1;
         }
         return rawStart;
     }
@@ -272,10 +280,11 @@ public sealed class Chunker
             {
                 var previous = merged[merged.Count - 1];
                 var combinedLength = chunk.CharEnd - previous.CharStart;
-                if ((previous.Text.Length < minimum || chunk.Text.Length < minimum)
+                if ((previous.Text.EnumerateRunes().Count() < minimum
+                        || chunk.Text.EnumerateRunes().Count() < minimum)
                     && combinedLength <= maximum)
                 {
-                    var combined = text.Substring(previous.CharStart, chunk.CharEnd - previous.CharStart);
+                    var combined = new UnicodeIndexMap(text).Slice(previous.CharStart, chunk.CharEnd);
                     merged[merged.Count - 1] = new ChunkSpan(
                         previous.Idx,
                         combined,
@@ -296,6 +305,42 @@ public sealed class Chunker
             result.Add(new ChunkSpan(i, c.Text, c.CharStart, c.CharEnd, c.TokenEstimate));
         }
         return result;
+    }
+
+    private sealed class UnicodeIndexMap
+    {
+        private readonly string _text;
+        private readonly int[] _scalarToUtf16;
+
+        public UnicodeIndexMap(string text)
+        {
+            _text = text;
+            var offsets = new List<int> { 0 };
+            foreach (var rune in text.EnumerateRunes())
+            {
+                offsets.Add(offsets[^1] + rune.Utf16SequenceLength);
+            }
+            _scalarToUtf16 = offsets.ToArray();
+        }
+
+        public int ScalarCount => _scalarToUtf16.Length - 1;
+
+        public int ToUtf16(int scalarIndex) => _scalarToUtf16[Math.Clamp(scalarIndex, 0, ScalarCount)];
+
+        public int ToScalar(int utf16Index)
+        {
+            var clamped = Math.Clamp(utf16Index, 0, _text.Length);
+            var scalar = Array.BinarySearch(_scalarToUtf16, clamped);
+            if (scalar >= 0) return scalar;
+            return ~scalar - 1;
+        }
+
+        public string Slice(int scalarStart, int scalarEnd)
+        {
+            var start = ToUtf16(scalarStart);
+            var end = ToUtf16(scalarEnd);
+            return _text.Substring(start, end - start);
+        }
     }
 }
 

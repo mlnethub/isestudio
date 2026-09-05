@@ -62,6 +62,51 @@ public sealed class PlainTextIngestionServiceTests : IClassFixture<PostgresGraph
     }
 
     [Fact]
+    public async Task Unicode_scalar_offsets_and_token_estimates_are_persisted()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var document = await db.Documents.SingleAsync(
+            item => item.KnowledgeSystemId == _fixture.KnowledgeSystemId);
+        var text = "甲😀乙😀丙😀丁";
+
+        var result = await new PlainTextIngestionService(
+            new DocumentVersionStore(db),
+            new Parsing.Chunker(size: 3, overlap: 0))
+            .IngestAsync(_fixture.KnowledgeSystemId, document.Id, text, CancellationToken.None);
+
+        var chunks = await db.DocumentVersionChunks.AsNoTracking()
+            .Where(item => item.DocumentVersionId == result.Id)
+            .OrderBy(item => item.Idx)
+            .ToListAsync();
+
+        Assert.Collection(
+            chunks,
+            first =>
+            {
+                Assert.Equal("甲😀乙", first.Text);
+                Assert.Equal(0, first.CharStart);
+                Assert.Equal(3, first.CharEnd);
+                Assert.Equal(3, first.TokenEstimate);
+            },
+            second =>
+            {
+                Assert.Equal("😀丙😀", second.Text);
+                Assert.Equal(3, second.CharStart);
+                Assert.Equal(6, second.CharEnd);
+                Assert.Equal(3, second.TokenEstimate);
+            },
+            third =>
+            {
+                Assert.Equal("丁", third.Text);
+                Assert.Equal(6, third.CharStart);
+                Assert.Equal(7, third.CharEnd);
+                Assert.Equal(1, third.TokenEstimate);
+            });
+    }
+
+    [Fact]
     public async Task Repeating_text_is_idempotent_and_changed_text_creates_a_new_version()
     {
         await using var services = _fixture.BuildServices();

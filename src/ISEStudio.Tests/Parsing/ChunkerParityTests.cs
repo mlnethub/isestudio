@@ -88,6 +88,36 @@ public sealed class ChunkerParityTests
 
     [Fact]
     [Trait("Category", "Parsing")]
+    public void Chunker_uses_unicode_scalar_offsets_and_preserves_surrogate_pairs()
+    {
+        var text = "😀😀😀😀";
+        var chunks = new Chunker(size: 3, overlap: 0).Chunk(text);
+
+        Assert.Equal(new[] { "😀😀😀", "😀" }, chunks.Select(chunk => chunk.Text));
+        Assert.Equal(new[] { 0, 3 }, chunks.Select(chunk => chunk.CharStart));
+        Assert.Equal(new[] { 3, 4 }, chunks.Select(chunk => chunk.CharEnd));
+        Assert.All(chunks, chunk =>
+        {
+            Assert.DoesNotContain('\uFFFD', chunk.Text);
+            Assert.Equal(chunk.Text.EnumerateRunes().Count(), chunk.Text.Length / 2);
+        });
+    }
+
+    [Fact]
+    [Trait("Category", "Parsing")]
+    public void Chunker_estimates_mixed_cjk_and_emoji_by_unicode_scalar()
+    {
+        var text = "甲😀乙😀丙😀丁";
+        var chunks = new Chunker(size: 3, overlap: 0).Chunk(text);
+
+        Assert.Equal(new[] { "甲😀乙", "😀丙😀", "丁" }, chunks.Select(chunk => chunk.Text));
+        Assert.Equal(new[] { 0, 3, 6 }, chunks.Select(chunk => chunk.CharStart));
+        Assert.Equal(new[] { 3, 6, 7 }, chunks.Select(chunk => chunk.CharEnd));
+        Assert.Equal(new[] { 3, 3, 1 }, chunks.Select(chunk => chunk.TokenEstimate));
+    }
+
+    [Fact]
+    [Trait("Category", "Parsing")]
     public void Chunker_overlap_aligns_to_boundary()
     {
         // Build a deterministic multi-paragraph input; overlap should start at a structural
