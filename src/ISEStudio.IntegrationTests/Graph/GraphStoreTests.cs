@@ -267,6 +267,65 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
     }
 
     [Fact]
+    public async Task Neighborhood_finds_fact_and_neighbor_when_root_only_has_incoming_edge()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var incomingNeighborId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump C");
+        var incomingFactId = await InsertFactAsync(
+            _fixture.KnowledgeSystemId,
+            incomingNeighborId,
+            _fixture.SubjectEntityId);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(
+                _fixture.KnowledgeSystemId,
+                _fixture.SubjectEntityId,
+                1,
+                DateTimeOffset.UtcNow,
+                false),
+            CancellationToken.None);
+
+        var fact = Assert.Single(result.Facts, item => item.Id == incomingFactId);
+        Assert.Equal(incomingNeighborId, fact.SubjectEntityId);
+        Assert.Equal(_fixture.SubjectEntityId, fact.ObjectEntityId);
+        Assert.Contains(incomingNeighborId, result.EntityIds);
+    }
+
+    [Fact]
+    public async Task Neighborhood_does_not_return_root_self_loop()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var selfLoopFactId = await InsertFactAsync(
+            _fixture.KnowledgeSystemId,
+            _fixture.SubjectEntityId,
+            _fixture.SubjectEntityId);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(
+                _fixture.KnowledgeSystemId,
+                _fixture.SubjectEntityId,
+                1,
+                DateTimeOffset.UtcNow,
+                false),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(result.Facts, fact => fact.Id == selfLoopFactId);
+        Assert.Equal([_fixture.SubjectEntityId], result.EntityIds);
+    }
+
+    [Fact]
     public async Task Neighborhood_traverses_both_directions_once_and_excludes_edge_back_to_root()
     {
         await _fixture.SeedGraphReferencesAsync();
