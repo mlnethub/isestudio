@@ -232,6 +232,126 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         Assert.Single(result.Facts);
     }
 
+    [Fact]
+    public async Task Neighborhood_finds_entity_that_only_appears_as_object_when_root_is_queried()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var reverseNeighborId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump C");
+        var rootFactId = await InsertFactAsync(
+            _fixture.KnowledgeSystemId,
+            _fixture.SubjectEntityId,
+            _fixture.ObjectEntityId);
+        var reverseFactId = await InsertFactAsync(
+            _fixture.KnowledgeSystemId,
+            reverseNeighborId,
+            _fixture.ObjectEntityId);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(
+                _fixture.KnowledgeSystemId,
+                _fixture.SubjectEntityId,
+                2,
+                DateTimeOffset.UtcNow,
+                false),
+            CancellationToken.None);
+
+        Assert.Contains(reverseNeighborId, result.EntityIds);
+        Assert.Contains(result.Facts, fact => fact.Id == rootFactId);
+        Assert.Contains(result.Facts, fact => fact.Id == reverseFactId);
+    }
+
+    [Fact]
+    public async Task Neighborhood_traverses_both_directions_once_and_excludes_edge_back_to_root()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var middleEntityId = _fixture.ObjectEntityId;
+        var leafEntityId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump C");
+        var forwardFactId = await InsertFactAsync(_fixture.KnowledgeSystemId, _fixture.SubjectEntityId, middleEntityId);
+        var reverseFactId = await InsertFactAsync(_fixture.KnowledgeSystemId, leafEntityId, middleEntityId);
+        var rootLoopFactId = await InsertFactAsync(_fixture.KnowledgeSystemId, middleEntityId, _fixture.SubjectEntityId);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(
+                _fixture.KnowledgeSystemId,
+                _fixture.SubjectEntityId,
+                3,
+                DateTimeOffset.UtcNow,
+                false),
+            CancellationToken.None);
+
+        Assert.Contains(middleEntityId, result.EntityIds);
+        Assert.Contains(leafEntityId, result.EntityIds);
+        Assert.Contains(result.Facts, fact => fact.Id == forwardFactId);
+        Assert.Contains(result.Facts, fact => fact.Id == reverseFactId);
+        Assert.DoesNotContain(result.Facts, fact => fact.Id == rootLoopFactId);
+        Assert.Equal(result.Facts.Count, result.Facts.Select(fact => fact.Id).Distinct().Count());
+    }
+
+    [Fact]
+    public async Task Neighborhood_does_not_treat_json_values_as_adjacent_entities()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var jsonFactId = await InsertJsonFactAsync(_fixture.KnowledgeSystemId, _fixture.SubjectEntityId, "{\"value\":\"json\"}");
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(
+                _fixture.KnowledgeSystemId,
+                _fixture.SubjectEntityId,
+                1,
+                DateTimeOffset.UtcNow,
+                false),
+            CancellationToken.None);
+
+        Assert.DoesNotContain(result.Facts, fact => fact.Id == jsonFactId);
+        Assert.DoesNotContain(result.Facts, fact => fact.ObjectKind == GraphObjectKind.JsonValue);
+    }
+
+    [Fact]
+    public async Task Neighborhood_does_not_resolve_entity_type_from_another_knowledge_system()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var foreignKnowledgeSystemId = await CreateKnowledgeSystemAsync($"graph-store-type-{Guid.NewGuid():N}");
+        var foreignEntityTypeId = await CreateEntityTypeAsync(foreignKnowledgeSystemId, "foreign-type");
+        var localEntityId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Local entity", foreignEntityTypeId);
+        await InsertFactAsync(_fixture.KnowledgeSystemId, _fixture.SubjectEntityId, localEntityId);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(
+                _fixture.KnowledgeSystemId,
+                _fixture.SubjectEntityId,
+                1,
+                DateTimeOffset.UtcNow,
+                false),
+            CancellationToken.None);
+
+        var localEntity = Assert.Single(result.Entities, entity => entity.Id == localEntityId);
+        Assert.Null(localEntity.TypeKey);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(6)]
@@ -434,7 +554,7 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         return knowledgeSystemId;
     }
 
-    private async Task<Guid> CreateGraphEntityAsync(Guid knowledgeSystemId, string label)
+    private async Task<Guid> CreateGraphEntityAsync(Guid knowledgeSystemId, string label, Guid? entityTypeId = null)
     {
         var entityId = Guid.NewGuid();
 
@@ -443,12 +563,51 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         {
             Id = entityId,
             KnowledgeSystemId = knowledgeSystemId,
+            EntityTypeId = entityTypeId,
             Label = label,
             Description = $"Fixture entity {label}",
         });
         await db.SaveChangesAsync();
 
         return entityId;
+    }
+
+    private async Task<Guid> CreateEntityTypeAsync(Guid knowledgeSystemId, string key)
+    {
+        var entityTypeId = Guid.NewGuid();
+
+        await using var db = CreateDbContext();
+        db.EntityTypes.Add(new EntityTypeEntity
+        {
+            Id = entityTypeId,
+            KnowledgeSystemId = knowledgeSystemId,
+            Key = key,
+            Label = key,
+            Description = "Fixture entity type",
+        });
+        await db.SaveChangesAsync();
+
+        return entityTypeId;
+    }
+
+    private async Task<Guid> InsertJsonFactAsync(Guid knowledgeSystemId, Guid subjectEntityId, string objectValue)
+    {
+        var factId = Guid.NewGuid();
+
+        await using var db = CreateDbContext();
+        db.Facts.Add(new FactEntity
+        {
+            Id = factId,
+            KnowledgeSystemId = knowledgeSystemId,
+            SubjectEntityId = subjectEntityId,
+            PredicateId = _fixture.PredicateId,
+            ObjectValue = objectValue,
+            Confidence = 0.9m,
+            RecordedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        return factId;
     }
 
     private async Task<Guid> InsertFactAsync(

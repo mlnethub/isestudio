@@ -185,7 +185,23 @@ public sealed class GraphStore : IGraphStore
 
         await using var command = new NpgsqlCommand(
             """
-            WITH RECURSIVE neighborhood AS (
+            WITH RECURSIVE neighborhood (
+                id,
+                knowledge_system_id,
+                subject_entity_id,
+                predicate_id,
+                object_entity_id,
+                object_value,
+                confidence,
+                valid_from,
+                valid_to,
+                recorded_at,
+                invalidated_at,
+                supersedes_fact_id,
+                depth,
+                current_entity_id,
+                path
+            ) AS (
                 SELECT
                     f.id,
                     f.knowledge_system_id,
@@ -200,14 +216,21 @@ public sealed class GraphStore : IGraphStore
                     f.invalidated_at,
                     f.supersedes_fact_id,
                     1 AS depth,
-                    ARRAY[@rootEntityId::uuid, next_entity.id] AS path
+                                        next_entity.id AS current_entity_id,
+                                        ARRAY[@rootEntityId::uuid, next_entity.id] AS path
                 FROM facts f
+                                JOIN graph_entities subject_entity
+                                    ON subject_entity.id = f.subject_entity_id
+                                 AND subject_entity.knowledge_system_id = @knowledgeSystemId
                 JOIN graph_entities next_entity
-                  ON next_entity.id = f.object_entity_id
+                                    ON next_entity.id = CASE
+                                            WHEN f.subject_entity_id = @rootEntityId THEN f.object_entity_id
+                                            ELSE f.subject_entity_id
+                                    END
                  AND next_entity.knowledge_system_id = @knowledgeSystemId
                 WHERE f.knowledge_system_id = @knowledgeSystemId
-                  AND f.subject_entity_id = @rootEntityId
                   AND f.object_entity_id IS NOT NULL
+                                    AND f.subject_entity_id = @rootEntityId
                   AND (@includeInvalidated OR f.invalidated_at IS NULL)
                   AND (f.valid_from IS NULL OR f.valid_from <= @effectiveAt)
                   AND (f.valid_to IS NULL OR f.valid_to > @effectiveAt)
@@ -228,12 +251,19 @@ public sealed class GraphStore : IGraphStore
                     f.invalidated_at,
                     f.supersedes_fact_id,
                     n.depth + 1 AS depth,
-                    n.path || next_entity.id AS path
+                                        next_entity.id AS current_entity_id,
+                                        n.path || next_entity.id AS path
                 FROM neighborhood n
                 JOIN facts f
-                  ON f.subject_entity_id = n.object_entity_id
+                                    ON (f.subject_entity_id = n.current_entity_id OR f.object_entity_id = n.current_entity_id)
+                                JOIN graph_entities subject_entity
+                                    ON subject_entity.id = f.subject_entity_id
+                                 AND subject_entity.knowledge_system_id = @knowledgeSystemId
                 JOIN graph_entities next_entity
-                  ON next_entity.id = f.object_entity_id
+                                    ON next_entity.id = CASE
+                                            WHEN f.subject_entity_id = n.current_entity_id THEN f.object_entity_id
+                                            ELSE f.subject_entity_id
+                                    END
                  AND next_entity.knowledge_system_id = @knowledgeSystemId
                 WHERE n.depth < @maxDepth
                   AND f.knowledge_system_id = @knowledgeSystemId
@@ -337,7 +367,9 @@ public sealed class GraphStore : IGraphStore
                 from entity in _db.GraphEntities.AsNoTracking()
                 where entity.KnowledgeSystemId == query.KnowledgeSystemId && entityIds.Contains(entity.Id)
                 join entityType in _db.EntityTypes.AsNoTracking() on entity.EntityTypeId equals entityType.Id into entityTypes
-                from entityType in entityTypes.DefaultIfEmpty()
+                from entityType in entityTypes
+                    .Where(item => item.KnowledgeSystemId == query.KnowledgeSystemId)
+                    .DefaultIfEmpty()
                 orderby entity.Id
                 select new GraphEntity(entity.Id, entity.KnowledgeSystemId, entityType != null ? entityType.Key : null, entity.Label))
                 .ToArrayAsync(cancellationToken);
