@@ -223,30 +223,43 @@ public sealed class GraphStore : IGraphStore
                     ON subject_entity.id = f.subject_entity_id
                    AND subject_entity.knowledge_system_id = @knowledgeSystemId
                 JOIN graph_entities next_entity
-                    ON next_entity.id = CASE
-                        WHEN f.subject_entity_id = @rootEntityId THEN f.object_entity_id
-                        ELSE f.subject_entity_id
-                    END
+                                        ON next_entity.id = f.object_entity_id
                    AND next_entity.knowledge_system_id = @knowledgeSystemId
                 WHERE f.knowledge_system_id = @knowledgeSystemId
                   AND f.object_entity_id IS NOT NULL
-                  AND (
-                      f.subject_entity_id = @rootEntityId
-                      OR (
-                          f.object_entity_id = @rootEntityId
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM facts outgoing_fact
-                              WHERE outgoing_fact.knowledge_system_id = @knowledgeSystemId
-                                AND outgoing_fact.subject_entity_id = @rootEntityId
-                                AND outgoing_fact.object_entity_id IS NOT NULL
-                                AND outgoing_fact.object_entity_id <> @rootEntityId
-                                AND (@includeInvalidated OR outgoing_fact.invalidated_at IS NULL)
-                                AND (outgoing_fact.valid_from IS NULL OR outgoing_fact.valid_from <= @effectiveAt)
-                                AND (outgoing_fact.valid_to IS NULL OR outgoing_fact.valid_to > @effectiveAt)
-                          )
-                      )
-                  )
+                                    AND f.subject_entity_id = @rootEntityId
+                  AND NOT next_entity.id = ANY(ARRAY[@rootEntityId::uuid])
+                  AND (@includeInvalidated OR f.invalidated_at IS NULL)
+                  AND (f.valid_from IS NULL OR f.valid_from <= @effectiveAt)
+                  AND (f.valid_to IS NULL OR f.valid_to > @effectiveAt)
+
+                UNION ALL
+
+                SELECT
+                    f.id,
+                    f.knowledge_system_id,
+                    f.subject_entity_id,
+                    f.predicate_id,
+                    f.object_entity_id,
+                    f.object_value,
+                    f.confidence,
+                    f.valid_from,
+                    f.valid_to,
+                    f.recorded_at,
+                    f.invalidated_at,
+                    f.supersedes_fact_id,
+                    1 AS depth,
+                    next_entity.id AS current_entity_id,
+                    ARRAY[@rootEntityId::uuid, next_entity.id] AS path
+                FROM facts f
+                JOIN graph_entities root_entity
+                    ON root_entity.id = f.object_entity_id
+                   AND root_entity.knowledge_system_id = @knowledgeSystemId
+                JOIN graph_entities next_entity
+                    ON next_entity.id = f.subject_entity_id
+                   AND next_entity.knowledge_system_id = @knowledgeSystemId
+                WHERE f.knowledge_system_id = @knowledgeSystemId
+                  AND f.object_entity_id = @rootEntityId
                   AND NOT next_entity.id = ANY(ARRAY[@rootEntityId::uuid])
                   AND (@includeInvalidated OR f.invalidated_at IS NULL)
                   AND (f.valid_from IS NULL OR f.valid_from <= @effectiveAt)

@@ -298,6 +298,43 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
     }
 
     [Fact]
+    public async Task Neighborhood_returns_outgoing_and_incoming_edges_when_root_has_both_directions()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+        await ResetGraphWritesAsync();
+
+        var rootEntityId = _fixture.SubjectEntityId;
+        var outgoingNeighborId = _fixture.ObjectEntityId;
+        var incomingNeighborId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump C");
+        var outgoingFactId = await InsertFactAsync(
+            _fixture.KnowledgeSystemId,
+            rootEntityId,
+            outgoingNeighborId);
+        var incomingFactId = await InsertFactAsync(
+            _fixture.KnowledgeSystemId,
+            incomingNeighborId,
+            rootEntityId);
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var result = await store.GetNeighborhoodAsync(
+            new GraphNeighborhoodQuery(
+                _fixture.KnowledgeSystemId,
+                rootEntityId,
+                1,
+                DateTimeOffset.UtcNow,
+                false),
+            CancellationToken.None);
+
+        Assert.Contains(outgoingNeighborId, result.EntityIds);
+        Assert.Contains(incomingNeighborId, result.EntityIds);
+        Assert.Contains(result.Facts, fact => fact.Id == outgoingFactId);
+        Assert.Contains(result.Facts, fact => fact.Id == incomingFactId);
+    }
+
+    [Fact]
     public async Task Neighborhood_does_not_return_root_self_loop()
     {
         await _fixture.SeedGraphReferencesAsync();
@@ -326,7 +363,7 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
     }
 
     [Fact]
-    public async Task Neighborhood_traverses_both_directions_once_and_excludes_edge_back_to_root()
+    public async Task Neighborhood_traverses_both_directions_and_returns_direct_incoming_edge()
     {
         await _fixture.SeedGraphReferencesAsync();
         await ResetGraphWritesAsync();
@@ -354,7 +391,7 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         Assert.Contains(leafEntityId, result.EntityIds);
         Assert.Contains(result.Facts, fact => fact.Id == forwardFactId);
         Assert.Contains(result.Facts, fact => fact.Id == reverseFactId);
-        Assert.DoesNotContain(result.Facts, fact => fact.Id == rootLoopFactId);
+        Assert.Contains(result.Facts, fact => fact.Id == rootLoopFactId);
         Assert.Equal(result.Facts.Count, result.Facts.Select(fact => fact.Id).Distinct().Count());
     }
 
@@ -503,12 +540,14 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         var leftEntityId = _fixture.ObjectEntityId;
         var rightEntityId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump C");
         var sharedEntityId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump D");
+        var tailEntityId = await CreateGraphEntityAsync(_fixture.KnowledgeSystemId, "Pump E");
 
         await InsertFactAsync(_fixture.KnowledgeSystemId, rootEntityId, leftEntityId);
         await InsertFactAsync(_fixture.KnowledgeSystemId, rootEntityId, rightEntityId);
         await InsertFactAsync(_fixture.KnowledgeSystemId, leftEntityId, sharedEntityId);
         await InsertFactAsync(_fixture.KnowledgeSystemId, rightEntityId, sharedEntityId);
-        await InsertFactAsync(_fixture.KnowledgeSystemId, sharedEntityId, rootEntityId);
+        await InsertFactAsync(_fixture.KnowledgeSystemId, sharedEntityId, tailEntityId);
+        await InsertFactAsync(_fixture.KnowledgeSystemId, tailEntityId, sharedEntityId);
 
         await using var services = BuildServices();
         await using var scope = services.CreateAsyncScope();
@@ -520,8 +559,8 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
 
         Assert.Equal(result.EntityIds.Count, result.EntityIds.Distinct().Count());
         Assert.Equal(1, result.EntityIds.Count(id => id == sharedEntityId));
-        Assert.DoesNotContain(result.Facts, fact => fact.SubjectEntityId == sharedEntityId && fact.ObjectEntityId == rootEntityId);
-        Assert.Equal(4, result.Facts.Count);
+        Assert.Equal(result.Facts.Count, result.Facts.Select(fact => fact.Id).Distinct().Count());
+        Assert.Equal(6, result.Facts.Count);
     }
 
     private RecordFactCommand NewEntityObjectFact(int evidenceCount)
