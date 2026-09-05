@@ -49,21 +49,34 @@ public sealed class DocumentVersionStoreTests : IClassFixture<PostgresGraphFixtu
     }
 
     [Fact]
-    public async Task Concurrent_same_input_returns_the_same_document_version()
+    public async Task Concurrent_same_hash_with_different_chunks_keeps_one_complete_winner()
     {
         await using var seedServices = _fixture.BuildServices();
         await using var seedScope = seedServices.CreateAsyncScope();
         var seedDb = seedScope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
         var document = await seedDb.Documents.SingleAsync(
             item => item.KnowledgeSystemId == _fixture.KnowledgeSystemId);
-        var input = new DocumentVersionInput(
+        var contentSha256 = new string('b', 64);
+        var firstChunks = new[]
+        {
+            new DocumentVersionChunkInput(0, "first winner", 0, 12, 2),
+            new DocumentVersionChunkInput(1, "first metadata", 12, 26, 3),
+            new DocumentVersionChunkInput(2, "first tail", 26, 36, 2),
+        };
+        var secondChunks = new[]
+        {
+            new DocumentVersionChunkInput(0, "second winner", 100, 113, 4),
+            new DocumentVersionChunkInput(1, "second metadata", 113, 128, 5),
+        };
+        var firstInput = new DocumentVersionInput(
             _fixture.KnowledgeSystemId,
             document.Id,
-            new string('b', 64),
-            [new DocumentVersionChunkInput(0, "concurrent", 0, 10, 1)]);
+            contentSha256,
+            firstChunks);
+        var secondInput = firstInput with { Chunks = secondChunks };
         var barrier = new Barrier(2);
 
-        async Task<DocumentVersionResult> RecordFromSeparateContextAsync()
+        async Task<DocumentVersionResult> RecordFromSeparateContextAsync(DocumentVersionInput input)
         {
             await using var services = _fixture.BuildServices();
             await using var scope = services.CreateAsyncScope();
@@ -73,10 +86,31 @@ public sealed class DocumentVersionStoreTests : IClassFixture<PostgresGraphFixtu
         }
 
         var results = await Task.WhenAll(
-            RecordFromSeparateContextAsync(),
-            RecordFromSeparateContextAsync());
+            RecordFromSeparateContextAsync(firstInput),
+            RecordFromSeparateContextAsync(secondInput));
 
         Assert.Equal(results[0].Id, results[1].Id);
+        Assert.Equal(
+            1,
+            await seedDb.DocumentVersions.CountAsync(item => item.ContentSha256 == contentSha256));
+
+        var actualChunks = (await seedDb.DocumentVersionChunks
+                .AsNoTracking()
+                .Where(item => item.DocumentVersionId == results[0].Id)
+                .OrderBy(item => item.Idx)
+                .ToListAsync())
+            .Select(item => (item.Idx, item.Text, item.CharStart, item.CharEnd, item.TokenEstimate))
+            .ToList();
+        var firstExpected = firstChunks
+            .Select(item => (item.Index, item.Text, item.CharStart, item.CharEnd, item.TokenEstimate))
+            .ToList();
+        var secondExpected = secondChunks
+            .Select(item => (item.Index, item.Text, item.CharStart, item.CharEnd, item.TokenEstimate))
+            .ToList();
+
+        Assert.True(
+            actualChunks.SequenceEqual(firstExpected) || actualChunks.SequenceEqual(secondExpected),
+            $"Concurrent winner chunks were not one complete payload: {string.Join("; ", actualChunks)}");
     }
 
     [Fact]
