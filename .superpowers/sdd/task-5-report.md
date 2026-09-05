@@ -71,7 +71,7 @@ dotnet build src\ISEStudio.sln --no-restore -warnaserror
 ## 提交
 
 - 实现提交：`466c549` (`test(graph): verify postgres traversal constraints`)
-- 报告和进度账本提交：`d68c3e6` (`docs(sdd): record task 5 graph validation`)
+- 报告和进度账本提交：`70668b1` (`docs(sdd): record task 5 graph validation`, amended report revision)
 
 ## 剩余风险
 
