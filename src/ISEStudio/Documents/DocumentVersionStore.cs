@@ -2,6 +2,7 @@ using ISEStudio.Application.Documents;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using Microsoft.EntityFrameworkCore;
+using System.Text.RegularExpressions;
 
 namespace ISEStudio.Documents;
 
@@ -18,7 +19,7 @@ public sealed class DocumentVersionStore
         DocumentVersionInput input,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(input.ContentSha256);
+        var contentSha256 = NormalizeSha256(input.ContentSha256);
         if (input.KnowledgeSystemId == Guid.Empty || input.DocumentId == Guid.Empty)
         {
             throw new ArgumentException("Knowledge system and document are required.", nameof(input));
@@ -36,7 +37,7 @@ public sealed class DocumentVersionStore
         var existing = await _db.DocumentVersions.AsNoTracking().SingleOrDefaultAsync(
             item => item.KnowledgeSystemId == input.KnowledgeSystemId
                 && item.DocumentId == input.DocumentId
-                && item.ContentSha256 == input.ContentSha256,
+                && item.ContentSha256 == contentSha256,
             cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
@@ -48,7 +49,7 @@ public sealed class DocumentVersionStore
         existing = await _db.DocumentVersions.SingleOrDefaultAsync(
             item => item.KnowledgeSystemId == input.KnowledgeSystemId
                 && item.DocumentId == input.DocumentId
-                && item.ContentSha256 == input.ContentSha256,
+                && item.ContentSha256 == contentSha256,
             cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
@@ -56,18 +57,28 @@ public sealed class DocumentVersionStore
             return Project(existing);
         }
 
-        var version = new DocumentVersionEntity
+        var versionId = Guid.NewGuid();
+        var inserted = await _db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO document_version
+                (id, knowledge_system_id, document_id, content_sha256, chunk_count, created_at)
+            VALUES
+                ({versionId}, {input.KnowledgeSystemId}, {input.DocumentId}, {contentSha256}, {input.Chunks.Count}, {DateTimeOffset.UtcNow})
+            ON CONFLICT (knowledge_system_id, document_id, content_sha256) DO NOTHING
+            """, cancellationToken).ConfigureAwait(false);
+        if (inserted == 0)
         {
-            KnowledgeSystemId = input.KnowledgeSystemId,
-            DocumentId = input.DocumentId,
-            ContentSha256 = input.ContentSha256,
-            ChunkCount = input.Chunks.Count,
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        _db.DocumentVersions.Add(version);
+            existing = await _db.DocumentVersions.AsNoTracking().SingleAsync(
+                item => item.KnowledgeSystemId == input.KnowledgeSystemId
+                    && item.DocumentId == input.DocumentId
+                    && item.ContentSha256 == contentSha256,
+                cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            return Project(existing);
+        }
+
         _db.DocumentVersionChunks.AddRange(input.Chunks.Select(chunk => new DocumentVersionChunkEntity
         {
-            DocumentVersionId = version.Id,
+            DocumentVersionId = versionId,
             Idx = chunk.Index,
             Text = chunk.Text,
             CharStart = chunk.CharStart,
@@ -76,7 +87,22 @@ public sealed class DocumentVersionStore
         }));
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-        return Project(version);
+        return new DocumentVersionResult(
+            versionId,
+            input.KnowledgeSystemId,
+            input.DocumentId,
+            contentSha256,
+            input.Chunks.Count);
+    }
+
+    private static string NormalizeSha256(string value)
+    {
+        if (!Regex.IsMatch(value, "^[0-9a-fA-F]{64}$", RegexOptions.CultureInvariant))
+        {
+            throw new ArgumentException("Content SHA-256 must be exactly 64 hexadecimal characters.", nameof(value));
+        }
+
+        return value.ToLowerInvariant();
     }
 
     private static DocumentVersionResult Project(DocumentVersionEntity version) => new(

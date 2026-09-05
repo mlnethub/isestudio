@@ -3,6 +3,7 @@ using System;
 using ISEStudio.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ISEStudio.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ISEStudioDbContext))]
-    partial class ISEStudioDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260905020205_HardenDocumentVersions")]
+    partial class HardenDocumentVersions
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -415,7 +418,7 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(1024)")
                         .HasDefaultValue("/");
 
-                    b.Property<Guid>("KnowledgeSystemId")
+                    b.Property<Guid?>("KnowledgeSystemId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("Mime")
@@ -572,7 +575,7 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("DocumentId", "KnowledgeSystemId");
+                    b.HasIndex("DocumentId");
 
                     b.HasIndex("KnowledgeSystemId", "DocumentId")
                         .HasDatabaseName("ix_document_version_knowledge_system_document");
@@ -581,7 +584,7 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasDatabaseName("ux_document_version_knowledge_system_document_sha256");
 
-                    b.ToTable("document_version", null, t =>
+                    b.ToTable("document_version", (string)null, t =>
                         {
                             t.HasCheckConstraint("ck_document_version_content_sha256_format", "content_sha256 ~ '^[0-9a-f]{64}$'");
                         });
@@ -2269,8 +2272,7 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                     b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
                         .WithMany()
                         .HasForeignKey("KnowledgeSystemId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .OnDelete(DeleteBehavior.Restrict);
                 });
 
             modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.DocumentVersionChunkEntity", b =>
@@ -2284,16 +2286,16 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.DocumentVersionEntity", b =>
                 {
-                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
-                        .WithMany()
-                        .HasForeignKey("KnowledgeSystemId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
                     b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.DocumentEntity", null)
                         .WithMany()
                         .HasForeignKey("DocumentId", "KnowledgeSystemId")
                         .HasPrincipalKey("Id", "KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

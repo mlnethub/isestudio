@@ -9,5 +9,5 @@
 
 # Ingestion Stage 1
 
-- Document version persistence slice: complete locally; immutable version and version-owned chunks, knowledge-system isolation, sequential idempotency, and transactional rollback covered by PostgreSQL integration tests.
+- Document version persistence slice: Stage 1 review fixes complete locally; concurrent winner reload, immutable version/chunk database triggers, composite knowledge-system foreign key, canonical SHA-256 validation, sequential idempotency, and transactional rollback are covered by PostgreSQL integration tests.
 - Later ingestion stages: not started.
