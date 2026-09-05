@@ -64,6 +64,12 @@ public sealed class ISEStudioDbContext : DbContext
     /// <summary>Contiguous text slices of parsed documents.</summary>
     public DbSet<ChunkEntity> Chunks => Set<ChunkEntity>();
 
+    /// <summary>Immutable parsed snapshots of an uploaded document.</summary>
+    public DbSet<DocumentVersionEntity> DocumentVersions => Set<DocumentVersionEntity>();
+
+    /// <summary>Chunks owned by one immutable document version.</summary>
+    public DbSet<DocumentVersionChunkEntity> DocumentVersionChunks => Set<DocumentVersionChunkEntity>();
+
     /// <summary>Model endpoint entries (LLM or embedding).</summary>
     public DbSet<ProviderEntity> Providers => Set<ProviderEntity>();
 

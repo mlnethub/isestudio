@@ -6,3 +6,8 @@
 - Task 3: complete (commits 7615eef..ffc5981, review clean after fixes for evidence knowledge-system isolation, invalidation coverage, and atomic concurrent invalidation)
 - Task 4: complete (commits 759f7c7..137aa5d, bidirectional temporal neighborhood query; review approved after fixing independent incoming/outgoing root anchors)
 - Task 5: complete (commits 137aa5d..466c549, schema foreign-key/type/index assertions, 1000-fact traversal baseline, architecture boundary documentation; graph tests clean, solution build remains blocked by pre-existing restore/diagnostic issues)
+
+# Ingestion Stage 1
+
+- Document version persistence slice: complete locally; immutable version and version-owned chunks, knowledge-system isolation, sequential idempotency, and transactional rollback covered by PostgreSQL integration tests.
+- Later ingestion stages: not started.

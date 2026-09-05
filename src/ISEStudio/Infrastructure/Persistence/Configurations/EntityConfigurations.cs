@@ -940,3 +940,50 @@ public sealed class ValidationDecisionEntityConfiguration : IEntityTypeConfigura
 
     }
 }
+
+public sealed class DocumentVersionEntityConfiguration : IEntityTypeConfiguration<DocumentVersionEntity>
+{
+    public void Configure(EntityTypeBuilder<DocumentVersionEntity> builder)
+    {
+        builder.UseTpcMappingStrategy();
+        builder.ToTable("document_version");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.KnowledgeSystemId).HasColumnName("knowledge_system_id");
+        builder.Property(x => x.DocumentId).HasColumnName("document_id");
+        builder.Property(x => x.ContentSha256).HasColumnName("content_sha256").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.ChunkCount).HasColumnName("chunk_count").IsRequired().HasDefaultValue(0);
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.HasIndex(x => new { x.KnowledgeSystemId, x.DocumentId, x.ContentSha256 })
+            .IsUnique()
+            .HasDatabaseName("ux_document_version_knowledge_system_document_sha256");
+        builder.HasIndex(x => new { x.KnowledgeSystemId, x.DocumentId })
+            .HasDatabaseName("ix_document_version_knowledge_system_document");
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<DocumentEntity>().WithMany().HasForeignKey(x => x.DocumentId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+public sealed class DocumentVersionChunkEntityConfiguration : IEntityTypeConfiguration<DocumentVersionChunkEntity>
+{
+    public void Configure(EntityTypeBuilder<DocumentVersionChunkEntity> builder)
+    {
+        builder.UseTpcMappingStrategy();
+        builder.ToTable("document_version_chunk");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.DocumentVersionId).HasColumnName("document_version_id");
+        builder.Property(x => x.Idx).HasColumnName("idx").IsRequired();
+        builder.Property(x => x.Text).HasColumnName("text").IsRequired();
+        builder.Property(x => x.CharStart).HasColumnName("char_start").IsRequired();
+        builder.Property(x => x.CharEnd).HasColumnName("char_end").IsRequired();
+        builder.Property(x => x.TokenEstimate).HasColumnName("token_estimate").IsRequired();
+        builder.HasIndex(x => new { x.DocumentVersionId, x.Idx })
+            .IsUnique()
+            .HasDatabaseName("ux_document_version_chunk_version_idx");
+        builder.HasOne<DocumentVersionEntity>().WithMany().HasForeignKey(x => x.DocumentVersionId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
