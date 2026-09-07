@@ -16,3 +16,17 @@
 - Plain-text application boundary complete: deterministic UTF-8 SHA-256 identity, existing paragraph-aware chunker reuse, ordered chunk metadata persistence, repeated-content idempotency, changed-content versioning, and PostgreSQL integration coverage.
 - Stage 2 Unicode review complete: chunk budgets, safe string boundaries, persisted character offsets, and token estimates now use Unicode scalar/code-point semantics; ASCII parity remains covered.
 - Acceptance criteria pass; no migration required and no frontend, Rust, parser, connector, job, API, or graph-core behavior changed.
+
+# Ingestion Stage 3
+
+- Plain-text job processor complete (commits e52c499..c0af28d): existing extraction-job lifecycle, DI registration, idempotent version/chunk persistence, failure/retry observability, PostgreSQL integration coverage, and knowledge-system/job-kind ownership guards.
+
+# Ingestion Stage 4
+
+- Parser invocation complete: `DocumentIngestionJobProcessor` reads blobs by
+	document SHA, invokes `IDocumentParser`, delegates text to the existing plain
+	text service, persists parser metadata, and preserves Stage 3 ownership/kind
+	guards.
+- PostgreSQL/Testcontainers coverage passes for txt success and Unicode scalar
+	metadata, missing blob, unsupported extension, duplicate delivery
+	idempotency, and cross-knowledge-system isolation.

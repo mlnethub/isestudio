@@ -192,6 +192,47 @@ public sealed class ExtractionJobStore
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Atomically claim the next pending job across concurrent callers.
+    /// Only jobs with status == pending are eligible. The claimed row is
+    /// transitioned to <c>running</c> and its <c>phase</c> set to
+    /// <c>dispatching</c>. Uses PostgreSQL row-level locking
+    /// (<c>FOR UPDATE SKIP LOCKED</c>) so multiple stores can run in
+    /// parallel without duplicating work. Returns the full entity when a
+    /// job was claimed, or <c>null</c> when the queue is empty.
+    /// </summary>
+    public async Task<ExtractionJobEntity?> ClaimNextAsync(CancellationToken cancellationToken)
+    {
+        await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        // Use a single UPDATE ... RETURNING query so the selection and
+        // state transition are atomic. Target table name follows the
+        // EF mapping in EntityConfigurations: "extractionjob".
+        var running = JobStatus.Running.ToWire();
+        var pending = JobStatus.Pending.ToWire();
+        var sql = @"
+UPDATE extractionjob
+SET ""Status"" = {0}, ""Phase"" = {1}, ""Log"" = COALESCE(""Log"", '')
+WHERE id = (
+    SELECT id FROM extractionjob
+    WHERE ""Status"" = {2}
+    ORDER BY ""CreatedAt""
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING *";
+
+        var rows = await db.ExtractionJobs
+            .FromSqlRaw(sql, running, "dispatching", pending)
+            .AsNoTracking()
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        var job = rows.FirstOrDefault();
+
+        return job;
+    }
+
     /// <summary>Update the live progress counters + phase column.</summary>
     public async Task UpdateProgressAsync(
         Guid id,
