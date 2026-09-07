@@ -68,6 +68,32 @@ public sealed class DocumentIngestionJobProcessorTests : IClassFixture<PostgresG
     }
 
     [Fact]
+    public async Task Replaced_cas_content_fails_before_creating_a_version()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = (LocalCasBlobStore)scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var document = await AddDocumentAsync(db, "replaced.txt");
+        await PutBlobAsync(blobStore, db, document, "original content");
+
+        var casPath = Path.Combine(blobStore.Root, document.StoragePath);
+        await File.WriteAllTextAsync(casPath, "replacement content", Encoding.UTF8);
+
+        var job = new DocumentIngestionJob(
+            Guid.NewGuid(), _fixture.KnowledgeSystemId, document.Id, "stage-4-test");
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => scope.ServiceProvider
+            .GetRequiredService<DocumentIngestionJobProcessor>()
+            .ProcessAsync(job, CancellationToken.None));
+
+        Assert.Equal(0, await db.DocumentVersions.CountAsync(item => item.DocumentId == document.Id));
+        var persisted = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == document.Id);
+        Assert.Equal("failed", persisted.ParseStatus);
+        Assert.Contains("SHA-256", persisted.ParseError!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task Html_blob_is_parsed_and_document_metadata_is_persisted()
     {
         await using var services = _fixture.BuildServices();
@@ -90,6 +116,51 @@ public sealed class DocumentIngestionJobProcessorTests : IClassFixture<PostgresG
         Assert.Equal("fallback:html", persisted.ParserBackend);
         Assert.Equal(result.Version.ChunkCount, await db.DocumentVersionChunks.CountAsync(
             item => item.DocumentVersionId == result.Version.Id));
+    }
+
+    [Fact]
+    public async Task Rdf_inputs_with_the_same_triple_count_keep_distinct_content()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var firstDocument = await AddDocumentAsync(db, "first.rdf");
+        var secondDocument = await AddDocumentAsync(db, "second.rdf");
+        var firstRdf = """
+            <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:ex="https://example.test/">
+              <rdf:Description rdf:about="https://example.test/subject">
+                <ex:label xml:lang="en">Alpha</ex:label>
+              </rdf:Description>
+            </rdf:RDF>
+            """;
+        var secondRdf = firstRdf.Replace("Alpha", "Bravo", StringComparison.Ordinal);
+        await PutBlobAsync(blobStore, db, firstDocument, firstRdf);
+        await PutBlobAsync(blobStore, db, secondDocument, secondRdf);
+
+        var processor = scope.ServiceProvider.GetRequiredService<DocumentIngestionJobProcessor>();
+        var first = await processor.ProcessAsync(
+            new DocumentIngestionJob(Guid.NewGuid(), _fixture.KnowledgeSystemId, firstDocument.Id, "stage-4-test"),
+            CancellationToken.None);
+        var second = await processor.ProcessAsync(
+            new DocumentIngestionJob(Guid.NewGuid(), _fixture.KnowledgeSystemId, secondDocument.Id, "stage-4-test"),
+            CancellationToken.None);
+
+        Assert.NotEqual(first.Version.ContentSha256, second.Version.ContentSha256);
+        var firstText = string.Join("\n", await db.DocumentVersionChunks.AsNoTracking()
+            .Where(item => item.DocumentVersionId == first.Version.Id)
+            .OrderBy(item => item.Idx)
+            .Select(item => item.Text)
+            .ToListAsync());
+        var secondText = string.Join("\n", await db.DocumentVersionChunks.AsNoTracking()
+            .Where(item => item.DocumentVersionId == second.Version.Id)
+            .OrderBy(item => item.Idx)
+            .Select(item => item.Text)
+            .ToListAsync());
+        Assert.Contains("https://example.test/subject", firstText.Replace("\n", "", StringComparison.Ordinal));
+        Assert.Contains("Alpha", firstText);
+        Assert.Contains("Bravo", secondText);
+        Assert.NotEqual(firstText, secondText);
     }
 
     [Theory]

@@ -423,7 +423,38 @@ public sealed class DocumentParser : IDocumentParser
             baseIri: null,
             maxTriples: null,
             blankNodeScope: "document-parser");
-        return $"RDF triples: {parsed.Triples.Count}";
+        var lines = parsed.Triples
+            .Select(FormatTriple)
+            .OrderBy(line => line, StringComparer.Ordinal);
+        return string.Join('\n', lines);
+    }
+
+    private static string FormatTriple(Oxigraph.Triple triple) =>
+        string.Join("\t", FormatTerm(triple.Subject), FormatTerm(triple.Predicate), FormatTerm(triple.Object));
+
+    private static string FormatTerm(Oxigraph.ITerm term) => term switch
+    {
+        Oxigraph.NamedNode named => $"<{named.Value}>",
+        Oxigraph.BlankNode blank => $"_:{blank.Value}",
+        Oxigraph.Literal literal => FormatLiteral(literal),
+        _ => term.ToString() ?? string.Empty,
+    };
+
+    private static string FormatLiteral(Oxigraph.Literal literal)
+    {
+        var escaped = literal.Value
+            .Replace("\\", "\\\\", StringComparison.Ordinal)
+            .Replace("\"", "\\\"", StringComparison.Ordinal)
+            .Replace("\r", "\\r", StringComparison.Ordinal)
+            .Replace("\n", "\\n", StringComparison.Ordinal);
+        if (!string.IsNullOrEmpty(literal.Language))
+        {
+            return $"\"{escaped}\"@{literal.Language}";
+        }
+
+        return literal.Datatype is null
+            ? $"\"{escaped}\""
+            : $"\"{escaped}\"^^<{literal.Datatype.Value}>";
     }
 
     private static string FallbackPdf(byte[] bytes)

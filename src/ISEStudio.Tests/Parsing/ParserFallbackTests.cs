@@ -8,8 +8,7 @@ using ISEStudio.Parsing;
 namespace ISEStudio.Tests.Parsing;
 
 /// <summary>
-/// Tests for the layered parser's fallback behaviour. The brief scopes the .NET port to
-/// PDF/DOCX/XLSX/plain-text; HTML and PPTX must throw <see cref="NotSupportedException"/>.
+/// Tests for the layered parser's fallback behaviour across the supported document formats.
 /// DoclingDotNet is the preferred backend; if it cannot process a given input we degrade
 /// to the lightweight per-format fallback.
 /// </summary>
@@ -71,11 +70,18 @@ public sealed class ParserFallbackTests
 
     [Fact]
     [Trait("Category", "Parsing")]
-    public void Parse_html_throws_NotSupportedException()
+    public void Parse_html_returns_visible_text()
     {
         var parser = new DocumentParser();
-        using var ms = new MemoryStream(Encoding.UTF8.GetBytes("<html></html>"));
-        Assert.Throws<NotSupportedException>(() => parser.Parse(ms, "page.html"));
+        using var ms = new MemoryStream(Encoding.UTF8.GetBytes(
+            "<html><head><style>.hidden { display: none; }</style></head><body><h1>Visible heading</h1><p>Visible body</p></body></html>"));
+
+        var result = parser.Parse(ms, "page.html");
+
+        Assert.Equal("fallback:html", result.Backend);
+        Assert.Contains("Visible heading", result.Text);
+        Assert.Contains("Visible body", result.Text);
+        Assert.DoesNotContain("display: none", result.Text);
     }
 
     [Fact]

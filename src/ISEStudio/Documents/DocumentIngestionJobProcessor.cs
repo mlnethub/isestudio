@@ -1,4 +1,5 @@
 using System.Text;
+using System.Security.Cryptography;
 using ISEStudio.Application.Documents;
 using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence;
@@ -87,6 +88,14 @@ public sealed class DocumentIngestionJobProcessor
                     $"Blob '{document.Sha256}' for document '{document.Id}' was not found.");
             }
 
+            var actualSha256 = await ComputeSha256Async(blob, cancellationToken).ConfigureAwait(false);
+            if (!string.Equals(actualSha256, document.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Blob SHA-256 '{actualSha256}' does not match document '{document.Sha256}'.");
+            }
+            if (blob.CanSeek) blob.Position = 0;
+
             var parsed = _parser.Parse(blob, document.OriginalFilename);
             var version = await _ingestion.IngestAsync(
                 input.KnowledgeSystemId,
@@ -125,6 +134,12 @@ public sealed class DocumentIngestionJobProcessor
             await _db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
+    }
+
+    private static async Task<string> ComputeSha256Async(Stream content, CancellationToken cancellationToken)
+    {
+        var digest = await SHA256.HashDataAsync(content, cancellationToken).ConfigureAwait(false);
+        return Convert.ToHexString(digest).ToLowerInvariant();
     }
 
     private async Task<ExtractionJobEntity> LoadOrCreateJobAsync(

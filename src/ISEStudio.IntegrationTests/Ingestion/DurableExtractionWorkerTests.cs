@@ -95,6 +95,37 @@ public sealed class DurableExtractionWorkerTests : IClassFixture<PostgresGraphFi
     }
 
     [Fact]
+    public async Task Parser_job_accepts_historical_payload_without_document_sha256()
+    {
+        await using var services = await BuildServicesAsync(services =>
+        {
+            services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
+        });
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var store = scope.ServiceProvider.GetRequiredService<ExtractionJobStore>();
+        var document = await AddDocumentAsync(db, "historical-parser.txt");
+        await PutBlobAsync(blobStore, db, document, "historical payload");
+        var job = await CreateQueuedJobAsync(db, document.Id, DocumentIngestionJobProcessor.Kind, "stage-5-test", includeDocumentSha256: false);
+
+        var worker = new TestDurableExtractionWorker(
+            scope.ServiceProvider.GetRequiredService<IServiceScopeFactory>(),
+            store,
+            TimeProvider.System,
+            Options.Create(new DurableExtractionWorkerOptions
+            {
+                PollInterval = DurableExtractionWorkerOptions.MinPollInterval,
+            }));
+
+        await worker.RunUntilTerminalAsync(job.Id, CancellationToken.None);
+
+        var persistedJob = await db.ExtractionJobs.AsNoTracking().SingleAsync(item => item.Id == job.Id);
+        Assert.Equal("completed", persistedJob.Status);
+        Assert.Equal(1, await db.DocumentVersions.CountAsync(item => item.DocumentId == document.Id));
+    }
+
+    [Fact]
     public async Task Parser_job_with_stale_blob_sha_fails_without_creating_a_version()
     {
         await using var services = await BuildServicesAsync(services =>
@@ -428,12 +459,17 @@ public sealed class DurableExtractionWorkerTests : IClassFixture<PostgresGraphFi
         ISEStudioDbContext db,
         Guid documentId,
         string kind,
-        string? model)
+        string? model,
+        bool includeDocumentSha256 = true)
     {
+        var documentSha256 = includeDocumentSha256
+            ? (await db.Documents.AsNoTracking().SingleAsync(item => item.Id == documentId)).Sha256
+            : null;
         var payload = JsonSerializer.SerializeToDocument(new
         {
             knowledge_system_id = _fixture.KnowledgeSystemId,
             document_id = documentId,
+            document_sha256 = documentSha256,
             model,
         });
 

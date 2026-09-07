@@ -37,7 +37,7 @@ public sealed class ParserExtractionJobHandler : IExtractionJobHandler
             payload,
             "document_id",
             "documentId");
-        var documentSha256 = ExtractionJobPayloadReader.ReadRequiredString(
+        var documentSha256 = ExtractionJobPayloadReader.ReadOptionalString(
             payload,
             "document_sha256",
             "documentSha256");
