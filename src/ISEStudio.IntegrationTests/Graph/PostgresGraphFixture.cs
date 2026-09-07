@@ -240,7 +240,7 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         return SubjectEntityId;
     }
 
-    public ServiceProvider BuildServices()
+    public ServiceProvider BuildServices(Action<IServiceCollection>? configure = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton<IDbContextFactory<ISEStudioDbContext>>(_ =>
@@ -260,6 +260,7 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         services.AddSingleton<IDocumentParser, DocumentParser>();
         services.AddSingleton<IBlobStore>(_ => new LocalCasBlobStore(
             Path.Combine(Path.GetTempPath(), "isestudio-stage4", Guid.NewGuid().ToString("N"))));
+        configure?.Invoke(services);
         services.AddGraphStore();
         return services.BuildServiceProvider();
     }

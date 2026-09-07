@@ -79,9 +79,10 @@ public sealed class PlainTextIngestionJobProcessor
         job.Phase = "plain_text";
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
+        DocumentVersionResult? persistedVersion = null;
         try
         {
-            var version = await _ingestion.IngestAsync(
+            persistedVersion = await _ingestion.IngestAsync(
                 input.KnowledgeSystemId,
                 input.DocumentId,
                 input.Content,
@@ -90,10 +91,19 @@ public sealed class PlainTextIngestionJobProcessor
             job.Status = JobStatus.Completed.ToWire();
             job.FinishedAt = DateTimeOffset.UtcNow;
             job.Phase = "finalizing";
-            job.ProcessedChunks = version.ChunkCount;
-            job.TotalChunks = version.ChunkCount;
+            job.ProcessedChunks = persistedVersion.ChunkCount;
+            job.TotalChunks = persistedVersion.ChunkCount;
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            return new PlainTextIngestionJobResult(job.Status, version, null);
+            return new PlainTextIngestionJobResult(job.Status, persistedVersion, null);
+        }
+        catch (OperationCanceledException) when (persistedVersion is not null)
+        {
+            job.Status = JobStatus.Failed.ToWire();
+            job.Phase = "failed";
+            job.Error = "Ingestion was cancelled after the document version was persisted.";
+            job.FinishedAt = DateTimeOffset.UtcNow;
+            await _db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
+            throw;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

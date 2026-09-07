@@ -104,6 +104,41 @@ public sealed class ParserFallbackTests
         Assert.Equal("hello world\n\nsecond paragraph", result.Text);
     }
 
+    [Theory]
+    [InlineData("ontology.owl", "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:ex=\"https://example.test/\"><rdf:Description rdf:about=\"https://example.test/subject\"><ex:label xml:lang=\"en\">Alpha</ex:label></rdf:Description></rdf:RDF>")]
+    [InlineData("ontology.owl", "@prefix ex: <https://example.test/> . ex:subject ex:label \"Alpha\"@en .")]
+    public void Parse_owl_auto_detects_rdfxml_and_turtle(string fileName, string content)
+    {
+        var parser = new DocumentParser();
+
+        using var first = new MemoryStream(Encoding.UTF8.GetBytes(content));
+        using var second = new MemoryStream(Encoding.UTF8.GetBytes(content));
+        var firstResult = parser.Parse(first, fileName);
+        var secondResult = parser.Parse(second, fileName);
+
+        Assert.Equal(firstResult.Text, secondResult.Text);
+        Assert.Contains("https://example.test/subject", firstResult.Text);
+        Assert.Contains("Alpha", firstResult.Text);
+        Assert.Contains("@en", firstResult.Text);
+    }
+
+    [Fact]
+    public void Parse_rdf_stably_serializes_blank_nodes_datatypes_and_languages()
+    {
+        var content = "@prefix ex: <https://example.test/> . @prefix xsd: <http://www.w3.org/2001/XMLSchema#> . [] ex:label \"Alpha\"@en ; ex:count \"42\"^^xsd:integer .";
+        var parser = new DocumentParser();
+
+        using var first = new MemoryStream(Encoding.UTF8.GetBytes(content));
+        using var second = new MemoryStream(Encoding.UTF8.GetBytes(content));
+        var firstText = parser.Parse(first, "ontology.owl").Text;
+        var secondText = parser.Parse(second, "ontology.owl").Text;
+
+        Assert.Equal(firstText, secondText);
+        Assert.Contains("_:rdfimport_document-parser_0", firstText);
+        Assert.Contains("\"Alpha\"@en", firstText);
+        Assert.Contains("^^<http://www.w3.org/2001/XMLSchema#integer>", firstText);
+    }
+
     /// <summary>
     /// Build a one-page PDF with the absolute minimum structure PdfPig accepts. We only need
     /// a valid header / object table so PdfPig can open it; the actual page text does not

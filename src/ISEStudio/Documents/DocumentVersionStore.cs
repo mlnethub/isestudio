@@ -53,7 +53,7 @@ public sealed class DocumentVersionStore
             cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
             return Project(existing);
         }
 
@@ -72,7 +72,7 @@ public sealed class DocumentVersionStore
                     && item.DocumentId == input.DocumentId
                     && item.ContentSha256 == contentSha256,
                 cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
             return Project(existing);
         }
 
@@ -86,7 +86,7 @@ public sealed class DocumentVersionStore
             TokenEstimate = chunk.TokenEstimate,
         }));
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
         return new DocumentVersionResult(
             versionId,
             input.KnowledgeSystemId,

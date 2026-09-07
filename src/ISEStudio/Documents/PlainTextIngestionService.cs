@@ -9,7 +9,7 @@ namespace ISEStudio.Documents;
 /// Converts already-available plain text into an immutable document version.
 /// Parsing, source retrieval, jobs, and transport remain outside this boundary.
 /// </summary>
-public sealed class PlainTextIngestionService
+public class PlainTextIngestionService
 {
     private readonly DocumentVersionStore _versions;
     private readonly Chunker _chunker;
@@ -20,7 +20,7 @@ public sealed class PlainTextIngestionService
         _chunker = chunker;
     }
 
-    public Task<DocumentVersionResult> IngestAsync(
+    public virtual async Task<DocumentVersionResult> IngestAsync(
         Guid knowledgeSystemId,
         Guid documentId,
         string content,
@@ -40,12 +40,12 @@ public sealed class PlainTextIngestionService
                 chunk.TokenEstimate))
             .ToList();
 
-        return _versions.RecordAsync(
+        return await _versions.RecordAsync(
             new DocumentVersionInput(
                 knowledgeSystemId,
                 documentId,
                 contentSha256,
                 chunks),
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 }

@@ -17,8 +17,8 @@ namespace ISEStudio.Parsing;
 /// Layered parser that prefers DoclingDotNet and degrades to per-format fallbacks.
 ///
 /// <para>Mirrors <c>backend/app/parsing/parser.py</c> for the in-scope extensions
-/// (<c>pdf / docx / xlsx / xls / txt / md / markdown / csv</c>). HTML and PPTX throw
-/// <see cref="NotSupportedException"/> — the brief keeps them out of scope for Task 2.</para>
+/// (<c>pdf / docx / xlsx / xls / txt / md / markdown / csv / html / rss / rdf / owl</c>).
+/// PPTX remains unsupported for Task 2.</para>
 ///
 /// <para>Layering per extension (DoclingDotNet backend → lightweight fallback):</para>
 /// <list type="bullet">
@@ -70,7 +70,7 @@ public sealed class DocumentParser : IDocumentParser
         {
             if (!Supported.Contains(ext))
             {
-                // HTML/PPTX (and any other unsupported extension) follow the same rule: throw.
+                // PPTX (and any other unsupported extension) follows the same rule: throw.
                 throw new NotSupportedException($"Unsupported file type: .{ext}");
             }
 
@@ -358,7 +358,7 @@ public sealed class DocumentParser : IDocumentParser
                 Encoding.UTF8.GetString(bytes), "fallback:text"),
             "html" => new ParseResult(FallbackHtml(bytes), "fallback:html"),
             "rss" => new ParseResult(FallbackXml(bytes), "fallback:rss"),
-            "rdf" or "owl" => new ParseResult(FallbackRdf(bytes), $"fallback:{ext}"),
+            "rdf" or "owl" => new ParseResult(FallbackRdf(bytes, fileName), $"fallback:{ext}"),
             _ => throw new NotSupportedException($"Unsupported file type: .{ext}"),
         };
     }
@@ -414,12 +414,12 @@ public sealed class DocumentParser : IDocumentParser
             .Where(text => text.Length > 0));
     }
 
-    private static string FallbackRdf(byte[] bytes)
+    private static string FallbackRdf(byte[] bytes, string fileName)
     {
         var parsed = new RdfImportParser().Parse(
             bytes,
-            "document.rdf",
-            "rdfxml",
+            fileName,
+            "auto",
             baseIri: null,
             maxTriples: null,
             blankNodeScope: "document-parser");

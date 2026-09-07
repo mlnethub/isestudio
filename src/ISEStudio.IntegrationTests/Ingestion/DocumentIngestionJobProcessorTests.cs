@@ -1,9 +1,11 @@
 using System.Security.Cryptography;
 using System.Text;
+using ISEStudio.Application.Documents;
 using ISEStudio.Documents;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.IntegrationTests.Graph;
+using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -91,6 +93,67 @@ public sealed class DocumentIngestionJobProcessorTests : IClassFixture<PostgresG
         var persisted = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == document.Id);
         Assert.Equal("failed", persisted.ParseStatus);
         Assert.Contains("SHA-256", persisted.ParseError!, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Non_seekable_blob_is_hashed_and_parsed_from_the_same_bytes()
+    {
+        await using var services = _fixture.BuildServices(configure: services =>
+        {
+            services.AddSingleton<IBlobStore>(_ => new NonSeekableBlobStore(
+                Path.Combine(Path.GetTempPath(), "isestudio-non-seekable", Guid.NewGuid().ToString("N"))));
+        });
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var text = "non-seekable blob content";
+        var document = await AddDocumentAsync(db, "non-seekable.txt");
+        await PutBlobAsync(blobStore, db, document, text);
+
+        var result = await scope.ServiceProvider
+            .GetRequiredService<DocumentIngestionJobProcessor>()
+            .ProcessAsync(
+                new DocumentIngestionJob(Guid.NewGuid(), _fixture.KnowledgeSystemId, document.Id, "stage-4-test"),
+                CancellationToken.None);
+
+        Assert.Equal("completed", result.Status);
+        var chunkText = await db.DocumentVersionChunks.AsNoTracking()
+            .Where(item => item.DocumentVersionId == result.Version.Id)
+            .OrderBy(item => item.Idx)
+            .Select(item => item.Text)
+            .ToListAsync();
+        Assert.Equal(text, string.Join("\n", chunkText));
+    }
+
+    [Fact]
+    public async Task Cancellation_after_version_persistence_finalizes_job_and_document_before_propagating()
+    {
+        using var cancellation = new CancellationTokenSource();
+        await using var services = _fixture.BuildServices(configure: services =>
+        {
+            services.AddScoped<PlainTextIngestionService>(sp =>
+                new CancellingIngestionService(
+                    sp.GetRequiredService<DocumentVersionStore>(),
+                    sp.GetRequiredService<Chunker>(),
+                    cancellation));
+        });
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var document = await AddDocumentAsync(db, "cancelled.txt");
+        await PutBlobAsync(blobStore, db, document, "cancel after version");
+        var job = new DocumentIngestionJob(
+            Guid.NewGuid(), _fixture.KnowledgeSystemId, document.Id, "stage-4-test");
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => scope.ServiceProvider
+            .GetRequiredService<DocumentIngestionJobProcessor>()
+            .ProcessAsync(job, cancellation.Token));
+
+        var persistedJob = await db.ExtractionJobs.AsNoTracking().SingleAsync(item => item.Id == job.Id);
+        var persistedDocument = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == document.Id);
+        Assert.Equal("failed", persistedJob.Status);
+        Assert.Equal("failed", persistedDocument.ParseStatus);
+        Assert.Equal(1, await db.DocumentVersions.CountAsync(item => item.DocumentId == document.Id));
     }
 
     [Fact]
@@ -285,5 +348,88 @@ public sealed class DocumentIngestionJobProcessorTests : IClassFixture<PostgresG
         document.StoragePath = written.LegacyStoragePath;
         document.SizeBytes = Encoding.UTF8.GetByteCount(text);
         await db.SaveChangesAsync();
+    }
+
+    private sealed class NonSeekableBlobStore : IBlobStore
+    {
+        private readonly LocalCasBlobStore _inner;
+
+        public NonSeekableBlobStore(string root) => _inner = new LocalCasBlobStore(root);
+
+        public Task<BlobWriteResult> PutAsync(Stream content, CancellationToken cancellationToken)
+            => _inner.PutAsync(content, cancellationToken);
+
+        public async Task<Stream?> GetAsync(string sha256, CancellationToken cancellationToken)
+        {
+            var stream = await _inner.GetAsync(sha256, cancellationToken);
+            return stream is null ? null : new NonSeekableReadStream(stream);
+        }
+
+        public Task<bool> ExistsAsync(string sha256, CancellationToken cancellationToken)
+            => _inner.ExistsAsync(sha256, cancellationToken);
+
+        public Task<bool> RemoveAsync(string sha256, CancellationToken cancellationToken)
+            => _inner.RemoveAsync(sha256, cancellationToken);
+    }
+
+    private sealed class CancellingIngestionService : PlainTextIngestionService
+    {
+        private readonly CancellationTokenSource _cancellation;
+
+        public CancellingIngestionService(
+            DocumentVersionStore versions,
+            Chunker chunker,
+            CancellationTokenSource cancellation)
+            : base(versions, chunker)
+        {
+            _cancellation = cancellation;
+        }
+
+        public override async Task<DocumentVersionResult> IngestAsync(
+            Guid knowledgeSystemId,
+            Guid documentId,
+            string content,
+            CancellationToken cancellationToken)
+        {
+            var result = await base.IngestAsync(
+                knowledgeSystemId,
+                documentId,
+                content,
+                CancellationToken.None);
+            _cancellation.Cancel();
+            return result;
+        }
+    }
+
+    private sealed class NonSeekableReadStream : Stream
+    {
+        private readonly Stream _inner;
+
+        public NonSeekableReadStream(Stream inner) => _inner = inner;
+
+        public override bool CanRead => _inner.CanRead;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => _inner.ReadAsync(buffer, cancellationToken);
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => _inner.ReadAsync(buffer, offset, count, cancellationToken);
+        public override void Flush() => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _inner.Dispose();
+            base.Dispose(disposing);
+        }
     }
 }

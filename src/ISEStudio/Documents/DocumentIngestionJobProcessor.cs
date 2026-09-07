@@ -51,6 +51,7 @@ public sealed class DocumentIngestionJobProcessor
 
         var job = await LoadOrCreateJobAsync(input, cancellationToken).ConfigureAwait(false);
         DocumentEntity? document = null;
+        DocumentVersionResult? persistedVersion = null;
         try
         {
             document = await _db.Documents.SingleOrDefaultAsync(
@@ -88,16 +89,21 @@ public sealed class DocumentIngestionJobProcessor
                     $"Blob '{document.Sha256}' for document '{document.Id}' was not found.");
             }
 
-            var actualSha256 = await ComputeSha256Async(blob, cancellationToken).ConfigureAwait(false);
+            await using var buffered = CreateBufferedBlobStream();
+            await blob.CopyToAsync(buffered, cancellationToken).ConfigureAwait(false);
+            await buffered.FlushAsync(cancellationToken).ConfigureAwait(false);
+            buffered.Position = 0;
+
+            var actualSha256 = await ComputeSha256Async(buffered, cancellationToken).ConfigureAwait(false);
             if (!string.Equals(actualSha256, document.Sha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
                     $"Blob SHA-256 '{actualSha256}' does not match document '{document.Sha256}'.");
             }
-            if (blob.CanSeek) blob.Position = 0;
 
-            var parsed = _parser.Parse(blob, document.OriginalFilename);
-            var version = await _ingestion.IngestAsync(
+            buffered.Position = 0;
+            var parsed = _parser.Parse(buffered, document.OriginalFilename);
+            persistedVersion = await _ingestion.IngestAsync(
                 input.KnowledgeSystemId,
                 input.DocumentId,
                 parsed.Text,
@@ -109,14 +115,19 @@ public sealed class DocumentIngestionJobProcessor
             document.Mime = parsed.MediaType ?? document.Mime;
             document.ParseError = null;
             document.TextCharCount = parsed.Text.EnumerateRunes().Count();
-            document.ChunkCount = version.ChunkCount;
+            document.ChunkCount = persistedVersion.ChunkCount;
             job.Status = JobStatus.Completed.ToWire();
             job.Phase = "finalizing";
-            job.ProcessedChunks = version.ChunkCount;
-            job.TotalChunks = version.ChunkCount;
+            job.ProcessedChunks = persistedVersion.ChunkCount;
+            job.TotalChunks = persistedVersion.ChunkCount;
             job.FinishedAt = DateTimeOffset.UtcNow;
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-            return new DocumentIngestionJobResult(job.Status, version, null);
+            return new DocumentIngestionJobResult(job.Status, persistedVersion, null);
+        }
+        catch (OperationCanceledException) when (document is not null && persistedVersion is not null)
+        {
+            await FinalizeCancellationAsync(document, job).ConfigureAwait(false);
+            throw;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -140,6 +151,29 @@ public sealed class DocumentIngestionJobProcessor
     {
         var digest = await SHA256.HashDataAsync(content, cancellationToken).ConfigureAwait(false);
         return Convert.ToHexString(digest).ToLowerInvariant();
+    }
+
+    private static FileStream CreateBufferedBlobStream()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"isestudio-ingestion-{Guid.NewGuid():N}.blob");
+        return new FileStream(
+            path,
+            FileMode.CreateNew,
+            FileAccess.ReadWrite,
+            FileShare.Read,
+            81920,
+            FileOptions.Asynchronous | FileOptions.DeleteOnClose);
+    }
+
+    private async Task FinalizeCancellationAsync(DocumentEntity document, ExtractionJobEntity job)
+    {
+        document.ParseStatus = "failed";
+        document.ParseError = "Ingestion was cancelled after the document version was persisted.";
+        job.Status = JobStatus.Failed.ToWire();
+        job.Phase = "failed";
+        job.Error = document.ParseError;
+        job.FinishedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(CancellationToken.None).ConfigureAwait(false);
     }
 
     private async Task<ExtractionJobEntity> LoadOrCreateJobAsync(
