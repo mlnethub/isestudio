@@ -26,7 +26,7 @@
 
 ## Verification output
 
-- Focused rehearsal suite: 17 passed, 0 failed, including Docker PostgreSQL tests,
+- Focused rehearsal suite: 18 passed, 0 failed, including Docker PostgreSQL tests,
   backup digest checks, restore validation failures, upgrade marker/history checks,
   missing `pg_restore`, and validator timeout handling.
 - Broader migration integration suite: 47 passed, 0 failed, including Docker

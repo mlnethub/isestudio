@@ -38,17 +38,20 @@ public sealed class PgRestoreBackupValidator : IPostgresBackupValidator
         {
             using var process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("Could not start pg_restore.");
-            var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
-            var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            var errorTask = process.StandardError.ReadToEndAsync();
+            var outputTask = process.StandardOutput.ReadToEndAsync();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(_timeout);
             try
             {
                 await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
             {
                 try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                if (cancellationToken.IsCancellationRequested)
+                    throw;
+
                 return new BackupValidationResult(false, "unknown", $"pg_restore --list timed out after {_timeout}.");
             }
             var detail = await errorTask.ConfigureAwait(false);

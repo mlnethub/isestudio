@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Migration.Rehearsal;
@@ -338,6 +339,61 @@ public sealed class PostgreSqlMigrationRehearsalTests : IAsyncLifetime
         finally
         {
             Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Pg_restore_validator_cancels_the_process_tree_when_calling_token_is_cancelled()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"pg-restore-{Guid.NewGuid():N}");
+        var script = Path.Combine(directory, "pg_restore.cmd");
+        var childPidPath = Path.Combine(directory, "child.pid");
+        var backup = Path.Combine(directory, "backup.dump");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await File.WriteAllTextAsync(script,
+                $"@echo off\r\npowershell -NoProfile -Command \"$child = Start-Process ping -ArgumentList '127.0.0.1 -n 30' -PassThru; Set-Content -Path '{childPidPath}' -Value $child.Id; Wait-Process -Id $child.Id\"\r\n");
+            await File.WriteAllTextAsync(backup, "fixture");
+            using var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                new PgRestoreBackupValidator(TimeSpan.FromSeconds(30), script)
+                    .ValidateAsync(backup, cancellation.Token));
+
+            await AssertEventuallyAsync(() => File.Exists(childPidPath));
+            var childPid = int.Parse(await File.ReadAllTextAsync(childPidPath));
+            await AssertEventuallyAsync(() => !IsProcessRunning(childPid));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    private static async Task AssertEventuallyAsync(Func<bool> condition)
+    {
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            if (condition())
+                return;
+
+            await Task.Delay(100);
+        }
+
+        Assert.True(condition());
+    }
+
+    private static bool IsProcessRunning(int processId)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 
