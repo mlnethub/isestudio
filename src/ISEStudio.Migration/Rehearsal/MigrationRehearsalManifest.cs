@@ -38,7 +38,9 @@ public sealed record MigrationRehearsalOptions(
     string? RdfSourcePath = null,
     string? RdfCopyPath = null,
     string? RdfWorkPath = null,
-    string? BlobManifestPath = null)
+    string? BlobManifestPath = null,
+    string? ExpectedBackupSha256 = null,
+    long? ExpectedBackupSize = null)
 {
     public static readonly IReadOnlyList<string> RequiredStepNames =
     [

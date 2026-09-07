@@ -12,11 +12,20 @@ public interface IPostgresBackupValidator
 
 public sealed class PgRestoreBackupValidator : IPostgresBackupValidator
 {
+    private readonly TimeSpan _timeout;
+    private readonly string _executablePath;
+
+    public PgRestoreBackupValidator(TimeSpan? timeout = null, string executablePath = "pg_restore")
+    {
+        _timeout = timeout ?? TimeSpan.FromMinutes(2);
+        _executablePath = executablePath;
+    }
+
     public async Task<BackupValidationResult> ValidateAsync(string path, CancellationToken cancellationToken)
     {
         var startInfo = new ProcessStartInfo
         {
-            FileName = "pg_restore",
+            FileName = _executablePath,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -31,7 +40,17 @@ public sealed class PgRestoreBackupValidator : IPostgresBackupValidator
                 ?? throw new InvalidOperationException("Could not start pg_restore.");
             var errorTask = process.StandardError.ReadToEndAsync(cancellationToken);
             var outputTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
-            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(_timeout);
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                try { process.Kill(entireProcessTree: true); } catch (InvalidOperationException) { }
+                return new BackupValidationResult(false, "unknown", $"pg_restore --list timed out after {_timeout}.");
+            }
             var detail = await errorTask.ConfigureAwait(false);
             _ = await outputTask.ConfigureAwait(false);
             if (process.ExitCode != 0)

@@ -26,11 +26,19 @@
 
 ## Verification output
 
-- `dotnet test src\ISEStudio.IntegrationTests\ISEStudio.IntegrationTests.csproj --filter FullyQualifiedName~MigrationRehearsalTests --no-restore`: 2 passed.
-- `dotnet test src\ISEStudio.IntegrationTests\ISEStudio.IntegrationTests.csproj --filter FullyQualifiedName~Migration --no-restore`: 32 passed, including Docker PostgreSQL tests.
-- `dotnet test src\ISEStudio.Tests\ISEStudio.Tests.csproj --filter FullyQualifiedName~Migration --no-restore`: 10 passed.
+- Focused rehearsal suite: 17 passed, 0 failed, including Docker PostgreSQL tests,
+  backup digest checks, restore validation failures, upgrade marker/history checks,
+  missing `pg_restore`, and validator timeout handling.
+- Broader migration integration suite: 47 passed, 0 failed, including Docker
+  PostgreSQL tests.
+- Persistence migration suite: 10 passed, 0 failed. The test project emitted four
+  existing unrelated warnings.
 - `dotnet build src\ISEStudio.Migration\ISEStudio.Migration.csproj --no-restore -warnaserror`: passed.
-- CLI without a PostgreSQL connection produced a failed manifest; rehearsal exit code and `Test-MigrationGate.ps1` exit code were both `1`.
+- `Test-MigrationGateSmoke.ps1`: passed; a valid canonical manifest was accepted and
+  tampered `Passed`, report checksum, and step metadata fixtures were rejected.
+- PowerShell AST parsing covers the gate, gate smoke, and rehearsal wrapper scripts.
+- CLI without a PostgreSQL connection produced a failed manifest; rehearsal exit code
+  and `Test-MigrationGate.ps1` exit code were both `1`.
 - Duplicate, empty, unknown, and incorrectly-counted gate steps are rejected.
 
 ## Preconditions and unverified external steps
@@ -48,6 +56,9 @@ operation was run in this workspace.
 - Backup restore orchestration remains deliberately external and manual; the
   command verifies the artifact and restored database rather than inventing a
   provider-specific restore API.
+- `pg_restore` is not installed on this workstation, so the real dump-list happy
+  path is not evidenced locally; missing executable and timeout behavior are tested
+  with injected validator paths.
 - Optional RDF/blob inputs are recorded as skipped when omitted, so production
   runbooks must supply them before treating a manifest as acceptance evidence.
 - Restored backup orchestration and upgrade fixture preparation remain

@@ -1,4 +1,55 @@
-# Migration rehearsal acceptance
+# Migration Gap Closure Acceptance
+
+## Scope
+
+This record covers the .NET migration rehearsal command and its manifest gate.
+PostgreSQL remains the authoritative store. A production cutover still requires
+explicit stop-write authorization, an operator-verified backup, and a reversible
+rollback plan.
+
+## Evidence
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Focused rehearsal tests | 17 passed, 0 failed | `MigrationRehearsalTests` and `PostgreSqlMigrationRehearsalTests` |
+| Broader migration integration suite | 47 passed, 0 failed | `ISEStudio.IntegrationTests`, filter `FullyQualifiedName~Migration` |
+| Persistence migration suite | 10 passed, 0 failed | `ISEStudio.Tests`, filter `FullyQualifiedName~Migration` |
+| Migration project strict build | Passed | `dotnet build ... -warnaserror` |
+| Canonical checksum regression | Passed | delimiter and NULL/empty-value collision fixture |
+| Backup digest resource bound | Passed | streamed SHA-256 and byte-count validation |
+| Restore validator failure modes | Passed | missing executable and timeout/process-tree cancellation tests |
+| Upgrade marker contract | Passed | schema, source migration, target schema, and actual history checks |
+| Gate smoke | Passed | valid fixture accepted; `Passed`, report checksum, and step metadata tampering rejected |
+| PowerShell syntax | Passed | gate, gate smoke, and rehearsal wrapper AST parsing |
+
+## Reproducible commands
+
+```powershell
+dotnet test src\ISEStudio.IntegrationTests\ISEStudio.IntegrationTests.csproj --filter 'FullyQualifiedName~MigrationRehearsalTests|FullyQualifiedName~PostgreSqlMigrationRehearsalTests' --no-restore --logger 'console;verbosity=minimal'
+pwsh -NoProfile -File scripts\migration\Test-MigrationGateSmoke.ps1
+```
+
+The focused suite uses PostgreSQL 16 Testcontainers and completed successfully in
+this workspace. The smoke script invokes `Test-MigrationGate.ps1` as a subprocess
+for both acceptance and tamper-rejection cases.
+
+## Unverified external evidence
+
+- `pg_restore` is not installed on this workstation. The actual dump-list happy path
+  therefore remains unverified locally; missing executable and timeout behavior are
+  covered by tests using injected executable paths.
+- No production database, provider-specific backup restore, MinIO cutover, or
+  stop-write operation was run here.
+- Restored and upgrade production rehearsals require an operator-provided database,
+  backup artifact, migration history, and credentials. Those inputs must be recorded
+  with the resulting manifest checksum before cutover acceptance.
+
+## Residual risk
+
+The rehearsal command verifies a backup artifact and the state of a restored target;
+it does not implement provider-specific restore orchestration. RDF and blob inputs
+are optional in the command and are recorded as skipped when omitted, so a production
+runbook must provide them before treating a manifest as complete acceptance evidence.# Migration rehearsal acceptance
 
 Task 4 is accepted only when a mode's JSON manifest satisfies its explicit
 preconditions and `scripts/migration/Test-MigrationGate.ps1` exits zero.

@@ -169,19 +169,19 @@ public static class SqlSnapshot
         return (bool)(await cmd.ExecuteScalarAsync(cancellationToken))!;
     }
 
-    private static async Task<HashSet<string>> GetBusinessChecksumColumnsAsync(
+    private static async Task<IReadOnlyList<ChecksumColumn>> GetBusinessChecksumColumnsAsync(
         NpgsqlConnection conn, string table, CancellationToken cancellationToken)
     {
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = @"
-            SELECT column_name
+            SELECT column_name, data_type, character_maximum_length
             FROM information_schema.columns
             WHERE table_schema = 'public' AND table_name = @t
             ORDER BY ordinal_position";
         cmd.Parameters.AddWithValue("@t", table);
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
 
-        var columns = new HashSet<string>(StringComparer.Ordinal);
+        var columns = new List<ChecksumColumn>();
         while (await reader.ReadAsync(cancellationToken))
         {
             var name = reader.GetString(0);
@@ -189,30 +189,28 @@ public static class SqlSnapshot
             {
                 continue;
             }
-            columns.Add(name);
+            columns.Add(new ChecksumColumn(name, reader.GetString(1), reader.IsDBNull(2) ? null : reader.GetInt32(2)));
         }
         return columns;
     }
 
-    private static string BuildChecksumSql(string table, IReadOnlyCollection<string> columns)
+    private static string BuildChecksumSql(string table, IReadOnlyCollection<ChecksumColumn> columns)
     {
-        // Concat every included column for each row, then md5 the
-        // concatenation, then string_agg over the rows (in id order so
-        // it is stable). The two layers of md5 + string_agg make the
-        // final value a hash over the full table content that fits
-        // in a single value (Postgres' md5 returns 32 hex chars).
-        // The column order MUST be deterministic — the caller passes
-        // a HashSet whose enumeration order is undefined, so we sort
-        // here to make the hash reproducible across snapshots.
-        var columnExprs = string.Join(", ", columns.OrderBy(c => c, StringComparer.Ordinal).Select(c => $"COALESCE({QuoteIdent(c)}::text, '')"));
+        // Encode each row as canonical JSONB with explicit column metadata,
+        // NULL state, and value. JSONB removes object-key order ambiguity;
+        // sorting the column array and rows makes the final digest stable.
+        var columnExprs = string.Join(", ", columns.OrderBy(c => c.Name, StringComparer.Ordinal).Select(c =>
+            $"jsonb_build_object('name', {SqlLiteral(c.Name)}, 'type', {SqlLiteral(c.DataType)}, 'length', {(c.CharacterMaximumLength is null ? "NULL" : c.CharacterMaximumLength.Value.ToString(System.Globalization.CultureInfo.InvariantCulture))}, 'is_null', {QuoteIdent(c.Name)} IS NULL, 'value', {QuoteIdent(c.Name)}::text)"));
         return $@"
             SELECT COALESCE(string_agg(row_md5, ''), '')
             FROM (
-                SELECT md5(concat_ws('|', {columnExprs})) AS row_md5
+                SELECT md5(jsonb_build_array({columnExprs})::text) AS row_md5
                 FROM {QuoteIdent(table)}
                 ORDER BY id
             ) rows";
     }
+
+    private static string SqlLiteral(string value) => "'" + value.Replace("'", "''", StringComparison.Ordinal) + "'";
 
     private static async Task<string?> GetColumnTypeAsync(
         NpgsqlConnection conn, string table, string column, CancellationToken cancellationToken)
@@ -266,3 +264,5 @@ public sealed record SnapshotResult(
     IReadOnlyDictionary<string, long> TableCounts,
     IReadOnlyDictionary<string, long> OrphanCounts,
     IReadOnlyDictionary<string, string> BusinessChecksums);
+
+internal sealed record ChecksumColumn(string Name, string DataType, int? CharacterMaximumLength);

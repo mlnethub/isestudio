@@ -74,7 +74,8 @@ public static class Program
         out MigrationRehearsalOptions? options)
     {
         string? mode = null, manifest = null, postgres = null, backup = null;
-        string? rdfSource = null, rdfCopy = null, rdfWork = null, blobManifest = null;
+        string? rdfSource = null, rdfCopy = null, rdfWork = null, blobManifest = null, expectedBackupSha256 = null;
+        long? expectedBackupSize = null;
         for (var i = 0; i < args.Count; i++)
         {
             if (args[i] is "--help" or "-h") { options = null; return false; }
@@ -90,6 +91,11 @@ public static class Program
                 case "--rdf-copy": rdfCopy = value; break;
                 case "--rdf-work": rdfWork = value; break;
                 case "--blob-manifest": blobManifest = value; break;
+                case "--expected-backup-sha256": expectedBackupSha256 = value; break;
+                case "--expected-backup-size":
+                    if (!long.TryParse(value, out var parsedSize) || parsedSize < 0) { options = null; return false; }
+                    expectedBackupSize = parsedSize;
+                    break;
                 default: options = null; return false;
             }
         }
@@ -101,7 +107,7 @@ public static class Program
         }
 
         options = new MigrationRehearsalOptions(mode, postgres, manifest, backup,
-            rdfSource, rdfCopy, rdfWork, blobManifest);
+            rdfSource, rdfCopy, rdfWork, blobManifest, expectedBackupSha256, expectedBackupSize);
         return true;
     }
 
@@ -128,6 +134,8 @@ public static class Program
                     --manifest <path>
                     --postgres-connection-string <s>
                     --backup <path>                 required for restored mode
+                    --expected-backup-sha256 <hex>  optional restored artifact digest
+                    --expected-backup-size <bytes>  optional restored artifact size
                     --rdf-source <dir> --rdf-copy <dir> --rdf-work <dir>
                     --blob-manifest <path>
                 """;

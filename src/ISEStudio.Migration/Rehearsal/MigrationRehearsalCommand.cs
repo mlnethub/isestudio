@@ -227,7 +227,12 @@ public sealed class MigrationRehearsalCommand
             var path = options.BackupPath!;
             if (!File.Exists(path) || new FileInfo(path).Length == 0)
                 throw new InvalidDataException("Restored backup must be a non-empty file.");
-            var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+            var (backupSize, backupSha256) = await ComputeFileDigestAsync(path, cancellationToken).ConfigureAwait(false);
+            if (options.ExpectedBackupSize is not null && options.ExpectedBackupSize.Value != backupSize)
+                throw new InvalidDataException($"Backup size does not match expected value {options.ExpectedBackupSize.Value}.");
+            if (!string.IsNullOrWhiteSpace(options.ExpectedBackupSha256)
+                && !string.Equals(options.ExpectedBackupSha256, backupSha256, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Backup SHA-256 does not match the expected value.");
             var validation = await _backupValidator.ValidateAsync(path, cancellationToken).ConfigureAwait(false);
             if (!validation.IsListable)
                 throw new InvalidDataException($"Backup is not a listable pg_dump artifact: {validation.Detail}");
@@ -235,10 +240,10 @@ public sealed class MigrationRehearsalCommand
             if (restoredTables == 0) throw new InvalidDataException("Database does not contain restored application tables.");
             return new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                ["restoreVerification"] = "external/manual",
+                ["restoreVerification"] = "external/manual; database-to-artifact association remains operator evidence",
                 ["backupFormat"] = validation.Format,
-                ["backupSize"] = bytes.LongLength.ToString(),
-                ["backupSha256"] = Convert.ToHexString(SHA256.HashData(bytes)),
+                ["backupSize"] = backupSize.ToString(),
+                ["backupSha256"] = backupSha256,
             };
         }
         else
@@ -253,9 +258,22 @@ public sealed class MigrationRehearsalCommand
                 var markerTable = await ScalarAsync(connection, "SELECT to_regclass('public.__migration_rehearsal_upgrade_marker') IS NOT NULL", cancellationToken);
                 if (historyRows == 0 || markerTable == 0)
                     throw new InvalidOperationException("Upgrade rehearsal requires non-empty old migration history and the __migration_rehearsal_upgrade_marker table.");
-                var markerRows = await ScalarAsync(connection, "SELECT count(*) FROM public.__migration_rehearsal_upgrade_marker WHERE marker = 'pre-upgrade'", cancellationToken);
-                if (markerRows == 0)
+                var markerColumns = await ScalarAsync(connection, "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = '__migration_rehearsal_upgrade_marker' AND column_name IN ('marker', 'source_migration', 'target_schema')", cancellationToken);
+                if (markerColumns != 3)
+                    throw new InvalidOperationException("Upgrade rehearsal marker must include marker, source_migration, and target_schema columns.");
+                await using var markerCommand = new NpgsqlCommand("SELECT source_migration, target_schema FROM public.__migration_rehearsal_upgrade_marker WHERE marker = 'pre-upgrade'", connection);
+                await using var markerReader = await markerCommand.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                if (!await markerReader.ReadAsync(cancellationToken).ConfigureAwait(false))
                     throw new InvalidOperationException("Upgrade rehearsal requires a pre-upgrade marker row.");
+                var sourceMigration = markerReader.GetString(0);
+                var targetSchema = markerReader.GetString(1);
+                if (!string.Equals(targetSchema, "public", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Upgrade rehearsal marker target_schema must be public.");
+                await markerReader.CloseAsync().ConfigureAwait(false);
+                await using var historyCommand = new NpgsqlCommand("SELECT count(*) FROM public.\"__EFMigrationsHistory\" WHERE \"MigrationId\" = @migration", connection);
+                historyCommand.Parameters.AddWithValue("migration", sourceMigration);
+                if (await historyCommand.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false) is not long { } matchingHistory || matchingHistory == 0)
+                    throw new InvalidOperationException("Upgrade rehearsal marker source_migration must exist in migration history.");
             }
         }
         return null;
@@ -300,4 +318,20 @@ public sealed class MigrationRehearsalCommand
 
     private static string ChecksumOf(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+
+    private static async Task<(long Size, string Sha256)> ComputeFileDigestAsync(string path, CancellationToken cancellationToken)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 64 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var sha256 = SHA256.Create();
+        var buffer = new byte[64 * 1024];
+        long size = 0;
+        int read;
+        while ((read = await stream.ReadAsync(buffer.AsMemory(), cancellationToken).ConfigureAwait(false)) != 0)
+        {
+            sha256.TransformBlock(buffer, 0, read, null, 0);
+            size += read;
+        }
+        sha256.TransformFinalBlock([], 0, 0);
+        return (size, Convert.ToHexString(sha256.Hash!));
+    }
 }

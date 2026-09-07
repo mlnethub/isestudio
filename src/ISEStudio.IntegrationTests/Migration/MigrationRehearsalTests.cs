@@ -12,6 +12,58 @@ namespace ISEStudio.IntegrationTests.Migration;
 public sealed class MigrationRehearsalTests
 {
     [Fact]
+    public async Task Sql_snapshot_business_checksum_distinguishes_delimiters_null_and_empty_values()
+    {
+        await using var container = new PostgreSqlBuilder()
+            .WithImage("postgres:16-alpine")
+            .WithDatabase("isestudio")
+            .WithUsername("postgres")
+            .WithPassword("postgres")
+            .WithCleanUp(true)
+            .Build();
+        await container.StartAsync();
+
+        await using (var connection = new NpgsqlConnection(container.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var command = new NpgsqlCommand("CREATE TABLE document (id bigint primary key, title text, body text)", connection);
+            await command.ExecuteNonQueryAsync();
+            await using var insert = new NpgsqlCommand("INSERT INTO document (id, title, body) VALUES (1, 'a|b', 'c'), (2, 'a', 'b|c')", connection);
+            await insert.ExecuteNonQueryAsync();
+        }
+
+        var collisionSnapshot = await SqlSnapshot.CaptureAsync(container.GetConnectionString(), CancellationToken.None);
+
+        await using (var connection = new NpgsqlConnection(container.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var update = new NpgsqlCommand("UPDATE document SET title = CASE id WHEN 1 THEN 'a' ELSE 'a|b' END, body = CASE id WHEN 1 THEN 'b|c' ELSE 'c' END", connection);
+            await update.ExecuteNonQueryAsync();
+        }
+
+        var reorderedSnapshot = await SqlSnapshot.CaptureAsync(container.GetConnectionString(), CancellationToken.None);
+        Assert.NotEqual(collisionSnapshot.BusinessChecksums["document"], reorderedSnapshot.BusinessChecksums["document"]);
+
+        await using (var connection = new NpgsqlConnection(container.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var update = new NpgsqlCommand("UPDATE document SET title = NULL, body = '' WHERE id = 1", connection);
+            await update.ExecuteNonQueryAsync();
+        }
+
+        var nullSnapshot = await SqlSnapshot.CaptureAsync(container.GetConnectionString(), CancellationToken.None);
+        await using (var connection = new NpgsqlConnection(container.GetConnectionString()))
+        {
+            await connection.OpenAsync();
+            await using var update = new NpgsqlCommand("UPDATE document SET title = '', body = NULL WHERE id = 1", connection);
+            await update.ExecuteNonQueryAsync();
+        }
+
+        var emptySnapshot = await SqlSnapshot.CaptureAsync(container.GetConnectionString(), CancellationToken.None);
+        Assert.NotEqual(nullSnapshot.BusinessChecksums["document"], emptySnapshot.BusinessChecksums["document"]);
+    }
+
+    [Fact]
     public void Snapshot_comparison_rejects_deleted_or_changed_business_data_and_graph_evidence()
     {
         var before = new SnapshotResult(
@@ -207,7 +259,12 @@ public sealed class PostgreSqlMigrationRehearsalTests : IAsyncLifetime
                 .RunAsync(new MigrationRehearsalOptions("restored", _container.GetConnectionString(), manifestPath, backupPath), CancellationToken.None);
 
             Assert.False(result.Passed);
+            Assert.Equal(["database-connectivity", "report-serialization"], result.Steps.Select(step => step.Name));
+            Assert.NotNull(result.ManifestChecksum);
             Assert.Contains("listable pg_dump artifact", result.Steps.Single(step => step.Name == "database-connectivity").Detail);
+            Assert.Equal(MigrationStepStatus.Failed, result.Steps[0].Status);
+            Assert.Equal(MigrationStepStatus.Passed, result.Steps[1].Status);
+            MigrationManifestIntegrity.Validate(await File.ReadAllTextAsync(manifestPath));
         }
         finally
         {
@@ -228,12 +285,59 @@ public sealed class PostgreSqlMigrationRehearsalTests : IAsyncLifetime
                 .RunAsync(new MigrationRehearsalOptions("restored", _container.GetConnectionString(), manifestPath, backupPath), CancellationToken.None);
 
             Assert.False(result.Passed);
+            Assert.Equal(["database-connectivity", "report-serialization"], result.Steps.Select(step => step.Name));
+            Assert.NotNull(result.ManifestChecksum);
             Assert.Contains("application tables", result.Steps.Single(step => step.Name == "database-connectivity").Detail);
+            Assert.Equal(MigrationStepStatus.Failed, result.Steps[0].Status);
+            Assert.Equal(MigrationStepStatus.Passed, result.Steps[1].Status);
+            MigrationManifestIntegrity.Validate(await File.ReadAllTextAsync(manifestPath));
         }
         finally
         {
             File.Delete(manifestPath);
             File.Delete(backupPath);
+        }
+    }
+
+    [Fact]
+    public async Task Pg_restore_validator_reports_missing_executable_as_real_validation_error()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"backup-{Guid.NewGuid():N}.dump");
+        try
+        {
+            await File.WriteAllTextAsync(path, "not a dump");
+            var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                new PgRestoreBackupValidator(TimeSpan.FromMilliseconds(50), "missing-pg-restore-executable")
+                    .ValidateAsync(path, CancellationToken.None));
+
+            Assert.Contains("pg_restore executable is required", exception.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task Pg_restore_validator_stops_a_hanging_list_process_at_timeout()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), $"pg-restore-{Guid.NewGuid():N}");
+        var script = Path.Combine(directory, "pg_restore.cmd");
+        var backup = Path.Combine(directory, "backup.dump");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            await File.WriteAllTextAsync(script, "@echo off\r\nping 127.0.0.1 -n 10 > nul\r\nexit /b 0\r\n");
+            await File.WriteAllTextAsync(backup, "fixture");
+            var result = await new PgRestoreBackupValidator(TimeSpan.FromMilliseconds(50), script)
+                .ValidateAsync(backup, CancellationToken.None);
+
+            Assert.False(result.IsListable);
+            Assert.Contains("timed out", result.Detail, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
         }
     }
 
@@ -269,8 +373,8 @@ public sealed class PostgreSqlMigrationRehearsalTests : IAsyncLifetime
             await using (var db = new ISEStudioDbContext(dbOptions))
             {
                 await db.Database.MigrateAsync("20260904151546_AddKnowledgeGraph");
-                await db.Database.ExecuteSqlRawAsync("CREATE TABLE __migration_rehearsal_upgrade_marker (marker text primary key)");
-                await db.Database.ExecuteSqlRawAsync("INSERT INTO __migration_rehearsal_upgrade_marker (marker) VALUES ('pre-upgrade')");
+                await db.Database.ExecuteSqlRawAsync("CREATE TABLE __migration_rehearsal_upgrade_marker (marker text primary key, source_migration text not null, target_schema text not null)");
+                await db.Database.ExecuteSqlRawAsync("INSERT INTO __migration_rehearsal_upgrade_marker (marker, source_migration, target_schema) VALUES ('pre-upgrade', '20260904151546_AddKnowledgeGraph', 'public')");
             }
 
             var result = await new MigrationRehearsalCommand()
