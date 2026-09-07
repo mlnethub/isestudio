@@ -82,6 +82,12 @@ public static class SqlSnapshot
         // Row counts.
         foreach (var table in BusinessTables)
         {
+            if (!await TableExistsAsync(conn, table, cancellationToken))
+            {
+                tableCounts[table] = 0;
+                businessChecksums[table] = string.Empty;
+                continue;
+            }
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = $"SELECT count(*)::bigint FROM {QuoteIdent(table)}";
             var n = (long)(await cmd.ExecuteScalarAsync(cancellationToken))!;
@@ -140,6 +146,10 @@ public static class SqlSnapshot
         // across the migration.
         foreach (var table in BusinessTables)
         {
+            if (!tableCounts.ContainsKey(table) || !await TableExistsAsync(conn, table, cancellationToken))
+            {
+                continue;
+            }
             var checksumColumns = await GetBusinessChecksumColumnsAsync(conn, table, cancellationToken);
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = BuildChecksumSql(table, checksumColumns);
@@ -148,6 +158,15 @@ public static class SqlSnapshot
         }
 
         return new SnapshotResult(tableCounts, orphanCounts, businessChecksums);
+    }
+
+    private static async Task<bool> TableExistsAsync(
+        NpgsqlConnection conn, string table, CancellationToken cancellationToken)
+    {
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT to_regclass(@name) IS NOT NULL";
+        cmd.Parameters.AddWithValue("@name", $"public.{table}");
+        return (bool)(await cmd.ExecuteScalarAsync(cancellationToken))!;
     }
 
     private static async Task<HashSet<string>> GetBusinessChecksumColumnsAsync(
