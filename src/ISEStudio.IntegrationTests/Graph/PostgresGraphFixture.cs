@@ -1,6 +1,8 @@
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Infrastructure.Startup;
+using ISEStudio.Documents;
+using ISEStudio.Parsing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -249,6 +251,10 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         });
         services.AddScoped<ISEStudioDbContext>(sp =>
             sp.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>().CreateDbContext());
+        services.AddScoped<DocumentVersionStore>();
+        services.AddSingleton<Chunker>(_ => new Chunker(size: 20, overlap: 0));
+        services.AddScoped<PlainTextIngestionService>();
+        services.AddScoped<PlainTextIngestionJobProcessor>();
         services.AddGraphStore();
         return services.BuildServiceProvider();
     }

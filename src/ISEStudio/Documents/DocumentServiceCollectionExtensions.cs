@@ -31,6 +31,7 @@ public static class DocumentServiceCollectionExtensions
         services.AddScoped<DocumentService>();
         services.AddScoped<DocumentVersionStore>();
         services.AddScoped<PlainTextIngestionService>();
+        services.AddScoped<PlainTextIngestionJobProcessor>();
         services.AddScoped<IDocumentApplicationService, DocumentApplicationService>();
         return services;
     }
