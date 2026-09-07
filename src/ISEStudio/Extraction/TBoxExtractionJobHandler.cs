@@ -148,6 +148,10 @@ public abstract class DurableLayerExtractionJobHandlerBase : IExtractionJobHandl
             var result = await _router.ExecuteAsync(input, cancellationToken).ConfigureAwait(false);
             if (!result.Succeeded)
             {
+                await _jobs.MarkFailedAsync(
+                    job.Id,
+                    result.Error ?? "Extraction pipeline failed.",
+                    CancellationToken.None).ConfigureAwait(false);
                 return;
             }
 
@@ -207,6 +211,13 @@ public abstract class DurableLayerExtractionJobHandlerBase : IExtractionJobHandl
         {
             throw new InvalidOperationException(
                 $"Document version '{sourceVersionId}' does not contain any chunks to replay.");
+        }
+
+        var expectedChunkIds = job.ChunkIds ?? new List<int>();
+        if (!expectedChunkIds.SequenceEqual(chunks.Select(chunk => chunk.Idx)))
+        {
+            throw new InvalidOperationException(
+                $"Document version '{sourceVersionId}' chunks do not match extraction job '{job.Id}'.");
         }
 
         var systemConfig = await _db.SystemConfigs.AsNoTracking()
