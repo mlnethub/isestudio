@@ -20,6 +20,7 @@ using ISEStudio.EntityResolution;
 using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Infrastructure.Search;
 using ISEStudio.Infrastructure.Startup;
 using ISEStudio.Integration;
 using ISEStudio.Knowledge;
@@ -328,6 +329,7 @@ builder.Services.AddDbContextFactory<ISEStudioDbContext>((sp, options) =>
 builder.Services.AddScoped<ISEStudioDbContext>(sp =>
     sp.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>().CreateDbContext());
 builder.Services.AddGraphStore();
+builder.Services.AddPostgresSearch();
 
 // Singleton so the dispatcher's "find any active extraction" guard does
 // not have to share state with the request-scoped DbContext; the store
