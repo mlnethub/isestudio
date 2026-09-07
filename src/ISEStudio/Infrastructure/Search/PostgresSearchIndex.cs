@@ -13,28 +13,39 @@ namespace ISEStudio.Infrastructure.Search;
 public sealed class PostgresSearchIndex : ISearchIndex
 {
     private const string SearchSql = """
+        WITH ranked_versions AS (
+            SELECT
+                dv.id,
+                dv.document_id,
+                dv.knowledge_system_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY dv.document_id
+                    ORDER BY dv.created_at DESC, dv.id DESC) AS version_rank
+            FROM document_version AS dv
+            WHERE dv.knowledge_system_id = @knowledge_system_id
+              AND (@as_of IS NULL OR dv.created_at <= @as_of))
         SELECT
             dvc.id,
-            d.id,
+            rv.document_id,
+            rv.id,
             dvc.text,
             ts_rank_cd(
                 to_tsvector('simple', dvc.text),
                 websearch_to_tsquery('simple', @query)) AS lexical_score,
             d."Sha256"
         FROM document_version_chunk AS dvc
-        INNER JOIN document_version AS dv ON dv.id = dvc.document_version_id
-                INNER JOIN document AS d ON d."id" = dv.document_id
-                INNER JOIN knowledgesystem AS ks ON ks."id" = dv.knowledge_system_id
+        INNER JOIN ranked_versions AS rv
+            ON rv.id = dvc.document_version_id
+           AND rv.version_rank = 1
+        INNER JOIN document AS d ON d."id" = rv.document_id
+        INNER JOIN knowledgesystem AS ks ON ks."id" = rv.knowledge_system_id
         LEFT JOIN ksgrant AS grant_row
-                    ON grant_row."KnowledgeSystemId" = dv.knowledge_system_id
+                    ON grant_row."KnowledgeSystemId" = rv.knowledge_system_id
                  AND grant_row."UserId" = @actor_id
-        WHERE dv.knowledge_system_id = @knowledge_system_id
-          AND to_tsvector('simple', dvc.text) @@
+        WHERE to_tsvector('simple', dvc.text) @@
               websearch_to_tsquery('simple', @query)
-          AND (@as_of IS NULL OR dv.created_at <= @as_of)
           AND (
-              @actor_id IS NULL
-              OR ks."OwnerId" = @actor_id
+              ks."OwnerId" = @actor_id
               OR grant_row."UserId" IS NOT NULL)
         ORDER BY lexical_score DESC, dvc.id ASC
         LIMIT @limit
@@ -48,7 +59,7 @@ public sealed class PostgresSearchIndex : ISearchIndex
         _contextFactory = contextFactory;
     }
 
-    public SearchCapabilities Capabilities => SearchCapabilities.PostgresWithoutVector;
+    public SearchCapabilities Capabilities => SearchCapabilities.NoVectorSearch;
 
     public async Task<IReadOnlyList<SearchHit>> SearchAsync(
         SearchRequest request,
@@ -84,10 +95,11 @@ public sealed class PostgresSearchIndex : ISearchIndex
             hits.Add(new SearchHit(
                 reader.GetGuid(0),
                 reader.GetGuid(1),
-                reader.GetString(2),
-                reader.GetDouble(3),
+                reader.GetGuid(2),
+                reader.GetString(3),
+                reader.GetDouble(4),
                 null,
-                reader.GetString(4)));
+                reader.GetString(5)));
         }
 
         return hits;

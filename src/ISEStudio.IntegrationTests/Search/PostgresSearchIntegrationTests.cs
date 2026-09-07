@@ -23,6 +23,8 @@ public sealed class PostgresSearchIntegrationTests : IAsyncLifetime
     private Guid _otherKnowledgeSystemId;
     private Guid _ownerId;
     private Guid _grantedUserId;
+    private Guid _currentVersionId;
+    private Guid _historicalVersionId;
 
     public async Task InitializeAsync()
     {
@@ -91,6 +93,14 @@ public sealed class PostgresSearchIntegrationTests : IAsyncLifetime
     }
 
     [Fact]
+    public void Missing_actor_is_rejected_by_the_search_contract()
+    {
+        Assert.Throws<UnauthorizedAccessException>(() => new SearchRequest(
+            _knowledgeSystemId,
+            "pump"));
+    }
+
+    [Fact]
     public async Task As_of_filter_returns_only_versions_visible_at_that_time()
     {
         var result = await _index.SearchAsync(new SearchRequest(
@@ -101,6 +111,32 @@ public sealed class PostgresSearchIntegrationTests : IAsyncLifetime
 
         Assert.Single(result);
         Assert.Contains("calibration", result[0].Text, StringComparison.Ordinal);
+        Assert.Equal(_historicalVersionId, result[0].DocumentVersionId);
+    }
+
+    [Fact]
+    public async Task Search_without_as_of_returns_only_the_latest_version_per_document()
+    {
+        var result = await _index.SearchAsync(new SearchRequest(
+            _knowledgeSystemId,
+            "pump",
+            ActorId: _ownerId));
+
+        Assert.Equal(2, result.Count);
+        Assert.Contains(result, hit => hit.DocumentVersionId == _currentVersionId);
+        Assert.DoesNotContain(result, hit => hit.DocumentVersionId == _historicalVersionId);
+        Assert.Equal(result.Count, result.Select(hit => hit.DocumentId).Distinct().Count());
+    }
+
+    [Fact]
+    public async Task Search_returns_empty_for_a_query_without_matches()
+    {
+        var result = await _index.SearchAsync(new SearchRequest(
+            _knowledgeSystemId,
+            "no-such-search-term",
+            ActorId: _ownerId));
+
+        Assert.Empty(result);
     }
 
     [Fact]
@@ -213,13 +249,24 @@ public sealed class PostgresSearchIntegrationTests : IAsyncLifetime
             CreatedAt = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero),
             ChunkCount = 1,
         };
+        _currentVersionId = currentVersion.Id;
         var historicalVersion = new DocumentVersionEntity
         {
             Id = Guid.NewGuid(),
             KnowledgeSystemId = _knowledgeSystemId,
-            DocumentId = historicalDocument.Id,
+            DocumentId = currentDocument.Id,
             ContentSha256 = new string('5', 64),
             CreatedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            ChunkCount = 1,
+        };
+        _historicalVersionId = historicalVersion.Id;
+        var archiveVersion = new DocumentVersionEntity
+        {
+            Id = Guid.NewGuid(),
+            KnowledgeSystemId = _knowledgeSystemId,
+            DocumentId = historicalDocument.Id,
+            ContentSha256 = new string('7', 64),
+            CreatedAt = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero),
             ChunkCount = 1,
         };
         var otherVersion = new DocumentVersionEntity
@@ -231,7 +278,7 @@ public sealed class PostgresSearchIntegrationTests : IAsyncLifetime
             CreatedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
             ChunkCount = 1,
         };
-        _db.DocumentVersions.AddRange(currentVersion, historicalVersion, otherVersion);
+        _db.DocumentVersions.AddRange(currentVersion, historicalVersion, archiveVersion, otherVersion);
         _db.DocumentVersionChunks.AddRange(
             new DocumentVersionChunkEntity
             {
@@ -246,6 +293,13 @@ public sealed class PostgresSearchIntegrationTests : IAsyncLifetime
                 DocumentVersionId = historicalVersion.Id,
                 Idx = 0,
                 Text = "pump calibration procedure",
+            },
+            new DocumentVersionChunkEntity
+            {
+                Id = Guid.NewGuid(),
+                DocumentVersionId = archiveVersion.Id,
+                Idx = 0,
+                Text = "pump valve procedure",
             },
             new DocumentVersionChunkEntity
             {

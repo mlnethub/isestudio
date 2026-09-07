@@ -28,13 +28,17 @@ public sealed record SearchRequest
         {
             throw new ArgumentOutOfRangeException(nameof(Offset), "Offset cannot be negative.");
         }
+        if (ActorId is null || ActorId == Guid.Empty)
+        {
+            throw new UnauthorizedAccessException("An actor is required to search a knowledge system.");
+        }
 
         this.KnowledgeSystemId = KnowledgeSystemId;
         this.Query = Query.Trim();
         this.Limit = Limit;
         this.Offset = Offset;
         this.AsOf = AsOf;
-        this.ActorId = ActorId;
+        this.ActorId = ActorId.Value;
         this.QueryVector = QueryVector;
     }
 
@@ -43,7 +47,7 @@ public sealed record SearchRequest
     public int Limit { get; }
     public int Offset { get; }
     public DateTimeOffset? AsOf { get; }
-    public Guid? ActorId { get; }
+    public Guid ActorId { get; }
     public IReadOnlyList<float>? QueryVector { get; }
 }
 
@@ -51,6 +55,7 @@ public sealed record SearchRequest
 public sealed record SearchHit(
     Guid ChunkId,
     Guid DocumentId,
+    Guid DocumentVersionId,
     string Text,
     double LexicalScore,
     double? VectorScore,
@@ -59,7 +64,7 @@ public sealed record SearchHit(
 /// <summary>Capabilities exposed without leaking the backing search provider.</summary>
 public sealed record SearchCapabilities(bool SupportsVectorSearch)
 {
-    public static SearchCapabilities PostgresWithoutVector { get; } = new(false);
+    public static SearchCapabilities NoVectorSearch { get; } = new(false);
 }
 
 public interface ISearchIndex

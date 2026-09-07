@@ -24,9 +24,18 @@ public sealed class PostgresSearchIndexTests
     }
 
     [Fact]
+    public void Search_request_requires_an_actor_for_authorized_search()
+    {
+        Assert.Throws<UnauthorizedAccessException>(() => new SearchRequest(
+            Guid.NewGuid(),
+            "pump"));
+    }
+
+    [Fact]
     public void Search_contract_exposes_provider_neutral_hits_and_capabilities()
     {
         var hit = new SearchHit(
+            Guid.NewGuid(),
             Guid.NewGuid(),
             Guid.NewGuid(),
             "pump pressure",
@@ -36,7 +45,7 @@ public sealed class PostgresSearchIndexTests
 
         Assert.Equal(0.75, hit.LexicalScore);
         Assert.Null(hit.VectorScore);
-        Assert.False(SearchCapabilities.PostgresWithoutVector.SupportsVectorSearch);
+        Assert.False(SearchCapabilities.NoVectorSearch.SupportsVectorSearch);
     }
 
     [Fact]
