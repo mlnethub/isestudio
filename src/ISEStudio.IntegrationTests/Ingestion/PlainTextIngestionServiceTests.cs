@@ -121,6 +121,92 @@ public sealed class PlainTextIngestionServiceTests : IClassFixture<PostgresGraph
     }
 
     [Fact]
+    public async Task Plain_text_job_does_not_mutate_existing_job_from_another_system_or_kind()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var document = await db.Documents.SingleAsync(
+            item => item.KnowledgeSystemId == _fixture.KnowledgeSystemId
+                && item.OriginalFilename == "fixture.txt");
+        var otherSystem = new KnowledgeSystemEntity
+        {
+            Id = Guid.NewGuid(),
+            PublicId = Guid.NewGuid().ToString("N"),
+            Name = "Existing job owner",
+            GraphIri = "https://example.test/existing-job-owner",
+            BaseIri = "https://example.test/existing-job-owner#",
+            CreatedAt = DateTimeOffset.UtcNow,
+            UpdatedAt = DateTimeOffset.UtcNow,
+        };
+        var crossSystemJob = new ExtractionJobEntity
+        {
+            Id = Guid.NewGuid(),
+            KnowledgeSystemId = otherSystem.Id,
+            Kind = PlainTextIngestionJobProcessor.Kind,
+            Status = "completed",
+            Model = "original-cross-system-model",
+            Error = "original cross-system error",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Log = "original-cross-system-log",
+        };
+        var wrongKindJob = new ExtractionJobEntity
+        {
+            Id = Guid.NewGuid(),
+            KnowledgeSystemId = _fixture.KnowledgeSystemId,
+            Kind = "abox",
+            Status = "pending",
+            Model = "original-abox-model",
+            Error = "original abox error",
+            CreatedAt = DateTimeOffset.UtcNow,
+            Log = "original-abox-log",
+        };
+        db.KnowledgeSystems.Add(otherSystem);
+        db.ExtractionJobs.AddRange(crossSystemJob, wrongKindJob);
+        await db.SaveChangesAsync();
+
+        var processor = scope.ServiceProvider.GetRequiredService<PlainTextIngestionJobProcessor>();
+
+        var crossSystemException = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            processor.ProcessAsync(
+                new PlainTextIngestionJob(
+                    crossSystemJob.Id,
+                    _fixture.KnowledgeSystemId,
+                    document.Id,
+                    "must not run",
+                    "new-model"),
+                CancellationToken.None));
+        Assert.Contains("knowledge system", crossSystemException.Message, StringComparison.OrdinalIgnoreCase);
+
+        var wrongKindException = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            processor.ProcessAsync(
+                new PlainTextIngestionJob(
+                    wrongKindJob.Id,
+                    _fixture.KnowledgeSystemId,
+                    document.Id,
+                    "must not run",
+                    "new-model"),
+                CancellationToken.None));
+        Assert.Contains("kind", wrongKindException.Message, StringComparison.OrdinalIgnoreCase);
+
+        var persistedCrossSystemJob = await db.ExtractionJobs.AsNoTracking()
+            .SingleAsync(item => item.Id == crossSystemJob.Id);
+        Assert.Equal(otherSystem.Id, persistedCrossSystemJob.KnowledgeSystemId);
+        Assert.Equal(PlainTextIngestionJobProcessor.Kind, persistedCrossSystemJob.Kind);
+        Assert.Equal("completed", persistedCrossSystemJob.Status);
+        Assert.Equal("original cross-system error", persistedCrossSystemJob.Error);
+        Assert.Equal("original-cross-system-model", persistedCrossSystemJob.Model);
+
+        var persistedWrongKindJob = await db.ExtractionJobs.AsNoTracking()
+            .SingleAsync(item => item.Id == wrongKindJob.Id);
+        Assert.Equal(_fixture.KnowledgeSystemId, persistedWrongKindJob.KnowledgeSystemId);
+        Assert.Equal("abox", persistedWrongKindJob.Kind);
+        Assert.Equal("pending", persistedWrongKindJob.Status);
+        Assert.Equal("original abox error", persistedWrongKindJob.Error);
+        Assert.Equal("original-abox-model", persistedWrongKindJob.Model);
+    }
+
+    [Fact]
     public async Task Plain_text_job_failure_is_observable_and_retryable()
     {
         await using var services = _fixture.BuildServices();

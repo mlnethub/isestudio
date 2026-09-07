@@ -55,6 +55,21 @@ public sealed class PlainTextIngestionJobProcessor
             };
             _db.ExtractionJobs.Add(job);
         }
+        else
+        {
+            if (job.KnowledgeSystemId != input.KnowledgeSystemId)
+            {
+                throw new InvalidOperationException(
+                    $"Extraction job '{input.Id}' belongs to knowledge system '{job.KnowledgeSystemId}', "
+                    + $"not '{input.KnowledgeSystemId}'.");
+            }
+
+            if (!string.Equals(job.Kind, Kind, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Extraction job '{input.Id}' has kind '{job.Kind}', not '{Kind}'.");
+            }
+        }
 
         job.Status = JobStatus.Running.ToWire();
         job.Kind = Kind;
