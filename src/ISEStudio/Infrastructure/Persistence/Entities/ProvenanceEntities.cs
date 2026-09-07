@@ -1,4 +1,3 @@
-using System.ComponentModel.DataAnnotations.Schema;
 using System.Text.Json;
 
 namespace ISEStudio.Infrastructure.Persistence.Entities;
@@ -18,12 +17,7 @@ public sealed class ExtractionJobEntity : EntityBase
     public Guid KnowledgeSystemId { get; set; }
 
     /// <summary>Dispatch payload used by the durable worker.</summary>
-    [NotMapped]
-    public JsonDocument? Payload
-    {
-        get => PromptSnapshot;
-        set => PromptSnapshot = value;
-    }
+    public JsonDocument? Payload { get; set; }
 
     /// <summary>Either <c>tbox</c> or <c>abox</c>.</summary>
     public string Kind { get; set; } = "tbox";

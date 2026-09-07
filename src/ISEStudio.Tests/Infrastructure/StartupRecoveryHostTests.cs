@@ -175,7 +175,6 @@ public sealed class StartupRecoveryHostTests
                 UploadedAt = DateTimeOffset.UtcNow,
                 ParseStatus = "pending",
             });
-
             db.SaveChanges();
 
             return new PreSeedHandle(ksId, interruptedJobId, orphanDocumentId);

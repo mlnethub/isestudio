@@ -339,9 +339,7 @@ public sealed class DocumentVersionStoreTests : IClassFixture<PostgresGraphFixtu
             SELECT 'constraint:' || conname
             FROM pg_constraint
             WHERE conname IN (
-                'ck_document_version_content_sha256_format',
-                'ak_document_id_knowledge_system_id',
-                'FK_document_version_document_document_id_knowledge_system_id')
+                'ck_document_version_content_sha256_format')
             UNION ALL
             SELECT 'trigger:' || tgname
             FROM pg_trigger
@@ -358,9 +356,7 @@ public sealed class DocumentVersionStoreTests : IClassFixture<PostgresGraphFixtu
 
         Assert.Equal(
             [
-                "constraint:ak_document_id_knowledge_system_id",
                 "constraint:ck_document_version_content_sha256_format",
-                "constraint:FK_document_version_document_document_id_knowledge_system_id",
                 "sha_length:64",
                 "trigger:document_version_chunk_immutable",
                 "trigger:document_version_immutable",

@@ -17,7 +17,19 @@ public sealed class ModelMappingTests
     {
         using var db = DbContextFactory.CreateSqlite();
         var entities = db.Model.GetEntityTypes().ToDictionary(x => x.ClrType.Name);
-        Assert.Equal(24, entities.Count);
+        Assert.Equal(35, entities.Count);
         Assert.All(entities.Values, entity => Assert.NotNull(entity.FindPrimaryKey()));
+    }
+
+    [Fact]
+    public void Sqlite_create_script_uses_sqlite_compatible_hash_constraint()
+    {
+        using var db = DbContextFactory.CreateSqlite();
+
+        var script = db.Database.GenerateCreateScript();
+
+        Assert.Contains("length(content_sha256) = 64", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("NOT GLOB", script, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("content_sha256 ~", script, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -194,14 +194,17 @@ public sealed class ExtractionJobStore
 
     /// <summary>
     /// Atomically claim the next pending job across concurrent callers.
-    /// Only jobs with status == pending are eligible. The claimed row is
+    /// Only jobs with status == pending and, when supplied, the requested
+    /// kind are eligible. The claimed row is
     /// transitioned to <c>running</c> and its <c>phase</c> set to
     /// <c>dispatching</c>. Uses PostgreSQL row-level locking
     /// (<c>FOR UPDATE SKIP LOCKED</c>) so multiple stores can run in
     /// parallel without duplicating work. Returns the full entity when a
     /// job was claimed, or <c>null</c> when the queue is empty.
     /// </summary>
-    public async Task<ExtractionJobEntity?> ClaimNextAsync(CancellationToken cancellationToken)
+    public async Task<ExtractionJobEntity?> ClaimNextAsync(
+        CancellationToken cancellationToken,
+        string? kind = null)
     {
         await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
 
@@ -210,20 +213,39 @@ public sealed class ExtractionJobStore
         // EF mapping in EntityConfigurations: "extractionjob".
         var running = JobStatus.Running.ToWire();
         var pending = JobStatus.Pending.ToWire();
-        var sql = @"
+        var isPostgres = db.Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true;
+        var lockClause = isPostgres ? "    FOR UPDATE SKIP LOCKED\n" : string.Empty;
+        var sql = kind is null
+            ? $@"
 UPDATE extractionjob
-SET ""Status"" = {0}, ""Phase"" = {1}, ""Log"" = COALESCE(""Log"", '')
+SET ""Status"" = {{0}}, ""Phase"" = {{1}}, ""Log"" = COALESCE(""Log"", '')
 WHERE id = (
     SELECT id FROM extractionjob
-    WHERE ""Status"" = {2}
+    WHERE ""Status"" = {{2}}
     ORDER BY ""CreatedAt""
-    FOR UPDATE SKIP LOCKED
+{lockClause}
+    LIMIT 1
+)
+RETURNING *"
+            : $@"
+UPDATE extractionjob
+SET ""Status"" = {{0}}, ""Phase"" = {{1}}, ""Log"" = COALESCE(""Log"", '')
+WHERE id = (
+    SELECT id FROM extractionjob
+        WHERE ""Status"" = {{2}}
+            AND ""Kind"" = {{3}}
+    ORDER BY ""CreatedAt""
+{lockClause}
     LIMIT 1
 )
 RETURNING *";
 
         var rows = await db.ExtractionJobs
-            .FromSqlRaw(sql, running, "dispatching", pending)
+            .FromSqlRaw(
+                sql,
+                kind is null
+                    ? new object[] { running, "dispatching", pending }
+                    : new object[] { running, "dispatching", pending, kind })
             .AsNoTracking()
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);

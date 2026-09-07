@@ -173,6 +173,11 @@ public sealed class ISEStudioDbContext : DbContext
         // per-entity Fluent-API noise and keeps the mapping discoverable.
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(Configurations.UserEntityConfiguration).Assembly);
 
+        modelBuilder.Entity<Entities.ExtractionJobEntity>().Property(x => x.Payload)
+            .HasConversion(Configurations.JsonStringValueConverter.Instance);
+        modelBuilder.Entity<Entities.ExtractionJobEntity>().Property(x => x.PromptSnapshot)
+            .HasConversion(Configurations.JsonStringValueConverter.Instance);
+
         // The unit tests run on SQLite which doesn't speak jsonb / bytea /
         // timestamptz. The configurations therefore don't pin those column
         // types. Production targets Npgsql — when that's the case, upgrade
@@ -181,6 +186,11 @@ public sealed class ISEStudioDbContext : DbContext
         if (Database.ProviderName?.Contains("Npgsql", StringComparison.OrdinalIgnoreCase) == true)
         {
             ApplyPostgresColumnTypes(modelBuilder);
+            ApplyPostgresConstraints(modelBuilder);
+        }
+        else if (Database.ProviderName?.Contains("Sqlite", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            ApplySqliteConstraints(modelBuilder);
         }
     }
 
@@ -195,6 +205,7 @@ public sealed class ISEStudioDbContext : DbContext
         // ---- JSON columns (text -> jsonb) ----
         modelBuilder.Entity<Entities.KnowledgeApiTokenEntity>().Property(x => x.Scopes).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.McpUserTokenEntity>().Property(x => x.Scopes).HasColumnType("jsonb");
+        modelBuilder.Entity<Entities.ExtractionJobEntity>().Property(x => x.Payload).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.ExtractionJobEntity>().Property(x => x.PromptSnapshot).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.ExtractionJobEntity>().Property(x => x.ChunkIds).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.ExtractionJobEntity>().Property(x => x.UnknownClasses).HasColumnType("jsonb");
@@ -215,5 +226,19 @@ public sealed class ISEStudioDbContext : DbContext
         // ---- Binary columns (bytea) ----
         modelBuilder.Entity<Entities.AuditEventEntity>().Property(x => x.Added).HasColumnType("bytea");
         modelBuilder.Entity<Entities.AuditEventEntity>().Property(x => x.Removed).HasColumnType("bytea");
+    }
+
+    private static void ApplyPostgresConstraints(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Entities.DocumentVersionEntity>().ToTable("document_version", table => table.HasCheckConstraint(
+            "ck_document_version_content_sha256_format",
+            "content_sha256 ~ '^[0-9a-f]{64}$'"));
+    }
+
+    private static void ApplySqliteConstraints(ModelBuilder modelBuilder)
+    {
+        modelBuilder.Entity<Entities.DocumentVersionEntity>().ToTable("document_version", table => table.HasCheckConstraint(
+            "ck_document_version_content_sha256_format",
+            "length(content_sha256) = 64 AND content_sha256 NOT GLOB '*[^0-9a-f]*'"));
     }
 }

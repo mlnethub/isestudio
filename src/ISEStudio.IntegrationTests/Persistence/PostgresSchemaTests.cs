@@ -35,7 +35,7 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
     /// <summary>Shared context applied with the migration before any assertion runs.</summary>
     private ISEStudioDbContext _db = null!;
 
-    /// <summary>The current 33 business tables (lowercased).</summary>
+    /// <summary>The current 35 business tables (lowercased).</summary>
     private static readonly string[] ExpectedTables =
     {
         "users", "authsession", "ksgrant", "document", "chunk", "knowledgesystem",
@@ -46,6 +46,7 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
         "auditevent", "ontologyrelease", "releasedeployment",
         "releasestatementprovenance", "exportjob", "conflict", "entityresolution",
         "termproposal", "tboxreconciliation", "validationdecision",
+        "document_version", "document_version_chunk",
     };
 
     /// <inheritdoc />
@@ -148,12 +149,12 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// Asserts that all 33 business tables are created by the migration
-    /// with no extras — the public schema should contain exactly the 33 tables
+    /// Asserts that all 35 business tables are created by the migration
+    /// with no extras — the public schema should contain exactly the 35 tables
     /// listed in <see cref="ExpectedTables"/>.
     /// </summary>
     [Fact]
-    public async Task Migration_creates_all_33_business_tables_with_postgres_types()
+    public async Task Migration_creates_all_35_business_tables_with_postgres_types()
     {
         var tables = await GetTableNamesAsync();
 
@@ -317,7 +318,7 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
     }
 
     /// <summary>
-    /// The current EF model emits 64 distinct (from_table, from_column)
+    /// The current EF model emits 67 distinct (from_table, from_column)
     /// &rarr; (to_table, to_column) foreign keys across the relational schema.
     /// This test asserts the structural shape of every one and checks a
     /// representative subset by name.
@@ -328,11 +329,11 @@ public sealed class PostgresSchemaTests : IAsyncLifetime
         var fks = await GetForeignKeysAsync();
 
         // The total number must match the count our current configurations emit.
-        Assert.Equal(64, fks.Count);
+        Assert.Equal(67, fks.Count);
 
         // Sanity check: every FK must point at the `id` column of a known
-        // business table (the principal). No FK should reference the EFMigrationHistory
-        // or any non-business table by accident.
+        // business table (the principal). No FK should reference the
+        // EFMigrationHistory or any non-business table by accident.
         var knownPrincipals = new HashSet<string>(ExpectedTables, StringComparer.Ordinal)
         {
             "__EFMigrationsHistory",

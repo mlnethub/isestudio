@@ -1,4 +1,5 @@
 using ISEStudio.Extraction;
+using ISEStudio.Documents;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.IntegrationTests.Graph;
@@ -84,7 +85,7 @@ public sealed class ExtractionJobStoreTests : IClassFixture<PostgresGraphFixture
 
         await Task.WhenAll(t1, t2);
 
-        var results = new[] { t1.Result, t2.Result };
+        var results = new[] { await t1, await t2 };
         var nonNull = results.Count(r => r is not null);
         Assert.Equal(1, nonNull);
 
@@ -106,5 +107,48 @@ public sealed class ExtractionJobStoreTests : IClassFixture<PostgresGraphFixture
 
         var claimed = await store.ClaimNextAsync(CancellationToken.None);
         Assert.Null(claimed);
+    }
+
+    [Fact]
+    public async Task ClaimNextAsync_can_scope_claims_to_a_worker_kind()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>();
+        var plainTextJob = new ExtractionJobEntity
+        {
+            Id = Guid.NewGuid(),
+            KnowledgeSystemId = _fixture.KnowledgeSystemId,
+            Kind = "plain_text",
+            Status = "pending",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        var tboxJob = new ExtractionJobEntity
+        {
+            Id = Guid.NewGuid(),
+            KnowledgeSystemId = _fixture.KnowledgeSystemId,
+            Kind = "tbox",
+            Status = "pending",
+            CreatedAt = DateTimeOffset.UtcNow.AddMilliseconds(1),
+        };
+        db.ExtractionJobs.AddRange(plainTextJob, tboxJob);
+        await db.SaveChangesAsync();
+
+        var store = new ExtractionJobStore(factory, TimeProvider.System);
+        var claimed = await store.ClaimNextAsync(
+            CancellationToken.None,
+            PlainTextIngestionJobProcessor.Kind);
+
+        Assert.NotNull(claimed);
+        Assert.Equal(plainTextJob.Id, claimed!.Id);
+        var tboxStatus = await db.ExtractionJobs
+            .Where(job => job.Id == tboxJob.Id)
+            .Select(job => job.Status)
+            .SingleAsync();
+        Assert.Equal("pending", tboxStatus);
+
+        db.ExtractionJobs.RemoveRange(plainTextJob, tboxJob);
+        await db.SaveChangesAsync();
     }
 }

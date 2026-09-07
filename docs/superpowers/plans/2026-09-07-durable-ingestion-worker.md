@@ -24,13 +24,13 @@
 - Test: `src/ISEStudio.IntegrationTests/Ingestion/ExtractionJobStoreTests.cs`
 
 **Interfaces:**
-- Produces `Task<ExtractionJobEntity?> ClaimNextAsync(CancellationToken)`.
-- Claim only `pending` jobs, set `running`, `Phase = "dispatching"`, and return the claimed row.
+- Produces `Task<ExtractionJobEntity?> ClaimNextAsync(CancellationToken, string? kind = null)`.
+- Claim only `pending` jobs, optionally scoped by `kind`, set `running`, `Phase = "dispatching"`, and return the claimed row. The hosted worker claims only `plain_text` jobs.
 
-- [ ] **Step 1: Write the failing PostgreSQL tests** for one-job claiming, no duplicate claim under two stores, and empty queue.
-- [ ] **Step 2: Run the focused tests** with `dotnet test ... --filter FullyQualifiedName~ExtractionJobStoreTests --no-restore`; expect compile/test failure because `ClaimNextAsync` is absent.
-- [ ] **Step 3: Implement one atomic EF/Npgsql SQL claim** using `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING ...`; preserve other job fields.
-- [ ] **Step 4: Rerun the focused tests** and require all claim tests to pass.
+- [x] **Step 1: Write the failing PostgreSQL tests** for one-job claiming, no duplicate claim under two stores, and empty queue.
+- [x] **Step 2: Run the focused tests** with `dotnet test ... --filter FullyQualifiedName~ExtractionJobStoreTests --no-restore`; expect compile/test failure because `ClaimNextAsync` is absent.
+- [x] **Step 3: Implement one atomic EF/Npgsql SQL claim** using `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1) RETURNING ...`; preserve other job fields.
+- [x] **Step 4: Rerun the focused tests** and require all claim tests to pass.
 - [ ] **Step 5: Commit** with `feat(ingestion): claim durable extraction jobs`.
 
 ### Task 2: Dispatcher and Hosted Worker
@@ -47,12 +47,12 @@
 - Worker constructor takes `IServiceScopeFactory`, `ExtractionJobStore`, and `TimeProvider`; it polls until cancelled.
 - `plain_text` payload must contain `knowledge_system_id`, `document_id`, and optional `model`; invalid/missing payload fails the job without invoking ingestion.
 
-- [ ] **Step 1: Write failing tests** for successful plain-text dispatch, unknown kind terminal failure, malformed payload failure, and worker cancellation.
-- [ ] **Step 2: Run the focused tests** and confirm failure before implementation.
-- [ ] **Step 3: Implement dispatcher** using a fresh DI scope per job; route to `DocumentIngestionJobProcessor`, parse payload with `JsonDocument`, and call `ExtractionJobStore.MarkFailedAsync` for dispatch errors.
-- [ ] **Step 4: Implement `BackgroundService.ExecuteAsync`** as a cancellation-aware poll loop: claim, dispatch, then delay briefly when empty; no unbounded task fan-out.
-- [ ] **Step 5: Register services** without changing existing processor registrations; use a configurable bounded poll interval with a short default.
-- [ ] **Step 6: Rerun focused integration tests** and require all tests to pass.
+- [x] **Step 1: Write failing tests** for successful plain-text dispatch, unknown kind terminal failure, malformed payload failure, and worker cancellation.
+- [x] **Step 2: Run the focused tests** and confirm failure before implementation.
+- [x] **Step 3: Implement dispatcher** using a fresh DI scope per job; route to `DocumentIngestionJobProcessor`, parse payload with `JsonDocument`, and call `ExtractionJobStore.MarkFailedAsync` for dispatch errors.
+- [x] **Step 4: Implement `BackgroundService.ExecuteAsync`** as a cancellation-aware poll loop: claim, dispatch, then delay briefly when empty; no unbounded task fan-out.
+- [x] **Step 5: Register services** without changing existing processor registrations; use a configurable bounded poll interval with a short default.
+- [x] **Step 6: Rerun focused integration tests** and require all tests to pass.
 - [ ] **Step 7: Commit** with `feat(ingestion): dispatch durable extraction jobs`.
 
 ### Task 3: Recovery, Documentation, and Full Verification
@@ -63,13 +63,13 @@
 - Create: `.superpowers/sdd/ingestion-stage-5-brief.md`
 - Create: `.superpowers/sdd/ingestion-stage-5-report.md`
 
-- [ ] **Step 1: Add a recovery test** proving a previously running worker job is requeued or failed according to the existing startup contract.
-- [ ] **Step 2: Make the smallest recovery adjustment** only if the test exposes a gap.
-- [ ] **Step 3: Run serial verification:**
+- [x] **Step 1: Add a recovery test** proving a previously running worker job is requeued or failed according to the existing startup contract.
+- [x] **Step 2: Make the smallest recovery adjustment** only if the test exposes a gap.
+- [x] **Step 3: Run serial verification:**
   `dotnet test src\ISEStudio.IntegrationTests\ISEStudio.IntegrationTests.csproj --filter FullyQualifiedName~Ingestion --no-restore`
   `dotnet test src\ISEStudio.Tests\ISEStudio.Tests.csproj --filter FullyQualifiedName~Extraction --no-restore`
   `git diff --check`
-- [ ] **Step 4: Record Stage 5 scope, evidence, and remaining source/API orchestration risks.**
+- [x] **Step 4: Record Stage 5 scope, evidence, and remaining source/API orchestration risks.**
 - [ ] **Step 5: Commit documentation and the final focused implementation changes.**
 
 ## Self-Review

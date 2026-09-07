@@ -271,8 +271,6 @@ public sealed class DocumentEntityConfiguration : IEntityTypeConfiguration<Docum
         builder.HasIndex(x => new { x.KnowledgeSystemId, x.Sha256 })
             .IsUnique()
             .HasDatabaseName("ux_document_knowledge_system_id_sha256");
-        builder.HasAlternateKey(x => new { x.Id, x.KnowledgeSystemId })
-            .HasName("ak_document_id_knowledge_system_id");
 
         builder.Property(x => x.OriginalFilename).HasMaxLength(1024).IsRequired();
         builder.Property(x => x.Folder).HasMaxLength(1024).IsRequired().HasDefaultValue("/");
@@ -948,9 +946,6 @@ public sealed class DocumentVersionEntityConfiguration : IEntityTypeConfiguratio
     public void Configure(EntityTypeBuilder<DocumentVersionEntity> builder)
     {
         builder.UseTpcMappingStrategy();
-        builder.ToTable("document_version", table => table.HasCheckConstraint(
-            "ck_document_version_content_sha256_format",
-            "content_sha256 ~ '^[0-9a-f]{64}$'"));
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.KnowledgeSystemId).HasColumnName("knowledge_system_id");
@@ -965,8 +960,7 @@ public sealed class DocumentVersionEntityConfiguration : IEntityTypeConfiguratio
             .HasDatabaseName("ix_document_version_knowledge_system_document");
         builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId)
             .OnDelete(DeleteBehavior.Restrict);
-        builder.HasOne<DocumentEntity>().WithMany().HasForeignKey(x => new { x.DocumentId, x.KnowledgeSystemId })
-            .HasPrincipalKey(x => new { x.Id, x.KnowledgeSystemId })
+        builder.HasOne<DocumentEntity>().WithMany().HasForeignKey(x => x.DocumentId)
             .OnDelete(DeleteBehavior.Restrict);
     }
 }

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using ISEStudio.Documents;
 
 namespace ISEStudio.Extraction;
 
@@ -34,7 +35,9 @@ public class DurableExtractionWorker : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            var job = await _jobs.ClaimNextAsync(stoppingToken).ConfigureAwait(false);
+            var job = await _jobs
+                .ClaimNextAsync(stoppingToken, PlainTextIngestionJobProcessor.Kind)
+                .ConfigureAwait(false);
             if (job is null)
             {
                 await Task.Delay(_options.PollInterval, stoppingToken).ConfigureAwait(false);

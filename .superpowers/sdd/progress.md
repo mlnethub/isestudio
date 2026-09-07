@@ -30,3 +30,13 @@
 - PostgreSQL/Testcontainers coverage passes for txt success and Unicode scalar
 	metadata, missing blob, unsupported extension, duplicate delivery
 	idempotency, and cross-knowledge-system isolation.
+
+# Ingestion Stage 5
+
+- Durable ingestion worker complete: PostgreSQL-backed atomic claiming,
+	bounded single-loop hosted dispatch, plain-text payload validation, terminal
+	failure handling, and startup recovery for interrupted pending/running jobs.
+- Payload is persisted in its own JSONB column and is intentionally separate
+	from the immutable `PromptSnapshot`; migration and Testcontainers coverage
+	pass. Worker claiming is scoped to `plain_text`, so existing TBox/ABox
+	pending rows are left for their own orchestration route.
