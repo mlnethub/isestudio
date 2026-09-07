@@ -19,6 +19,14 @@ public static class ExtractionServiceCollectionExtensions
     public static IServiceCollection AddExtractionServices(
         this IServiceCollection services)
     {
+        services.PostConfigure<DurableExtractionWorkerOptions>(options =>
+        {
+            options.PollInterval = options.PollInterval < DurableExtractionWorkerOptions.MinPollInterval
+                ? DurableExtractionWorkerOptions.MinPollInterval
+                : options.PollInterval > DurableExtractionWorkerOptions.MaxPollInterval
+                    ? DurableExtractionWorkerOptions.MaxPollInterval
+                    : options.PollInterval;
+        });
         services.AddSingleton<IChatClientFactory, ChatClientFactory>();
         services.AddSingleton<EndpointCapacityCoordinator>();
         services.AddSingleton<TBoxExtractionService>();
@@ -32,6 +40,7 @@ public static class ExtractionServiceCollectionExtensions
         services.AddSingleton<IExtractionMerger, ExtractionMerger>();
         services.AddSingleton<ExtractionOrchestrator>();
         services.AddScoped<TerminologyAgent>();
+        services.AddScoped<ExtractionJobDispatcher>();
         // Application service facade for the five extraction.* dispatcher
         // arms (three run* + list_jobs + get_job). Scoped — shares the
         // request DbContext with the BuildFrontendExtractionRequestAsync

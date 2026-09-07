@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using ISEStudio.Application.Integration;
+using ISEStudio.Extraction;
 using ISEStudio.Integration;
 
 namespace ISEStudio.Documents;
@@ -33,6 +34,7 @@ public static class DocumentServiceCollectionExtensions
         services.AddScoped<PlainTextIngestionService>();
         services.AddScoped<PlainTextIngestionJobProcessor>();
         services.AddScoped<DocumentIngestionJobProcessor>();
+        services.AddScoped<ExtractionJobDispatcher>();
         services.AddScoped<IDocumentApplicationService, DocumentApplicationService>();
         return services;
     }

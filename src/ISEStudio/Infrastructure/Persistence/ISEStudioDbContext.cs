@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using ISEStudio.Infrastructure.Persistence.Configurations;
 using ISEStudio.Infrastructure.Persistence.Entities;
 
@@ -27,6 +28,14 @@ public sealed class ISEStudioDbContext : DbContext
     public ISEStudioDbContext(DbContextOptions<ISEStudioDbContext> options)
         : base(options)
     {
+    }
+
+    /// <inheritdoc />
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        base.OnConfiguring(optionsBuilder);
+        optionsBuilder.ConfigureWarnings(warnings =>
+            warnings.Ignore(RelationalEventId.PendingModelChangesWarning));
     }
 
     // ---------------------------------------------------------------------

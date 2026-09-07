@@ -474,6 +474,9 @@ builder.Services.AddSingleton<Chunker>(_ => new Chunker(
     size: DocumentService.DefaultChunkSize,
     overlap: DocumentService.DefaultChunkOverlap));
 builder.Services.AddDocumentServices();
+builder.Services.Configure<DurableExtractionWorkerOptions>(
+    builder.Configuration.GetSection("ISEStudio:Extraction:DurableWorker"));
+builder.Services.AddHostedService<DurableExtractionWorker>();
 
 // ---- Ontology slice ----
 // The Oxigraph store is a process-wide singleton (the underlying
