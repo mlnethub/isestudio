@@ -12,11 +12,16 @@ namespace ISEStudio.Migration.Rehearsal;
 
 public sealed class MigrationRehearsalCommand
 {
-    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
-    private static readonly JsonSerializerOptions StableJsonOptions = new(JsonOptions)
+    private static readonly JsonSerializerOptions StableJsonOptions = new()
     {
         WriteIndented = false,
     };
+    private readonly IPostgresBackupValidator _backupValidator;
+
+    public MigrationRehearsalCommand(IPostgresBackupValidator? backupValidator = null)
+    {
+        _backupValidator = backupValidator ?? new PgRestoreBackupValidator();
+    }
 
     public async Task<MigrationRehearsalManifest> RunAsync(
         MigrationRehearsalOptions options,
@@ -69,8 +74,8 @@ public sealed class MigrationRehearsalCommand
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var command = new NpgsqlCommand("SELECT 1", connection);
             var value = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
-            await ValidateDatabaseModeAsync(connection, options, cancellationToken).ConfigureAwait(false);
-            return (MigrationStepStatus.Passed, value, "1", "PostgreSQL connection and mode preconditions verified.", null);
+            var modeMetadata = await ValidateDatabaseModeAsync(connection, options, cancellationToken).ConfigureAwait(false);
+            return (MigrationStepStatus.Passed, value, "1", "PostgreSQL connection and mode preconditions verified.", modeMetadata);
         }).ConfigureAwait(false);
 
         SnapshotResult? beforeSnapshot = null;
@@ -80,11 +85,8 @@ public sealed class MigrationRehearsalCommand
                 .UseNpgsql(options.PostgresConnectionString)
                 .Options;
             await using var db = new ISEStudioDbContext(dbOptions);
-            if (options.DatabaseMode is "fresh" or "upgrade")
-            {
-                beforeSnapshot = await SqlSnapshot.CaptureAsync(options.PostgresConnectionString!, cancellationToken)
-                    .ConfigureAwait(false);
-            }
+            beforeSnapshot = await SqlSnapshot.CaptureAsync(options.PostgresConnectionString!, cancellationToken)
+                .ConfigureAwait(false);
             var graphBefore = await CaptureGraphEvidenceAsync(options.PostgresConnectionString!, cancellationToken).ConfigureAwait(false);
             var appliedBefore = await db.Database.GetAppliedMigrationsAsync(cancellationToken).ConfigureAwait(false);
             var pendingBefore = await db.Database.GetPendingMigrationsAsync(cancellationToken).ConfigureAwait(false);
@@ -96,12 +98,13 @@ public sealed class MigrationRehearsalCommand
             var applied = await db.Database.GetAppliedMigrationsAsync(cancellationToken).ConfigureAwait(false);
             var afterSnapshot = await SqlSnapshot.CaptureAsync(options.PostgresConnectionString!, cancellationToken)
                 .ConfigureAwait(false);
-            var metadata = SnapshotMetadata(beforeSnapshot, afterSnapshot);
             var graphAfter = await CaptureGraphEvidenceAsync(options.PostgresConnectionString!, cancellationToken).ConfigureAwait(false);
+            SnapshotComparison.AssertEquivalent(beforeSnapshot, afterSnapshot, graphBefore, graphAfter);
+            var metadata = SnapshotMetadata(beforeSnapshot, afterSnapshot);
             metadata = metadata.Concat(new Dictionary<string, string>
             {
-                ["graphBefore"] = graphBefore,
-                ["graphAfter"] = graphAfter,
+                ["graphBefore"] = JsonSerializer.Serialize(graphBefore, StableJsonOptions),
+                ["graphAfter"] = JsonSerializer.Serialize(graphAfter, StableJsonOptions),
             }).ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
             return (MigrationStepStatus.Passed, applied.LongCount(), ChecksumOf(string.Join("\n", applied)),
                 $"Applied migrations: {applied.Count()}; before/after snapshot evidence captured.", metadata);
@@ -179,25 +182,23 @@ public sealed class MigrationRehearsalCommand
             return (MigrationStepStatus.Passed, rows, ChecksumOf(rows.ToString()), "Graph facts and evidence read-only counts verified.", null);
         }).ConfigureAwait(false);
 
-        steps.Add(new MigrationStepResult("report-serialization", MigrationStepStatus.Started, 0, string.Empty,
-            "Final manifest checksum is calculated over the canonical manifest with checksum fields cleared.",
-            DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
-        steps[^1] = steps[^1] with { Status = MigrationStepStatus.Passed, Rows = 1, Checksum = string.Empty };
-        var manifest = new MigrationRehearsalManifest(runId, options.DatabaseMode, steps, passed, DateTimeOffset.UtcNow);
+        var completedAt = DateTimeOffset.UtcNow;
+        steps.Add(new MigrationStepResult("report-serialization", MigrationStepStatus.Passed, 1, string.Empty,
+            "Manifest checksum covers the final JSON excluding only ManifestChecksum; report checksum covers the same payload with its own checksum cleared.",
+            completedAt, completedAt));
+        var manifest = new MigrationRehearsalManifest(runId, options.DatabaseMode, steps, passed, completedAt);
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(options.ManifestPath))!);
-            var checksum = ComputeManifestChecksum(manifest);
-            steps[^1] = steps[^1] with { Checksum = checksum, Detail = "Manifest written." };
-            manifest = manifest with { Steps = steps, ManifestChecksum = checksum, CompletedAt = DateTimeOffset.UtcNow };
-            await File.WriteAllTextAsync(options.ManifestPath, JsonSerializer.Serialize(manifest, JsonOptions), cancellationToken).ConfigureAwait(false);
+            manifest = MigrationManifestIntegrity.Finalize(manifest);
+            await File.WriteAllTextAsync(options.ManifestPath, MigrationManifestIntegrity.Serialize(manifest), cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             steps[^1] = steps[^1] with { Status = MigrationStepStatus.Failed, Detail = $"{ex.GetType().Name}: {ex.Message}" };
-            manifest = manifest with { Steps = steps, Passed = false, CompletedAt = DateTimeOffset.UtcNow };
+            manifest = MigrationManifestIntegrity.Finalize(manifest with { Steps = steps, Passed = false });
             await File.WriteAllTextAsync(options.ManifestPath,
-                JsonSerializer.Serialize(manifest, JsonOptions), CancellationToken.None).ConfigureAwait(false);
+                MigrationManifestIntegrity.Serialize(manifest), CancellationToken.None).ConfigureAwait(false);
         }
 
         return manifest;
@@ -219,7 +220,7 @@ public sealed class MigrationRehearsalCommand
         }
     }
 
-    private static async Task ValidateDatabaseModeAsync(NpgsqlConnection connection, MigrationRehearsalOptions options, CancellationToken cancellationToken)
+    private async Task<IReadOnlyDictionary<string, string>?> ValidateDatabaseModeAsync(NpgsqlConnection connection, MigrationRehearsalOptions options, CancellationToken cancellationToken)
     {
         if (options.DatabaseMode == "restored")
         {
@@ -227,12 +228,18 @@ public sealed class MigrationRehearsalCommand
             if (!File.Exists(path) || new FileInfo(path).Length == 0)
                 throw new InvalidDataException("Restored backup must be a non-empty file.");
             var bytes = await File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
-            var isCustomDump = bytes.Length >= 5 && Encoding.ASCII.GetString(bytes, 0, 5) == "PGDMP";
-            var text = Encoding.UTF8.GetString(bytes);
-            if (!isCustomDump && !text.Contains("PostgreSQL database dump", StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException("Backup is not a recognizable PostgreSQL dump artifact.");
+            var validation = await _backupValidator.ValidateAsync(path, cancellationToken).ConfigureAwait(false);
+            if (!validation.IsListable)
+                throw new InvalidDataException($"Backup is not a listable pg_dump artifact: {validation.Detail}");
             var restoredTables = await ScalarAsync(connection, "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> '__EFMigrationsHistory'", cancellationToken);
             if (restoredTables == 0) throw new InvalidDataException("Database does not contain restored application tables.");
+            return new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["restoreVerification"] = "external/manual",
+                ["backupFormat"] = validation.Format,
+                ["backupSize"] = bytes.LongLength.ToString(),
+                ["backupSha256"] = Convert.ToHexString(SHA256.HashData(bytes)),
+            };
         }
         else
         {
@@ -240,9 +247,18 @@ public sealed class MigrationRehearsalCommand
             var applicationTables = await ScalarAsync(connection, "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> '__EFMigrationsHistory'", cancellationToken);
             if (options.DatabaseMode == "fresh" && (history != 0 || applicationTables != 0))
                 throw new InvalidOperationException("Fresh rehearsal requires an empty public schema with no EF migration history.");
-            if (options.DatabaseMode == "upgrade" && history == 0)
-                throw new InvalidOperationException("Upgrade rehearsal requires existing EF migration history.");
+            if (options.DatabaseMode == "upgrade")
+            {
+                var historyRows = history == 0 ? 0 : await ScalarAsync(connection, "SELECT count(*) FROM public.\"__EFMigrationsHistory\"", cancellationToken);
+                var markerTable = await ScalarAsync(connection, "SELECT to_regclass('public.__migration_rehearsal_upgrade_marker') IS NOT NULL", cancellationToken);
+                if (historyRows == 0 || markerTable == 0)
+                    throw new InvalidOperationException("Upgrade rehearsal requires non-empty old migration history and the __migration_rehearsal_upgrade_marker table.");
+                var markerRows = await ScalarAsync(connection, "SELECT count(*) FROM public.__migration_rehearsal_upgrade_marker WHERE marker = 'pre-upgrade'", cancellationToken);
+                if (markerRows == 0)
+                    throw new InvalidOperationException("Upgrade rehearsal requires a pre-upgrade marker row.");
+            }
         }
+        return null;
     }
 
     private static async Task<long> ScalarAsync(NpgsqlConnection connection, string sql, CancellationToken cancellationToken)
@@ -251,22 +267,25 @@ public sealed class MigrationRehearsalCommand
         return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false));
     }
 
-    private static async Task<string> CaptureGraphEvidenceAsync(string connectionString, CancellationToken cancellationToken)
+    private static async Task<GraphSnapshot> CaptureGraphEvidenceAsync(string connectionString, CancellationToken cancellationToken)
     {
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        var fact = await GraphCountAsync(connection, "fact", cancellationToken).ConfigureAwait(false);
-        var evidence = await GraphCountAsync(connection, "factevidence", cancellationToken).ConfigureAwait(false);
-        return JsonSerializer.Serialize(new { fact, evidence }, StableJsonOptions);
+        var fact = await GraphEvidenceAsync(connection, "fact", cancellationToken).ConfigureAwait(false);
+        var evidence = await GraphEvidenceAsync(connection, "factevidence", cancellationToken).ConfigureAwait(false);
+        return new GraphSnapshot(fact.RowCount + evidence.RowCount, ChecksumOf($"fact:{fact.ContentChecksum}\nevidence:{evidence.ContentChecksum}"));
     }
 
-    private static async Task<long> GraphCountAsync(NpgsqlConnection connection, string table, CancellationToken cancellationToken)
+    private static async Task<GraphSnapshot> GraphEvidenceAsync(NpgsqlConnection connection, string table, CancellationToken cancellationToken)
     {
         if (await ScalarAsync(connection, $"SELECT to_regclass('public.{table}') IS NOT NULL", cancellationToken) == 0)
         {
-            return 0;
+            return new GraphSnapshot(0, string.Empty);
         }
-        return await ScalarAsync(connection, $"SELECT count(*) FROM public.\"{table}\"", cancellationToken).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand($"SELECT count(*)::bigint, md5(COALESCE(string_agg(row_to_json(t)::text, '' ORDER BY row_to_json(t)::text), '')) FROM public.\"{table}\" t", connection);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+        await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+        return new GraphSnapshot(reader.GetInt64(0), reader.GetString(1));
     }
 
     private static IReadOnlyDictionary<string, string> SnapshotMetadata(SnapshotResult? before, SnapshotResult after) =>
@@ -277,14 +296,7 @@ public sealed class MigrationRehearsalCommand
         };
 
     private static string SnapshotText(SnapshotResult snapshot) =>
-        string.Join("\n", snapshot.BusinessChecksums.OrderBy(x => x.Key).Select(x => $"{x.Key}:{snapshot.TableCounts[x.Key]}:{x.Value}:{snapshot.OrphanCounts.Values.Sum()}"));
-
-    private static string ComputeManifestChecksum(MigrationRehearsalManifest manifest)
-    {
-        var canonicalSteps = manifest.Steps.Select(step => step with { Checksum = step.Name == "report-serialization" ? string.Empty : step.Checksum }).ToArray();
-        var canonical = manifest with { Steps = canonicalSteps, ManifestChecksum = null };
-        return ChecksumOf(JsonSerializer.Serialize(canonical, StableJsonOptions));
-    }
+        string.Join("\n", snapshot.BusinessChecksums.OrderBy(x => x.Key).Select(x => $"{x.Key}:{snapshot.TableCounts[x.Key]}:{x.Value}:{string.Join(",", snapshot.OrphanCounts.OrderBy(y => y.Key).Select(y => $"{y.Key}={y.Value}"))}"));
 
     private static string ChecksumOf(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));

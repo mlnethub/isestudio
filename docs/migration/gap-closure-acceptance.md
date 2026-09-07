@@ -16,17 +16,22 @@ powershell -File scripts\migration\Invoke-MigrationRehearsal.ps1 -Mode upgrade -
 The database must be PostgreSQL 16 or later with the application role and
 extensions required by the checked-in EF migrations. `fresh` requires an
 empty public schema with no application tables or EF migration history.
-`restored` requires a non-empty, recognizable PostgreSQL plain/custom dump
-file and a supplied database that already contains restored application
-tables. The command does not invent provider-specific restore orchestration or
-mutate production; the operator must perform restore before the rehearsal.
+`restored` requires a non-empty backup file accepted by `pg_restore --list` (or
+an injected validator in tests), a non-empty supplied database containing
+restored application tables, and records backup size/SHA-256 evidence. The
+manifest explicitly labels restore verification `external/manual`. The command
+does not invent provider-specific restore orchestration or mutate production;
+the operator must perform restore before the rehearsal. Missing `pg_restore`, a
+non-listable artifact, or an empty target fails closed.
 
-`upgrade` requires non-empty existing EF migration history and at least one
-pending migration before it runs `MigrateAsync`; a current database is
-rejected rather than reported as an upgrade. The manifest records migration
-before/after SQL evidence (row counts, business checksums, FK orphan counts)
-and graph fact/evidence counts. Connection strings and secrets are never
-written to the manifest.
+`upgrade` requires non-empty existing EF migration history, at least one
+pending migration, and an explicit `__migration_rehearsal_upgrade_marker`
+table containing a `pre-upgrade` row before it runs `MigrateAsync`; a current
+database or an unmarked database is rejected rather than reported as an
+upgrade. The manifest records and compares migration before/after SQL evidence
+(row counts, business checksums, FK orphan counts) and graph fact/evidence
+content checksums. Connection strings and secrets are never written to the
+manifest.
 
 Record the commit, PostgreSQL image/version, command duration, manifest SHA-256,
 and any skipped optional RDF/blob inputs alongside the generated manifests.
