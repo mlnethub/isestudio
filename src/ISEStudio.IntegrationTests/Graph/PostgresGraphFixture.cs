@@ -3,6 +3,7 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Infrastructure.Startup;
 using ISEStudio.Documents;
 using ISEStudio.Parsing;
+using ISEStudio.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
@@ -255,6 +256,10 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         services.AddSingleton<Chunker>(_ => new Chunker(size: 20, overlap: 0));
         services.AddScoped<PlainTextIngestionService>();
         services.AddScoped<PlainTextIngestionJobProcessor>();
+        services.AddScoped<DocumentIngestionJobProcessor>();
+        services.AddSingleton<IDocumentParser, DocumentParser>();
+        services.AddSingleton<IBlobStore>(_ => new LocalCasBlobStore(
+            Path.Combine(Path.GetTempPath(), "isestudio-stage4", Guid.NewGuid().ToString("N"))));
         services.AddGraphStore();
         return services.BuildServiceProvider();
     }
