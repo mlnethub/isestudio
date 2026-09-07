@@ -1,4 +1,5 @@
 using ISEStudio.Application.Integration;
+using ISEStudio.Documents;
 using ISEStudio.Extraction;
 using ISEStudio.Extraction.Dovetail;
 using ISEStudio.Integration;
@@ -40,6 +41,18 @@ public static class ExtractionServiceCollectionExtensions
         services.AddSingleton<IExtractionMerger, ExtractionMerger>();
         services.AddSingleton<ExtractionOrchestrator>();
         services.AddScoped<TerminologyAgent>();
+        services.AddScoped<IExtractionJobHandler, PlainTextExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, TBoxExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, ABoxExtractionJobHandler>();
+        services.PostConfigure<DurableExtractionWorkerOptions>(options =>
+        {
+            options.SupportedKinds = new[]
+            {
+                PlainTextIngestionJobProcessor.Kind,
+                ExtractionWire.KindTBox,
+                ExtractionWire.KindABox,
+            };
+        });
         services.AddScoped<ExtractionJobDispatcher>();
         // Application service facade for the five extraction.* dispatcher
         // arms (three run* + list_jobs + get_job). Scoped — shares the
