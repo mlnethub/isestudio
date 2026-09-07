@@ -37,7 +37,9 @@ public sealed class PostgresSearchIndex : ISearchIndex
         INNER JOIN ranked_versions AS rv
             ON rv.id = dvc.document_version_id
            AND rv.version_rank = 1
-        INNER JOIN document AS d ON d."id" = rv.document_id
+        INNER JOIN document AS d
+            ON d."id" = rv.document_id
+           AND d."KnowledgeSystemId" = rv.knowledge_system_id
         INNER JOIN knowledgesystem AS ks ON ks."id" = rv.knowledge_system_id
         LEFT JOIN ksgrant AS grant_row
                     ON grant_row."KnowledgeSystemId" = rv.knowledge_system_id

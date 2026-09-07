@@ -112,6 +112,25 @@ public sealed class PostgresSearchIntegrationTests : IAsyncLifetime
         Assert.Single(result);
         Assert.Contains("calibration", result[0].Text, StringComparison.Ordinal);
         Assert.Equal(_historicalVersionId, result[0].DocumentVersionId);
+
+        var beforeEarliestVersion = await _index.SearchAsync(new SearchRequest(
+            _knowledgeSystemId,
+            "pump",
+            ActorId: _ownerId,
+            AsOf: new DateTimeOffset(2025, 12, 31, 0, 0, 0, TimeSpan.Zero)));
+
+        Assert.Empty(beforeEarliestVersion);
+    }
+
+    [Fact]
+    public async Task Search_rejects_a_version_whose_document_belongs_to_another_knowledge_system()
+    {
+        var result = await _index.SearchAsync(new SearchRequest(
+            _knowledgeSystemId,
+            "cross-tenant-secret",
+            ActorId: _ownerId));
+
+        Assert.Empty(result);
     }
 
     [Fact]
@@ -278,7 +297,21 @@ public sealed class PostgresSearchIntegrationTests : IAsyncLifetime
             CreatedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
             ChunkCount = 1,
         };
-        _db.DocumentVersions.AddRange(currentVersion, historicalVersion, archiveVersion, otherVersion);
+        var crossTenantVersion = new DocumentVersionEntity
+        {
+            Id = Guid.NewGuid(),
+            KnowledgeSystemId = _knowledgeSystemId,
+            DocumentId = otherDocument.Id,
+            ContentSha256 = new string('8', 64),
+            CreatedAt = new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero),
+            ChunkCount = 1,
+        };
+        _db.DocumentVersions.AddRange(
+            currentVersion,
+            historicalVersion,
+            archiveVersion,
+            otherVersion,
+            crossTenantVersion);
         _db.DocumentVersionChunks.AddRange(
             new DocumentVersionChunkEntity
             {
@@ -307,6 +340,13 @@ public sealed class PostgresSearchIntegrationTests : IAsyncLifetime
                 DocumentVersionId = otherVersion.Id,
                 Idx = 0,
                 Text = "secret pump procedure",
+            },
+            new DocumentVersionChunkEntity
+            {
+                Id = Guid.NewGuid(),
+                DocumentVersionId = crossTenantVersion.Id,
+                Idx = 0,
+                Text = "cross-tenant-secret",
             });
 
         await _db.SaveChangesAsync();
