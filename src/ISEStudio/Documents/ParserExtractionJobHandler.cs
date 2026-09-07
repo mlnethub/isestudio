@@ -1,18 +1,22 @@
-using ISEStudio.Documents;
+using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence.Entities;
 
-namespace ISEStudio.Extraction;
+namespace ISEStudio.Documents;
 
-public sealed class PlainTextExtractionJobHandler : IExtractionJobHandler
+/// <summary>
+/// Durable adapter for every document format handled by <see cref="Parsing.IDocumentParser"/>.
+/// The processor owns blob loading, parser metadata persistence, versioning, and chunking.
+/// </summary>
+public sealed class ParserExtractionJobHandler : IExtractionJobHandler
 {
     private readonly DocumentIngestionJobProcessor _processor;
 
-    public PlainTextExtractionJobHandler(DocumentIngestionJobProcessor processor)
+    public ParserExtractionJobHandler(DocumentIngestionJobProcessor processor)
     {
         _processor = processor;
     }
 
-    public string Kind => PlainTextIngestionJobProcessor.Kind;
+    public string Kind => DocumentIngestionJobProcessor.Kind;
 
     public async Task HandleAsync(ExtractionJobEntity job, CancellationToken cancellationToken)
     {
@@ -29,15 +33,23 @@ public sealed class PlainTextExtractionJobHandler : IExtractionJobHandler
                 $"Extraction job '{job.Id}' payload knowledge system '{knowledgeSystemId}' does not match the claimed row.");
         }
 
-        var documentId = ExtractionJobPayloadReader.ReadRequiredGuid(payload, "document_id", "documentId");
-        var model = ExtractionJobPayloadReader.ReadOptionalString(payload, "model") ?? job.Model;
-        var documentSha256 = ExtractionJobPayloadReader.ReadOptionalString(
+        var documentId = ExtractionJobPayloadReader.ReadRequiredGuid(
+            payload,
+            "document_id",
+            "documentId");
+        var documentSha256 = ExtractionJobPayloadReader.ReadRequiredString(
             payload,
             "document_sha256",
             "documentSha256");
+        var model = ExtractionJobPayloadReader.ReadOptionalString(payload, "model") ?? job.Model;
 
         var result = await _processor.ProcessAsync(
-            new DocumentIngestionJob(job.Id, knowledgeSystemId, documentId, model, documentSha256),
+            new DocumentIngestionJob(
+                job.Id,
+                knowledgeSystemId,
+                documentId,
+                model,
+                documentSha256),
             cancellationToken).ConfigureAwait(false);
 
         if (!string.Equals(result.Status, JobStatus.Completed.ToWire(), StringComparison.Ordinal))

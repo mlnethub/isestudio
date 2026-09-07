@@ -15,4 +15,6 @@ namespace ISEStudio.Parsing;
 public sealed record ParseResult(
     string Text,
     string Backend,
-    object? StructuredDocument = null);
+    object? StructuredDocument = null,
+    string? MediaType = null,
+    string? ParserVersion = null);

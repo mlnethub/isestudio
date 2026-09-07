@@ -13,7 +13,8 @@ public sealed record DocumentIngestionJob(
     Guid Id,
     Guid KnowledgeSystemId,
     Guid DocumentId,
-    string Model);
+    string Model,
+    string? DocumentSha256 = null);
 
 public sealed record DocumentIngestionJobResult(
     string Status,
@@ -64,6 +65,13 @@ public sealed class DocumentIngestionJobProcessor
                 throw new InvalidOperationException("Document does not belong to the knowledge system.");
             }
 
+            if (input.DocumentSha256 is not null
+                && !string.Equals(document.Sha256, input.DocumentSha256, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Document SHA-256 '{input.DocumentSha256}' does not match stored blob '{document.Sha256}'.");
+            }
+
             job.Status = JobStatus.Running.ToWire();
             job.Model = input.Model;
             job.Error = null;
@@ -88,6 +96,8 @@ public sealed class DocumentIngestionJobProcessor
 
             document.ParseStatus = "parsed";
             document.ParserBackend = parsed.Backend;
+            document.ParserVersion = parsed.ParserVersion;
+            document.Mime = parsed.MediaType ?? document.Mime;
             document.ParseError = null;
             document.TextCharCount = parsed.Text.EnumerateRunes().Count();
             document.ChunkCount = version.ChunkCount;

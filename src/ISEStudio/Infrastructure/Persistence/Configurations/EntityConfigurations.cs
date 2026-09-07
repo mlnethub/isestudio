@@ -288,6 +288,7 @@ public sealed class DocumentEntityConfiguration : IEntityTypeConfiguration<Docum
         builder.HasIndex(x => x.ParseStatus).HasDatabaseName("ix_document_parse_status");
 
         builder.Property(x => x.ParserBackend).HasMaxLength(64);
+        builder.Property(x => x.ParserVersion).HasMaxLength(128);
         builder.Property(x => x.ParseError);
         builder.Property(x => x.TextCharCount);
         builder.Property(x => x.ChunkCount).IsRequired().HasDefaultValue(0);

@@ -1,7 +1,11 @@
 using System.Diagnostics;
+using System.Net;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using ClosedXML.Excel;
+using ISEStudio.Ontology;
 using DocumentFormat.OpenXml.Packaging;
 using DocumentFormat.OpenXml.Wordprocessing;
 using ISEStudio.Observability;
@@ -29,10 +33,13 @@ namespace ISEStudio.Parsing;
 /// </summary>
 public sealed class DocumentParser : IDocumentParser
 {
+    private const string ParserVersion = "document-parser/2";
+
     // Same set as the Python `SUPPORTED_EXTS`. Order matters only for diagnostics.
     private static readonly HashSet<string> Supported = new(StringComparer.OrdinalIgnoreCase)
     {
         "pdf", "docx", "doc", "xlsx", "xls", "txt", "md", "markdown", "csv",
+        "html", "rss", "rdf", "owl",
     };
 
     // Extensions for which we attempt DoclingDotNet first. The corresponding
@@ -78,7 +85,7 @@ public sealed class DocumentParser : IDocumentParser
                     if (docling is not null && !string.IsNullOrWhiteSpace(docling.Text))
                     {
                         activity?.SetTag(TelemetryExtensions.OutcomeTag, "success");
-                        return docling;
+                        return WithMetadata(docling, ext);
                     }
                 }
                 catch (Exception ex)
@@ -89,7 +96,7 @@ public sealed class DocumentParser : IDocumentParser
 
             var fallback = FallbackParse(bytes, ext, fileName);
             activity?.SetTag(TelemetryExtensions.OutcomeTag, "success");
-            return fallback;
+            return WithMetadata(fallback, ext);
         }
         catch (Exception ex)
         {
@@ -349,8 +356,74 @@ public sealed class DocumentParser : IDocumentParser
             "xlsx" or "xls" => new ParseResult(FallbackXlsx(bytes), "fallback:xlsx"),
             "txt" or "md" or "markdown" or "csv" => new ParseResult(
                 Encoding.UTF8.GetString(bytes), "fallback:text"),
+            "html" => new ParseResult(FallbackHtml(bytes), "fallback:html"),
+            "rss" => new ParseResult(FallbackXml(bytes), "fallback:rss"),
+            "rdf" or "owl" => new ParseResult(FallbackRdf(bytes), $"fallback:{ext}"),
             _ => throw new NotSupportedException($"Unsupported file type: .{ext}"),
         };
+    }
+
+    private static ParseResult WithMetadata(ParseResult result, string ext) => result with
+    {
+        MediaType = MediaTypeFor(ext),
+        ParserVersion = ParserVersion,
+    };
+
+    private static string MediaTypeFor(string ext) => ext switch
+    {
+        "txt" or "md" or "markdown" or "csv" => "text/plain",
+        "pdf" => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "doc" => "application/msword",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "xls" => "application/vnd.ms-excel",
+        "html" => "text/html",
+        "rss" => "application/rss+xml",
+        "rdf" or "owl" => "application/rdf+xml",
+        _ => "application/octet-stream",
+    };
+
+    private static string FallbackHtml(byte[] bytes)
+    {
+        var html = Encoding.UTF8.GetString(bytes);
+        html = Regex.Replace(html, "<script\\b[^>]*>.*?</script>|<style\\b[^>]*>.*?</style>",
+            string.Empty, RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        html = Regex.Replace(html, "<[^>]+>", "\n", RegexOptions.Singleline);
+        return WebUtility.HtmlDecode(html)
+            .Replace("\r", string.Empty, StringComparison.Ordinal)
+            .Split('\n')
+            .Select(line => line.Trim())
+            .Where(line => line.Length > 0)
+            .Aggregate(new StringBuilder(), (builder, line) =>
+            {
+                if (builder.Length > 0) builder.Append('\n');
+                builder.Append(line);
+                return builder;
+            })
+            .ToString();
+    }
+
+    private static string FallbackXml(byte[] bytes)
+    {
+        var document = XDocument.Parse(
+            Encoding.UTF8.GetString(bytes),
+            System.Xml.Linq.LoadOptions.PreserveWhitespace);
+        return string.Join('\n', document.DescendantNodes()
+            .OfType<XText>()
+            .Select(text => text.Value.Trim())
+            .Where(text => text.Length > 0));
+    }
+
+    private static string FallbackRdf(byte[] bytes)
+    {
+        var parsed = new RdfImportParser().Parse(
+            bytes,
+            "document.rdf",
+            "rdfxml",
+            baseIri: null,
+            maxTriples: null,
+            blankNodeScope: "document-parser");
+        return $"RDF triples: {parsed.Triples.Count}";
     }
 
     private static string FallbackPdf(byte[] bytes)

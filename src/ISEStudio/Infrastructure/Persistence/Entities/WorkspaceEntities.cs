@@ -100,6 +100,9 @@ public sealed class DocumentEntity : EntityBase
     /// <summary>Parser backend used (e.g. <c>docling</c>, <c>fallback:pdf</c>).</summary>
     public string? ParserBackend { get; set; }
 
+    /// <summary>Parser implementation version recorded with the parsed document.</summary>
+    public string? ParserVersion { get; set; }
+
     /// <summary>Parse error message if <see cref="ParseStatus"/> == <c>failed</c>.</summary>
     public string? ParseError { get; set; }
 

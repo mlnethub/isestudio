@@ -48,6 +48,7 @@ public sealed class DocumentService
         new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "pdf", "docx", "doc", "xlsx", "xls", "txt", "md", "markdown", "csv",
+            "html", "rss", "rdf", "owl",
         };
 
     private readonly ISEStudioDbContext _db;
@@ -695,6 +696,8 @@ public sealed class DocumentService
 
                 doc.ParseStatus = "parsed";
                 doc.ParserBackend = parsed.Backend;
+                doc.ParserVersion = parsed.ParserVersion;
+                doc.Mime = parsed.MediaType ?? doc.Mime;
                 doc.ParseError = null;
                 doc.TextCharCount = parsed.Text.Length;
                 doc.ChunkCount = spans.Count;

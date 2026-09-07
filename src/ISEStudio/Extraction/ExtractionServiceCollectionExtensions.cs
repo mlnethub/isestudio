@@ -41,7 +41,7 @@ public static class ExtractionServiceCollectionExtensions
         services.AddSingleton<IExtractionMerger, ExtractionMerger>();
         services.AddSingleton<ExtractionOrchestrator>();
         services.AddScoped<TerminologyAgent>();
-        services.AddScoped<IExtractionJobHandler, PlainTextExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
         services.AddScoped<IExtractionJobHandler, TBoxExtractionJobHandler>();
         services.AddScoped<IExtractionJobHandler, ABoxExtractionJobHandler>();
         services.PostConfigure<DurableExtractionWorkerOptions>(options =>

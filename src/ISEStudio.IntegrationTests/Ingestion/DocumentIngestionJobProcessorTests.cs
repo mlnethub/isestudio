@@ -68,25 +68,59 @@ public sealed class DocumentIngestionJobProcessorTests : IClassFixture<PostgresG
     }
 
     [Fact]
-    public async Task Unsupported_extension_fails_without_version_or_chunks()
+    public async Task Html_blob_is_parsed_and_document_metadata_is_persisted()
     {
         await using var services = _fixture.BuildServices();
         await using var scope = services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
         var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
-        var document = await AddDocumentAsync(db, "unsupported.html");
-        await PutBlobAsync(blobStore, db, document, "<html>no</html>");
+        var html = "<html><body><h1>Durable HTML</h1><p>content</p></body></html>";
+        var document = await AddDocumentAsync(db, "durable.html");
+        await PutBlobAsync(blobStore, db, document, html);
         var job = new DocumentIngestionJob(
             Guid.NewGuid(), _fixture.KnowledgeSystemId, document.Id, "stage-4-test");
 
-        await Assert.ThrowsAsync<NotSupportedException>(() => scope.ServiceProvider
+        var result = await scope.ServiceProvider
             .GetRequiredService<DocumentIngestionJobProcessor>()
-            .ProcessAsync(job, CancellationToken.None));
+            .ProcessAsync(job, CancellationToken.None);
 
         var persisted = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == document.Id);
-        Assert.Equal("failed", persisted.ParseStatus);
-        Assert.Equal(0, await db.DocumentVersions.CountAsync(item => item.DocumentId == document.Id));
-        Assert.Equal("failed", (await db.ExtractionJobs.SingleAsync(item => item.Id == job.Id)).Status);
+        Assert.Equal("completed", result.Status);
+        Assert.Equal("parsed", persisted.ParseStatus);
+        Assert.Equal("fallback:html", persisted.ParserBackend);
+        Assert.Equal(result.Version.ChunkCount, await db.DocumentVersionChunks.CountAsync(
+            item => item.DocumentVersionId == result.Version.Id));
+    }
+
+    [Theory]
+    [InlineData("feed.rss", "<rss><channel><title>Durable feed</title><item><description>entry</description></item></channel></rss>", "application/rss+xml")]
+    [InlineData("ontology.rdf", "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description><rdf:type>ClassRdf</rdf:type></rdf:Description></rdf:RDF>", "application/rdf+xml")]
+    [InlineData("ontology.owl", "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description><rdf:type>ClassOwl</rdf:type></rdf:Description></rdf:RDF>", "application/rdf+xml")]
+    public async Task Xml_document_format_is_persisted_through_the_same_version_contract(
+        string filename,
+        string content,
+        string mediaType)
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var document = await AddDocumentAsync(db, filename);
+        await PutBlobAsync(blobStore, db, document, content);
+
+        var result = await scope.ServiceProvider
+            .GetRequiredService<DocumentIngestionJobProcessor>()
+            .ProcessAsync(
+                new DocumentIngestionJob(
+                    Guid.NewGuid(), _fixture.KnowledgeSystemId, document.Id, "stage-4-test"),
+                CancellationToken.None);
+
+        var persisted = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == document.Id);
+        Assert.Equal("completed", result.Status);
+        Assert.Equal("parsed", persisted.ParseStatus);
+        Assert.Equal(mediaType, persisted.Mime);
+        Assert.Equal("document-parser/2", persisted.ParserVersion);
+        Assert.True(result.Version.ChunkCount > 0);
     }
 
     [Fact]

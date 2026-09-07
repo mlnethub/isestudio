@@ -54,6 +54,85 @@ public sealed class DurableExtractionWorkerTests : IClassFixture<PostgresGraphFi
     }
 
     [Fact]
+    public async Task Parser_job_validates_blob_sha_and_persists_parser_metadata()
+    {
+        await using var services = await BuildServicesAsync(services =>
+        {
+            services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
+        });
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var store = scope.ServiceProvider.GetRequiredService<ExtractionJobStore>();
+        var document = await AddDocumentAsync(db, "durable-parser.html");
+        await PutBlobAsync(blobStore, db, document, "<html><body>durable parser</body></html>");
+        var job = await CreateQueuedJobAsync(db, document.Id, DocumentIngestionJobProcessor.Kind, "stage-5-test");
+        job.Payload = JsonSerializer.SerializeToDocument(new
+        {
+            knowledge_system_id = _fixture.KnowledgeSystemId,
+            document_id = document.Id,
+            document_sha256 = document.Sha256,
+        });
+        await db.SaveChangesAsync();
+
+        var worker = new TestDurableExtractionWorker(
+            scope.ServiceProvider.GetRequiredService<IServiceScopeFactory>(),
+            store,
+            TimeProvider.System,
+            Options.Create(new DurableExtractionWorkerOptions
+            {
+                PollInterval = DurableExtractionWorkerOptions.MinPollInterval,
+            }));
+
+        await worker.RunUntilTerminalAsync(job.Id, CancellationToken.None);
+
+        var persistedJob = await db.ExtractionJobs.AsNoTracking().SingleAsync(item => item.Id == job.Id);
+        var persistedDocument = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == document.Id);
+        Assert.Equal("completed", persistedJob.Status);
+        Assert.Equal("text/html", persistedDocument.Mime);
+        Assert.Equal("document-parser/2", persistedDocument.ParserVersion);
+        Assert.Equal(1, await db.DocumentVersions.CountAsync(item => item.DocumentId == document.Id));
+    }
+
+    [Fact]
+    public async Task Parser_job_with_stale_blob_sha_fails_without_creating_a_version()
+    {
+        await using var services = await BuildServicesAsync(services =>
+        {
+            services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
+        });
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var store = scope.ServiceProvider.GetRequiredService<ExtractionJobStore>();
+        var document = await AddDocumentAsync(db, "stale-sha.txt");
+        var job = await CreateQueuedJobAsync(db, document.Id, DocumentIngestionJobProcessor.Kind, "stage-5-test");
+        job.Payload = JsonSerializer.SerializeToDocument(new
+        {
+            knowledge_system_id = _fixture.KnowledgeSystemId,
+            document_id = document.Id,
+            document_sha256 = new string('0', 64),
+        });
+        await db.SaveChangesAsync();
+
+        var worker = new TestDurableExtractionWorker(
+            scope.ServiceProvider.GetRequiredService<IServiceScopeFactory>(),
+            store,
+            TimeProvider.System,
+            Options.Create(new DurableExtractionWorkerOptions
+            {
+                PollInterval = DurableExtractionWorkerOptions.MinPollInterval,
+            }));
+
+        await worker.RunUntilTerminalAsync(job.Id, CancellationToken.None);
+
+        var persistedJob = await db.ExtractionJobs.AsNoTracking().SingleAsync(item => item.Id == job.Id);
+        Assert.Equal("failed", persistedJob.Status);
+        Assert.Equal("failed", persistedJob.Phase);
+        Assert.Contains("SHA-256", persistedJob.Error!, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, await db.DocumentVersions.CountAsync(item => item.DocumentId == document.Id));
+    }
+
+    [Fact]
     public async Task Tbox_job_is_claimed_and_sent_to_the_tbox_handler_once()
     {
         var tracker = new HandlerTracker();
