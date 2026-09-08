@@ -193,8 +193,8 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         {
             entities.Transaction = transaction;
             entities.CommandText = @"
-                INSERT INTO graph_entities (id, knowledge_system_id, entity_type_id, label, description)
-                SELECT value, @ks, NULL, 'Traversal entity', 'Performance fixture'
+                INSERT INTO graph_entities (id, knowledge_system_id, iri, entity_type_id, label, description)
+                SELECT value, @ks, 'https://example.test/entity/' || value::text, NULL, 'Traversal entity', 'Performance fixture'
                 FROM unnest(@ids) AS value;";
             entities.Parameters.AddWithValue("ks", KnowledgeSystemId);
             entities.Parameters.AddWithValue("ids", chainEntityIds);
@@ -275,15 +275,15 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         await using var connection = await OpenConnectionAsync();
         await using var command = connection.CreateCommand();
         command.CommandText = @"
-            INSERT INTO entity_types (id, knowledge_system_id, key, label, description)
-            VALUES (@entity_type, @ks, 'pump', 'Pump', 'Seed entity type');
+                 INSERT INTO entity_types (id, knowledge_system_id, iri, key, label, description)
+                 VALUES (@entity_type, @ks, @entity_type_iri, 'pump', 'Pump', 'Seed entity type');
 
-            INSERT INTO relation_types (id, knowledge_system_id, key, label, description)
-            VALUES (@predicate, @ks, 'connected_to', 'Connected To', 'Seed relation type');
+                 INSERT INTO relation_types (id, knowledge_system_id, iri, key, label, description)
+                 VALUES (@predicate, @ks, @predicate_iri, 'connected_to', 'Connected To', 'Seed relation type');
 
-            INSERT INTO graph_entities (id, knowledge_system_id, entity_type_id, label, description)
-            VALUES (@subject, @ks, @entity_type, 'Pump A', 'Seed subject entity'),
-                   (@object, @ks, @entity_type, 'Pump B', 'Seed object entity');
+                 INSERT INTO graph_entities (id, knowledge_system_id, iri, entity_type_id, label, description)
+                 VALUES (@subject, @ks, @subject_iri, @entity_type, 'Pump A', 'Seed subject entity'),
+                     (@object, @ks, @object_iri, @entity_type, 'Pump B', 'Seed object entity');
         ";
 
         command.Parameters.AddWithValue("entity_type", Guid.NewGuid());
@@ -291,6 +291,10 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         command.Parameters.AddWithValue("ks", KnowledgeSystemId);
         command.Parameters.AddWithValue("subject", SubjectEntityId);
         command.Parameters.AddWithValue("object", ObjectEntityId);
+        command.Parameters.AddWithValue("entity_type_iri", $"https://example.test/type/{Guid.NewGuid():N}");
+        command.Parameters.AddWithValue("predicate_iri", $"https://example.test/property/{PredicateId:N}");
+        command.Parameters.AddWithValue("subject_iri", $"https://example.test/entity/{SubjectEntityId:N}");
+        command.Parameters.AddWithValue("object_iri", $"https://example.test/entity/{ObjectEntityId:N}");
 
         await command.ExecuteNonQueryAsync();
         _graphReferencesSeeded = true;

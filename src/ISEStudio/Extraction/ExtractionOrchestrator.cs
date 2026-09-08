@@ -54,7 +54,7 @@ public sealed record ChunkVerifyOutcome(
 /// upload endpoint) can poll for status.</para>
 ///
 /// <para>Atomicity contract (load-bearing): when any phase's merge throws,
-/// the orchestrator's <see cref="StoreWrapper.CaptureAsync(string, bool, TimeSpan?, CancellationToken)"/>
+/// the orchestrator's PostgreSQL layer snapshot
 /// block for that phase has <see cref="QuadChangeCapture.MarkError"/>
 /// called on it before disposal, so the RDF writes the merger already
 /// produced are reverted in the same logical operation as the SQL
@@ -74,7 +74,7 @@ public sealed class ExtractionOrchestrator
     private readonly ITerminologySync _terminology;
     private readonly PromptSnapshotService _promptSnapshot;
     private readonly IExtractionMerger _merger;
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly TimeProvider _clock;
     private readonly ISEStudioOptions _options;
 
@@ -177,7 +177,7 @@ public sealed class ExtractionOrchestrator
         ITerminologySync terminology,
         PromptSnapshotService promptSnapshot,
         IExtractionMerger merger,
-        StoreWrapper store,
+        IRdfStatementRepository statements,
         TimeProvider clock,
         IOptions<ISEStudioOptions>? options = null,
         TBoxVerifyService? verify = null,
@@ -202,7 +202,7 @@ public sealed class ExtractionOrchestrator
         ArgumentNullException.ThrowIfNull(terminology);
         ArgumentNullException.ThrowIfNull(promptSnapshot);
         ArgumentNullException.ThrowIfNull(merger);
-        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(statements);
         ArgumentNullException.ThrowIfNull(clock);
 
         _jobs = jobs;
@@ -216,7 +216,7 @@ public sealed class ExtractionOrchestrator
         _terminology = terminology;
         _promptSnapshot = promptSnapshot;
         _merger = merger;
-        _store = store;
+        _statements = statements;
         _clock = clock;
         _options = options?.Value ?? new ISEStudioOptions();
         _verify = verify;
@@ -606,7 +606,7 @@ public sealed class ExtractionOrchestrator
         IReadOnlyList<ChunkSpan> chunks,
         CancellationToken cancellationToken)
     {
-        var labels = ExistingClassLabels(ksContext);
+        var labels = ExistingClassLabels(ksContext, state.KnowledgeSystemId);
         var promptSnapshot = _promptSnapshot.SnapshotAsync(
             new Dictionary<string, string> { [ABoxExtractionService.PromptKey] = _abox.ResolveSystemPrompt() });
         state = await RunLayerAsync(
@@ -644,7 +644,7 @@ public sealed class ExtractionOrchestrator
         IReadOnlyList<ChunkSpan> chunks,
         CancellationToken cancellationToken)
     {
-        var labels = ExistingClassLabels(ksContext);
+        var labels = ExistingClassLabels(ksContext, state.KnowledgeSystemId);
         var promptSnapshot = _promptSnapshot.SnapshotAsync(
             new Dictionary<string, string>(BuildTBoxPromptSnapshot())
             {
@@ -697,7 +697,7 @@ public sealed class ExtractionOrchestrator
 
         // After TBox completes, refresh the label set so ABox chunks see the
         // newly minted classes.
-        labels = ExistingClassLabels(ksContext);
+        labels = ExistingClassLabels(ksContext, state.KnowledgeSystemId);
 
         state = await RunLayerAsync(
             state,
@@ -744,8 +744,8 @@ public sealed class ExtractionOrchestrator
         long totalProcessed,
         CancellationToken cancellationToken)
     {
-        await using var termCapture = await _store.CaptureAsync(
-            ksContext.VocabularyGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+        await using var termCapture = await new PostgresRdfGraphStore(_statements, state.KnowledgeSystemId, "Vocabulary").CaptureAsync(
+            ksContext.VocabularyGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60), cancellationToken)
             .ConfigureAwait(false);
         try
         {
@@ -1099,7 +1099,8 @@ public sealed class ExtractionOrchestrator
             appendPhaseToLog: phase.ToWire(),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        await using var capture = await _store.CaptureAsync(
+        var layer = phase == ExtractionPhase.ABox ? "ABox" : "TBox";
+        await using var capture = await new PostgresRdfGraphStore(_statements, state.KnowledgeSystemId, layer).CaptureAsync(
             graphIri, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60), cancellationToken)
             .ConfigureAwait(false);
 
@@ -1268,8 +1269,8 @@ public sealed class ExtractionOrchestrator
     /// labels the ABox extractor grounds against). Routes through the
     /// orchestrator's private <see cref="ExistingClassLabels"/> helper.
     /// </summary>
-    internal IReadOnlyCollection<string> ExistingClassLabelsForStep(KsContext ksContext) =>
-        ExistingClassLabels(ksContext);
+    internal IReadOnlyCollection<string> ExistingClassLabelsForStep(KsContext ksContext, Guid knowledgeSystemId) =>
+        ExistingClassLabels(ksContext, knowledgeSystemId);
 
     /// <summary>
     /// Run the ABox duplicate-class detection pipeline (Dovetail
@@ -1296,13 +1297,13 @@ public sealed class ExtractionOrchestrator
     public async Task<ABoxJobResult> RunABoxLayerAsync(
         Guid knowledgeSystemId,
         string graphIri,
-        StoreWrapper store,
+        IReadOnlyList<Oxigraph.Quad> quads,
         IChatClient? chat,
         IEmbeddingGenerator<string, Embedding<float>>? embedder,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(graphIri);
-        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(quads);
 
         if (_aboxPipeline is not null)
         {
@@ -1321,7 +1322,7 @@ public sealed class ExtractionOrchestrator
                     JobId: Guid.NewGuid(),
                     KnowledgeSystemId: knowledgeSystemId,
                     GraphIri: graphIri,
-                    Store: store,
+                    Quads: quads,
                     Chat: resolvedChat,
                     Embedder: resolvedEmbedder,
                     MinConfidence: _options.DuplicateAutoApplyFloor);
@@ -1339,7 +1340,7 @@ public sealed class ExtractionOrchestrator
             throw new InvalidOperationException(
                 "ABox pipeline fallback requires DuplicateJudge to be registered.");
         }
-        var conflicts = await _duplicateJudge.DetectAsync(store, graphIri, cancellationToken)
+        var conflicts = await _duplicateJudge.DetectAsync(quads, graphIri, cancellationToken)
             .ConfigureAwait(false);
         return new ABoxJobResult(
             Applied: new AppliedMerges(Array.Empty<MergedClassPair>()),
@@ -1471,7 +1472,9 @@ public sealed class ExtractionOrchestrator
                 appendPhaseToLog: "corpus-recovery",
                 cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
-            var existingNorms = SchemaBuilder.BuildView(ksContext.TBoxGraph, _store).Classes
+            var existingNorms = SchemaBuilder.BuildView(ksContext.TBoxGraph,
+                    new PostgresRdfGraphStore(_statements, state.KnowledgeSystemId, "TBox").Match(ksContext.TBoxGraph))
+                .Classes
                 .Select(c => TBoxVerifyService.LabelNorm(c.Label))
                 .ToHashSet(StringComparer.Ordinal);
 
@@ -1500,8 +1503,8 @@ public sealed class ExtractionOrchestrator
         KsContext ksContext,
         CorpusRecoveryResult recovered)
     {
-        await using var capture = await _store.CaptureAsync(
-            ksContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+        await using var capture = await new PostgresRdfGraphStore(_statements, state.KnowledgeSystemId, "TBox").CaptureAsync(
+            ksContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60), CancellationToken.None)
             .ConfigureAwait(false);
         try
         {
@@ -1540,7 +1543,7 @@ public sealed class ExtractionOrchestrator
         if (_hierarchy is null || _verify is null) return state;
         if (perChunk.Count == 0) return state;
 
-        var labels = ExistingClassLabels(ksContext);
+        var labels = ExistingClassLabels(ksContext, state.KnowledgeSystemId);
 
         try
         {
@@ -1588,8 +1591,8 @@ public sealed class ExtractionOrchestrator
         HierarchyRecoveryResult recovered)
     {
         if (recovered.Classes.Count == 0 && recovered.Edges.Count == 0) return;
-        await using var capture = await _store.CaptureAsync(
-            ksContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+        await using var capture = await new PostgresRdfGraphStore(_statements, state.KnowledgeSystemId, "TBox").CaptureAsync(
+            ksContext.TBoxGraph, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60), CancellationToken.None)
             .ConfigureAwait(false);
         try
         {
@@ -1637,9 +1640,10 @@ public sealed class ExtractionOrchestrator
         return (_chunker.ChunkDocument(fallback), fallback);
     }
 
-    private IReadOnlyCollection<string> ExistingClassLabels(KsContext ksContext)
+    private IReadOnlyCollection<string> ExistingClassLabels(KsContext ksContext, Guid knowledgeSystemId)
     {
-        var view = SchemaBuilder.BuildView(ksContext.TBoxGraph, _store);
+        var view = SchemaBuilder.BuildView(ksContext.TBoxGraph,
+            new PostgresRdfGraphStore(_statements, knowledgeSystemId, "TBox").Match(ksContext.TBoxGraph));
         return view.Classes
             .Select(c => c.Label)
             .Where(l => !string.IsNullOrWhiteSpace(l))

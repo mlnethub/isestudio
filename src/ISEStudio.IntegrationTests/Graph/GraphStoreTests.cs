@@ -20,6 +20,38 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
     }
 
     [Fact]
+    public async Task Create_entity_persists_a_postgres_backed_graph_entity()
+    {
+        await _fixture.SeedGraphReferencesAsync();
+
+        await using var services = BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IGraphStore>();
+
+        var entity = await store.CreateEntityAsync(
+            new CreateGraphEntityCommand(
+                _fixture.KnowledgeSystemId,
+                "pump",
+                "Ada",
+                "A graph entity",
+                null),
+            CancellationToken.None);
+
+        Assert.Equal(_fixture.KnowledgeSystemId, entity.KnowledgeSystemId);
+        Assert.Equal("pump", entity.TypeKey);
+        Assert.Equal("Ada", entity.Label);
+
+        await using var verify = CreateDbContext();
+        var persisted = await verify.GraphEntities.SingleAsync(item => item.Id == entity.Id);
+        Assert.Equal("Ada", persisted.Label);
+        Assert.Equal($"https://example.test/base/entity/{entity.Id:N}", persisted.Iri);
+        Assert.Equal("pump", await verify.EntityTypes
+            .Where(item => item.Id == persisted.EntityTypeId)
+            .Select(item => item.Key)
+            .SingleAsync());
+    }
+
+    [Fact]
     public async Task Record_fact_persists_fact_and_evidence_in_one_transaction()
     {
         await _fixture.SeedGraphReferencesAsync();
@@ -661,6 +693,7 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         {
             Id = entityId,
             KnowledgeSystemId = knowledgeSystemId,
+            Iri = $"https://example.test/entity/{entityId:N}",
             EntityTypeId = entityTypeId,
             Label = label,
             Description = $"Fixture entity {label}",
@@ -679,6 +712,7 @@ public sealed class GraphStoreTests : IClassFixture<PostgresGraphFixture>
         {
             Id = entityTypeId,
             KnowledgeSystemId = knowledgeSystemId,
+            Iri = $"https://example.test/type/{entityTypeId:N}",
             Key = key,
             Label = key,
             Description = "Fixture entity type",

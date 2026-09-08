@@ -25,7 +25,7 @@ public sealed class EmbeddingMatchStep(DuplicateJudge? judge)
         }
 
         // Reconstruct labels and call the legacy embedding service.
-        var labels = ConflictDetection.ReadClassLabels(input.Store, input.GraphIri);
+        var labels = ConflictDetection.ReadClassLabels(input.Quads, input.GraphIri);
         var cosineResults = await _judge.EmbeddingCandidatesAsync(
             labels,
             input.MinConfidence,

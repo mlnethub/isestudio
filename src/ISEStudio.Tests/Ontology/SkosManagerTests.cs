@@ -1,5 +1,6 @@
 using ISEStudio.Application.Vocabulary;
 using ISEStudio.Ontology;
+using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
@@ -7,27 +8,8 @@ using KsContext = ISEStudio.Ontology.KsContext;
 
 namespace ISEStudio.Tests.Ontology;
 
-public sealed class SkosManagerFixture : IDisposable
+public sealed class SkosManagerFixture : PostgresRdfFixture
 {
-    public string Path { get; }
-    public StoreWrapper Store { get; }
-
-    public SkosManagerFixture()
-    {
-        Path = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "isestudio-skos-" + Guid.NewGuid().ToString("N"));
-        Store = new StoreWrapper(Path);
-    }
-
-    public void Dispose()
-    {
-        Store.Dispose();
-        if (Directory.Exists(Path))
-        {
-            Directory.Delete(Path, recursive: true);
-        }
-    }
 }
 
 public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetime
@@ -40,14 +22,11 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
         _fx = fx;
         _ks = new KsContext(
             GraphIri: "http://goodcrew.local/ks/test/skos-mgr",
-            BaseIri: "http://goodcrew.local/ks/test/skos-mgr/onto#");
+                BaseIri: "http://goodcrew.local/ks/test/skos-mgr/onto#",
+                KnowledgeSystemId: fx.KnowledgeSystemId);
     }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+            public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -61,7 +40,7 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
         // through ABoxManager.CreateIndividual. We don't need the ABox
         // manager's surface here — re-implement the call inline so this
         // file remains standalone.
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
 
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
@@ -69,12 +48,12 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
             Iri: "urn:c", PrefLabel: "Pump", Language: "en"));
 
         // Concept must not appear in TBox or ABox graphs.
-        Assert.Empty(_fx.Store.Match(subjectIri: conceptIri, graphIri: _ks.TBoxGraph));
-        Assert.Empty(_fx.Store.Match(subjectIri: conceptIri, graphIri: _ks.ABoxGraph));
+        Assert.Empty(_fx.Vocabulary.Match(subjectIri: conceptIri, graphIri: _ks.TBoxGraph));
+        Assert.Empty(_fx.Vocabulary.Match(subjectIri: conceptIri, graphIri: _ks.ABoxGraph));
 
         // Scheme must not appear in TBox or ABox graphs.
-        Assert.Empty(_fx.Store.Match(subjectIri: schemeIri, graphIri: _ks.TBoxGraph));
-        Assert.Empty(_fx.Store.Match(subjectIri: schemeIri, graphIri: _ks.ABoxGraph));
+        Assert.Empty(_fx.Vocabulary.Match(subjectIri: schemeIri, graphIri: _ks.TBoxGraph));
+        Assert.Empty(_fx.Vocabulary.Match(subjectIri: schemeIri, graphIri: _ks.ABoxGraph));
     }
 
     // ------------------------------------------------------------------
@@ -83,7 +62,7 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     [Fact]
     public void CreateScheme_then_CreateConcept_round_trip_in_vocabulary_graph()
     {
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
 
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
@@ -95,7 +74,7 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
 
         // skos:Concept + skos:inScheme + skos:prefLabel all live in the vocab graph
         var vocab = new OntoNamedNode(_ks.VocabularyGraph);
-        var matches = _fx.Store.Match(subjectIri: conceptIri, graphIri: _ks.VocabularyGraph);
+        var matches = _fx.Vocabulary.Match(subjectIri: conceptIri, graphIri: _ks.VocabularyGraph);
         Assert.NotEmpty(matches);
 
         // The concept must be typed skos:Concept
@@ -119,7 +98,7 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     [Fact]
     public void ListConcepts_filters_by_mapping_origin_status_date()
     {
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
 
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
@@ -165,7 +144,7 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     [Fact]
     public void ListConcepts_filters_by_start_and_end_date()
     {
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
 
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
@@ -206,7 +185,7 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     [Fact]
     public void Resolve_matches_pref_and_alt_labels_with_scores()
     {
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
 
@@ -231,7 +210,7 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     [Fact]
     public void UpdateConcept_rejects_broader_cycle()
     {
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
 
@@ -252,7 +231,7 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     [Fact]
     public void UpdateConcept_rejects_self_relation()
     {
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
 
@@ -270,7 +249,7 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     [Fact]
     public void CreateConcept_rejects_duplicate_label_in_same_scheme()
     {
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
 
@@ -288,24 +267,28 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
     [Fact]
     public async Task Failed_concept_write_reverts_via_MarkError()
     {
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
 
         skos.CreateConcept(_ks, schemeIri, new SkosConceptData(
             Iri: "urn:c-keep", PrefLabel: "Keep", Language: "en"));
 
-        byte[] snapshot = _fx.Store.DumpNQuads(new OntoNamedNode(_ks.VocabularyGraph));
+        byte[] snapshot = _fx.Vocabulary.DumpNQuads(_ks.VocabularyGraph);
 
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
-            await using var capture = await _fx.Store.CaptureAsync(_ks.VocabularyGraph, revertOnError: false);
+            await using var capture = await _fx.Vocabulary.CaptureAsync(
+                _ks.VocabularyGraph,
+                revertOnError: false,
+                waitTimeout: null,
+                cancellationToken: CancellationToken.None);
             skos.CreateConcept(_ks, schemeIri, new SkosConceptData(
                 Iri: "urn:c-tmp", PrefLabel: "Tmp", Language: "en"));
             capture.MarkError();
             throw new InvalidOperationException();
         });
 
-        Assert.Equal(snapshot, _fx.Store.DumpNQuads(new OntoNamedNode(_ks.VocabularyGraph)));
+        Assert.Equal(snapshot, _fx.Vocabulary.DumpNQuads(_ks.VocabularyGraph));
     }
 }

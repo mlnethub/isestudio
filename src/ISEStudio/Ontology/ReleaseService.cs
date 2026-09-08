@@ -36,7 +36,7 @@ public sealed class ReleaseService
     private readonly ABoxValidator _aboxValidator;
     private readonly KnowledgeStatsService _stats;
     private readonly ConflictService _conflicts;
-    private readonly StoreWrapper? _store;
+    private readonly IRdfStatementRepository _statements;
 
     public ReleaseService(
         ISEStudioDbContext db,
@@ -46,7 +46,7 @@ public sealed class ReleaseService
         ABoxValidator aboxValidator,
         KnowledgeStatsService stats,
         ConflictService conflicts,
-        StoreWrapper? store)
+        IRdfStatementRepository statements)
     {
         _db = db;
         _audit = audit;
@@ -55,7 +55,7 @@ public sealed class ReleaseService
         _aboxValidator = aboxValidator;
         _stats = stats;
         _conflicts = conflicts;
-        _store = store;
+        _statements = statements;
     }
 
     // ----------------------------------------------------------------------
@@ -102,7 +102,7 @@ public sealed class ReleaseService
         {
             await _releases.CaptureAsync(KsContext.FromEntity(ks), releaseKey, row.Version, actor, ct)
                 .ConfigureAwait(false);
-            row.SnapshotDir = _releases.Artifacts.ReleasePath(releaseKey);
+            row.SnapshotDir = string.Empty;
             row.Manifest = JsonDocument.Parse(
                 $$"""{"capture_status":"ready","version":"{{row.Version}}"}""");
         }
@@ -332,17 +332,15 @@ public sealed class ReleaseService
         if (!CaptureReady(row))
             throw new ResourceInUseException("Release snapshot is not ready.");
 
-        if (_store is null)
-            throw new InvalidOperationException("Graph store is not available.");
-
-        var releaseKey = row.Id.ToString("N");
         var ksc = KsContext.FromEntity(ks);
-        // Restore each workspace layer from the immutable snapshot.
         foreach (var layer in new[] { RdfLayer.TBox, RdfLayer.ABox, RdfLayer.Vocabulary })
         {
-            var graphIri = ReleaseManager.GraphIriFor(ksc, layer);
-            var snapshot = _releases.Artifacts.Read(releaseKey, layer);
-            _store.ReplaceGraphFromNQuads(graphIri, snapshot);
+            var layerName = layer.ToString();
+            var rows = await _db.ReleaseStatements.AsNoTracking()
+                .Where(item => item.ReleaseId == row.Id && item.Layer == layerName)
+                .ToListAsync(ct).ConfigureAwait(false);
+            await _statements.ReplaceLayerAsync(ks.Id, layerName,
+                rows.Select(ToRdfStatement).ToList(), ct).ConfigureAwait(false);
         }
 
         // Clear governance queues (mirrors Python: delete all conflicts +
@@ -390,13 +388,16 @@ public sealed class ReleaseService
         if (!CaptureReady(left) || !CaptureReady(right))
             throw new ResourceInUseException("Both release snapshots must be ready.");
 
-        var leftKey = left.Id.ToString("N");
-        var rightKey = right.Id.ToString("N");
         var layers = new Dictionary<string, object>(StringComparer.Ordinal);
         foreach (var layer in new[] { RdfLayer.TBox, RdfLayer.ABox, RdfLayer.Vocabulary })
         {
-            var leftLines = Lines(_releases.Artifacts.Read(leftKey, layer));
-            var rightLines = Lines(_releases.Artifacts.Read(rightKey, layer));
+            var layerKey = layer.ToString();
+            var leftLines = await _db.ReleaseStatements.AsNoTracking()
+                .Where(item => item.ReleaseId == left.Id && item.Layer == layerKey)
+                .Select(item => item.StatementHash).ToListAsync(ct).ConfigureAwait(false);
+            var rightLines = await _db.ReleaseStatements.AsNoTracking()
+                .Where(item => item.ReleaseId == right.Id && item.Layer == layerKey)
+                .Select(item => item.StatementHash).ToListAsync(ct).ConfigureAwait(false);
             var added = rightLines.Except(leftLines).ToList();
             var removed = leftLines.Except(rightLines).ToList();
             layers[layerName(layer)] = new
@@ -539,6 +540,17 @@ public sealed class ReleaseService
         while (reader.ReadLine() is { } line)
             if (!string.IsNullOrWhiteSpace(line)) lines.Add(line.Trim());
         return lines;
+    }
+
+    private static RdfStatement ToRdfStatement(ReleaseStatementEntity row)
+    {
+        RdfTerm subject = row.SubjectIri.StartsWith("_:", StringComparison.Ordinal)
+            ? new RdfBlankNode(row.SubjectIri[2..])
+            : new RdfIri(row.SubjectIri);
+        RdfTerm value = row.ObjectIri is not null
+            ? new RdfIri(row.ObjectIri)
+            : new RdfLiteral(row.ObjectValue ?? string.Empty);
+        return new RdfStatement(subject, row.PredicateIri, value, row.GraphIri);
     }
 
     private static string layerName(RdfLayer layer) => layer switch

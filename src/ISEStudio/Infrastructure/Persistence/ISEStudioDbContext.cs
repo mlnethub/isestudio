@@ -116,6 +116,12 @@ public sealed class ISEStudioDbContext : DbContext
     /// <summary>Join rows linking facts to existing conflict records.</summary>
     public DbSet<FactConflictEntity> FactConflicts => Set<FactConflictEntity>();
 
+    /// <summary>Supported ontology axioms that do not use a dedicated link table.</summary>
+    public DbSet<OntologyAxiomEntity> OntologyAxioms => Set<OntologyAxiomEntity>();
+
+    /// <summary>RDF-compatible workspace statements owned by PostgreSQL.</summary>
+    public DbSet<WorkspaceStatementEntity> WorkspaceStatements => Set<WorkspaceStatementEntity>();
+
     // ---------------------------------------------------------------------
     // Provenance & jobs
     // ---------------------------------------------------------------------
@@ -144,6 +150,9 @@ public sealed class ISEStudioDbContext : DbContext
 
     /// <summary>Release-fixed provenance index.</summary>
     public DbSet<ReleaseStatementProvenanceEntity> ReleaseStatementProvenances => Set<ReleaseStatementProvenanceEntity>();
+
+    /// <summary>Immutable RDF-compatible statements owned by a release.</summary>
+    public DbSet<ReleaseStatementEntity> ReleaseStatements => Set<ReleaseStatementEntity>();
 
     /// <summary>Asynchronous stream-written export jobs.</summary>
     public DbSet<ExportJobEntity> ExportJobs => Set<ExportJobEntity>();
@@ -176,6 +185,10 @@ public sealed class ISEStudioDbContext : DbContext
         modelBuilder.Entity<Entities.ExtractionJobEntity>().Property(x => x.Payload)
             .HasConversion(Configurations.JsonStringValueConverter.Instance);
         modelBuilder.Entity<Entities.ExtractionJobEntity>().Property(x => x.PromptSnapshot)
+            .HasConversion(Configurations.JsonStringValueConverter.Instance);
+        modelBuilder.Entity<Entities.OntologyAxiomEntity>().Property(x => x.Payload)
+            .HasConversion(Configurations.JsonStringValueConverter.Instance);
+        modelBuilder.Entity<Entities.ReleaseStatementEntity>().Property(x => x.Payload)
             .HasConversion(Configurations.JsonStringValueConverter.Instance);
 
         // The unit tests run on SQLite which doesn't speak jsonb / bytea /
@@ -222,6 +235,8 @@ public sealed class ISEStudioDbContext : DbContext
         modelBuilder.Entity<Entities.TermProposalEntity>().Property(x => x.Evidence).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.TermProposalEntity>().Property(x => x.SourceChunkIds).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.TboxReconciliationEntity>().Property(x => x.Candidates).HasColumnType("jsonb");
+        modelBuilder.Entity<Entities.OntologyAxiomEntity>().Property(x => x.Payload).HasColumnType("jsonb");
+        modelBuilder.Entity<Entities.ReleaseStatementEntity>().Property(x => x.Payload).HasColumnType("jsonb");
 
         // ---- Binary columns (bytea) ----
         modelBuilder.Entity<Entities.AuditEventEntity>().Property(x => x.Added).HasColumnType("bytea");

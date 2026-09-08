@@ -92,7 +92,9 @@ public sealed class ActivityWrappingTests
                 sh:property [ sh:path rdfs:label ; sh:minCount 1 ; sh:datatype xsd:string ] .
             """), shapeGraph);
 
-        var validator = new ShaclValidator(shapeStore, dataStore);
+        var validator = new ShaclValidator(
+            shapeStore.Match(subjectIri: (string?)null, predicateIri: null, objectIri: null, graphIri: null).ToList(),
+            dataStore.Match(subjectIri: (string?)null, predicateIri: null, objectIri: null, graphIri: null).ToList());
         var report = validator.Validate("urn:data");
 
         var activity = FindActivity(listener.Snapshot(), "rdf.shacl.validate");

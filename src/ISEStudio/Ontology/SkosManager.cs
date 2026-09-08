@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using ISEStudio.Application.Vocabulary;
+using ISEStudio.Infrastructure.Persistence.Entities;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -100,18 +101,14 @@ public sealed class SkosValidationException : Exception
 /// </summary>
 public sealed class SkosManager
 {
-    private readonly StoreWrapper? _store;
+    private readonly IVocabularyGraphStore _store;
 
     private static readonly Regex WhitespaceRun = new(@"\s+", RegexOptions.Compiled);
 
-    // The store is optional so the contract-test factory (which registers
-    // a null StoreWrapper when no RocksDB root is provisioned) can still
-    // resolve this service. Read methods return empty results and write
-    // methods no-op when the store is null; the public contract shape is
-    // preserved so the HTTP endpoints respond cleanly.
-    public SkosManager(StoreWrapper? store)
+    public SkosManager(IRdfStatementRepository statements)
     {
-        _store = store;
+        ArgumentNullException.ThrowIfNull(statements);
+        _store = new PostgresVocabularyGraphStore(statements);
     }
 
     // ------------------------------------------------------------------
@@ -147,15 +144,8 @@ public sealed class SkosManager
     private IReadOnlyDictionary<string, List<(OntoNamedNode Predicate, object Object)>> SubjectIndex(KsContext ks)
     {
         var out_ = new Dictionary<string, List<(OntoNamedNode, object)>>(StringComparer.Ordinal);
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path). Return an empty
-            // index so callers see the vocabulary as empty rather than
-            // throwing.
-            return out_;
-        }
         var g = new OntoNamedNode(ks.VocabularyGraph);
-        foreach (var q in _store.Match(graph: g))
+        foreach (var q in _store.Match(ks, graph: g))
         {
             if (q.Subject is OntoNamedNode n)
             {
@@ -334,13 +324,6 @@ public sealed class SkosManager
         if (GetScheme(ks, iri) is not null)
             throw new SkosValidationException("A vocabulary with this IRI already exists");
 
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — mint the IRI
-            // and skip the write so the HTTP envelope still parses.
-            return iri;
-        }
-
         var graph = new OntoNamedNode(ks.VocabularyGraph);
         var node = new OntoNamedNode(iri);
         var now = NowIso();
@@ -357,7 +340,7 @@ public sealed class SkosManager
         {
             quads.Add(new(node, SkosVocab.DcDescription, MakeLiteral(description, language), graph));
         }
-        _store.AddQuads(graph, quads);
+        _store.AddQuads(ks, graph, quads);
         return iri;
     }
 
@@ -380,13 +363,6 @@ public sealed class SkosManager
         var origin = (data.Origin ?? existing.Origin).Trim();
         if (origin.Length == 0) origin = "manual";
 
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — preserve the
-            // existing IRI without performing the predicate rewrite.
-            return iri;
-        }
-
         var graph = new OntoNamedNode(ks.VocabularyGraph);
         var node = new OntoNamedNode(iri);
         RemovePredicates(ks, node, SchemePredicates);
@@ -399,7 +375,7 @@ public sealed class SkosManager
         };
         if (description.Length > 0)
             quads.Add(new(node, SkosVocab.DcDescription, MakeLiteral(description, language), graph));
-        _store.AddQuads(graph, quads);
+        _store.AddQuads(ks, graph, quads);
         return iri;
     }
 
@@ -424,19 +400,14 @@ public sealed class SkosManager
     {
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(iri);
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — nothing to remove.
-            return 0;
-        }
         var view = BuildView(ks);
         var graph = new OntoNamedNode(ks.VocabularyGraph);
         var removed = 0;
         foreach (var c in view.Concepts.Where(c => c.SchemeIri == iri))
         {
-            removed += RemoveEntity(graph, c.Iri);
+            removed += RemoveEntity(ks, graph, c.Iri);
         }
-        removed += RemoveEntity(graph, iri);
+        removed += RemoveEntity(ks, graph, iri);
         return removed;
     }
 
@@ -468,21 +439,13 @@ public sealed class SkosManager
             ? explicitIri
             : $"{ks.VocabularyGraph}#concept-{Guid.NewGuid().ToString("N")[..16]}";
 
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — mint the IRI
-            // without validation / duplicate check / write so the HTTP
-            // envelope still parses.
-            return iri;
-        }
-
         var withScheme = data with { SchemeIri = schemeIri };
         var cleaned = ValidateConcept(ks, withScheme, excludeIri: null);
         if (GetConcept(ks, iri) is not null)
             throw new SkosValidationException("A concept with this IRI already exists");
 
         var quads = ConceptTriples(iri, cleaned, createdAt: NowIso(), graph: new OntoNamedNode(ks.VocabularyGraph));
-        _store.AddQuads(new OntoNamedNode(ks.VocabularyGraph), quads);
+        _store.AddQuads(ks, new OntoNamedNode(ks.VocabularyGraph), quads);
         return iri;
     }
 
@@ -502,21 +465,15 @@ public sealed class SkosManager
             Origin = data.Origin.Length > 0 ? data.Origin : existing.Origin,
         };
         var cleaned = ValidateConcept(ks, source, excludeIri: iri);
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — preserve the
-            // existing IRI without performing the predicate rewrite.
-            return iri;
-        }
         var graph = new OntoNamedNode(ks.VocabularyGraph);
         var node = new OntoNamedNode(iri);
         RemovePredicates(ks, node, ConceptPredicates);
         // Also drop any inbound `skos:related -> iri` triples.
-        var inbound = _store.Match(predicateIri: SkosVocab.Related.Value,
+        var inbound = _store.Match(ks, predicateIri: SkosVocab.Related.Value,
             objectIri: iri, graphIri: ks.VocabularyGraph);
-        if (inbound.Count > 0) _store.RemoveQuads(graph, inbound);
+        if (inbound.Count > 0) _store.RemoveQuads(ks, graph, inbound);
         var quads = ConceptTriples(iri, cleaned, createdAt: existing.CreatedAt.Length > 0 ? existing.CreatedAt : null, graph: graph);
-        _store.AddQuads(graph, quads);
+        _store.AddQuads(ks, graph, quads);
         return iri;
     }
 
@@ -525,39 +482,106 @@ public sealed class SkosManager
     {
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(iri);
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — nothing to remove.
-            return 0;
-        }
         var graph = new OntoNamedNode(ks.VocabularyGraph);
-        var inbound = _store.Match(predicateIri: SkosVocab.Related.Value,
+        var inbound = _store.Match(ks, predicateIri: SkosVocab.Related.Value,
             objectIri: iri, graphIri: ks.VocabularyGraph);
-        if (inbound.Count > 0) _store.RemoveQuads(graph, inbound);
-        return RemoveEntity(graph, iri);
+        if (inbound.Count > 0) _store.RemoveQuads(ks, graph, inbound);
+        return RemoveEntity(ks, graph, iri);
     }
 
     private void RemovePredicates(KsContext ks, OntoNamedNode subject, HashSet<OntoNamedNode> predicates)
     {
-        if (_store is null) return;
         var graph = new OntoNamedNode(ks.VocabularyGraph);
         foreach (var pred in predicates)
         {
-            var existing = _store.Match(subjectIri: subject.Value, predicateIri: pred.Value,
+            var existing = _store.Match(ks, subjectIri: subject.Value, predicateIri: pred.Value,
                 graphIri: ks.VocabularyGraph);
-            if (existing.Count > 0) _store.RemoveQuads(graph, existing);
+            if (existing.Count > 0) _store.RemoveQuads(ks, graph, existing);
         }
     }
 
-    private int RemoveEntity(OntoNamedNode graph, string iri)
+    private int RemoveEntity(KsContext ks, OntoNamedNode graph, string iri)
     {
-        if (_store is null) return 0;
-        var outgoing = _store.Match(subjectIri: iri, graphIri: graph.Value);
+        var outgoing = _store.Match(ks, subjectIri: iri, graphIri: graph.Value);
         if (outgoing.Count > 0)
         {
-            _store.RemoveQuads(graph, outgoing);
+            _store.RemoveQuads(ks, graph, outgoing);
         }
         return outgoing.Count;
+    }
+
+    private interface IVocabularyGraphStore
+    {
+        List<OntoQuad> Match(KsContext ks, string? subjectIri = null, string? predicateIri = null,
+            string? objectIri = null, string? graphIri = null, OntoNamedNode? graph = null);
+        void AddQuads(KsContext ks, OntoNamedNode graph, IEnumerable<OntoQuad> quads);
+        void RemoveQuads(KsContext ks, OntoNamedNode graph, IEnumerable<OntoQuad> quads);
+    }
+
+    private sealed class PostgresVocabularyGraphStore : IVocabularyGraphStore
+    {
+        private readonly IRdfStatementRepository _statements;
+
+        public PostgresVocabularyGraphStore(IRdfStatementRepository statements) => _statements = statements;
+
+        public List<OntoQuad> Match(KsContext ks, string? subjectIri = null, string? predicateIri = null,
+            string? objectIri = null, string? graphIri = null, OntoNamedNode? graph = null)
+        {
+            var selectedGraph = graphIri ?? graph?.Value ?? ks.VocabularyGraph;
+            return _statements.ListAsync(ks.KnowledgeSystemId, "Vocabulary").GetAwaiter().GetResult()
+                .Where(statement => statement.GraphIri == selectedGraph)
+                .Where(statement => subjectIri is null || statement.Subject is RdfIri iri && iri.Value == subjectIri)
+                .Where(statement => predicateIri is null || statement.PredicateIri == predicateIri)
+                .Where(statement => objectIri is null || statement.Object is RdfIri iri && iri.Value == objectIri)
+                .Select(ToQuad)
+                .ToList();
+        }
+
+        public void AddQuads(KsContext ks, OntoNamedNode graph, IEnumerable<OntoQuad> quads) =>
+            Replace(ks, graph.Value, Match(ks, graph: graph).Concat(quads).Distinct().ToList());
+
+        public void RemoveQuads(KsContext ks, OntoNamedNode graph, IEnumerable<OntoQuad> quads)
+        {
+            var remove = quads.ToHashSet();
+            Replace(ks, graph.Value, Match(ks, graph: graph).Where(quad => !remove.Contains(quad)).ToList());
+        }
+
+        private void Replace(KsContext ks, string graphIri, IReadOnlyList<OntoQuad> quads) =>
+            _statements.ReplaceLayerAsync(ks.KnowledgeSystemId, "Vocabulary",
+                quads.Select(FromQuad).ToList()).GetAwaiter().GetResult();
+
+        private static RdfStatement FromQuad(OntoQuad quad) =>
+            new(FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object), quad.Graph is OntoNamedNode g ? g.Value : quad.Graph?.ToString());
+
+        private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
+        {
+            OntoNamedNode iri => new RdfIri(iri.Value),
+            Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
+            OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
+            _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+        };
+
+        private static OntoQuad ToQuad(RdfStatement statement)
+        {
+            var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("Vocabulary graph is required"));
+            return new OntoQuad(ToSubject(statement.Subject), new OntoNamedNode(statement.PredicateIri), ToObject(statement.Object), graph);
+        }
+
+        private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
+        {
+            RdfIri iri => new OntoNamedNode(iri.Value),
+            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+            _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
+        };
+
+        private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
+        {
+            RdfIri iri => new OntoNamedNode(iri.Value),
+            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+            RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
+                literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
+            _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+        };
     }
 
     private static List<OntoQuad> ConceptTriples(string iri, SkosConceptData data, string? createdAt, OntoNamedNode graph)

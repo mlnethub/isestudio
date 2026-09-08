@@ -34,23 +34,24 @@ public sealed class ExportRunner
 {
     private readonly ExportJobStore _jobs;
     private readonly ExportArtifactStore _artifacts;
-    private readonly StoreWrapper? _store;
+    private readonly RdfExportService _export;
     private readonly ReleaseArtifactStore? _releaseArtifacts;
     private readonly TimeProvider _clock;
 
     public ExportRunner(
         ExportJobStore jobs,
         ExportArtifactStore artifacts,
-        StoreWrapper? store,
+        RdfExportService export,
         ReleaseArtifactStore? releaseArtifacts,
         TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(jobs);
         ArgumentNullException.ThrowIfNull(artifacts);
+        ArgumentNullException.ThrowIfNull(export);
         ArgumentNullException.ThrowIfNull(clock);
         _jobs = jobs;
         _artifacts = artifacts;
-        _store = store;
+        _export = export;
         _releaseArtifacts = releaseArtifacts;
         _clock = clock;
     }
@@ -85,15 +86,6 @@ public sealed class ExportRunner
                 if (_releaseArtifacts is null)
                     throw new InvalidOperationException("Release artifact store is not available.");
             }
-            else if (_store is null)
-            {
-                // No Oxigraph (contract-test factory with no RDF root).
-                // Fail loudly so the operator can see the export couldn't
-                // produce shards; the row's error column surfaces the
-                // reason in the API response.
-                throw new InvalidOperationException("Graph store is not available.");
-            }
-
             var ksc = KsContext.FromEntity(ks);
             _artifacts.PrepareOutputDir(ks.PublicId);
 
@@ -115,13 +107,9 @@ public sealed class ExportRunner
                 else
                 {
                     var graphIri = ReleaseManager.GraphIriFor(ksc, LayerToRdf(layer));
-                    // Exclusive lease — slightly more conservative than the
-                    // Python `store.read_lock` (shared). MVP; brief doesn't
-                    // require concurrent-edit semantics.
-                    await using var capture = await _store!.CaptureAsync(
-                        graphIri, revertOnError: false, waitTimeout: TimeSpan.FromSeconds(60))
+                    nQuads = await _export.ExportAsync(
+                        ksc, LayerToRdf(layer), RdfExportFormat.NQuads, cancellationToken)
                         .ConfigureAwait(false);
-                    nQuads = _store.DumpNQuads(graphIri);
                 }
                 var entry = _artifacts.WriteShard(
                     ks.PublicId, layer, shardIndex: 0, nQuads);

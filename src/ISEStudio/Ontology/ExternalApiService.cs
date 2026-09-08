@@ -22,7 +22,7 @@ namespace ISEStudio.Ontology;
 public sealed class ExternalApiService
 {
     private readonly ISEStudioDbContext _db;
-    private readonly StoreWrapper? _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly OntologyViewBuilder _builder;
     private readonly ABoxManager _abox;
     private readonly SkosManager _skos;
@@ -30,14 +30,14 @@ public sealed class ExternalApiService
 
     public ExternalApiService(
         ISEStudioDbContext db,
-        StoreWrapper? store,
+        IRdfStatementRepository statements,
         OntologyViewBuilder builder,
         ABoxManager abox,
         SkosManager skos,
         RdfExportService export)
     {
         _db = db;
-        _store = store;
+        _statements = statements;
         _builder = builder;
         _abox = abox;
         _skos = skos;
@@ -124,7 +124,7 @@ public sealed class ExternalApiService
     /// <c>null</c> when the KS is unknown.
     /// </summary>
     public async Task<string?> ExportAsync(
-        string publicId, RdfFormat format, Actor actor, CancellationToken ct)
+        string publicId, RdfExportFormat format, Actor actor, CancellationToken ct)
     {
         var ks = await ResolveKsAsync(publicId, ct).ConfigureAwait(false);
         if (ks is null) return null;
@@ -133,6 +133,20 @@ public sealed class ExternalApiService
             .ConfigureAwait(false);
         return System.Text.Encoding.UTF8.GetString(bytes);
     }
+
+    [Obsolete("Use RdfExportFormat with the PostgreSQL exporter.")]
+    public Task<string?> ExportAsync(
+        string publicId, Oxigraph.RdfFormat format, Actor actor, CancellationToken ct) =>
+        ExportAsync(publicId, format switch
+        {
+            Oxigraph.RdfFormat.NQuads => RdfExportFormat.NQuads,
+            Oxigraph.RdfFormat.TriG => RdfExportFormat.TriG,
+            Oxigraph.RdfFormat.Turtle => RdfExportFormat.Turtle,
+            Oxigraph.RdfFormat.NTriples => RdfExportFormat.NTriples,
+            Oxigraph.RdfFormat.RdfXml => RdfExportFormat.RdfXml,
+            Oxigraph.RdfFormat.JsonLd => RdfExportFormat.JsonLd,
+            _ => throw new ArgumentOutOfRangeException(nameof(format)),
+        }, actor, ct);
 
     // ------------------------------------------------------------------
     // individual (GET /{public_id}/individual?iri=)
@@ -196,7 +210,9 @@ public sealed class ExternalApiService
     private async Task<(Dictionary<string, string> classLabels, Dictionary<string, string> propLabels)> LoadLabelsAsync(
         KnowledgeSystemEntity ks, CancellationToken ct)
     {
-        var view = await _builder.BuildFromStoreAsync(_store, ks.GraphIri, ct)
+        var statements = await _statements.ListAsync(ks.Id, "TBox", ct)
+            .ConfigureAwait(false);
+        var view = await _builder.BuildFromStatementsAsync(statements, ks.GraphIri, ct)
             .ConfigureAwait(false);
         var classLabels = view.Classes
             .ToDictionary(c => c.Iri, c => c.Label ?? c.Iri, StringComparer.Ordinal);

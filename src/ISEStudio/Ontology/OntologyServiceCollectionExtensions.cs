@@ -18,6 +18,9 @@ public static class OntologyServiceCollectionExtensions
 {
     public static IServiceCollection AddOntologyServices(this IServiceCollection services)
     {
+        services.AddScoped<IOntologyRepository, PostgresOntologyRepository>();
+        services.AddScoped<IRdfStatementRepository, PostgresRdfStatementRepository>();
+        services.AddScoped<OntologyEditor>();
         services.AddScoped<OntologyService>();
         services.AddScoped<StructureAgent>();
         // Slice 3 spec §5 D6: interface-keyed resolution for the Dovetail
@@ -63,13 +66,10 @@ public static class OntologyServiceCollectionExtensions
         // StoreWrapper. servingRoot sits under the same Storage:RdfRoot in
         // a "serving" sibling so published read-only stores never collide
         // with the workspace handle.
-        services.AddSingleton<ReleaseManager>(sp => new ReleaseManager(
-            sp.GetRequiredService<StoreWrapper>(),
-            sp.GetRequiredService<ReleaseArtifactStore>(),
-            System.IO.Path.Combine(
-                sp.GetRequiredService<IConfiguration>()["ISEStudio:Storage:RdfRoot"]
-                    ?? System.IO.Path.Combine(AppContext.BaseDirectory, "data", "rdf"),
-                "serving")));
+        services.AddScoped<ReleaseManager>(sp => new ReleaseManager(
+            sp.GetRequiredService<ISEStudio.Infrastructure.Persistence.ISEStudioDbContext>(),
+            sp.GetRequiredService<IRdfStatementRepository>(),
+            sp.GetRequiredService<ReleaseArtifactStore>()));
         // Stateless parser — same instance handles every concurrent
         // request (RdfImportParser holds no state). Scoped service
         // because it shares the request DbContext and the Oxigraph
@@ -83,7 +83,7 @@ public static class OntologyServiceCollectionExtensions
         // Singleton RDF exporter — depends only on the singleton
         // StoreWrapper and holds no state. Resolved by the dispatcher
         // for ontology.export (and re-used by future export arms).
-        services.AddSingleton<RdfExportService>();
+        services.AddScoped<RdfExportService>();
         // ReleaseService writes OntologyReleaseEntity rows (B9 create
         // draft); the dispatcher arm previously returned a Stage-1
         // placeholder so a "create draft" click persisted nothing.

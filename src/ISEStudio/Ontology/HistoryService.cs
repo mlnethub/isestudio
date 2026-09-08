@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text;
 using ISEStudio.Application.Conflicts;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Application.History;
@@ -8,6 +9,7 @@ using ISEStudio.Conflicts;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Knowledge;
+using Oxigraph;
 
 namespace ISEStudio.Ontology;
 
@@ -15,15 +17,15 @@ public sealed class HistoryService
 {
     private readonly ISEStudioDbContext _db;
     private readonly KnowledgeSystemAccessService _access;
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly AuditLogService _audit;
     private readonly OntologyService _ontology;
     private readonly ConflictService _conflicts;
     private readonly KnowledgeStatsService _stats;
 
-    public HistoryService(ISEStudioDbContext db, KnowledgeSystemAccessService access, StoreWrapper store,
+    public HistoryService(ISEStudioDbContext db, KnowledgeSystemAccessService access, IRdfStatementRepository statements,
         AuditLogService audit, OntologyService ontology, ConflictService conflicts, KnowledgeStatsService stats)
-    { _db = db; _access = access; _store = store; _audit = audit; _ontology = ontology; _conflicts = conflicts; _stats = stats; }
+    { _db = db; _access = access; _statements = statements; _audit = audit; _ontology = ontology; _conflicts = conflicts; _stats = stats; }
 
     public async Task<HistoryResponseOut?> ListHistoryAsync(
         Guid ksId, Actor actor, string? category, string? q, int limit, int offset, CancellationToken ct)
@@ -101,32 +103,20 @@ public sealed class HistoryService
 
         foreach (var g in graphs)
         {
-            var gName = new Oxigraph.NamedNode(g);
-            await using var capture = await _store.CaptureAsync(gName, revertOnError: false, cancellationToken: ct).ConfigureAwait(false);
-            byte[] pre;
-            byte[] post = Array.Empty<byte>();
-            byte[] added;
-            byte[] removed;
-            try
+            var layer = g == ks.GraphIri ? "TBox" : "ABox";
+            var all = await _statements.ListAsync(ks.Id, layer, ct).ConfigureAwait(false);
+            var before = all.Where(statement => statement.GraphIri == g).ToHashSet();
+            var after = before.ToHashSet();
+            foreach (var ev in events)
             {
-                pre = _store.DumpNQuads(gName);
-                foreach (var ev in events)
-                {
-                    if ((ev.Graph ?? ks.GraphIri) != g) continue;
-                    if (ev.Added is not null && ev.Added.Length > 0)
-                        _store.RemoveQuads(gName, StoreWrapper.ParseNQuads(ev.Added));
-                    if (ev.Removed is not null && ev.Removed.Length > 0)
-                        _store.AddQuads(gName, StoreWrapper.ParseNQuads(ev.Removed));
-                    undone++;
-                }
-                post = _store.DumpNQuads(gName);
+                if ((ev.Graph ?? ks.GraphIri) != g) continue;
+                foreach (var statement in ParseStatements(ev.Added, g)) after.Remove(statement);
+                foreach (var statement in ParseStatements(ev.Removed, g)) after.Add(statement);
+                undone++;
             }
-            catch
-            {
-                capture.MarkError();  // 回滚本图的局部写入到 capture 快照
-                throw;
-            }
-            (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+            var replacement = all.Where(statement => statement.GraphIri != g).Concat(after).ToList();
+            await _statements.ReplaceLayerAsync(ks.Id, layer, replacement, ct).ConfigureAwait(false);
+            var (added, removed) = Diff(before, after);
             if (added.Length == 0 && removed.Length == 0) continue;
             if (g == ks.GraphIri) tboxChanged = true;
             await _audit.RecordAsync(ksId, user, "system.rollback", summary, detail, g, added, removed, rbGid, ct).ConfigureAwait(false);
@@ -141,6 +131,39 @@ public sealed class HistoryService
         var view = await _ontology.GetViewAsync(ksId, actor, ct).ConfigureAwait(false);
         return new RollbackResponseOut(undone, view, openConflicts);
     }
+
+    private static IReadOnlyList<RdfStatement> ParseStatements(byte[]? bytes, string graphIri)
+    {
+        if (bytes is null || bytes.Length == 0) return Array.Empty<RdfStatement>();
+        using var store = new Store();
+        store.Load(Encoding.UTF8.GetString(bytes), RdfFormat.NQuads);
+        return store.Match().Select(quad => new RdfStatement(
+            FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object), graphIri)).ToList();
+    }
+
+    private static RdfTerm FromTerm(ITerm term) => term switch
+    {
+        NamedNode iri => new RdfIri(iri.Value),
+        BlankNode blank => new RdfBlankNode(blank.Value),
+        Literal literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
+        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+    };
+
+    private static (byte[] Added, byte[] Removed) Diff(
+        IReadOnlySet<RdfStatement> before, IReadOnlySet<RdfStatement> after) =>
+        (Serialize(after.Except(before)), Serialize(before.Except(after)));
+
+    private static byte[] Serialize(IEnumerable<RdfStatement> statements) =>
+        Encoding.UTF8.GetBytes(string.Join("\n", statements.Select(statement =>
+            $"{Term(statement.Subject)} <{statement.PredicateIri}> {Term(statement.Object)} <{statement.GraphIri}> .")) + "\n");
+
+    private static string Term(RdfTerm term) => term switch
+    {
+        RdfIri iri => $"<{iri.Value}>",
+        RdfBlankNode blank => $"_:{blank.Id}",
+        RdfLiteral literal => $"\"{literal.Value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"",
+        _ => throw new InvalidOperationException("Unsupported RDF term."),
+    };
 
     private async Task<(UserEntity? User, KnowledgeSystemEntity? Ks)> ResolveUserAndKsAsync(
         Guid ksId, Actor actor, CancellationToken ct)

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Api;
 using ISEStudio.Application.Foundation;
@@ -8,7 +9,6 @@ using ISEStudio.Authorization;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.EntityResolution;
 
@@ -27,22 +27,22 @@ public sealed class ResolutionService
     private readonly KnowledgeSystemAccessService _access;
     private readonly AuditLogService _audit;
     private readonly ABoxManager? _abox;
-    private readonly StoreWrapper? _store;
+    private readonly IRdfStatementRepository _statements;
 
     public ResolutionService(
         ISEStudioDbContext db,
         TimeProvider clock,
         KnowledgeSystemAccessService access,
         AuditLogService audit,
-        ABoxManager? abox = null,
-        StoreWrapper? store = null)
+        IRdfStatementRepository statements,
+        ABoxManager? abox = null)
     {
         _db = db;
         _clock = clock;
         _access = access;
         _audit = audit;
         _abox = abox;
-        _store = store;
+        _statements = statements;
     }
 
     // ---- read: queue ----
@@ -125,8 +125,8 @@ public sealed class ResolutionService
     /// <item><c>action="new"</c> mints a fresh individual via <see cref="ABoxManager.CreateIndividual"/>; row status → "new".</item>
     /// </list>
     /// Writes audit row with action <c>abox.resolve</c>; for <c>new</c>, the audit
-    /// <c>added</c> blob carries the gzipped N-Triples captured by
-    /// <see cref="StoreWrapper.CaptureAsync"/>; <c>match</c> emits empty diffs.
+    /// <c>added</c> blob carries the statement diff;
+    /// <c>match</c> emits empty diffs.
     /// </summary>
     public async Task<ResolutionDecisionOut?> ResolveAsync(
         Guid ksId, Guid rowId, string action, string? individualIri,
@@ -160,26 +160,13 @@ public sealed class ResolutionService
             if (string.IsNullOrWhiteSpace(row.ClassIri))
                 throw new ValidationException("class_iri missing on row; cannot mint new individual.");
 
-            if (_abox is not null && _store is not null)
+            if (_abox is not null)
             {
                 var ctx = KsContext.FromEntity(ks);
-                var aboxGraph = new OntoNamedNode(ctx.ABoxGraph);
-                await using var capture = await _store.CaptureAsync(
-                    aboxGraph, revertOnError: false, cancellationToken: ct).ConfigureAwait(false);
-                byte[] pre;
-                byte[] post;
-                try
-                {
-                    pre = _store.DumpNQuads(aboxGraph);
-                    mintedIri = _abox.CreateIndividual(ctx, row.SurfaceForm, row.ClassIri!, row.SurfaceForm);
-                    post = _store.DumpNQuads(aboxGraph);
-                }
-                catch
-                {
-                    capture.MarkError();
-                    throw;
-                }
-                (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+                var pre = await _statements.ListAsync(ks.Id, "ABox", ct).ConfigureAwait(false);
+                mintedIri = _abox.CreateIndividual(ctx, row.SurfaceForm, row.ClassIri!, row.SurfaceForm);
+                var post = await _statements.ListAsync(ks.Id, "ABox", ct).ConfigureAwait(false);
+                (added, removed) = Diff(pre, post);
             }
             else
             {
@@ -324,6 +311,35 @@ public sealed class ResolutionService
         return (user, ks);
     }
 
+    private static (byte[] Added, byte[] Removed) Diff(
+        IReadOnlyList<RdfStatement> before,
+        IReadOnlyList<RdfStatement> after)
+    {
+        return (Serialize(after.Except(before)), Serialize(before.Except(after)));
+    }
+
+    private static byte[] Serialize(IEnumerable<RdfStatement> statements)
+    {
+        var lines = statements.Select(statement =>
+        {
+            var subject = statement.Subject switch
+            {
+                RdfIri iri => $"<{iri.Value}>",
+                RdfBlankNode blank => $"_:{blank.Id}",
+                _ => throw new InvalidOperationException("Unsupported RDF subject."),
+            };
+            var obj = statement.Object switch
+            {
+                RdfIri iri => $"<{iri.Value}>",
+                RdfBlankNode blank => $"_:{blank.Id}",
+                RdfLiteral literal => $"\"{literal.Value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"",
+                _ => throw new InvalidOperationException("Unsupported RDF object."),
+            };
+            return $"{subject} <{statement.PredicateIri}> {obj} <{statement.GraphIri}> .";
+        });
+        return Encoding.UTF8.GetBytes(string.Join("\n", lines) + "\n");
+    }
+
     private static Dictionary<string, object?> ReadContextDict(EntityResolutionEntity row)
     {
         if (row.Context is null) return new(StringComparer.Ordinal);
@@ -343,7 +359,7 @@ public sealed class ResolutionService
             r.Id,
             r.SurfaceForm,
             r.ClassIri,
-            null, // class_label: requires StoreWrapper rdfs:label lookup; MVP returns null
+            null, // class_label lookup is not part of the resolution queue query
             r.Confidence,
             candidates,
             r.SourceChunkId?.ToString("N"),

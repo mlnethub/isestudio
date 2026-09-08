@@ -27,7 +27,7 @@ public sealed class CandidateGatherStep(DuplicateJudge? judge)
             return new CandidateList(Array.Empty<CandidatePair>());
         }
 
-        var labels = ConflictDetection.ReadClassLabels(input.Store, input.GraphIri);
+        var labels = ConflictDetection.ReadClassLabels(input.Quads, input.GraphIri);
         var pairs = DuplicateJudge.StringCandidates(labels);
         return await Task.FromResult(new CandidateList(
             pairs.Select(p => new CandidatePair(p.IriA, p.IriB, Cosine: null)).ToList())).ConfigureAwait(false);

@@ -13,10 +13,9 @@ namespace ISEStudio.Ontology;
 /// scales independently of the TBox schema.
 /// </summary>
 /// <remarks>
-/// <para>Mutation methods are synchronous wrappers around <see cref="StoreWrapper"/>
-/// primitives; callers that want atomic revert on failure must wrap the call
-/// in a <see cref="StoreWrapper.CaptureAsync(string, bool, TimeSpan?, CancellationToken)"/>
-/// block (or pass <c>revertOnError:true</c> to a nested capture).</para>
+/// <para>Mutation methods are synchronous wrappers around the PostgreSQL
+/// statement repository; callers that need atomicity should perform the
+/// operation within the surrounding database transaction.</para>
 /// <para>IRIs are minted from <see cref="KsContext.BaseIri"/> with a uuid4
 /// suffix; the caller-supplied "individual IRI" argument is treated as a
 /// label / display hint and is never echoed back as the IRI, matching the
@@ -24,16 +23,12 @@ namespace ISEStudio.Ontology;
 /// </remarks>
 public sealed class ABoxManager
 {
-    private readonly StoreWrapper? _store;
+    private readonly IABoxGraphStore _store;
 
-    // The store is optional so the contract-test factory (which registers
-    // a null StoreWrapper when no RocksDB root is provisioned) can still
-    // resolve this service. Read methods return empty results and write
-    // methods no-op when the store is null; the public contract shape is
-    // preserved so the HTTP endpoints respond cleanly.
-    public ABoxManager(StoreWrapper? store)
+    public ABoxManager(IRdfStatementRepository statements)
     {
-        _store = store;
+        ArgumentNullException.ThrowIfNull(statements);
+        _store = new PostgresABoxGraphStore(statements);
     }
 
     // ------------------------------------------------------------------
@@ -49,6 +44,7 @@ public sealed class ABoxManager
     /// </summary>
     public string CreateIndividual(KsContext ks, string individualIri, string classIri, string label)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(individualIri);
         ArgumentException.ThrowIfNullOrEmpty(classIri);
@@ -93,6 +89,7 @@ public sealed class ABoxManager
     /// </summary>
     public string CreateIndividual(KsContext ks, string individualIri, string classIri)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(individualIri);
         ArgumentException.ThrowIfNullOrEmpty(classIri);
@@ -122,6 +119,7 @@ public sealed class ABoxManager
     /// <summary>Remove every quad whose subject is <paramref name="iri"/> in the ABox graph.</summary>
     public int DeleteIndividual(KsContext ks, string iri)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(iri);
 
@@ -141,6 +139,7 @@ public sealed class ABoxManager
     /// <summary>Add <c>iri rdf:type classIri</c> to the ABox graph.</summary>
     public void AddType(KsContext ks, string iri, string classIri)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(iri);
         ArgumentException.ThrowIfNullOrEmpty(classIri);
@@ -165,6 +164,7 @@ public sealed class ABoxManager
     /// <summary>Remove the <c>iri rdf:type classIri</c> triple from the ABox graph.</summary>
     public void RemoveType(KsContext ks, string iri, string classIri)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(iri);
         ArgumentException.ThrowIfNullOrEmpty(classIri);
@@ -198,6 +198,7 @@ public sealed class ABoxManager
     /// </summary>
     public bool AddObjectAssertion(KsContext ks, string subject, string property, string target)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(subject);
         ArgumentException.ThrowIfNullOrEmpty(property);
@@ -224,6 +225,7 @@ public sealed class ABoxManager
     /// <summary>Remove an object-property assertion.</summary>
     public void RemoveObjectAssertion(KsContext ks, string subject, string property, string target)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(subject);
         ArgumentException.ThrowIfNullOrEmpty(property);
@@ -248,6 +250,7 @@ public sealed class ABoxManager
     /// </summary>
     public bool AddDataAssertion(KsContext ks, string subject, string property, string value, string? datatype)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(subject);
         ArgumentException.ThrowIfNullOrEmpty(property);
@@ -287,6 +290,7 @@ public sealed class ABoxManager
     /// <summary>Remove a data-property assertion.</summary>
     public void RemoveDataAssertion(KsContext ks, string subject, string property, string value, string? datatype)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(subject);
         ArgumentException.ThrowIfNullOrEmpty(property);
@@ -323,7 +327,7 @@ public sealed class ABoxManager
     public IReadOnlyList<OntoQuad> All(KsContext ks) =>
         _store is null
             ? Array.Empty<OntoQuad>()
-            : _store.Match(graph: new OntoNamedNode(ks.ABoxGraph));
+            : BindAndMatch(ks);
 
     /// <summary>
     /// A flat <c>iri -&gt; label</c> map for every individual in the ABox
@@ -347,8 +351,7 @@ public sealed class ABoxManager
 
     /// <summary>Whether any triple exists whose subject is <paramref name="iri"/>.</summary>
     public bool Exists(KsContext ks, string iri) =>
-        _store is not null
-            && _store.Match(subjectIri: iri, graphIri: ks.ABoxGraph).Count > 0;
+        (_store is not null && BindAndMatch(ks, subjectIri: iri).Count > 0);
 
     /// <summary>
     /// Returns every individual IRI in the ABox graph — defined as every
@@ -524,6 +527,7 @@ public sealed class ABoxManager
         IReadOnlyDictionary<string, string> classLabels,
         IReadOnlyDictionary<string, string> propLabels)
     {
+        Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(iri);
         ArgumentNullException.ThrowIfNull(classLabels);
@@ -590,6 +594,22 @@ public sealed class ABoxManager
             DataAssertions: dataAssertions);
     }
 
+    private void Bind(KsContext ks)
+    {
+        ArgumentNullException.ThrowIfNull(ks);
+        _store?.Bind(ks.KnowledgeSystemId, ks.ABoxGraph);
+    }
+
+    private List<OntoQuad> BindAndMatch(
+        KsContext ks,
+        string? subjectIri = null,
+        string? predicateIri = null,
+        string? objectIri = null) 
+    {
+        Bind(ks);
+        return _store!.Match(subjectIri, predicateIri, objectIri, ks.ABoxGraph);
+    }
+
     /// <summary>
     /// Compute the local-name fragment of an IRI — the substring after
     /// the last <c>#</c> or last <c>/</c>. Mirrors the Python
@@ -613,4 +633,76 @@ public sealed class ABoxManager
         ArgumentException.ThrowIfNullOrEmpty(baseIri);
         return $"{baseIri}ind-{Guid.NewGuid().ToString("N")[..12]}";
     }
+
+    private interface IABoxGraphStore
+    {
+        void Bind(Guid knowledgeSystemId, string graphIri);
+        List<OntoQuad> Match(string? subjectIri = null, string? predicateIri = null,
+            string? objectIri = null, string? graphIri = null, OntoNamedNode? graph = null);
+        void AddQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads);
+        void RemoveQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads);
+    }
+
+    private sealed class PostgresABoxGraphStore : IABoxGraphStore
+    {
+        private readonly IRdfStatementRepository _statements;
+        private Guid _knowledgeSystemId;
+        private string _graphIri = string.Empty;
+        public PostgresABoxGraphStore(IRdfStatementRepository statements) => _statements = statements;
+        public void Bind(Guid knowledgeSystemId, string graphIri)
+        {
+            _knowledgeSystemId = knowledgeSystemId;
+            _graphIri = graphIri;
+        }
+        public List<OntoQuad> Match(string? subjectIri = null, string? predicateIri = null,
+            string? objectIri = null, string? graphIri = null, OntoNamedNode? graph = null)
+        {
+            var selectedGraph = graphIri ?? graph?.Value ?? _graphIri;
+            return _statements.ListAsync(_knowledgeSystemId, "ABox").GetAwaiter().GetResult()
+                .Where(statement => statement.GraphIri == selectedGraph)
+                .Where(statement => subjectIri is null || statement.Subject is RdfIri iri && iri.Value == subjectIri)
+                .Where(statement => predicateIri is null || statement.PredicateIri == predicateIri)
+                .Where(statement => objectIri is null || statement.Object is RdfIri iri && iri.Value == objectIri)
+                .Select(ToQuad).ToList();
+        }
+        public void AddQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads) =>
+            Replace(graph.Value, Match(graph: graph).Concat(quads).Distinct().ToList());
+        public void RemoveQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads)
+        {
+            var remove = quads.ToHashSet();
+            Replace(graph.Value, Match(graph: graph).Where(quad => !remove.Contains(quad)).ToList());
+        }
+        private void Replace(string graphIri, IReadOnlyList<OntoQuad> quads) =>
+            _statements.ReplaceLayerAsync(_knowledgeSystemId, "ABox", quads.Select(FromQuad).ToList())
+                .GetAwaiter().GetResult();
+        private static RdfStatement FromQuad(OntoQuad quad) =>
+            new(FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object), quad.Graph is OntoNamedNode g ? g.Value : quad.Graph?.ToString());
+        private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
+        {
+            OntoNamedNode iri => new RdfIri(iri.Value),
+            Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
+            OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
+            _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+        };
+        private static OntoQuad ToQuad(RdfStatement statement)
+        {
+            var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("ABox graph is required"));
+            return new OntoQuad(ToSubject(statement.Subject), new OntoNamedNode(statement.PredicateIri), ToObject(statement.Object), graph);
+        }
+        private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
+        {
+            RdfIri iri => new OntoNamedNode(iri.Value),
+            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+            _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
+        };
+        private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
+        {
+            RdfIri iri => new OntoNamedNode(iri.Value),
+            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+            RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
+                literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
+            _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+        };
+    }
+
 }

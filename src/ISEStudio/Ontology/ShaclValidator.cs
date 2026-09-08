@@ -65,19 +65,24 @@ public sealed record ShaclReport(
 /// </remarks>
 public sealed class ShaclValidator
 {
-    private readonly StoreWrapper _shapeStore;
-    private readonly StoreWrapper _dataStore;
+    private readonly IReadOnlyList<Oxigraph.Quad> _shapeQuads;
+    private readonly IReadOnlyList<Oxigraph.Quad> _dataQuads;
 
-    /// <param name="shapeStore">Store containing the <c>sh:NodeShape</c>
-    /// definitions. Typically loaded from <c>Shapes/tbox-shapes.ttl</c>.</param>
-    /// <param name="dataStore">Store containing the data graph to validate.</param>
-    public ShaclValidator(StoreWrapper shapeStore, StoreWrapper dataStore)
+    public ShaclValidator(IReadOnlyList<Oxigraph.Quad> shapeQuads,
+        IReadOnlyList<Oxigraph.Quad> dataQuads)
     {
-        ArgumentNullException.ThrowIfNull(shapeStore);
-        ArgumentNullException.ThrowIfNull(dataStore);
-        _shapeStore = shapeStore;
-        _dataStore = dataStore;
+        _shapeQuads = shapeQuads ?? throw new ArgumentNullException(nameof(shapeQuads));
+        _dataQuads = dataQuads ?? throw new ArgumentNullException(nameof(dataQuads));
     }
+
+    private static IEnumerable<Oxigraph.Quad> Match(
+        IEnumerable<Oxigraph.Quad> quads,
+        string? graphIri = null,
+        OntoNamedNode? subject = null,
+        OntoNamedNode? predicate = null) =>
+        quads.Where(q => graphIri is null || (q.Graph is OntoNamedNode gn && gn.Value == graphIri))
+            .Where(q => subject is null || q.Subject.Equals(subject))
+            .Where(q => predicate is null || q.Predicate.Equals(predicate));
 
     /// <summary>
     /// Validate the data in <paramref name="dataGraphIri"/> against every
@@ -137,7 +142,7 @@ public sealed class ShaclValidator
         // so Oxigraph treats `graph == null` as a wildcard across all named
         // graphs — not as a filter on the default graph.
         var shPredicate = (OntoNamedNode?)new OntoNamedNode(ShaclVocab.TargetClass.Value);
-        foreach (var q in _shapeStore.Match(predicate: shPredicate))
+        foreach (var q in Match(_shapeQuads, predicate: shPredicate))
         {
             if (q.Subject is OntoNamedNode s && q.Object is OntoNamedNode t)
             {
@@ -145,7 +150,7 @@ public sealed class ShaclValidator
             }
         }
         var rdfTypePredicate = (OntoNamedNode?)new OntoNamedNode(Vocabulary.RdfType.Value);
-        foreach (var q in _shapeStore.Match(predicate: rdfTypePredicate))
+        foreach (var q in Match(_shapeQuads, predicate: rdfTypePredicate))
         {
             if (q.Subject is OntoNamedNode s
                 && q.Object is OntoNamedNode t
@@ -164,7 +169,7 @@ public sealed class ShaclValidator
         {
             var targets = new List<string>();
             var propertyShapes = new List<OntoTerm>();
-            foreach (var q in _shapeStore.Match(
+            foreach (var q in Match(_shapeQuads,
                 subject: (OntoNamedNode?)new OntoNamedNode(shapeIri)))
             {
                 if (q.Predicate.Value == ShaclVocab.TargetClass.Value && q.Object is OntoNamedNode t)
@@ -194,7 +199,7 @@ public sealed class ShaclValidator
         string? nodeKind = null;
         string? cls = null;
         string? message = null;
-        foreach (var q in _shapeStore.MatchSubject(psTerm))
+        foreach (var q in _shapeQuads.Where(q => q.Subject.Equals(psTerm)))
         {
             switch (q.Predicate.Value)
             {
@@ -232,7 +237,7 @@ public sealed class ShaclValidator
 
     private IEnumerable<ShaclViolation> ValidateShape(ShapeDef shape, string targetClass, string dataGraphIri)
     {
-        var data = _dataStore.Match(graphIri: dataGraphIri);
+        var data = Match(_dataQuads, graphIri: dataGraphIri);
         var focusNodes = new HashSet<string>(StringComparer.Ordinal);
         foreach (var q in data)
         {
@@ -256,7 +261,9 @@ public sealed class ShaclValidator
 
     private IEnumerable<ShaclViolation> ValidateProperty(string focus, PropertyShapeDef prop, string dataGraphIri)
     {
-        var values = _dataStore.Match(subjectIri: focus, predicateIri: prop.PathIri, graphIri: dataGraphIri);
+        var values = _dataQuads.Where(q => (q.Graph is OntoNamedNode gn && gn.Value == dataGraphIri)
+            && q.Subject is OntoNamedNode subject && subject.Value == focus
+            && q.Predicate.Value == prop.PathIri).ToList();
         if (prop.MinCount is int minCount && values.Count < minCount)
         {
             yield return new ShaclViolation(
@@ -303,8 +310,9 @@ public sealed class ShaclValidator
             if (prop.ClassIri is { } cls && kind == "iri")
             {
                 // Verify the value has an rdf:type that includes cls (transitively not enforced).
-                var types = _dataStore.Match(subjectIri: ((OntoNamedNode)q.Object).Value,
-                    predicateIri: Vocabulary.RdfType.Value, graphIri: dataGraphIri);
+                var types = _dataQuads.Where(tq => (tq.Graph is OntoNamedNode gn && gn.Value == dataGraphIri)
+                    && tq.Subject is OntoNamedNode subject && subject.Value == ((OntoNamedNode)q.Object).Value
+                    && tq.Predicate.Value == Vocabulary.RdfType.Value).ToList();
                 var hasClass = types.Any(tq => tq.Object is OntoNamedNode tn && tn.Value == cls);
                 if (!hasClass)
                 {

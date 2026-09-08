@@ -9,6 +9,7 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Extraction;
 using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -40,27 +41,21 @@ namespace ISEStudio.Tests.Conflicts;
 public sealed class ConflictAgentTests : IDisposable
 {
     private readonly SqliteContextFactory _dbFactory = new();
-    private readonly string _storePath;
-    private readonly StoreWrapper _store;
+    private readonly PostgresRdfFixture _rdf = new();
     private readonly FakeChat _chat = new();
     private readonly FakeChatClientFactory _chatFactory = new();
 
     public ConflictAgentTests()
     {
-        _storePath = Path.Combine(Path.GetTempPath(), "isestudio-conflict-agent-" + Guid.NewGuid().ToString("N"));
-        _store = new StoreWrapper(_storePath);
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
         _chatFactory.UseClient(_chat);
     }
 
     public void Dispose()
     {
         _chatFactory.Reset();
-        _store.Dispose();
+        _rdf.DisposeAsync().GetAwaiter().GetResult();
         _dbFactory.Dispose();
-        if (Directory.Exists(_storePath))
-        {
-            Directory.Delete(_storePath, recursive: true);
-        }
     }
 
     // ------------------------------------------------------------------
@@ -318,7 +313,7 @@ public sealed class ConflictAgentTests : IDisposable
         var agent = new ConflictAgent(
             _chatFactory,
             _dbFactory.CreateDbContext(),
-            _store,
+            _rdf.Statements,
             options: Options.Create(new ISEStudioOptions { SystemLanguage = "zh-CN" }));
         Assert.Contains("冲突", agent.ResolveSystemPrompt());
     }
@@ -367,7 +362,7 @@ public sealed class ConflictAgentTests : IDisposable
         Assert.NotNull(row.ResolvedAt);
 
         // The editor really ran: the TBox graph gained the new class.
-        Assert.NotEmpty(_store.Match(
+        Assert.NotEmpty(_rdf.TBox.Match(
             subjectIri: $"{baseIri}AutoClass", graphIri: graphIri));
 
         // One audit row: agent actor, conflict.resolve action, agent flag,
@@ -430,7 +425,7 @@ public sealed class ConflictAgentTests : IDisposable
         Assert.True(row.Payload!.RootElement.TryGetProperty("recommendation", out _));
         Assert.Empty(await verify.AuditEvents.Where(e => e.KnowledgeSystemId == ksId).ToListAsync());
         // The graph is untouched too.
-        Assert.Empty(_store.Match(subjectIri: $"{graphIri}#Nope", graphIri: graphIri));
+        Assert.Empty(_rdf.TBox.Match(subjectIri: $"{graphIri}#Nope", graphIri: graphIri));
     }
 
     [Fact]
@@ -473,7 +468,7 @@ public sealed class ConflictAgentTests : IDisposable
         var aboxGraph = new OntoNamedNode(aboxIri);
         var alice = new OntoNamedNode($"{baseIri}alice");
         var pump = new OntoNamedNode($"{baseIri}Pump");
-        _store.AddQuads(aboxGraph, new[]
+        _rdf.ABox.AddQuads(aboxGraph, new[]
         {
             new OntoQuad(alice, Vocabulary.RdfType, pump, aboxGraph),
         });
@@ -492,7 +487,7 @@ public sealed class ConflictAgentTests : IDisposable
         Assert.Equal("resolved", row.Status);
 
         // The individual lost its only type → removed with its assertions.
-        Assert.Empty(_store.Match(graph: aboxGraph));
+        Assert.Empty(_rdf.ABox.Match(graphIri: aboxIri));
 
         // TBox + ABox audit rows share one GroupId; the ABox row names the
         // instance graph and omits the reason (Python parity).
@@ -554,7 +549,7 @@ public sealed class ConflictAgentTests : IDisposable
         var pump = new OntoNamedNode($"{baseIri}Pump");
         // SchemaBuilder.BuildMutation normalises "Centrifugal Pump" → PascalCase local "CentrifugalPump".
         var cp = new OntoNamedNode($"{baseIri}CentrifugalPump");
-        _store.AddQuads(aboxGraph, new[]
+        _rdf.ABox.AddQuads(aboxGraph, new[]
         {
             new OntoQuad(alice, Vocabulary.RdfType, cp, aboxGraph),
         });
@@ -579,11 +574,11 @@ public sealed class ConflictAgentTests : IDisposable
         Assert.Equal("resolved", row.Status);
 
         // The source class is gone (its rdf:type + rdfs:label dropped).
-        Assert.Empty(_store.Match(subjectIri: $"{baseIri}CentrifugalPump", graphIri: graphIri));
+        Assert.Empty(_rdf.TBox.Match(subjectIri: $"{baseIri}CentrifugalPump", graphIri: graphIri));
 
         // alice is now typed as Pump, no longer as CentrifugalPump.
-        Assert.Empty(_store.Match(objectIri: cp.Value, graphIri: aboxGraph.Value));
-        Assert.Single(_store.Match(objectIri: pump.Value, graphIri: aboxGraph.Value));
+        Assert.Empty(_rdf.ABox.Match(objectIri: cp.Value, graphIri: aboxGraph.Value));
+        Assert.Single(_rdf.ABox.Match(objectIri: pump.Value, graphIri: aboxGraph.Value));
 
         // One audit row carrying the agent flag + merge reason (the
         // TBox row — the ABox cascade's audit row, when present, shares
@@ -618,7 +613,7 @@ public sealed class ConflictAgentTests : IDisposable
 
         await using var agentDb = _dbFactory.CreateDbContext();
         var agent = new ConflictAgent(
-            _chatFactory, agentDb, _store, jobs, Options.Create(options));
+            _chatFactory, agentDb, _rdf.Statements, jobs, Options.Create(options));
         return await agent.TriageAsync(ksId, CancellationToken.None);
     }
 
@@ -639,7 +634,7 @@ public sealed class ConflictAgentTests : IDisposable
         db.Providers.Add(provider);
         var ks = new KnowledgeSystemEntity
         {
-            Id = Guid.NewGuid(),
+            Id = _rdf.KnowledgeSystemId,
             Name = $"conflict-agent-{tag}",
             Description = "Seed KS for ConflictAgent tests.",
             GraphIri = $"http://goodcrew.local/ks/{tag}",
@@ -747,6 +742,6 @@ public sealed class ConflictAgentTests : IDisposable
                 new AxiomMutation("disjoint", A: "Pump", B: "Station"),
             });
         var quads = SchemaBuilder.BuildMutation(baseIri, mutation, graphIri);
-        _store.AddQuads(new OntoNamedNode(graphIri), quads);
+        _rdf.TBox.AddQuads(new OntoNamedNode(graphIri), quads);
     }
 }

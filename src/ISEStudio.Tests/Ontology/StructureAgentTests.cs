@@ -9,6 +9,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Tests.Extraction;
 using ISEStudio.Tests.Persistence;
 using OntoNamedNode = Oxigraph.NamedNode;
+using OntoQuad = Oxigraph.Quad;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -32,27 +33,19 @@ namespace ISEStudio.Tests.Ontology;
 public sealed class StructureAgentTests : IDisposable
 {
     private readonly SqliteContextFactory _dbFactory = new();
-    private readonly string _storePath;
-    private readonly StoreWrapper _store;
+    private readonly TestRdfStatementRepository _statements = new();
     private readonly FakeChat _chat = new();
     private readonly FakeChatClientFactory _chatFactory = new();
 
     public StructureAgentTests()
     {
-        _storePath = Path.Combine(Path.GetTempPath(), "isestudio-structure-agent-" + Guid.NewGuid().ToString("N"));
-        _store = new StoreWrapper(_storePath);
         _chatFactory.UseClient(_chat);
     }
 
     public void Dispose()
     {
         _chatFactory.Reset();
-        _store.Dispose();
         _dbFactory.Dispose();
-        if (Directory.Exists(_storePath))
-        {
-            Directory.Delete(_storePath, recursive: true);
-        }
     }
 
     // ------------------------------------------------------------------
@@ -77,7 +70,7 @@ public sealed class StructureAgentTests : IDisposable
         Assert.Equal(new[] { "Centrifugal Pump ⊑ Pump (auto 0.90)" }, log);
         Assert.Equal(1, _chat.CallCount);
 
-        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/existing", _store);
+        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/existing", await _statements.ListAsync(ksId, "TBox"));
         var pump = view.Classes.Single(c => c.Label == "Pump");
         var centrifugal = view.Classes.Single(c => c.Label == "Centrifugal Pump");
         Assert.Contains(pump.Iri, centrifugal.Superclasses);
@@ -112,7 +105,7 @@ public sealed class StructureAgentTests : IDisposable
 
         Assert.Equal(new[] { "Centrifugal Pump ⊑ Pump (new) (auto 0.90)" }, log);
 
-        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/new-parent", _store);
+        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/new-parent", await _statements.ListAsync(ksId, "TBox"));
         var pump = view.Classes.Single(c => c.Label == "Pump");
         var centrifugal = view.Classes.Single(c => c.Label == "Centrifugal Pump");
         Assert.Contains(pump.Iri, centrifugal.Superclasses);
@@ -139,7 +132,7 @@ public sealed class StructureAgentTests : IDisposable
 
         Assert.Equal(new[] { "Centrifugal Pump: agent suggested \"Pump\" (0.50) — left" }, log);
 
-        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/low-conf", _store);
+        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/low-conf", await _statements.ListAsync(ksId, "TBox"));
         Assert.Empty(view.Classes.Single(c => c.Label == "Centrifugal Pump").Superclasses);
         await using var verify = _dbFactory.CreateDbContext();
         Assert.Empty(await verify.AuditEvents.Where(a => a.KnowledgeSystemId == ksId).ToListAsync());
@@ -343,7 +336,7 @@ public sealed class StructureAgentTests : IDisposable
         Assert.Empty(log);
         await using var verify = _dbFactory.CreateDbContext();
         Assert.Empty(await verify.AuditEvents.Where(a => a.KnowledgeSystemId == ksId).ToListAsync());
-        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/invented-existing", _store);
+        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/invented-existing", await _statements.ListAsync(ksId, "TBox"));
         Assert.Single(view.Classes);
     }
 
@@ -369,7 +362,7 @@ public sealed class StructureAgentTests : IDisposable
         Assert.Contains("Centrifugal Pump ⊑ Pump (auto 0.90)", log[1]);
 
         // Exactly one Pump class was created; both attaches target its IRI.
-        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/index-reuse", _store);
+        var view = SchemaBuilder.BuildView("http://goodcrew.local/ks/index-reuse", await _statements.ListAsync(ksId, "TBox"));
         var pumps = view.Classes.Where(c => c.Label == "Pump").ToList();
         Assert.Single(pumps);
         var pumpIri = pumps[0].Iri;
@@ -429,7 +422,7 @@ public sealed class StructureAgentTests : IDisposable
         var agent = new StructureAgent(
             _chatFactory,
             db,
-            _store,
+            _statements,
             options: Options.Create(new ISEStudioOptions { SystemLanguage = "zh-CN" }));
         Assert.Contains("未连接", agent.ResolveSystemPrompt());
     }
@@ -463,7 +456,7 @@ public sealed class StructureAgentTests : IDisposable
     {
         await using var agentDb = _dbFactory.CreateDbContext();
         var agent = new StructureAgent(
-            _chatFactory, agentDb, _store, jobs, Options.Create(options));
+            _chatFactory, agentDb, _statements, jobs, Options.Create(options));
         return await agent.AttachIsolatedAsync(ksId, model: null, CancellationToken.None);
     }
 
@@ -539,6 +532,42 @@ public sealed class StructureAgentTests : IDisposable
             DataProperties: Array.Empty<PropertyMutation>(),
             Axioms: axioms);
         var quads = SchemaBuilder.BuildMutation($"{graphIri}#", mutation, graphIri);
-        _store.AddQuads(new OntoNamedNode(graphIri), quads);
+        _statements.ReplaceLayerAsync(
+            _dbFactory.CreateDbContext().KnowledgeSystems.Single(k => k.GraphIri == graphIri).Id,
+            "TBox",
+            quads.Select(TestRdfStatementRepository.FromQuad).ToList()).GetAwaiter().GetResult();
     }
+}
+
+internal sealed class TestRdfStatementRepository : IRdfStatementRepository
+{
+    private readonly Dictionary<(Guid KnowledgeSystemId, string Layer), List<RdfStatement>> _layers = new();
+
+    public Task ReplaceLayerAsync(Guid knowledgeSystemId, string layer, IReadOnlyList<RdfStatement> statements, CancellationToken cancellationToken = default)
+    {
+        _layers[(knowledgeSystemId, layer)] = statements.ToList();
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<RdfStatement>> ListAsync(Guid knowledgeSystemId, string? layer = null, CancellationToken cancellationToken = default)
+    {
+        var statements = layer is null
+            ? _layers.Where(pair => pair.Key.KnowledgeSystemId == knowledgeSystemId).SelectMany(pair => pair.Value)
+            : _layers.TryGetValue((knowledgeSystemId, layer), out var values) ? values : [];
+        return Task.FromResult<IReadOnlyList<RdfStatement>>(statements.ToList());
+    }
+
+    public static RdfStatement FromQuad(OntoQuad quad) => new(
+        FromTerm(quad.Subject),
+        quad.Predicate.Value,
+        FromTerm(quad.Object),
+        quad.Graph?.ToString());
+
+    private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
+    {
+        Oxigraph.NamedNode iri => new RdfIri(iri.Value),
+        Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
+        Oxigraph.Literal literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
+        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+    };
 }

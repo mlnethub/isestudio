@@ -5,8 +5,6 @@ using ISEStudio.Application.Foundation;
 using ISEStudio.Application.Ontology;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
-using OntoLiteral = Oxigraph.Literal;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Ontology;
 
@@ -45,7 +43,7 @@ public sealed record ServingContext(
     OntologyReleaseEntity Release,
     ReleaseDeploymentEntity Deployment,
     string ReleaseKey,
-    StoreWrapper Store);
+    IReadOnlyList<RdfStatement> Statements);
 
 /// <summary>
 /// Scoped service backing the six <c>published.*</c> read endpoints the
@@ -67,12 +65,14 @@ public sealed class PublishedDataService : IDisposable
     private readonly ReleaseManager _releases;
     private readonly ReleaseArtifactStore _artifacts;
     private readonly OntologyViewBuilder _viewBuilder;
+    private readonly IRdfStatementRepository _statements;
 
     public PublishedDataService(
         ISEStudioDbContext db,
         ReleaseManager releases,
         ReleaseArtifactStore artifacts,
-        OntologyViewBuilder viewBuilder)
+        OntologyViewBuilder viewBuilder,
+        IRdfStatementRepository statements)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(releases);
@@ -82,6 +82,7 @@ public sealed class PublishedDataService : IDisposable
         _releases = releases;
         _artifacts = artifacts;
         _viewBuilder = viewBuilder;
+        _statements = statements;
     }
 
     /// <summary>
@@ -143,22 +144,20 @@ public sealed class PublishedDataService : IDisposable
         }
         if (release is null) return null;
 
-        return BuildContext(ks, release, deployment);
+        return await BuildContextAsync(ks, release, deployment, ct).ConfigureAwait(false);
     }
 
-    private ServingContext? BuildContext(
+    private async Task<ServingContext?> BuildContextAsync(
         KnowledgeSystemEntity ks,
         OntologyReleaseEntity release,
-        ReleaseDeploymentEntity? deployment)
+        ReleaseDeploymentEntity? deployment,
+        CancellationToken ct)
     {
         var key = release.Id.ToString("N");
         // IsPublished lazy-opens the on-disk serving directory if one
         // exists, so a process restart can serve a previously-published
         // release without re-publishing.
         if (!_releases.IsPublished(key)) return null;
-
-        var store = ResolveServingStore(key);
-        if (store is null) return null;
 
         // Ensure the deployment row exists for the response projection —
         // synthesise a minimal active deployment when a published release
@@ -182,7 +181,13 @@ public sealed class PublishedDataService : IDisposable
             };
         }
 
-        return new ServingContext(ks, release, deployment, key, store);
+        if (deployment.Status != "active") return null;
+        var statements = await _statements.ListAsync(ks.Id, cancellationToken: ct)
+            .ConfigureAwait(false);
+        return new ServingContext(ks, release, deployment, key,
+            statements.Where(s => s.GraphIri == deployment.TboxGraphIri
+                || s.GraphIri == deployment.VocabularyGraphIri
+                || s.GraphIri == deployment.AboxGraphIri).ToList());
     }
 
     /// <summary>
@@ -194,19 +199,8 @@ public sealed class PublishedDataService : IDisposable
     /// side-effect-free (a concurrent publish / delete in another request
     /// doesn't tear down our handle mid-read).
     /// </summary>
-    private StoreWrapper? ResolveServingStore(string releaseKey)
-    {
-        var path = _releases.ServingPath(releaseKey);
-        if (!Directory.Exists(path)) return null;
-        try
-        {
-            return StoreWrapper.OpenReadOnly(path);
-        }
-        catch
-        {
-            return null;
-        }
-    }
+    private static IEnumerable<RdfStatement> GraphStatements(ServingContext ctx, string graphIri) =>
+        ctx.Statements.Where(s => s.GraphIri == graphIri);
 
     // ----------------------------------------------------------------------
     // metadata
@@ -317,13 +311,11 @@ public sealed class PublishedDataService : IDisposable
         // store. Mirrors ABoxManager.CountsByClass but reads from the
         // serving store rather than the live workspace handle.
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-        var aboxQuads = ctx.Store.Match(graphIri: ctx.Deployment.AboxGraphIri);
-        foreach (var q in aboxQuads)
+        var aboxStatements = GraphStatements(ctx, ctx.Deployment.AboxGraphIri);
+        foreach (var q in aboxStatements)
         {
-            if (q.Subject is not OntoNamedNode) continue;
-            if (q.Predicate.Value != Vocabulary.RdfType.Value) continue;
-            if (q.Object is not OntoNamedNode cls) continue;
-            if (cls.Value == Vocabulary.OwlNamedIndividual.Value) continue;
+            if (q.Subject is not RdfIri || q.PredicateIri != Vocabulary.RdfType.Value) continue;
+            if (q.Object is not RdfIri cls || cls.Value == Vocabulary.OwlNamedIndividual.Value) continue;
             counts.TryGetValue(cls.Value, out var n);
             counts[cls.Value] = n + 1;
         }
@@ -394,8 +386,9 @@ public sealed class PublishedDataService : IDisposable
         ArgumentNullException.ThrowIfNull(ctx);
         ArgumentException.ThrowIfNullOrEmpty(iri);
 
-        var outgoing = ctx.Store.Match(
-            subjectIri: iri, graphIri: ctx.Deployment.AboxGraphIri);
+        var outgoing = GraphStatements(ctx, ctx.Deployment.AboxGraphIri)
+            .Where(s => s.Subject is RdfIri subject && subject.Value == iri)
+            .ToList();
         if (outgoing.Count == 0) return null;
 
         var (classLabels, propLabels) = await BuildLabelMapsAsync(ctx, ct)
@@ -408,22 +401,22 @@ public sealed class PublishedDataService : IDisposable
 
         foreach (var quad in outgoing)
         {
-            if (quad.Predicate.Value == Vocabulary.RdfType.Value
-                && quad.Object is OntoNamedNode cls)
+            if (quad.PredicateIri == Vocabulary.RdfType.Value
+                && quad.Object is RdfIri cls)
             {
                 var clsIri = cls.Value;
                 if (clsIri == Vocabulary.OwlNamedIndividual.Value) continue;
                 types.Add(new LabeledIri(clsIri,
                     classLabels.TryGetValue(clsIri, out var l) ? l : LocalIri(clsIri)));
             }
-            else if (quad.Predicate.Value == Vocabulary.RdfsLabel.Value
-                && quad.Object is OntoLiteral labelLit)
+            else if (quad.PredicateIri == Vocabulary.RdfsLabel.Value
+                && quad.Object is RdfLiteral labelLit)
             {
                 label = labelLit.Value;
             }
-            else if (quad.Object is OntoNamedNode target)
+            else if (quad.Object is RdfIri target)
             {
-                var propIri = quad.Predicate.Value;
+                var propIri = quad.PredicateIri;
                 objectAssertions.Add(new ObjectAssertionOut(
                     Prop: propIri,
                     PropLabel: propLabels.TryGetValue(propIri, out var l) ? l : LocalIri(propIri),
@@ -431,14 +424,14 @@ public sealed class PublishedDataService : IDisposable
                     TargetLabel: LocalIri(target.Value),
                     Sources: Array.Empty<string>()));
             }
-            else if (quad.Object is OntoLiteral literal)
+            else if (quad.Object is RdfLiteral literal)
             {
-                var propIri = quad.Predicate.Value;
+                var propIri = quad.PredicateIri;
                 dataAssertions.Add(new DataAssertionOut(
                     Prop: propIri,
                     PropLabel: propLabels.TryGetValue(propIri, out var l) ? l : LocalIri(propIri),
                     Value: literal.Value,
-                    Datatype: literal.Datatype?.Value,
+                    Datatype: literal.Datatype,
                     Sources: Array.Empty<string>()));
             }
         }
@@ -471,13 +464,13 @@ public sealed class PublishedDataService : IDisposable
 
         var classBySubject = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         var labelBySubject = new Dictionary<string, string>(StringComparer.Ordinal);
-        var allQuads = ctx.Store.Match(graphIri: ctx.Deployment.AboxGraphIri);
-        foreach (var quad in allQuads)
+        var allStatements = GraphStatements(ctx, ctx.Deployment.AboxGraphIri);
+        foreach (var quad in allStatements)
         {
-            if (quad.Subject is not OntoNamedNode subj) continue;
+            if (quad.Subject is not RdfIri subj) continue;
             var siri = subj.Value;
-            if (quad.Predicate.Value == Vocabulary.RdfType.Value
-                && quad.Object is OntoNamedNode cls)
+            if (quad.PredicateIri == Vocabulary.RdfType.Value
+                && quad.Object is RdfIri cls)
             {
                 if (!classBySubject.TryGetValue(siri, out var set))
                 {
@@ -486,8 +479,8 @@ public sealed class PublishedDataService : IDisposable
                 }
                 set.Add(cls.Value);
             }
-            else if (quad.Predicate.Value == Vocabulary.RdfsLabel.Value
-                && quad.Object is OntoLiteral lit)
+            else if (quad.PredicateIri == Vocabulary.RdfsLabel.Value
+                && quad.Object is RdfLiteral lit)
             {
                 labelBySubject[siri] = lit.Value;
             }

@@ -258,19 +258,13 @@ public static class SchemaBuilder
     // BuildView
     // ------------------------------------------------------------------
 
-    /// <summary>
-    /// Read the named graph out of <paramref name="store"/> into a curated
-    /// view the frontend consumes. Anonymous owl:unionOf expressions are
-    /// expanded; multi-valued domain/range triples are surfaced as
-    /// <see cref="PropertyView.DomainMembers"/> / <see cref="PropertyView.RangeMembers"/>.
-    /// </summary>
-    public static OntologyView BuildView(string graphIri, StoreWrapper store)
+    public static OntologyView BuildView(string graphIri, IReadOnlyList<RdfStatement> statements) =>
+        BuildView(graphIri, statements.Select(ToQuad).ToList());
+
+    public static OntologyView BuildView(string graphIri, IReadOnlyList<OntoQuad> quads)
     {
         ArgumentNullException.ThrowIfNull(graphIri);
-        ArgumentNullException.ThrowIfNull(store);
-
-        var graph = new OntoNamedNode(graphIri);
-        var quads = store.Match(graph: graph);
+        ArgumentNullException.ThrowIfNull(quads);
 
         var classes = new Dictionary<string, ClassView>(StringComparer.Ordinal);
         var objProps = new Dictionary<string, PropertyView>(StringComparer.Ordinal);
@@ -562,4 +556,26 @@ public static class SchemaBuilder
             DomainMembers: dMembers,
             RangeMembers: rMembers);
     }
+
+    private static OntoQuad ToQuad(RdfStatement statement)
+    {
+        var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("RDF graph is required"));
+        return new OntoQuad(ToSubject(statement.Subject), new OntoNamedNode(statement.PredicateIri), ToObject(statement.Object), graph);
+    }
+
+    private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
+    {
+        RdfIri iri => new OntoNamedNode(iri.Value),
+        RdfBlankNode blank => new OntoBlankNode(blank.Id),
+        _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
+    };
+
+    private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
+    {
+        RdfIri iri => new OntoNamedNode(iri.Value),
+        RdfBlankNode blank => new OntoBlankNode(blank.Id),
+        RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
+            literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
+        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+    };
 }

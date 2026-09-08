@@ -2,7 +2,9 @@ using System.Text;
 using ISEStudio.Application.Releases;
 using ISEStudio.Exports;
 using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Ontology;
 using ISEStudio.Tests.Extraction;
+using ISEStudio.Tests.Infrastructure;
 
 namespace ISEStudio.Tests.Exports;
 
@@ -19,14 +21,14 @@ namespace ISEStudio.Tests.Exports;
 /// runner is constructed store-less purely to satisfy the
 /// <see cref="ExportService"/> constructor.</para>
 /// </summary>
-public sealed class ExportLegacyLayoutFixture : IDisposable
+public sealed class ExportLegacyLayoutFixture : PostgresRdfFixture
 {
     public string Root { get; }
     public SqliteContextFactory Contexts { get; }
     public ExportArtifactStore Artifacts { get; }
     public ExportJobStore Jobs { get; }
 
-    private readonly ExportRunner _runner;
+    private ExportRunner? _runner;
 
     public ExportLegacyLayoutFixture()
     {
@@ -38,12 +40,14 @@ public sealed class ExportLegacyLayoutFixture : IDisposable
         Artifacts = new ExportArtifactStore(Path.Combine(Root, "exports"));
         Jobs = new ExportJobStore(Contexts, TimeProvider.System);
         _runner = new ExportRunner(
-            Jobs, Artifacts, store: null, releaseArtifacts: null, TimeProvider.System);
+            Jobs, Artifacts, new RdfExportService(Statements), releaseArtifacts: null,
+            TimeProvider.System);
     }
 
     public void Dispose()
     {
         Contexts.Dispose();
+        base.DisposeAsync().GetAwaiter().GetResult();
         try { Directory.Delete(Root, recursive: true); }
         catch (IOException) { /* best-effort temp cleanup */ }
     }
@@ -69,7 +73,7 @@ public sealed class ExportLegacyLayoutFixture : IDisposable
 
     /// <summary>Scoped <see cref="ExportService"/> over this fixture.</summary>
     public ExportService CreateService() =>
-        new(Contexts.CreateDbContext(), Jobs, _runner, Artifacts);
+        new(Contexts.CreateDbContext(), Jobs, _runner!, Artifacts);
 }
 
 /// <summary>

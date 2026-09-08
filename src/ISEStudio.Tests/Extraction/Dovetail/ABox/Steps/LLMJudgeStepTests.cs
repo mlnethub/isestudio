@@ -15,7 +15,7 @@ public class LLMJudgeStepTests
             JobId: Guid.NewGuid(),
             KnowledgeSystemId: Guid.NewGuid(),
             GraphIri: "http://example.org/g",
-            Store: null!,
+            Quads: null!,
             Chat: null!,
             Embedder: null!,
             MinConfidence: 0.90);
@@ -39,7 +39,7 @@ public class LLMJudgeStepTests
             JobId: Guid.NewGuid(),
             KnowledgeSystemId: Guid.NewGuid(),
             GraphIri: "http://example.org/g",
-            Store: null!,
+            Quads: null!,
             Chat: null!,
             Embedder: null!,
             MinConfidence: 0.90);

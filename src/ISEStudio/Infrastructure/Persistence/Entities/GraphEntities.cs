@@ -4,6 +4,8 @@ public sealed class EntityTypeEntity : EntityBase
 {
     public Guid KnowledgeSystemId { get; set; }
 
+    public string Iri { get; set; } = string.Empty;
+
     public string Key { get; set; } = string.Empty;
 
     public string? Label { get; set; }
@@ -14,6 +16,8 @@ public sealed class EntityTypeEntity : EntityBase
 public sealed class RelationTypeEntity : EntityBase
 {
     public Guid KnowledgeSystemId { get; set; }
+
+    public string Iri { get; set; } = string.Empty;
 
     public string Key { get; set; } = string.Empty;
 
@@ -46,6 +50,8 @@ public sealed class EntityTypeParentEntity
 public sealed class GraphEntityEntity : EntityBase
 {
     public Guid KnowledgeSystemId { get; set; }
+
+    public string Iri { get; set; } = string.Empty;
 
     public Guid? EntityTypeId { get; set; }
 

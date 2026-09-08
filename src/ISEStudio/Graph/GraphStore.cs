@@ -3,6 +3,7 @@ using System.Data;
 using System.Data.Common;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Infrastructure.Persistence.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
@@ -13,153 +14,32 @@ namespace ISEStudio.Graph;
 public sealed class GraphStore : IGraphStore
 {
     private readonly ISEStudioDbContext _db;
+    private readonly IPostgresGraphRepository _repository;
 
     public GraphStore(ISEStudioDbContext db)
+        : this(db, new PostgresGraphRepository(db))
+    {
+    }
+
+    public GraphStore(ISEStudioDbContext db, IPostgresGraphRepository repository)
     {
         _db = db;
+        _repository = repository;
     }
 
     public Task<GraphEntity> CreateEntityAsync(CreateGraphEntityCommand command, CancellationToken cancellationToken)
     {
-        throw new NotSupportedException("Graph entity creation is outside task 3 scope.");
+        return _repository.CreateEntityAsync(command, cancellationToken);
     }
 
-    public async Task<GraphFact> RecordFactAsync(RecordFactCommand command, CancellationToken cancellationToken)
+    public Task<GraphFact> RecordFactAsync(RecordFactCommand command, CancellationToken cancellationToken)
     {
-        command.Validate();
-
-        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
-
-        var knowledgeSystemExists = await _db.KnowledgeSystems
-            .AnyAsync(item => item.Id == command.KnowledgeSystemId, cancellationToken);
-        if (!knowledgeSystemExists)
-        {
-            throw new KeyNotFoundException($"Knowledge system '{command.KnowledgeSystemId}' was not found.");
-        }
-
-        await EnsureGraphEntityInKnowledgeSystemAsync(
-            command.SubjectEntityId,
-            command.KnowledgeSystemId,
-            "subject",
-            cancellationToken);
-
-        await EnsureRelationTypeInKnowledgeSystemAsync(
-            command.PredicateId,
-            command.KnowledgeSystemId,
-            cancellationToken);
-
-        if (command.ObjectKind == GraphObjectKind.Entity && command.ObjectEntityId is Guid objectEntityId)
-        {
-            await EnsureGraphEntityInKnowledgeSystemAsync(
-                objectEntityId,
-                command.KnowledgeSystemId,
-                "object",
-                cancellationToken);
-        }
-
-        await EnsureEvidenceChunksInKnowledgeSystemAsync(
-            command.Evidence,
-            command.KnowledgeSystemId,
-            cancellationToken);
-
-        if (command.ActorId is Guid actorId)
-        {
-            var actorExists = await _db.Users.AnyAsync(item => item.Id == actorId, cancellationToken);
-            if (!actorExists)
-            {
-                throw new KeyNotFoundException($"Actor '{actorId}' was not found.");
-            }
-        }
-
-        var fact = new FactEntity
-        {
-            Id = Guid.NewGuid(),
-            KnowledgeSystemId = command.KnowledgeSystemId,
-            SubjectEntityId = command.SubjectEntityId,
-            PredicateId = command.PredicateId,
-            ObjectEntityId = command.ObjectEntityId,
-            ObjectValue = command.ObjectValue,
-            Confidence = command.Confidence,
-            ValidFrom = command.ValidFrom,
-            ValidTo = command.ValidTo,
-            RecordedAt = command.RecordedAt,
-            InvalidatedAt = null,
-            SupersedesFactId = null,
-        };
-
-        var evidence = command.Evidence
-            .Select(item => new FactEvidenceEntity
-            {
-                Id = Guid.NewGuid(),
-                FactId = fact.Id,
-                SourceChunkId = item.SourceChunkId,
-                Quote = item.Quote,
-                Predicate = item.Predicate,
-            })
-            .ToArray();
-
-        var auditEvent = new AuditEventEntity
-        {
-            Id = Guid.NewGuid(),
-            KnowledgeSystemId = command.KnowledgeSystemId,
-            ActorId = command.ActorId,
-            ActorName = string.Empty,
-            Action = "graph.fact.recorded",
-            Summary = "Recorded graph fact.",
-            Detail = JsonSerializer.SerializeToDocument(new
-            {
-                factId = fact.Id,
-                knowledgeSystemId = command.KnowledgeSystemId,
-                actorId = command.ActorId,
-                evidenceCount = evidence.Length,
-            }),
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-
-        _db.Facts.Add(fact);
-        _db.FactEvidence.AddRange(evidence);
-        _db.AuditEvents.Add(auditEvent);
-
-        await _db.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-
-        return MapFact(fact, evidence);
+        return _repository.RecordFactAsync(command, cancellationToken);
     }
 
-    public async Task InvalidateFactAsync(Guid knowledgeSystemId, Guid factId, DateTimeOffset invalidatedAt, CancellationToken cancellationToken)
+    public Task InvalidateFactAsync(Guid knowledgeSystemId, Guid factId, DateTimeOffset invalidatedAt, CancellationToken cancellationToken)
     {
-        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken);
-
-        var factWasInvalidated = await InvalidateLiveFactRowAsync(
-            transaction,
-            knowledgeSystemId,
-            factId,
-            invalidatedAt,
-            cancellationToken);
-
-        if (!factWasInvalidated)
-        {
-            throw new KeyNotFoundException($"Fact '{factId}' was not found or already invalidated.");
-        }
-
-        _db.AuditEvents.Add(new AuditEventEntity
-        {
-            Id = Guid.NewGuid(),
-            KnowledgeSystemId = knowledgeSystemId,
-            ActorName = string.Empty,
-            Action = "graph.fact.invalidated",
-            Summary = "Invalidated graph fact.",
-            Detail = JsonSerializer.SerializeToDocument(new
-            {
-                factId,
-                knowledgeSystemId,
-                invalidatedAt,
-            }),
-            CreatedAt = DateTimeOffset.UtcNow,
-        });
-
-        await _db.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        return _repository.InvalidateFactAsync(knowledgeSystemId, factId, invalidatedAt, cancellationToken);
     }
 
     public async Task<GraphNeighborhood> GetNeighborhoodAsync(GraphNeighborhoodQuery query, CancellationToken cancellationToken)

@@ -14,6 +14,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Extraction;
@@ -71,9 +72,10 @@ public sealed class ExtractionAgentChainTests : IDisposable
     private readonly string _root;
     private readonly SqliteContextFactory _contexts;
     private readonly Guid _ksId = Guid.NewGuid();
+    private readonly PostgresRdfFixture _rdf = new();
     private readonly IBlobStore _blobs;
 
-    private StoreWrapper Store { get; }
+    private PostgresRdfGraphStore Store => _rdf.TBox;
 
     private KsContext Ks { get; } = new(GraphIri, BaseIri);
 
@@ -98,7 +100,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
         _root = Path.Combine(Path.GetTempPath(), "isestudio-agent-chain-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(_root);
 
-        Store = new StoreWrapper(Path.Combine(_root, "store"));
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
         SeedTBox();
 
         _contexts = new SqliteContextFactory();
@@ -202,7 +204,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
 
         Assert.Equal("completed", finished.Status);
 
-        var view = SchemaBuilder.BuildView(GraphIri, Store);
+        var view = SchemaBuilder.BuildView(GraphIri, _rdf.Statements.ListAsync(_rdf.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
         var pump = view.Classes.Single(c => c.Label == "Pump");
         var centrifugal = view.Classes.Single(c => c.Label == "Centrifugal Pump");
         Assert.Contains(pump.Iri, centrifugal.Superclasses);
@@ -232,7 +234,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
         Assert.Equal(
             new[] { "tbox", "conflicts", "structure", "abox", "terminology", "finalizing" },
             ExtractionJobLog.Phases(finished.Log));
-        Assert.NotEmpty(Store.Match(graph: new OntoNamedNode(Ks.ABoxGraph)));
+        Assert.NotEmpty(_rdf.ABox.Match(graphIri: Ks.ABoxGraph));
     }
 
     [Fact]
@@ -329,7 +331,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
         services.AddSingleton<IDbContextFactory<ISEStudioDbContext>>(_contexts);
         services.AddScoped<ISEStudioDbContext>(sp =>
             sp.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>().CreateDbContext());
-        services.AddSingleton(Store);
+        services.AddSingleton<IRdfStatementRepository>(_rdf.Statements);
         services.AddSingleton(Jobs);
         services.AddSingleton<IChatClientFactory>(FakeChatClientFactory.Default);
         services.AddSingleton(TimeProvider.System);
@@ -359,10 +361,10 @@ public sealed class ExtractionAgentChainTests : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(Store),
+            new TerminologyService(_rdf.Statements),
             new PromptSnapshotService(),
-            new ExtractionMerger(Store),
-            Store,
+            new ExtractionMerger(_rdf.Statements),
+            _rdf.Statements,
             TimeProvider.System,
             verify: null,
             scopes: scopes);
@@ -471,7 +473,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
         FakeChatClientFactory.Default.Reset();
         FakeChat.Release();
         Services.Dispose();
-        Store.Dispose();
+        _rdf.DisposeAsync().GetAwaiter().GetResult();
         _contexts.Dispose();
         try
         {

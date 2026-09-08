@@ -15,6 +15,8 @@ public sealed class RdfImportException : Exception
 
 public sealed record ParsedRdfImport(string Format, IReadOnlyList<OntoTriple> Triples);
 
+public sealed record ParsedRdfDocument(string Format, IReadOnlyList<RdfStatement> Statements);
+
 public sealed record RdfImportPartition(IReadOnlyList<OntoTriple> TBox, IReadOnlyList<OntoTriple> ABox);
 
 /// <summary>
@@ -82,6 +84,29 @@ public sealed class RdfImportParser
         }
         throw new RdfImportException($"Could not parse RDF ({(errors.Count == 0 ? "unknown parser error" : errors[0])})");
     }
+
+    /// <summary>Parse RDF into Oxigraph-free boundary terms.</summary>
+    public ParsedRdfDocument ParseStatements(byte[] data, string filename, string requestedFormat, string? baseIri, int? maxTriples, string blankNodeScope)
+    {
+        var parsed = Parse(data, filename, requestedFormat, baseIri, maxTriples, blankNodeScope);
+        return new ParsedRdfDocument(parsed.Format, parsed.Triples.Select(ToStatement).ToList());
+    }
+
+    private static RdfStatement ToStatement(OntoTriple triple)
+    {
+        return new RdfStatement(
+            ToTerm(triple.Subject),
+            triple.Predicate.Value,
+            ToTerm(triple.Object));
+    }
+
+    private static RdfTerm ToTerm(Oxigraph.ITerm term) => term switch
+    {
+        OntoNamedNode named => new RdfIri(named.Value),
+        OntoBlankNode blank => new RdfBlankNode(blank.Value),
+        OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
+        _ => throw new RdfImportException($"Unsupported RDF term: {term.GetType().Name}"),
+    };
 
     public RdfImportPartition Partition(IReadOnlyList<OntoTriple> triples, string target)
     {

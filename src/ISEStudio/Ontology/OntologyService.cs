@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Application.Ontology;
@@ -29,7 +30,7 @@ public sealed class OntologyService
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
     private readonly OntologyEditor _editor;
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly OntologyViewBuilder _builder;
     private readonly KnowledgeStatsService _stats;
 
@@ -38,7 +39,7 @@ public sealed class OntologyService
         TimeProvider clock,
         KnowledgeSystemAccessService access,
         OntologyEditor editor,
-        StoreWrapper store,
+        IRdfStatementRepository statements,
         OntologyViewBuilder builder,
         KnowledgeStatsService stats)
     {
@@ -46,7 +47,7 @@ public sealed class OntologyService
         _clock = clock;
         _access = access;
         _editor = editor;
-        _store = store;
+        _statements = statements;
         _builder = builder;
         _stats = stats;
     }
@@ -81,7 +82,7 @@ public sealed class OntologyService
         }
 
         var opName = op.TryGetValue("op", out var opObj) && opObj is string s ? s : "edit";
-        var pre = _store.DumpNQuads(ks.GraphIri);
+        var pre = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
         string result;
         try
         {
@@ -91,8 +92,8 @@ public sealed class OntologyService
         {
             throw new InvalidOperationException(ex.Message, ex);
         }
-        var post = _store.DumpNQuads(ks.GraphIri);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var post = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
+        var (added, removed) = Diff(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "ontology.edit",
             $"Ontology edit ({opName})",
@@ -131,26 +132,12 @@ public sealed class OntologyService
         }
 
         var aboxGraphIri = AboxIri(ks.GraphIri);
-        var preTBox = _store.DumpNQuads(ks.GraphIri);
-        var preABox = _store.DumpNQuads(aboxGraphIri);
-
-        var tboxGraph = new OntoNamedNode(ks.GraphIri);
-        var aboxGraph = new OntoNamedNode(aboxGraphIri);
-        var tboxQuads = _store.Match(graph: tboxGraph);
-        if (tboxQuads.Count > 0)
-        {
-            _store.RemoveQuads(tboxGraph, tboxQuads);
-        }
-        var aboxQuads = _store.Match(graph: aboxGraph);
-        if (aboxQuads.Count > 0)
-        {
-            _store.RemoveQuads(aboxGraph, aboxQuads);
-        }
-
-        var postTBox = _store.DumpNQuads(ks.GraphIri);
-        var postABox = _store.DumpNQuads(aboxGraphIri);
-        var (addedTBox, removedTBox) = StoreWrapper.DiffNQuads(preTBox, postTBox);
-        var (addedABox, removedABox) = StoreWrapper.DiffNQuads(preABox, postABox);
+        var preTBox = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
+        var preABox = await _statements.ListAsync(ks.Id, "ABox", ct).ConfigureAwait(false);
+        await _statements.ReplaceLayerAsync(ks.Id, "TBox", Array.Empty<RdfStatement>(), ct).ConfigureAwait(false);
+        await _statements.ReplaceLayerAsync(ks.Id, "ABox", Array.Empty<RdfStatement>(), ct).ConfigureAwait(false);
+        var (addedTBox, removedTBox) = Diff(preTBox, Array.Empty<RdfStatement>());
+        var (addedABox, removedABox) = Diff(preABox, Array.Empty<RdfStatement>());
 
         var added = Concat(addedTBox, addedABox);
         var removed = Concat(removedTBox, removedABox);
@@ -189,7 +176,8 @@ public sealed class OntologyService
             throw new InvalidOperationException(
                 "Viewer access is required to read the ontology view.");
 
-        var view = await _builder.BuildFromStoreAsync(_store, ks.GraphIri, ct).ConfigureAwait(false);
+        var statements = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
+        var view = await _builder.BuildFromStatementsAsync(statements, ks.GraphIri, ct).ConfigureAwait(false);
         return view with
         {
             KnowledgeSystem = new KnowledgeSystemMeta(
@@ -273,5 +261,52 @@ public sealed class OntologyService
         Buffer.BlockCopy(a, 0, combined, 0, a.Length);
         Buffer.BlockCopy(b, 0, combined, a.Length, b.Length);
         return combined;
+    }
+
+    private static (byte[] Added, byte[] Removed) Diff(
+        IReadOnlyList<RdfStatement> before,
+        IReadOnlyList<RdfStatement> after)
+    {
+        var beforeSet = before.ToHashSet();
+        var afterSet = after.ToHashSet();
+        return (Serialize(afterSet.Except(beforeSet)), Serialize(beforeSet.Except(afterSet)));
+    }
+
+    private static byte[] Serialize(IEnumerable<RdfStatement> statements)
+    {
+        var builder = new StringBuilder();
+        foreach (var statement in statements.OrderBy(item => item.PredicateIri, StringComparer.Ordinal))
+        {
+            Append(builder, statement.Subject);
+            builder.Append(' ');
+            Append(builder, new RdfIri(statement.PredicateIri));
+            builder.Append(' ');
+            Append(builder, statement.Object);
+            if (!string.IsNullOrWhiteSpace(statement.GraphIri))
+                builder.Append(" <").Append(statement.GraphIri).Append('>');
+            builder.Append(" .\n");
+        }
+        return Encoding.UTF8.GetBytes(builder.ToString());
+    }
+
+    private static void Append(StringBuilder builder, RdfTerm term)
+    {
+        switch (term)
+        {
+            case RdfIri iri:
+                builder.Append('<').Append(iri.Value).Append('>');
+                break;
+            case RdfBlankNode blank:
+                builder.Append("_:").Append(blank.Id);
+                break;
+            case RdfLiteral literal:
+                builder.Append('"').Append(literal.Value.Replace("\\", "\\\\").Replace("\"", "\\\""))
+                    .Append('"');
+                if (!string.IsNullOrWhiteSpace(literal.Language))
+                    builder.Append('@').Append(literal.Language);
+                else if (!string.IsNullOrWhiteSpace(literal.Datatype))
+                    builder.Append("^^<").Append(literal.Datatype).Append('>');
+                break;
+        }
     }
 }

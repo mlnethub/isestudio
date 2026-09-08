@@ -21,14 +21,11 @@ public class EntitySyncStepTests : IClassFixture<TerminologyServiceFixture>, IAs
         _ks = new KsContext(
             GraphIri: "http://goodcrew.local/ks/test/term-step2",
             BaseIri: "http://goodcrew.local/ks/test/term-step2/onto#",
-            Name: "Step tests");
+                Name: "Step tests",
+                KnowledgeSystemId: fx.KnowledgeSystemId);
     }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+            public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -36,7 +33,7 @@ public class EntitySyncStepTests : IClassFixture<TerminologyServiceFixture>, IAs
     public async Task ExecuteAsync_CreatesMappedConceptsAndCounts()
     {
         SeedClasses("Pump", "Motor");
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var input = new TerminologyInput(_ks, Guid.NewGuid(), null, false);
         var init = await new StaleMappingStep(svc, NullLogger<StaleMappingStep>.Instance)
             .ExecuteAsync(input, CancellationToken.None);
@@ -49,7 +46,7 @@ public class EntitySyncStepTests : IClassFixture<TerminologyServiceFixture>, IAs
         Assert.Equal(2, carry.Carry.TermsMapped);
         Assert.Equal(0, carry.Carry.MappingConflicts);
 
-        var view = new SkosManager(_fx.Store).BuildView(_ks);
+        var view = new SkosManager(_fx.Statements).BuildView(_ks);
         Assert.Equal(2, view.Stats.ConceptCount);
         Assert.Equal(2, view.Stats.MappedCount);
     }
@@ -62,7 +59,7 @@ public class EntitySyncStepTests : IClassFixture<TerminologyServiceFixture>, IAs
         // (D5) instead of propagating. (Inducing a real store exception is
         // nondeterministic on Windows — Oxigraph handle behavior — so the
         // catch contract is pinned with a synthetic throw.)
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var step = new EntitySyncStep(svc, NullLogger<EntitySyncStep>.Instance);
         var malformed = new TermSyncCarry("http://x/scheme", null, null, 0);
 
@@ -96,6 +93,6 @@ public class EntitySyncStepTests : IClassFixture<TerminologyServiceFixture>, IAs
             DataProperties: dataProperties.Select(l => new PropertyMutation(l, "data")).ToArray(),
             Axioms: axioms);
         var quads = SchemaBuilder.BuildMutation(_ks.BaseIri, mutation, _ks.TBoxGraph);
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
     }
 }

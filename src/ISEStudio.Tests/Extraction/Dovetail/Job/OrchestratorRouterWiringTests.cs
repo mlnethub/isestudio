@@ -13,6 +13,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Extraction;
+using ISEStudio.Tests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -62,7 +63,7 @@ public sealed class OrchestratorRouterWiringTests : IDisposable
     private const string BaseIri = GraphIri + "/onto#";
 
     private readonly string _root;
-    private readonly StoreWrapper _store;
+    private readonly PostgresRdfFixture _rdf;
     private readonly SqliteContextFactory _contexts;
     private readonly ExtractionJobStore _jobs;
     private readonly FakeChat _chat = new();
@@ -75,7 +76,8 @@ public sealed class OrchestratorRouterWiringTests : IDisposable
         _root = Path.Combine(Path.GetTempPath(), "isestudio-jobrouter-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(_root);
 
-        _store = new StoreWrapper(Path.Combine(_root, "store"));
+        _rdf = new PostgresRdfFixture();
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
         _contexts = new SqliteContextFactory();
         SeedKnowledgeSystem();
         _chatFactory.UseClient(_chat);
@@ -90,10 +92,10 @@ public sealed class OrchestratorRouterWiringTests : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(_store),
+            new TerminologyService(_rdf.Statements),
             new PromptSnapshotService(),
-            new ExtractionMerger(_store),
-            _store,
+            new ExtractionMerger(_rdf.Statements),
+            _rdf.Statements,
             TimeProvider.System);
     }
 
@@ -101,7 +103,7 @@ public sealed class OrchestratorRouterWiringTests : IDisposable
     {
         _chatFactory.Reset();
         _chat.Release();
-        _store.Dispose();
+        _rdf.DisposeAsync().GetAwaiter().GetResult();
         _contexts.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
     }
@@ -205,10 +207,10 @@ public sealed class OrchestratorRouterWiringTests : IDisposable
         services.AddSingleton<EndpointCapacityCoordinator>();
         services.AddSingleton(new TBoxExtractionService(Options.Create(new ISEStudioOptions())));
         services.AddSingleton(new ABoxExtractionService(Options.Create(new ISEStudioOptions())));
-        services.AddSingleton<ITerminologySync>(_ => new TerminologyService(_store));
+        services.AddSingleton<ITerminologySync>(_ => new TerminologyService(_rdf.Statements));
         services.AddSingleton<PromptSnapshotService>();
-        services.AddSingleton<IExtractionMerger>(_ => new ExtractionMerger(_store));
-        services.AddSingleton(_store);
+        services.AddSingleton<IExtractionMerger>(_ => new ExtractionMerger(_rdf.Statements));
+        services.AddSingleton<IRdfStatementRepository>(_rdf.Statements);
         services.AddSingleton<TimeProvider>(TimeProvider.System);
 
         // Build first ServiceProvider so IServiceScopeFactory is

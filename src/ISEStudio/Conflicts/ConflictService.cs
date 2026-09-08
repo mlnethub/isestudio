@@ -13,18 +13,12 @@ namespace ISEStudio.Conflicts;
 /// <c>backend/app/api/conflicts.py</c> surface (and its companion
 /// <c>backend/app/ontology/conflicts.py</c> detector).
 ///
-/// <para>The service is the first dispatcher-routed service that touches
-/// the in-memory graph layer via <see cref="StoreWrapper"/>. Production
-/// code resolves a single singleton <see cref="StoreWrapper"/> opened at
-/// the configured workspace path; test / contract-only factories pass
-/// <c>null</c> and the structural detection paths degrade to "return
-/// what's already in the table" so the SQL contract stays testable without
-/// an embedded Oxigraph.</para>
+/// <para>Structural and semantic detection read immutable PostgreSQL RDF
+/// snapshots; the SQL conflict queue remains the source of lifecycle state.</para>
 /// </summary>
 public sealed class ConflictService
 {
-    /// <summary>Injected optionally so tests can skip graph detection.</summary>
-    private readonly StoreWrapper? _store;
+    private readonly IRdfStatementRepository _statements;
 
     /// <summary>Used for the <c>extraction_active</c> guard on resolve / dismiss.</summary>
     private readonly ExtractionJobStore? _jobs;
@@ -55,15 +49,15 @@ public sealed class ConflictService
     public ConflictService(
         ISEStudioDbContext db,
         TimeProvider clock,
+        IRdfStatementRepository statements,
         ExtractionJobStore? jobs = null,
-        StoreWrapper? store = null,
         DuplicateJudge? duplicateJudge = null,
         ExtractionOrchestrator? extraction = null)
     {
         _db = db;
         _clock = clock;
+        _statements = statements;
         _jobs = jobs;
-        _store = store;
         _duplicateJudge = duplicateJudge;
         _extraction = extraction;
     }
@@ -123,15 +117,11 @@ public sealed class ConflictService
         var ks = await ResolveKnowledgeSystemAsync(ksId, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Knowledge system {ksId} not found.");
 
-        if (_store is null)
-        {
-            // No graph store wired — preserve the existing DB rows and
-            // return them as-is. This is the contract-test path; the
-            // SQLite-backed factory doesn't ship an Oxigraph.
-            return await ListAsync(ksId, "open", ctype: null, ct).ConfigureAwait(false);
-        }
-
-        var detected = ConflictDetection.Detect(_store, ks.GraphIri, semantic: true);
+        var tbox = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
+        var quads = tbox.Where(s => s.GraphIri == ks.GraphIri)
+            .Select(PostgresRdfGraphStore.ToQuadForConflictDetection)
+            .ToList();
+        var detected = ConflictDetection.Detect(quads, ks.GraphIri, semantic: true);
         // The semantic duplicate-class pass (P1-1:83 + Slice 2): runs after
         // the structural detectors and merges its candidates into the queue
         // by signature. Slice 2 prefers the orchestrator's Dovetail
@@ -145,7 +135,7 @@ public sealed class ConflictService
             var outcome = await _extraction.RunABoxLayerAsync(
                 knowledgeSystemId: ks.Id,
                 graphIri: ks.GraphIri,
-                store: _store,
+                quads: new PostgresRdfGraphStore(_statements, ks.Id, "ABox").Match(graphIri: ks.GraphIri),
                 chat: null,
                 embedder: null,
                 cancellationToken: ct).ConfigureAwait(false);
@@ -153,7 +143,7 @@ public sealed class ConflictService
         }
         else if (_duplicateJudge is not null)
         {
-            semantic = await _duplicateJudge.DetectAsync(_store, ks.GraphIri, ct).ConfigureAwait(false);
+            semantic = await _duplicateJudge.DetectAsync(quads, ks.GraphIri, ct).ConfigureAwait(false);
         }
         else
         {
@@ -460,9 +450,9 @@ public sealed class ConflictService
         // OntologyEditor; the detector now emits real ops instead of noop
         // hints. An explicit noop resolution (op=="noop") still skips the
         // editor and just marks the conflict resolved.
-        if (_store is not null && !IsNoOpResolution(chosen.Op))
+        if (!IsNoOpResolution(chosen.Op))
         {
-            var editor = new OntologyEditor(_store);
+            var editor = new OntologyEditor(new PostgresOntologyRepository(_db));
             try
             {
                 await editor.ApplyEditAsync(ks.GraphIri, ks.BaseIri, chosen.Op, ct).ConfigureAwait(false);
@@ -488,9 +478,7 @@ public sealed class ConflictService
 
         // Re-sync open conflicts (semantic=False path mirrors Python
         // resolve_conflict — no LLM/embedding pass after a manual fix).
-        var openConflicts = _store is null
-            ? await ListAsync(ksId, "open", ctype: null, ct).ConfigureAwait(false)
-            : await DetectAndSyncWithoutSemanticAsync(ks, ct).ConfigureAwait(false);
+        var openConflicts = await DetectAndSyncWithoutSemanticAsync(ks, ct).ConfigureAwait(false);
 
         // The full build_view (OntologyViewBuilder over the post-resolve graph)
         // lands with later ShapeBuilder wiring. The frontend ignores `view` —
@@ -587,8 +575,11 @@ public sealed class ConflictService
         KnowledgeSystemEntity ks,
         CancellationToken ct)
     {
-        if (_store is null) return Array.Empty<ConflictOut>();
-        var detected = ConflictDetection.Detect(_store, ks.GraphIri, semantic: false);
+        var tbox = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
+        var quads = tbox.Where(s => s.GraphIri == ks.GraphIri)
+            .Select(PostgresRdfGraphStore.ToQuadForConflictDetection)
+            .ToList();
+        var detected = ConflictDetection.Detect(quads, ks.GraphIri, semantic: false);
         var bySig = detected.ToDictionary(d => d.Signature, StringComparer.Ordinal);
         var existing = await _db.Conflicts
             .Where(c => c.KnowledgeSystemId == ks.Id)

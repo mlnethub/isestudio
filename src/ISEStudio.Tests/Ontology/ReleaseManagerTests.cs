@@ -1,5 +1,6 @@
 using ISEStudio.Ontology;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -16,13 +17,9 @@ namespace ISEStudio.Tests.Ontology;
 /// </list>
 /// On dispose every StoreWrapper is disposed and every temp dir is wiped.
 /// </summary>
-public sealed class ReleaseManagerFixture : IDisposable
+public sealed class ReleaseManagerFixture : PostgresRdfFixture
 {
-    public string WorkspacePath { get; }
     public string ArtifactPath { get; }
-    public string ServingPath { get; }
-
-    public StoreWrapper Store { get; }
     public ReleaseArtifactStore Artifacts { get; }
 
     public ReleaseManagerFixture()
@@ -30,25 +27,8 @@ public sealed class ReleaseManagerFixture : IDisposable
         var root = System.IO.Path.Combine(
             System.IO.Path.GetTempPath(),
             "isestudio-relmgr-" + Guid.NewGuid().ToString("N"));
-        WorkspacePath = System.IO.Path.Combine(root, "workspace");
         ArtifactPath = System.IO.Path.Combine(root, "artifacts");
-        ServingPath = System.IO.Path.Combine(root, "serving");
-
-        // Oxigraph's Store constructor requires the path to exist; create it.
-        Directory.CreateDirectory(WorkspacePath);
-
-        Store = new StoreWrapper(WorkspacePath);
         Artifacts = new ReleaseArtifactStore(ArtifactPath);
-    }
-
-    public void Dispose()
-    {
-        Store.Dispose();
-        var root = System.IO.Path.GetDirectoryName(WorkspacePath)!;
-        if (Directory.Exists(root))
-        {
-            Directory.Delete(root, recursive: true);
-        }
     }
 }
 
@@ -63,19 +43,20 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
         _fx = fx;
         _ks = new KsContext(
             GraphIri: "http://goodcrew.local/ks/test/releasemgr",
-            BaseIri: "http://goodcrew.local/ks/test/releasemgr/onto#");
+                BaseIri: "http://goodcrew.local/ks/test/releasemgr/onto#",
+                KnowledgeSystemId: fx.KnowledgeSystemId);
     }
 
-    public Task InitializeAsync()
+            public async Task InitializeAsync()
     {
-        _fx.Store.Clear();
+        await _fx.ResetAsync();
         // The artifact store is a directory; wipe it between tests so each
         // test starts at v1. We don't delete the root, just its contents.
         foreach (var d in Directory.GetDirectories(_fx.ArtifactPath))
         {
             Directory.Delete(d, recursive: true);
         }
-        return Task.CompletedTask;
+        
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -93,15 +74,15 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     {
         // Set up an initial workspace TBox.
         var initialQuad = MakeQuad("urn:s1", "urn:p", "v1", _ks.TBoxGraph);
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph), [initialQuad]);
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), [initialQuad]);
 
         // Use a per-fixture manager so the lifecycle is explicit.
-        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+        using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
 
         var laterQuad = MakeQuad("urn:s2", "urn:p", "v2", _ks.TBoxGraph);
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph), [laterQuad]);
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), [laterQuad]);
 
         Assert.DoesNotContain(laterQuad, releases.ReadPublished(release.Id, RdfLayer.TBox));
     }
@@ -113,7 +94,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task AllocateVersion_assigns_v1_then_v2_then_reuses_v1_after_delete()
     {
-        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+        using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
 
         var v1 = releases.AllocateVersion();
         Assert.Equal("v1", v1);
@@ -135,14 +116,14 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task ReadPublished_returns_quads_from_all_three_layers()
     {
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
             [MakeQuad("urn:t-s", "urn:p", "t-v", _ks.TBoxGraph)]);
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.ABoxGraph),
+        _fx.ABox.AddQuads(new OntoNamedNode(_ks.ABoxGraph),
             [MakeQuad("urn:a-s", "urn:p", "a-v", _ks.ABoxGraph)]);
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.VocabularyGraph),
+        _fx.Vocabulary.AddQuads(new OntoNamedNode(_ks.VocabularyGraph),
             [MakeQuad("urn:v-s", "urn:p", "v-v", _ks.VocabularyGraph)]);
 
-        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+        using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
 
@@ -161,17 +142,17 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task Concurrent_workspace_writes_do_not_leak_into_published_view()
     {
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
             [MakeQuad("urn:s1", "urn:p", "v1", _ks.TBoxGraph)]);
 
-        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+        using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
 
         // Race: many concurrent workspace writes — none should leak.
         var tasks = Enumerable.Range(0, 16).Select(i => Task.Run(() =>
         {
-            _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
+            _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
                 [MakeQuad($"urn:race-{i}", "urn:p", $"v{i}", _ks.TBoxGraph)]);
         })).ToArray();
         await Task.WhenAll(tasks);
@@ -190,7 +171,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task DeleteAsync_closes_serving_store()
     {
-        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+        using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
         Assert.True(releases.IsPublished(release.Id));
@@ -207,7 +188,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task PublishAsync_throws_for_missing_release()
     {
-        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+        using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
             await releases.PublishAsync("no-such-release", ActorInstance, CancellationToken.None));
     }
@@ -219,10 +200,10 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task PublishAsync_is_idempotent()
     {
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
             [MakeQuad("urn:s1", "urn:p", "v1", _ks.TBoxGraph)]);
 
-        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+        using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
 
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
@@ -239,10 +220,10 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task Capture_writes_shards_for_all_three_layers_even_when_empty()
     {
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
             [MakeQuad("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
 
-        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+        using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
 
         var manifest = _fx.Artifacts.LoadManifest(release.Id);
@@ -260,19 +241,19 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task Two_captures_of_same_workspace_yield_same_signature()
     {
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
             [MakeQuad("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
 
-        var quads = _fx.Store.Match(graph: new OntoNamedNode(_ks.TBoxGraph));
+        var quads = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
         var sig1 = ConflictDetector.Signature(quads);
 
         // Mutate the workspace and back — same logical content → same sig.
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
             [MakeQuad("urn:tmp", "urn:p", "tmp", _ks.TBoxGraph)]);
-        _fx.Store.RemoveQuads(new OntoNamedNode(_ks.TBoxGraph),
+        _fx.TBox.RemoveQuads(new OntoNamedNode(_ks.TBoxGraph),
             [MakeQuad("urn:tmp", "urn:p", "tmp", _ks.TBoxGraph)]);
 
-        var quadsAfter = _fx.Store.Match(graph: new OntoNamedNode(_ks.TBoxGraph));
+        var quadsAfter = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
         var sig2 = ConflictDetector.Signature(quadsAfter);
 
         Assert.Equal(sig1, sig2);
@@ -295,10 +276,10 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     public async Task Concurrent_captures_write_distinct_release_artifacts()
     {
         const int n = 8;
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
             [MakeQuad("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
 
-        using var releases = new ReleaseManager(_fx.Store, _fx.Artifacts, _fx.ServingPath);
+        using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
 
         var releaseKeys = Enumerable.Range(0, n)
             .Select(_ => Guid.NewGuid().ToString("N"))

@@ -32,16 +32,19 @@ namespace ISEStudio.Ontology;
 public sealed class VocabularyService
 {
     private readonly SkosManager _skos;
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
     private readonly ExtractionJobStore _jobStore;
     private readonly ITerminologySync _terminology;
 
+    private PostgresRdfGraphStore StoreFor(KsContext context) =>
+        new(_statements, context.KnowledgeSystemId, "Vocabulary");
+
     public VocabularyService(
         SkosManager skos,
-        StoreWrapper store,
+        IRdfStatementRepository statements,
         ISEStudioDbContext db,
         TimeProvider clock,
         KnowledgeSystemAccessService access,
@@ -49,7 +52,7 @@ public sealed class VocabularyService
         ITerminologySync terminology)
     {
         _skos = skos;
-        _store = store;
+        _statements = statements;
         _db = db;
         _clock = clock;
         _access = access;
@@ -172,7 +175,9 @@ public sealed class VocabularyService
         // valid RDF serialisation. Clients that need Turtle / JSON-LD
         // parsing can transform the bytes client-side.
         _ = fmt;
-        return _store.DumpNQuads(KsContext.FromEntity(ks).VocabularyGraph);
+        var ksc = KsContext.FromEntity(ks);
+        return new PostgresRdfGraphStore(_statements, ks.Id, "Vocabulary")
+            .DumpNQuads(ksc.VocabularyGraph);
     }
 
     // ----------------------------------------------------------------------
@@ -194,9 +199,9 @@ public sealed class VocabularyService
         var (user, ksc) = await RequireWriterAsync(ks, actor, ct).ConfigureAwait(false);
         if (user is null || ksc is null) return null;
 
-        var pre = _store.DumpNQuads(ksc.VocabularyGraph);
+        var pre = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         string iri;
-        await using (var cap = await _store
+        await using (var cap = await StoreFor(ksc)
             .CaptureAsync(ksc.VocabularyGraph, revertOnError: false, waitTimeout: null, ct)
             .ConfigureAwait(false))
         {
@@ -215,7 +220,7 @@ public sealed class VocabularyService
                 throw;
             }
         }
-        var post = _store.DumpNQuads(ksc.VocabularyGraph);
+        var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.create_scheme",
@@ -249,8 +254,8 @@ public sealed class VocabularyService
         var (user, ksc) = await RequireWriterAsync(ks, actor, ct).ConfigureAwait(false);
         if (user is null || ksc is null) return null;
 
-        var pre = _store.DumpNQuads(ksc.VocabularyGraph);
-        await using (var cap = await _store
+        var pre = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
+        await using (var cap = await StoreFor(ksc)
             .CaptureAsync(ksc.VocabularyGraph, revertOnError: false, waitTimeout: null, ct)
             .ConfigureAwait(false))
         {
@@ -269,7 +274,7 @@ public sealed class VocabularyService
                 throw;
             }
         }
-        var post = _store.DumpNQuads(ksc.VocabularyGraph);
+        var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.update_scheme",
@@ -299,9 +304,9 @@ public sealed class VocabularyService
         var (user, ksc) = await RequireWriterAsync(ks, actor, ct).ConfigureAwait(false);
         if (user is null || ksc is null) return null;
 
-        var pre = _store.DumpNQuads(ksc.VocabularyGraph);
+        var pre = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         int removedCount;
-        await using (var cap = await _store
+        await using (var cap = await StoreFor(ksc)
             .CaptureAsync(ksc.VocabularyGraph, revertOnError: false, waitTimeout: null, ct)
             .ConfigureAwait(false))
         {
@@ -320,7 +325,7 @@ public sealed class VocabularyService
                 throw;
             }
         }
-        var post = _store.DumpNQuads(ksc.VocabularyGraph);
+        var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.delete_scheme",
@@ -356,9 +361,9 @@ public sealed class VocabularyService
         var (user, ksc) = await RequireWriterAsync(ks, actor, ct).ConfigureAwait(false);
         if (user is null || ksc is null) return null;
 
-        var pre = _store.DumpNQuads(ksc.VocabularyGraph);
+        var pre = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         string iri;
-        await using (var cap = await _store
+        await using (var cap = await StoreFor(ksc)
             .CaptureAsync(ksc.VocabularyGraph, revertOnError: false, waitTimeout: null, ct)
             .ConfigureAwait(false))
         {
@@ -377,7 +382,7 @@ public sealed class VocabularyService
                 throw;
             }
         }
-        var post = _store.DumpNQuads(ksc.VocabularyGraph);
+        var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.create_concept",
@@ -413,8 +418,8 @@ public sealed class VocabularyService
         var (user, ksc) = await RequireWriterAsync(ks, actor, ct).ConfigureAwait(false);
         if (user is null || ksc is null) return null;
 
-        var pre = _store.DumpNQuads(ksc.VocabularyGraph);
-        await using (var cap = await _store
+        var pre = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
+        await using (var cap = await StoreFor(ksc)
             .CaptureAsync(ksc.VocabularyGraph, revertOnError: false, waitTimeout: null, ct)
             .ConfigureAwait(false))
         {
@@ -433,7 +438,7 @@ public sealed class VocabularyService
                 throw;
             }
         }
-        var post = _store.DumpNQuads(ksc.VocabularyGraph);
+        var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.update_concept",
@@ -463,9 +468,9 @@ public sealed class VocabularyService
         var (user, ksc) = await RequireWriterAsync(ks, actor, ct).ConfigureAwait(false);
         if (user is null || ksc is null) return null;
 
-        var pre = _store.DumpNQuads(ksc.VocabularyGraph);
+        var pre = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         int removedCount;
-        await using (var cap = await _store
+        await using (var cap = await StoreFor(ksc)
             .CaptureAsync(ksc.VocabularyGraph, revertOnError: false, waitTimeout: null, ct)
             .ConfigureAwait(false))
         {
@@ -484,7 +489,7 @@ public sealed class VocabularyService
                 throw;
             }
         }
-        var post = _store.DumpNQuads(ksc.VocabularyGraph);
+        var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.delete_concept",
@@ -519,7 +524,7 @@ public sealed class VocabularyService
         var (user, ksc) = await RequireWriterAsync(ks, actor, ct).ConfigureAwait(false);
         if (user is null || ksc is null) return null;
 
-        var pre = _store.DumpNQuads(ksc.VocabularyGraph);
+        var pre = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         TerminologyResult result;
         // Wrap the terminology pass in a CaptureAsync so a mid-loop failure
         // in TerminologyService.SyncCore (which writes quads directly via
@@ -530,7 +535,7 @@ public sealed class VocabularyService
         // exception. The graph-side rollback is automatic on dispose when
         // cap.MarkError() fires; the audit row below still records what was
         // attempted so operators can see the partial diff.
-        await using (var cap = await _store
+        await using (var cap = await StoreFor(ksc)
             .CaptureAsync(ksc.VocabularyGraph, revertOnError: false, waitTimeout: null, ct)
             .ConfigureAwait(false))
         {
@@ -553,7 +558,7 @@ public sealed class VocabularyService
                 throw;
             }
         }
-        var post = _store.DumpNQuads(ksc.VocabularyGraph);
+        var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
 
         var summary = result.Error is null

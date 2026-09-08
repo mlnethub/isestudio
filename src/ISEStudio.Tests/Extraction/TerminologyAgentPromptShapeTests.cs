@@ -23,7 +23,6 @@ namespace ISEStudio.Tests.Extraction;
 /// against regressions of that gap.
 ///
 /// <para>Tests run with the agent's chat-factory dependency wired to a
-/// <see cref="FakeChatClientFactory"/> so the prompt-shape assertions stay
 /// independent of the LLM call itself; <see cref="BuildMessages"/> /
 /// <see cref="BuildExistingVocabularyBlock"/> are pure and never touch the
 /// chat client.</para>
@@ -37,17 +36,16 @@ public sealed class TerminologyAgentPromptShapeTests
 
     private readonly TerminologyServiceFixture _fx;
     private readonly SqliteContextFactory _contexts = new();
+    private readonly KsContext _ks;
 
     public TerminologyAgentPromptShapeTests(TerminologyServiceFixture fx)
     {
         _fx = fx;
+        _ks = new KsContext(GraphIri, BaseIri, Name: "Prompt shape fixture",
+            KnowledgeSystemId: fx.KnowledgeSystemId);
     }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+    public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync()
     {
@@ -75,7 +73,7 @@ public sealed class TerminologyAgentPromptShapeTests
         // SkosManager wired, but the scheme has no concepts yet — the LLM
         // should be told the scheme is empty so it does not assume any
         // labels are pre-existing.
-        var manager = new SkosManager(_fx.Store);
+        var manager = new SkosManager(_fx.Statements);
         SeedScheme(manager);
         var agent = BuildAgent(skos: manager);
 
@@ -91,15 +89,15 @@ public sealed class TerminologyAgentPromptShapeTests
         // Two seeded concepts, each with prefLabel + altLabels — the LLM
         // must see both so it can route duplicate labels to add_alias
         // instead of create.
-        var manager = new SkosManager(_fx.Store);
+        var manager = new SkosManager(_fx.Statements);
         SeedScheme(manager);
-        manager.CreateConcept(Ks, SchemeIri, new SkosConceptData(
+        manager.CreateConcept(_ks, SchemeIri, new SkosConceptData(
             Iri: "",
             PrefLabel: "操作类",
             Language: "zh-CN",
             AltLabels: new[] { new SkosLabel("操作", "zh-CN") },
             MappedEntityIri: null));
-        manager.CreateConcept(Ks, SchemeIri, new SkosConceptData(
+        manager.CreateConcept(_ks, SchemeIri, new SkosConceptData(
             Iri: "",
             PrefLabel: "泵站",
             Language: "zh-CN",
@@ -119,9 +117,9 @@ public sealed class TerminologyAgentPromptShapeTests
     {
         // Single concept with no altLabels — the pipe-separator column
         // collapses so the row reads as the pref label only.
-        var manager = new SkosManager(_fx.Store);
+        var manager = new SkosManager(_fx.Statements);
         SeedScheme(manager);
-        manager.CreateConcept(Ks, SchemeIri, new SkosConceptData(
+        manager.CreateConcept(_ks, SchemeIri, new SkosConceptData(
             Iri: "",
             PrefLabel: "Pump",
             Language: "en",
@@ -144,16 +142,16 @@ public sealed class TerminologyAgentPromptShapeTests
     {
         // Two schemes in the same store; only the concepts attached to
         // the requested scheme should surface.
-        var manager = new SkosManager(_fx.Store);
+        var manager = new SkosManager(_fx.Statements);
         SeedScheme(manager);
         var otherSchemeIri = GraphIri + "/vocab#scheme-other";
         SeedScheme(manager, otherSchemeIri, title: "Other scheme");
-        manager.CreateConcept(Ks, SchemeIri, new SkosConceptData(
+        manager.CreateConcept(_ks, SchemeIri, new SkosConceptData(
             Iri: "",
             PrefLabel: "Owned",
             Language: "en",
             MappedEntityIri: null));
-        manager.CreateConcept(Ks, otherSchemeIri, new SkosConceptData(
+        manager.CreateConcept(_ks, otherSchemeIri, new SkosConceptData(
             Iri: "",
             PrefLabel: "Foreign",
             Language: "en",
@@ -175,11 +173,11 @@ public sealed class TerminologyAgentPromptShapeTests
         // instructing the LLM to verify against the sample AND the
         // source chunks before proposing create. Without the sample,
         // the LLM is flying blind and may confidently invent duplicates.
-        var manager = new SkosManager(_fx.Store);
+        var manager = new SkosManager(_fx.Statements);
         SeedScheme(manager);
         for (var i = 0; i < 247; i++)
         {
-            manager.CreateConcept(Ks, SchemeIri, new SkosConceptData(
+            manager.CreateConcept(_ks, SchemeIri, new SkosConceptData(
                 Iri: "",
                 PrefLabel: $"Term {i:D3}",
                 Language: "en",
@@ -210,9 +208,9 @@ public sealed class TerminologyAgentPromptShapeTests
     [Fact]
     public void BuildMessages_user_message_carries_scheme_iri_and_existing_concepts()
     {
-        var manager = new SkosManager(_fx.Store);
+        var manager = new SkosManager(_fx.Statements);
         SeedScheme(manager);
-        manager.CreateConcept(Ks, SchemeIri, new SkosConceptData(
+        manager.CreateConcept(_ks, SchemeIri, new SkosConceptData(
             Iri: "",
             PrefLabel: "操作类",
             Language: "zh-CN",
@@ -289,8 +287,6 @@ public sealed class TerminologyAgentPromptShapeTests
     // Helpers
     // ------------------------------------------------------------------
 
-    private static readonly KsContext Ks = new(GraphIri, BaseIri, Name: "Prompt shape fixture");
-
     private TerminologyAgent BuildAgent(SkosManager? skos)
     {
         // BuildMessages never calls the chat factory, so wiring
@@ -342,7 +338,7 @@ public sealed class TerminologyAgentPromptShapeTests
 
     private void SeedScheme(SkosManager manager, string iri, string title)
     {
-        manager.CreateScheme(Ks, new SkosSchemeData(
+        manager.CreateScheme(_ks, new SkosSchemeData(
             Iri: iri,
             Title: title,
             DefaultLanguage: "en",

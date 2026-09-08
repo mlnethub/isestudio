@@ -516,12 +516,10 @@ else
     builder.Services.AddSingleton<StoreWrapper?>(_ => null);
 #pragma warning restore CS8634
 }
-builder.Services.AddSingleton<OntologyEditor>(sp =>
-    new OntologyEditor(sp.GetService<StoreWrapper>()));
-builder.Services.AddSingleton<ABoxManager>(sp =>
-    new ABoxManager(sp.GetService<StoreWrapper>()));
-builder.Services.AddSingleton<ABoxValidator>(sp =>
-    new ABoxValidator(sp.GetService<StoreWrapper>()));
+builder.Services.AddScoped<ABoxManager>(sp =>
+    new ABoxManager(sp.GetRequiredService<IRdfStatementRepository>()));
+builder.Services.AddScoped<ABoxValidator>(sp =>
+    new ABoxValidator(sp.GetService<IRdfStatementRepository>()));
 builder.Services.AddOntologyServices();
 builder.Services.AddPromptServices();
 builder.Services.AddAboxServices();
@@ -541,7 +539,7 @@ builder.Services.AddExtractionServices();
 // (depends on the singleton StoreWrapper); the underlying TerminologyService
 // + ExtractionJobStore come from AddExtractionServices above.
 builder.Services.AddSingleton<SkosManager>(sp =>
-    new SkosManager(sp.GetService<StoreWrapper>()));
+    new SkosManager(sp.GetRequiredService<IRdfStatementRepository>()));
 builder.Services.AddVocabularyServices();
 
 // ---- Releases exports (slice 7b) ----

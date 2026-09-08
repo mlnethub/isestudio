@@ -3,9 +3,6 @@ using System.Text;
 using System.Text.RegularExpressions;
 using ISEStudio.Application.Ontology;
 using Oxigraph;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Ontology;
 
@@ -77,7 +74,7 @@ public sealed record ABoxValidationReport(
 /// </remarks>
 public sealed class ABoxValidator
 {
-    private readonly StoreWrapper? _store;
+    private readonly IRdfStatementRepository? _statements;
 
     /// <summary>Per-call cap so a runaway ABox doesn't OOM the report.</summary>
     public const int MaxViolations = 500;
@@ -94,9 +91,9 @@ public sealed class ABoxValidator
     // a null StoreWrapper when no RocksDB root is provisioned) can still
     // resolve this service. Validate returns an empty report when the
     // store is null; the HTTP envelope still parses cleanly.
-    public ABoxValidator(StoreWrapper? store)
+    public ABoxValidator(IRdfStatementRepository? statements)
     {
-        _store = store;
+        _statements = statements;
     }
 
     /// <summary>
@@ -106,7 +103,7 @@ public sealed class ABoxValidator
     {
         ArgumentNullException.ThrowIfNull(ks);
 
-        if (_store is null)
+        if (_statements is null || ks.KnowledgeSystemId == Guid.Empty)
         {
             // No graph store wired (contract-test path) — return an
             // empty report so the HTTP envelope still parses.
@@ -117,7 +114,10 @@ public sealed class ABoxValidator
                 Truncated: false);
         }
 
-        var view = SchemaBuilder.BuildView(ks.TBoxGraph, _store);
+        var allStatements = _statements.ListAsync(ks.KnowledgeSystemId)
+            .GetAwaiter().GetResult();
+        var view = SchemaBuilder.BuildView(ks.TBoxGraph,
+            allStatements.Where(statement => statement.GraphIri == ks.TBoxGraph).ToList());
         var clabel = (string iri) =>
         {
             foreach (var c in view.Classes)
@@ -157,16 +157,15 @@ public sealed class ABoxValidator
         }
 
         // 1. Scan ABox once.
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
         var types = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         var indLabels = new Dictionary<string, string>(StringComparer.Ordinal);
         var objAssert = new List<(string S, string P, string O)>();
         var dataAssert = new List<(string S, string P, string Value, string? Dt)>();
-        foreach (var q in _store.Match(graph: aboxGraph))
+        foreach (var q in allStatements.Where(statement => statement.GraphIri == ks.ABoxGraph))
         {
-            if (q.Subject is not OntoNamedNode s) continue;
+            if (q.Subject is not RdfIri s) continue;
             var sIri = s.Value;
-            if (q.Predicate.Value == Vocabulary.RdfType.Value && q.Object is OntoNamedNode t)
+            if (q.PredicateIri == Vocabulary.RdfType.Value && q.Object is RdfIri t)
             {
                 if (t.Value != Vocabulary.OwlNamedIndividual.Value)
                 {
@@ -178,18 +177,17 @@ public sealed class ABoxValidator
                     set.Add(t.Value);
                 }
             }
-            else if (q.Predicate.Value == Vocabulary.RdfsLabel.Value && q.Object is OntoLiteral lbl)
+            else if (q.PredicateIri == Vocabulary.RdfsLabel.Value && q.Object is RdfLiteral lbl)
             {
                 indLabels[sIri] = lbl.Value;
             }
-            else if (q.Object is OntoNamedNode tn)
+            else if (q.Object is RdfIri tn)
             {
-                objAssert.Add((sIri, q.Predicate.Value, tn.Value));
+                objAssert.Add((sIri, q.PredicateIri, tn.Value));
             }
-            else if (q.Object is OntoLiteral lit)
+            else if (q.Object is RdfLiteral lit)
             {
-                dataAssert.Add((sIri, q.Predicate.Value, lit.Value,
-                    lit.Datatype?.Value));
+                dataAssert.Add((sIri, q.PredicateIri, lit.Value, lit.Datatype));
             }
         }
 

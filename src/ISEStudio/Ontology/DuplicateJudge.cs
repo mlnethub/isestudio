@@ -41,7 +41,7 @@ namespace ISEStudio.Ontology;
 ///     candidate generator — the LLM judge decides which candidates are
 ///     truly one concept.</description></item>
 ///   <item><description><b>LLM judge</b> — a single chat completion per
-///     <see cref="DetectAsync(StoreWrapper, string, CancellationToken)"/>
+///     quad-list <see cref="DetectAsync(IReadOnlyList{Oxigraph.Quad}, string, CancellationToken)"/>
 ///     call batches every candidate pair (number-indexed) into the
 ///     <c>conflict.duplicate_judge</c> prompt, returning the indices of
 ///     "same" pairs. Fail-closed (empty set on any error) so a flaky
@@ -69,7 +69,7 @@ public sealed class DuplicateJudge
     /// Minimum normalised token-set Jaccard overlap for a string-similarity
     /// candidate. Mirrors Python <c>DUP_THRESHOLD = 0.86</c>. Public so the
     /// tests can reuse the same threshold; production callers go through
-    /// <see cref="DetectAsync(StoreWrapper, string, CancellationToken)"/>.
+        /// <see cref="DetectAsync(IReadOnlyList{Oxigraph.Quad}, string, CancellationToken)"/>.
     /// </summary>
     public const double StringThreshold = 0.86;
 
@@ -110,20 +110,20 @@ public sealed class DuplicateJudge
     /// cannot build a client.
     /// </remarks>
     public async Task<IReadOnlyList<ConflictDetection.DetectedConflict>> DetectAsync(
-        StoreWrapper store,
+        IReadOnlyList<Oxigraph.Quad> quads,
         string graphIri,
         CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(quads);
         ArgumentException.ThrowIfNullOrEmpty(graphIri);
 
-        var labels = ConflictDetection.ReadClassLabels(store, graphIri);
+        var labels = ConflictDetection.ReadClassLabels(quads, graphIri);
         if (labels.Count < 2)
         {
             return Array.Empty<ConflictDetection.DetectedConflict>();
         }
 
-        var relations = ConflictDetection.ReadGraphRelations(store, graphIri);
+        var relations = ConflictDetection.ReadGraphRelations(quads, graphIri);
         var seen = new HashSet<(string, string)>(PairKeyComparer.Ordinal);
         var found = new List<ConflictDetection.DetectedConflict>();
 

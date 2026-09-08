@@ -9,6 +9,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 
 namespace ISEStudio.Tests.Extraction;
 
@@ -32,7 +33,7 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
 {
     private readonly string _root;
     private readonly SqliteContextFactory _contexts;
-    private readonly StoreWrapper _store;
+    private readonly PostgresRdfFixture _rdf = new();
     private readonly LocalCasBlobStore _blobs;
     private readonly ExtractionJobStore _jobs;
     private readonly ExtractionOrchestrator _orchestrator;
@@ -45,13 +46,13 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
         _root = Path.Combine(Path.GetTempPath(), "isestudio-capacity-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(_root);
 
-        _store = new StoreWrapper(Path.Combine(_root, "store"));
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
         _blobs = new LocalCasBlobStore(Path.Combine(_root, "blobs"));
         _contexts = new SqliteContextFactory();
         _sha = PutDocument(_blobs);
 
         _jobs = new ExtractionJobStore(_contexts, TimeProvider.System);
-        _merger = new FakeMerger(new ExtractionMerger(_store));
+        _merger = new FakeMerger(new ExtractionMerger(_rdf.Statements));
 
         FakeChatClientFactory.Default.Reset();
         FakeChatClientFactory.Default.UseClient(_chat);
@@ -69,10 +70,10 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(_store),
+            new TerminologyService(_rdf.Statements),
             new PromptSnapshotService(),
             _merger,
-            _store,
+            _rdf.Statements,
             TimeProvider.System);
     }
 
@@ -161,7 +162,7 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
     {
         FakeChatClientFactory.Default.Reset();
         _chat.Release();
-        _store.Dispose();
+        _rdf.DisposeAsync().GetAwaiter().GetResult();
         _contexts.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
     }
@@ -212,7 +213,16 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
                 DataProperties: new[] { new PropertyMutation("age", "data", Domain: "Person", Range: "integer") },
                 Axioms: Array.Empty<AxiomMutation>()),
             graphIri);
-        _store.AddQuads(new Oxigraph.NamedNode(graphIri), quads);
+        _rdf.Statements.ReplaceLayerAsync(
+            knowledgeSystemId,
+            RdfLayer.TBox.ToString(),
+            quads.Select(quad => new RdfStatement(
+                new RdfIri(quad.Subject.ToString()),
+                quad.Predicate.Value,
+                quad.Object is Oxigraph.NamedNode named
+                    ? new RdfIri(named.Value)
+                    : new RdfLiteral(quad.Object.ToString()),
+                graphIri)).ToList()).GetAwaiter().GetResult();
     }
 
     private static string PutDocument(IBlobStore blobs)

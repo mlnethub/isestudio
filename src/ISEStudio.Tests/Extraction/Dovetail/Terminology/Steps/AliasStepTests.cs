@@ -21,14 +21,11 @@ public class AliasStepTests : IClassFixture<TerminologyServiceFixture>, IAsyncLi
         _ks = new KsContext(
             GraphIri: "http://goodcrew.local/ks/test/term-step3",
             BaseIri: "http://goodcrew.local/ks/test/term-step3/onto#",
-            Name: "Step tests");
+                Name: "Step tests",
+                KnowledgeSystemId: fx.KnowledgeSystemId);
     }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+            public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -40,7 +37,7 @@ public class AliasStepTests : IClassFixture<TerminologyServiceFixture>, IAsyncLi
         // is "Fluid Mover" — the alias pass must attach "Pump" as an
         // skos:altLabel without touching the curated pref label.
         SeedClasses("Pump");
-        var manager = new SkosManager(_fx.Store);
+        var manager = new SkosManager(_fx.Statements);
         SeedDefaultScheme(manager);
         var pumpIri = $"{_ks.BaseIri}Pump";
         manager.CreateConcept(_ks,
@@ -51,7 +48,7 @@ public class AliasStepTests : IClassFixture<TerminologyServiceFixture>, IAsyncLi
                 Language: "en",
                 MappedEntityIri: pumpIri));
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var input = new TerminologyInput(_ks, Guid.NewGuid(), null, false);
         var init = await new StaleMappingStep(svc, NullLogger<StaleMappingStep>.Instance)
             .ExecuteAsync(input, CancellationToken.None);
@@ -78,7 +75,7 @@ public class AliasStepTests : IClassFixture<TerminologyServiceFixture>, IAsyncLi
         // Same synthetic-throw pin as EntitySyncStepTests: SchemeIri
         // non-null passes the guard, the null View throws inside the
         // pass, and the step converts it to an Error carry (D5).
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var step = new AliasStep(svc, NullLogger<AliasStep>.Instance);
         var malformed = new EntitySyncCarry(new TermSyncCarry("http://x/scheme", null, null, 0));
 
@@ -119,6 +116,6 @@ public class AliasStepTests : IClassFixture<TerminologyServiceFixture>, IAsyncLi
             DataProperties: dataProperties.Select(l => new PropertyMutation(l, "data")).ToArray(),
             Axioms: axioms);
         var quads = SchemaBuilder.BuildMutation(_ks.BaseIri, mutation, _ks.TBoxGraph);
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
     }
 }

@@ -21,14 +21,11 @@ public class BroaderStepTests : IClassFixture<TerminologyServiceFixture>, IAsync
         _ks = new KsContext(
             GraphIri: "http://goodcrew.local/ks/test/term-step4",
             BaseIri: "http://goodcrew.local/ks/test/term-step4/onto#",
-            Name: "Step tests");
+                Name: "Step tests",
+                KnowledgeSystemId: fx.KnowledgeSystemId);
     }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+            public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -44,7 +41,7 @@ public class BroaderStepTests : IClassFixture<TerminologyServiceFixture>, IAsync
             dataProperties: Array.Empty<string>(),
             axioms: new[] { new AxiomMutation("subclass", Sub: "Centrifugal Pump", Super: "Pump") });
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var input = new TerminologyInput(_ks, Guid.NewGuid(), null, false);
         var init = await new StaleMappingStep(svc, NullLogger<StaleMappingStep>.Instance)
             .ExecuteAsync(input, CancellationToken.None);
@@ -60,7 +57,7 @@ public class BroaderStepTests : IClassFixture<TerminologyServiceFixture>, IAsync
         Assert.Equal(1, carry.Carry.BroaderAdded);
         Assert.Equal(2, carry.Carry.TermsAdded);
 
-        var view = new SkosManager(_fx.Store).BuildView(_ks);
+        var view = new SkosManager(_fx.Statements).BuildView(_ks);
         var child = view.Concepts.Single(c => c.DisplayLabel == "Centrifugal Pump");
         var parent = view.Concepts.Single(c => c.DisplayLabel == "Pump");
         Assert.Contains(parent.Iri, child.Broader);
@@ -72,7 +69,7 @@ public class BroaderStepTests : IClassFixture<TerminologyServiceFixture>, IAsync
         // Same synthetic-throw pin as EntitySyncStepTests: SchemeIri
         // non-null passes the guard, the null View throws inside the
         // pass, and the step converts it to an Error carry (D5).
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var step = new BroaderStep(svc, NullLogger<BroaderStep>.Instance);
         var malformed = new AliasCarry(new TermSyncCarry("http://x/scheme", null, null, 0));
 
@@ -99,6 +96,6 @@ public class BroaderStepTests : IClassFixture<TerminologyServiceFixture>, IAsync
             DataProperties: dataProperties.Select(l => new PropertyMutation(l, "data")).ToArray(),
             Axioms: axioms);
         var quads = SchemaBuilder.BuildMutation(_ks.BaseIri, mutation, _ks.TBoxGraph);
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
     }
 }

@@ -11,7 +11,7 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Knowledge;
 using ISEStudioOptionsConfig = ISEStudio.Configuration.ISEStudioOptions;
 using OntoNamedNode = Oxigraph.NamedNode;
-using OntoQuad = Oxigraph.Quad;
+using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Ontology;
 
@@ -78,7 +78,7 @@ public sealed record RdfImportResult(
 /// </summary>
 public sealed class RdfImportService
 {
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly RdfImportParser _parser;
     private readonly AuditLogService? _audit;
     private readonly ISEStudioDbContext? _db;
@@ -97,11 +97,10 @@ public sealed class RdfImportService
     /// requires the full DI constructor below and throws if the
     /// request-scoped collaborators are missing.
     /// </summary>
-    public RdfImportService(StoreWrapper store)
+    public RdfImportService(IRdfStatementRepository statements, RdfImportParser parser)
     {
-        ArgumentNullException.ThrowIfNull(store);
-        _store = store;
-        _parser = new RdfImportParser();
+        _statements = statements ?? throw new ArgumentNullException(nameof(statements));
+        _parser = parser ?? throw new ArgumentNullException(nameof(parser));
         _audit = null;
         _db = null;
         _access = null;
@@ -114,7 +113,7 @@ public sealed class RdfImportService
     }
 
     public RdfImportService(
-        StoreWrapper store,
+        IRdfStatementRepository statements,
         RdfImportParser parser,
         AuditLogService audit,
         ISEStudioDbContext db,
@@ -126,7 +125,7 @@ public sealed class RdfImportService
         KnowledgeStatsService stats,
         Microsoft.Extensions.Options.IOptions<ISEStudioOptionsConfig> options)
     {
-        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(statements);
         ArgumentNullException.ThrowIfNull(parser);
         ArgumentNullException.ThrowIfNull(audit);
         ArgumentNullException.ThrowIfNull(db);
@@ -138,7 +137,7 @@ public sealed class RdfImportService
         ArgumentNullException.ThrowIfNull(stats);
         ArgumentNullException.ThrowIfNull(options);
 
-        _store = store;
+        _statements = statements;
         _parser = parser;
         _audit = audit;
         _db = db;
@@ -178,26 +177,21 @@ public sealed class RdfImportService
         ArgumentNullException.ThrowIfNull(nQuads);
 
         var graphIri = LayerGraph(ks, layer);
-        await using var capture = await _store.CaptureAsync(
-            graphIri, revertOnError: false, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-
-        try
-        {
-            var graph = new OntoNamedNode(graphIri);
-
-            if (mode == ImportMode.Replace)
+        using var parserStore = new Oxigraph.Store();
+        parserStore.Load(System.Text.Encoding.UTF8.GetString(nQuads), Oxigraph.RdfFormat.NQuads);
+        var incoming = parserStore.Match().Select(quad => new RdfStatement(
+            ToRdfTerm(quad.Subject), quad.Predicate.Value,
+            quad.Object switch
             {
-                _store.ReplaceGraph(graph, Array.Empty<OntoQuad>());
-            }
-
-            _store.LoadNQuads(nQuads, graph);
-        }
-        catch
-        {
-            capture.MarkError();
-            throw;
-        }
+                OntoNamedNode iri => new RdfIri(iri.Value),
+                Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
+                OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
+                _ => throw new InvalidOperationException("Unsupported RDF term."),
+            }, graphIri)).ToList();
+        var layerName = layer.ToString();
+        var existing = await _statements.ListAsync(ks.KnowledgeSystemId, layerName, cancellationToken).ConfigureAwait(false);
+        var next = mode == ImportMode.Replace ? incoming : existing.Concat(incoming).Distinct().ToList();
+        await _statements.ReplaceLayerAsync(ks.KnowledgeSystemId, layerName, next, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -291,7 +285,7 @@ public sealed class RdfImportService
         if (partition.TBox.Count > 0)
         {
             var (added, removed, addedBytes, removedBytes) = await ImportLayerAsync(
-                ksCtx.TBoxGraph, partition.TBox, strategy, cancellationToken).ConfigureAwait(false);
+                ks.Id, ksCtx.TBoxGraph, partition.TBox, strategy, cancellationToken).ConfigureAwait(false);
             tboxAdded = added;
             tboxRemoved = removed;
             tboxAddedBytes = addedBytes;
@@ -300,7 +294,7 @@ public sealed class RdfImportService
         if (partition.ABox.Count > 0)
         {
             var (added, removed, addedBytes, removedBytes) = await ImportLayerAsync(
-                ksCtx.ABoxGraph, partition.ABox, strategy, cancellationToken).ConfigureAwait(false);
+                ks.Id, ksCtx.ABoxGraph, partition.ABox, strategy, cancellationToken).ConfigureAwait(false);
             aboxAdded = added;
             aboxRemoved = removed;
             aboxAddedBytes = addedBytes;
@@ -391,8 +385,9 @@ public sealed class RdfImportService
 
         // Live view rebuild + cached-stats refresh — same end-of-mutation
         // touch-ups every other ontology writer performs.
+        var statements = await _statements.ListAsync(ks.Id, "TBox", cancellationToken).ConfigureAwait(false);
         var view = await _viewBuilder
-            .BuildFromStoreAsync(_store, ks.GraphIri, cancellationToken)
+            .BuildFromStatementsAsync(statements, ks.GraphIri, cancellationToken)
             .ConfigureAwait(false);
 
         var validation = _validator.Validate(ksCtx);
@@ -430,43 +425,22 @@ public sealed class RdfImportService
     /// </summary>
     private async Task<(int Added, int Removed, byte[] AddedBytes, byte[] RemovedBytes)>
         ImportLayerAsync(
+            Guid knowledgeSystemId,
             string graphIri,
             IReadOnlyList<Oxigraph.Triple> triples,
             string strategy,
             CancellationToken cancellationToken)
     {
-        var graph = new OntoNamedNode(graphIri);
-        // Re-attach the named-graph context to every parsed triple so the
-        // store sees quads in the target graph. Blank nodes, language
-        // tags, and datatypes survive because the triple terms are the
-        // same Oxigraph term objects the parser produced.
-        var quads = new List<OntoQuad>(triples.Count);
-        foreach (var triple in triples)
-        {
-            quads.Add(new OntoQuad(triple.Subject, triple.Predicate, triple.Object, graph));
-        }
-
-        var pre = _store.DumpNQuads(graph);
-        await using var capture = await _store.CaptureAsync(
-            graphIri, revertOnError: false, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-
-        try
-        {
-            if (strategy == "replace")
-            {
-                _store.ReplaceGraph(graph, Array.Empty<OntoQuad>());
-            }
-            _store.AddQuads(graph, quads);
-        }
-        catch
-        {
-            capture.MarkError();
-            throw;
-        }
-
-        var post = _store.DumpNQuads(graph);
-        var (addedBytes, removedBytes) = StoreWrapper.DiffNQuads(pre, post);
+        var incoming = triples.Select(triple => new RdfStatement(
+            ToRdfTerm(triple.Subject), triple.Predicate.Value, ToRdfTerm(triple.Object), graphIri)).ToList();
+        var layer = LayerForGraph(graphIri);
+        var existing = await _statements.ListAsync(knowledgeSystemId, layer, cancellationToken).ConfigureAwait(false);
+        var next = strategy == "replace" ? incoming : existing.Concat(incoming).Distinct().ToList();
+        var addedStatements = next.Except(existing).ToList();
+        var removedStatements = existing.Except(next).ToList();
+        await _statements.ReplaceLayerAsync(knowledgeSystemId, layer, next, cancellationToken).ConfigureAwait(false);
+        var addedBytes = Serialize(addedStatements);
+        var removedBytes = Serialize(removedStatements);
         return (CountLines(addedBytes), CountLines(removedBytes), addedBytes, removedBytes);
     }
 
@@ -476,6 +450,29 @@ public sealed class RdfImportService
         var text = System.Text.Encoding.UTF8.GetString(bytes);
         return text.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
     }
+
+    private static byte[] Serialize(IEnumerable<RdfStatement> statements) =>
+        System.Text.Encoding.UTF8.GetBytes(string.Join("\n", statements.Select(statement =>
+            $"{Term(statement.Subject)} <{statement.PredicateIri}> {Term(statement.Object)} <{statement.GraphIri}> .")) + "\n");
+
+    private static string Term(RdfTerm term) => term switch
+    {
+        RdfIri iri => $"<{iri.Value}>",
+        RdfBlankNode blank => $"_:{blank.Id}",
+        RdfLiteral literal => $"\"{literal.Value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"",
+        _ => throw new InvalidOperationException("Unsupported RDF term."),
+    };
+
+    private static string LayerForGraph(string graphIri) =>
+        graphIri.EndsWith("/abox", StringComparison.Ordinal) ? "ABox" : "TBox";
+
+    private static RdfTerm ToRdfTerm(Oxigraph.ITerm term) => term switch
+    {
+        OntoNamedNode iri => new RdfIri(iri.Value),
+        Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
+        OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
+        _ => throw new RdfImportException($"Unsupported RDF term: {term.GetType().Name}"),
+    };
 
     private async Task<UserEntity?> ResolveActorAsync(
         Actor actor,

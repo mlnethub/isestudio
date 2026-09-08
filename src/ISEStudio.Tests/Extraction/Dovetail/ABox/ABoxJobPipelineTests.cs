@@ -23,7 +23,7 @@ public class ABoxJobPipelineTests
             JobId: Guid.NewGuid(),
             KnowledgeSystemId: Guid.NewGuid(),
             GraphIri: "http://example.org/g",
-            Store: null!,
+            Quads: null!,
             Chat: new NullChat(),
             Embedder: null!,
             MinConfidence: 0.90);

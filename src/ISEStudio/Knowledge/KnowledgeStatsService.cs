@@ -16,7 +16,7 @@ namespace ISEStudio.Knowledge;
 /// and axioms.
 ///
 /// <para>The TBox stats are derived from the same
-/// <see cref="OntologyViewBuilder.BuildFromStoreAsync"/> algorithm that
+/// <see cref="OntologyViewBuilder.BuildFromStatementsAsync"/> algorithm that
 /// powers <c>GET /api/knowledge/{id}/ontology</c>, so the cached
 /// counts are guaranteed to match what the ontology page renders.</para>
 ///
@@ -30,7 +30,7 @@ public sealed class KnowledgeStatsService : IKnowledgeStatsService
 {
     private readonly ISEStudioDbContext _db;
     private readonly TimeProvider _clock;
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly OntologyViewBuilder _builder;
 
     /// <summary>DI constructor. Scoped lifetime shares the request's
@@ -38,16 +38,16 @@ public sealed class KnowledgeStatsService : IKnowledgeStatsService
     public KnowledgeStatsService(
         ISEStudioDbContext db,
         TimeProvider clock,
-        StoreWrapper store,
+        IRdfStatementRepository statements,
         OntologyViewBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(db);
         ArgumentNullException.ThrowIfNull(clock);
-        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(statements);
         ArgumentNullException.ThrowIfNull(builder);
         _db = db;
         _clock = clock;
-        _store = store;
+        _statements = statements;
         _builder = builder;
     }
 
@@ -64,8 +64,11 @@ public sealed class KnowledgeStatsService : IKnowledgeStatsService
             .ConfigureAwait(false);
         if (ks is null) return;
 
+        var statements = await _statements
+            .ListAsync(ksId, "TBox", ct)
+            .ConfigureAwait(false);
         var view = await _builder
-            .BuildFromStoreAsync(_store, ks.GraphIri, ct)
+            .BuildFromStatementsAsync(statements, ks.GraphIri, ct)
             .ConfigureAwait(false);
 
         // Short-circuit when nothing changed so we don't churn

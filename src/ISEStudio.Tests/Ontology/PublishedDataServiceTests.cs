@@ -5,7 +5,7 @@ using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Extraction;
-using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 using OntoLiteral = Oxigraph.Literal;
 using OntoNamedNode = Oxigraph.NamedNode;
 
@@ -19,38 +19,29 @@ namespace ISEStudio.Tests.Ontology;
 /// "real collaborators" wiring so the resolver / Match / tbox-shard paths
 /// actually traverse every layer.
 /// </summary>
-public sealed class PublishedDataServiceFixture : IDisposable
+public sealed class PublishedDataServiceFixture : PostgresRdfFixture
 {
     public const string GraphIri = "http://goodcrew.local/ks/published-tests";
     public const string BaseIri = GraphIri + "/onto#";
 
     public string Root { get; }
-    public SqliteContextFactory Contexts { get; }
     public ReleaseArtifactStore Artifacts { get; }
-    public ReleaseManager Releases { get; }
+    public ReleaseManager? Releases { get; private set; }
     public OntologyViewBuilder ViewBuilder { get; }
-    public StoreWrapper Workspace { get; }
+    private readonly string _root;
 
     public PublishedDataServiceFixture()
     {
-        Root = Path.Combine(Path.GetTempPath(),
+        _root = Path.Combine(Path.GetTempPath(),
             "isestudio-published-" + Guid.NewGuid().ToString("N")[..12]);
-        Directory.CreateDirectory(Root);
+        Directory.CreateDirectory(_root);
+        Root = _root;
 
         // ReleaseArtifactStore lays out releases under
         // {releasesRoot}/{releaseKey}/tbox.nq etc.
-        var releasesRoot = Path.Combine(Root, "releases");
+        var releasesRoot = Path.Combine(_root, "releases");
         Artifacts = new ReleaseArtifactStore(releasesRoot);
-
-        // ReleaseManager needs a workspace StoreWrapper for its ctor +
-        // a serving root to host the per-release read-only DB. The
-        // published-data service never reads from the workspace, but the
-        // manager expects the dependency.
-        var servingRoot = Path.Combine(Root, "serving");
-        Workspace = new StoreWrapper(Path.Combine(Root, "workspace"));
-        Releases = new ReleaseManager(Workspace, Artifacts, servingRoot);
-
-        Contexts = new SqliteContextFactory();
+        Releases = null!;
         ViewBuilder = new OntologyViewBuilder();
     }
 
@@ -63,48 +54,42 @@ public sealed class PublishedDataServiceFixture : IDisposable
     /// </summary>
     public PublishedSeed SeedPublished(string version, IEnumerable<Oxigraph.Quad> aboxQuads)
     {
-        var ks = new KnowledgeSystemEntity
-        {
-            Id = Guid.NewGuid(),
-            PublicId = Guid.NewGuid().ToString("N"),
-            Name = "Published data fixture",
-            Description = "",
-            GraphIri = GraphIri,
-            BaseIri = BaseIri,
-            CreatedAt = DateTimeOffset.UtcNow,
-            UpdatedAt = DateTimeOffset.UtcNow,
-        };
+        var ks = Db.KnowledgeSystems.Single(item => item.Id == KnowledgeSystemId);
+        ks.PublicId = Guid.NewGuid().ToString("N");
+        ks.Name = "Published data fixture";
+        ks.Description = "";
+        ks.GraphIri = GraphIri;
+        ks.BaseIri = BaseIri;
+        ks.UpdatedAt = DateTimeOffset.UtcNow;
         var releaseId = Guid.NewGuid();
         var releaseKey = releaseId.ToString("N");
-        var ksContext = new KsContext(ks.GraphIri, ks.BaseIri);
+        var ksContext = new KsContext(ks.GraphIri, ks.BaseIri,
+            KnowledgeSystemId: KnowledgeSystemId);
         var deploymentId = Guid.NewGuid();
+
+        TBox.AddQuads(new OntoNamedNode(ksContext.TBoxGraph),
+            [new Oxigraph.Quad(
+                new OntoNamedNode(BaseIri + "Person"),
+                new OntoNamedNode(ISEStudio.Ontology.Vocabulary.RdfType.Value),
+                new OntoNamedNode(ISEStudio.Ontology.Vocabulary.OwlClass.Value),
+                new OntoNamedNode(ksContext.TBoxGraph))]);
+        ABox.AddQuads(new OntoNamedNode(ksContext.ABoxGraph), aboxQuads.ToList());
 
         // 1) tbox.nq — one class declaration so GetClassesAsync has
         //    something to enumerate. Hand-roll the n-quads line (NQuadsTermWriter
         //    is internal to ISEStudio) — same shape the writer emits.
         var tboxNq =
-            $"<{BaseIri}Person> <{Vocabulary.RdfType.Value}> " +
-            $"<{Vocabulary.OwlClass.Value}> <{ksContext.TBoxGraph}> .\n";
-        Artifacts.Write(releaseKey, RdfLayer.TBox, Encoding.UTF8.GetBytes(tboxNq));
+            $"<{BaseIri}Person> <{ISEStudio.Ontology.Vocabulary.RdfType.Value}> " +
+            $"<{ISEStudio.Ontology.Vocabulary.OwlClass.Value}> <{ksContext.TBoxGraph}> .\n";
+        var tboxBytes = Encoding.UTF8.GetBytes(tboxNq);
+        Artifacts.Write(releaseKey, RdfLayer.TBox, tboxBytes);
+        Artifacts.SaveManifest(releaseKey, new ReleaseManifest(
+            version,
+            [Artifacts.BuildFileManifest(releaseKey, RdfLayer.TBox, tboxBytes)],
+            1));
 
-        // 2) Materialise the serving store at the manager's expected
-        //    location. Writable → add quads → dispose → re-open path.
-        //    ReleaseManager.IsPublished lazy-opens via OpenReadOnly so
-        //    a valid Oxigraph DB must exist on disk.
-        var servingPath = Releases.ServingPath(releaseKey);
-        Directory.CreateDirectory(servingPath);
-        using (var writable = new StoreWrapper(servingPath))
-        {
-            writable.AddQuads(
-                new OntoNamedNode(ksContext.ABoxGraph),
-                aboxQuads.ToList());
-        }
-
-        // 3) Persist rows.
-        using (var db = Contexts.CreateDbContext())
-        {
-            db.KnowledgeSystems.Add(ks);
-            db.OntologyReleases.Add(new OntologyReleaseEntity
+        // 2) Persist release and deployment rows.
+        Db.OntologyReleases.Add(new OntologyReleaseEntity
             {
                 Id = releaseId,
                 KnowledgeSystemId = ks.Id,
@@ -117,7 +102,7 @@ public sealed class PublishedDataServiceFixture : IDisposable
                 CreatedAt = DateTimeOffset.UtcNow,
                 PublishedAt = DateTimeOffset.UtcNow,
             });
-            db.ReleaseDeployments.Add(new ReleaseDeploymentEntity
+        Db.ReleaseDeployments.Add(new ReleaseDeploymentEntity
             {
                 Id = deploymentId,
                 KnowledgeSystemId = ks.Id,
@@ -130,27 +115,20 @@ public sealed class PublishedDataServiceFixture : IDisposable
                 CreatedAt = DateTimeOffset.UtcNow,
                 ActivatedAt = DateTimeOffset.UtcNow,
             });
-            db.SaveChanges();
-        }
+        Db.SaveChanges();
+
+        Releases = new ReleaseManager(Db, Statements, Artifacts);
 
         return new PublishedSeed(this, ks, releaseId, releaseKey, ksContext);
     }
 
-    /// <summary>
-    /// Open a fresh read-only <see cref="StoreWrapper"/> against the
-    /// same serving directory the service will open. Returned handle
-    /// is the caller's responsibility to dispose.
-    /// </summary>
-    public StoreWrapper OpenServing(string releaseKey) =>
-        StoreWrapper.OpenReadOnly(Releases.ServingPath(releaseKey));
-
     public PublishedDataService CreateService() =>
-        new(Contexts.CreateDbContext(), Releases, Artifacts, ViewBuilder);
+        new(Db, Releases!, Artifacts, ViewBuilder, Statements);
 
-    public void Dispose()
+    public new async Task DisposeAsync()
     {
-        Workspace.Dispose();
-        Contexts.Dispose();
+        Releases?.Dispose();
+        await base.DisposeAsync();
         try { Directory.Delete(Root, recursive: true); }
         catch (IOException) { /* Oxigraph handle can linger briefly. */ }
     }

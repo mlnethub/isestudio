@@ -3,7 +3,7 @@ using ISEStudio.Application.Foundation;
 namespace ISEStudio.Ontology;
 
 /// <summary>
-/// Reads the curated TBox view out of an RDF store (live) or a
+/// Reads the curated TBox view out of PostgreSQL statements or a
 /// pre-serialized N-Quads shard (release). One pure algorithm
 /// (<see cref="BuildCore"/>) feeds both adapters so the wire shape
 /// matches Python `backend/app/ontology/schema.py::build_view`
@@ -11,19 +11,42 @@ namespace ISEStudio.Ontology;
 /// </summary>
 public sealed class OntologyViewBuilder
 {
-    /// <summary>Live TBox read via Oxigraph. Returns empty envelope when
-    /// <paramref name="store"/> is null (contract-test path).</summary>
-    public Task<OntologyResponse> BuildFromStoreAsync(
-        StoreWrapper? store,
+    public Task<OntologyResponse> BuildFromStatementsAsync(
+        IReadOnlyList<RdfStatement> statements,
         string graphIri,
         CancellationToken cancellationToken)
     {
-        if (store is null) return Task.FromResult(EmptyResponse());
-
-        // Live algorithm lands in Task 3-5. This task only wires the
-        // empty contract.
-        var quads = store.Match(graphIri: graphIri);
+        cancellationToken.ThrowIfCancellationRequested();
+        var quads = statements
+            .Where(statement => statement.GraphIri == graphIri)
+            .Select(ToQuad)
+            .ToList();
         return Task.FromResult(BuildCore(quads));
+    }
+
+    private static Oxigraph.Quad ToQuad(RdfStatement statement)
+    {
+        static Oxigraph.ITerm Term(RdfTerm term) => term switch
+        {
+            RdfIri iri => new Oxigraph.NamedNode(iri.Value),
+            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+            RdfLiteral literal => new Oxigraph.Literal(literal.Value, literal.Language,
+                literal.Datatype is null ? null : new Oxigraph.NamedNode(literal.Datatype)),
+            _ => throw new InvalidOperationException("Unsupported RDF term."),
+        };
+
+        static Oxigraph.INamedOrBlankNode Subject(RdfTerm term) => term switch
+        {
+            RdfIri iri => new Oxigraph.NamedNode(iri.Value),
+            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+            _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node."),
+        };
+
+        return new Oxigraph.Quad(
+            Subject(statement.Subject),
+            new Oxigraph.NamedNode(statement.PredicateIri),
+            Term(statement.Object),
+            new Oxigraph.NamedNode(statement.GraphIri ?? throw new InvalidOperationException("RDF graph is required.")));
     }
 
     /// <summary>Release TBox read from a pre-serialized N-Quads shard

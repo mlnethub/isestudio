@@ -9,6 +9,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Extraction;
@@ -31,10 +32,11 @@ public sealed class ExtractionStateTests : IDisposable
 
     private readonly string _root;
     private readonly SqliteContextFactory _contexts;
-    private readonly Guid _ksId = Guid.NewGuid();
+    private readonly PostgresRdfFixture _rdf = new();
+    private readonly Guid _ksId;
 
     /// <summary>Oxigraph store under test.</summary>
-    private StoreWrapper Store { get; }
+    private PostgresRdfGraphStore Store => _rdf.TBox;
 
     /// <summary>Graph coordinates for the seeded knowledge system.</summary>
     private KsContext Ks { get; } = new(GraphIri, BaseIri);
@@ -59,7 +61,8 @@ public sealed class ExtractionStateTests : IDisposable
         _root = Path.Combine(Path.GetTempPath(), "isestudio-extraction-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(_root);
 
-        Store = new StoreWrapper(Path.Combine(_root, "store"));
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
+        _ksId = _rdf.KnowledgeSystemId;
         SeedTBox();
 
         _contexts = new SqliteContextFactory();
@@ -69,7 +72,7 @@ public sealed class ExtractionStateTests : IDisposable
         var sha = PutDocument(blobs);
 
         Jobs = new ExtractionJobStore(_contexts, TimeProvider.System);
-        Merger = new FakeMerger(new ExtractionMerger(Store));
+        Merger = new FakeMerger(new ExtractionMerger(_rdf.Statements));
 
         FakeChatClientFactory.Default.Reset();
         FakeChatClientFactory.Default.UseClient(FakeChat);
@@ -83,10 +86,10 @@ public sealed class ExtractionStateTests : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(Store),
+            new TerminologyService(_rdf.Statements),
             new PromptSnapshotService(),
             Merger,
-            Store,
+            _rdf.Statements,
             TimeProvider.System);
 
         Request = new ExtractionRequest(
@@ -184,7 +187,7 @@ public sealed class ExtractionStateTests : IDisposable
         Assert.True(finished.Status == "completed", diag);
         Assert.True(ClassCount() > before, diag);
         Assert.True(finished.AxiomsAdded > 0, diag);
-        Assert.Empty(Store.Match(graph: new OntoNamedNode(Ks.ABoxGraph)));
+        Assert.Empty(Store.Match(graphIri: Ks.ABoxGraph));
     }
 
     [Fact]
@@ -230,7 +233,7 @@ public sealed class ExtractionStateTests : IDisposable
         Assert.True(finished.IndividualsAdded > 0, "ABox extraction should create individuals.");
 
         // Instances land in the ABox graph — never in the schema graph.
-        Assert.NotEmpty(Store.Match(graph: new OntoNamedNode(Ks.ABoxGraph)));
+        Assert.NotEmpty(_rdf.ABox.Match(graphIri: Ks.ABoxGraph));
         Assert.Equal(tboxBefore, Store.DumpNQuads(Ks.TBoxGraph));
     }
 
@@ -279,7 +282,7 @@ public sealed class ExtractionStateTests : IDisposable
 
         // Combined runs walk every chunk twice (once per layer).
         Assert.Equal(finished.TotalChunks, finished.ProcessedChunks);
-        Assert.NotEmpty(Store.Match(graph: new OntoNamedNode(Ks.ABoxGraph)));
+        Assert.NotEmpty(_rdf.ABox.Match(graphIri: Ks.ABoxGraph));
     }
 
     // ------------------------------------------------------------------
@@ -304,7 +307,7 @@ public sealed class ExtractionStateTests : IDisposable
         // performed (fresh creates + adopted unmapped concepts), so an
         // idempotent rerun reports 0 — every entity already has its
         // mapped concept and the loop skips it.
-        var second = new TerminologyService(Store).SyncAsync(Ks, CancellationToken.None);
+        var second = new TerminologyService(_rdf.Statements).SyncAsync(Ks, CancellationToken.None);
         Assert.Equal(0, second.TermsAdded);
         Assert.Equal(0, second.TermsMapped);
     }
@@ -387,7 +390,7 @@ public sealed class ExtractionStateTests : IDisposable
     {
         FakeChatClientFactory.Default.Reset();
         FakeChat.Release();
-        Store.Dispose();
+        _rdf.DisposeAsync().GetAwaiter().GetResult();
         _contexts.Dispose();
         try
         {

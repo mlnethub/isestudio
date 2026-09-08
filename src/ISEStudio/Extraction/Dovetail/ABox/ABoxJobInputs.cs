@@ -40,7 +40,7 @@ public sealed record ABoxJobInput(
     Guid JobId,
     Guid KnowledgeSystemId,
     string GraphIri,
-    StoreWrapper Store,
+    IReadOnlyList<Oxigraph.Quad> Quads,
     IChatClient Chat,
     IEmbeddingGenerator<string, Embedding<float>> Embedder,
     double MinConfidence);

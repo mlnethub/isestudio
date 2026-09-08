@@ -10,6 +10,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Extraction.Dovetail.Adapters;
+using ISEStudio.Tests.Infrastructure;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -128,20 +129,20 @@ internal sealed class JobTestOrchestratorFactory : IDisposable
 {
     private readonly string _root;
     private readonly List<IDisposable> _disposables = new();
+    private readonly PostgresRdfFixture _rdf = new();
     private ExtractionOrchestrator? _orchestrator;
 
     public JobTestOrchestratorFactory(string prefix = "isestudio-jobpipe")
     {
         _root = Path.Combine(Path.GetTempPath(), prefix + "-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(_root);
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
     }
 
     public ExtractionOrchestrator Create()
     {
         if (_orchestrator is not null) return _orchestrator;
 
-        var store = new StoreWrapper(Path.Combine(_root, "store"));
-        _disposables.Add(store);
         var contexts = new SqliteContextFactory();
         _disposables.Add(contexts);
 
@@ -154,19 +155,20 @@ internal sealed class JobTestOrchestratorFactory : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(store),
+            new TerminologyService(_rdf.Statements),
             new PromptSnapshotService(),
-            new ExtractionMerger(store),
-            store,
+            new ExtractionMerger(_rdf.Statements),
+            _rdf.Statements,
             TimeProvider.System);
     }
 
     /// <summary>Direct access to the test temp store (some tests seed it).</summary>
-    public StoreWrapper Store => (StoreWrapper)_disposables[0];
+    public IRdfStatementRepository Store => _rdf.Statements;
 
     public void Dispose()
     {
         foreach (var disposable in _disposables) disposable.Dispose();
+        _rdf.DisposeAsync().GetAwaiter().GetResult();
         try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
     }
 }

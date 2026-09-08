@@ -7,11 +7,11 @@ namespace ISEStudio.Tests.Ontology;
 public sealed class OntologyViewBuilderTests
 {
     [Fact]
-    public async Task BuildFromStoreAsync_with_null_store_returns_empty_envelope()
+    public async Task BuildFromStatementsAsync_with_empty_statements_returns_empty_envelope()
     {
         var builder = new OntologyViewBuilder();
-        var view = await builder.BuildFromStoreAsync(
-            store: null, graphIri: "http://x/graph", CancellationToken.None);
+        var view = await builder.BuildFromStatementsAsync(
+            Array.Empty<RdfStatement>(), "http://x/graph", CancellationToken.None);
 
         Assert.NotNull(view);
         Assert.Empty(view.Classes);
@@ -40,7 +40,7 @@ public sealed class OntologyViewBuilderTests
     }
 
     [Fact]
-    public async Task BuildFromStoreAsync_extracts_single_class_with_label_and_comment()
+    public async Task BuildFromNQuadsAsync_extracts_single_class_with_label_and_comment()
     {
         using var dir = new TempDir();
         using var store = new StoreWrapper(dir.Path);
@@ -53,8 +53,8 @@ public sealed class OntologyViewBuilderTests
             new Oxigraph.NamedNode("http://example.com/graph"));
 
         var builder = new OntologyViewBuilder();
-        var view = await builder.BuildFromStoreAsync(
-            store, "http://example.com/graph", CancellationToken.None);
+        var view = await builder.BuildFromNQuadsAsync(
+            store.DumpNQuads(new Oxigraph.NamedNode("http://example.com/graph")), CancellationToken.None);
 
         Assert.Single(view.Classes);
         var c = view.Classes[0];
@@ -66,7 +66,7 @@ public sealed class OntologyViewBuilderTests
     }
 
     [Fact]
-    public async Task BuildFromStoreAsync_extracts_superclasses_via_subClassOf()
+    public async Task BuildFromNQuadsAsync_extracts_superclasses_via_subClassOf()
     {
         using var dir = new TempDir();
         using var store = new StoreWrapper(dir.Path);
@@ -80,8 +80,8 @@ public sealed class OntologyViewBuilderTests
             new Oxigraph.NamedNode("http://example.com/graph"));
 
         var builder = new OntologyViewBuilder();
-        var view = await builder.BuildFromStoreAsync(
-            store, "http://example.com/graph", CancellationToken.None);
+        var view = await builder.BuildFromNQuadsAsync(
+            store.DumpNQuads("http://example.com/graph"), CancellationToken.None);
 
         Assert.Equal(2, view.Classes.Count);
         var dog = view.Classes.Single(c => c.Local == "Dog");
@@ -89,7 +89,7 @@ public sealed class OntologyViewBuilderTests
     }
 
     [Fact]
-    public async Task BuildFromStoreAsync_splits_object_vs_data_properties()
+    public async Task BuildFromNQuadsAsync_splits_object_vs_data_properties()
     {
         using var dir = new TempDir();
         using var store = new StoreWrapper(dir.Path);
@@ -107,8 +107,8 @@ public sealed class OntologyViewBuilderTests
             new Oxigraph.NamedNode("http://example.com/graph"));
 
         var builder = new OntologyViewBuilder();
-        var view = await builder.BuildFromStoreAsync(
-            store, "http://example.com/graph", CancellationToken.None);
+        var view = await builder.BuildFromNQuadsAsync(
+            store.DumpNQuads("http://example.com/graph"), CancellationToken.None);
 
         Assert.Single(view.ObjectProperties);
         Assert.Single(view.DataProperties);
@@ -131,7 +131,7 @@ public sealed class OntologyViewBuilderTests
     }
 
     [Fact]
-    public async Task BuildFromStoreAsync_extracts_disjointWith_and_equivalentClass_axioms()
+    public async Task BuildFromNQuadsAsync_extracts_disjointWith_and_equivalentClass_axioms()
     {
         using var dir = new TempDir();
         using var store = new StoreWrapper(dir.Path);
@@ -147,8 +147,8 @@ public sealed class OntologyViewBuilderTests
             new Oxigraph.NamedNode("http://example.com/graph"));
 
         var builder = new OntologyViewBuilder();
-        var view = await builder.BuildFromStoreAsync(
-            store, "http://example.com/graph", CancellationToken.None);
+        var view = await builder.BuildFromNQuadsAsync(
+            store.DumpNQuads("http://example.com/graph"), CancellationToken.None);
 
         Assert.Single(view.Axioms.DisjointWith);
         Assert.Equal("urn:Cat", view.Axioms.DisjointWith[0].A);
@@ -179,7 +179,7 @@ public sealed class OntologyViewBuilderTests
         var shard = store.DumpNQuads(new Oxigraph.NamedNode(graphIri));
 
         var builder = new OntologyViewBuilder();
-        var fromStore = await builder.BuildFromStoreAsync(store, graphIri, CancellationToken.None);
+        var fromStore = await builder.BuildFromNQuadsAsync(shard, CancellationToken.None);
         var fromShard = await builder.BuildFromNQuadsAsync(shard, CancellationToken.None);
 
         Assert.Equal(fromStore.Classes.Count, fromShard.Classes.Count);

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text;
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Application.Integration;
@@ -45,7 +46,7 @@ public sealed class ABoxService
     private readonly KnowledgeSystemAccessService _access;
     private readonly ABoxManager _manager;
     private readonly ABoxProvenanceService _provenance;
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly ABoxValidator _validator;
     private readonly ValidationDecisionService _decisions;
     private readonly OntologyEditor _editor;
@@ -57,7 +58,7 @@ public sealed class ABoxService
         KnowledgeSystemAccessService access,
         ABoxManager manager,
         ABoxProvenanceService provenance,
-        StoreWrapper store,
+        IRdfStatementRepository statements,
         ABoxValidator validator,
         ValidationDecisionService decisions,
         OntologyEditor editor,
@@ -68,7 +69,7 @@ public sealed class ABoxService
         _access = access;
         _manager = manager;
         _provenance = provenance;
-        _store = store;
+        _statements = statements;
         _validator = validator;
         _decisions = decisions;
         _editor = editor;
@@ -184,27 +185,10 @@ public sealed class ABoxService
         var ksc = ToKsContext(ks);
         var propLabels = await LoadPropertyLabelsAsync(ks, ct).ConfigureAwait(false);
 
-        var pre = _store.DumpNQuads(ksc.ABoxGraph);
-        string iri;
-        // QuadChangeCapture semantics: `revertOnError: true` unconditionally
-        // rolls the graph back on dispose. To commit the writes on the
-        // happy path AND still revert on failure, we open with
-        // `revertOnError: false` and call `MarkError()` explicitly when
-        // the inner block throws — matching the OntologyEditor pattern.
-        await using (var cap = await _store.CaptureAsync(ksc.ABoxGraph, revertOnError: false, waitTimeout: null, ct).ConfigureAwait(false))
-        {
-            try
-            {
-                iri = _manager.CreateIndividual(ksc, req.Label, req.ClassIri, req.Label);
-            }
-            catch
-            {
-                cap.MarkError();
-                throw;
-            }
-        }
-        var post = _store.DumpNQuads(ksc.ABoxGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var pre = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+        var iri = _manager.CreateIndividual(ksc, req.Label, req.ClassIri, req.Label);
+        var post = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+        var (added, removed) = Diff(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "abox.add_individual",
             $"Added individual \"{req.Label}\" ({classLabels[req.ClassIri]})",
@@ -251,31 +235,19 @@ public sealed class ABoxService
 
         if (!propLabels.ContainsKey(prop))
             throw new InvalidOperationException("Unknown property.");
-        if (!IndividualExists(ksc, subjectIri))
+        if (!await IndividualExistsAsync(ksc, subjectIri, ct).ConfigureAwait(false))
             throw new InvalidOperationException("Subject not found.");
-        if (kind == "object" && !IndividualExists(ksc, targetIri!))
+        if (kind == "object" && !await IndividualExistsAsync(ksc, targetIri!, ct).ConfigureAwait(false))
             throw new InvalidOperationException("Target individual not found.");
 
         var factKey = StatementProvenanceService.AssertionKey(subjectIri, prop, kind, targetIri, value);
 
-        var pre = _store.DumpNQuads(ksc.ABoxGraph);
-        bool changed;
-        await using (var cap = await _store.CaptureAsync(ksc.ABoxGraph, revertOnError: false, waitTimeout: null, ct).ConfigureAwait(false))
-        {
-            try
-            {
-                changed = kind == "object"
-                    ? _manager.AddObjectAssertion(ksc, subjectIri, prop, targetIri!)
-                    : _manager.AddDataAssertion(ksc, subjectIri, prop, value!, datatype);
-            }
-            catch
-            {
-                cap.MarkError();
-                throw;
-            }
-        }
-        var post = _store.DumpNQuads(ksc.ABoxGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var pre = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+        var changed = kind == "object"
+            ? _manager.AddObjectAssertion(ksc, subjectIri, prop, targetIri!)
+            : _manager.AddDataAssertion(ksc, subjectIri, prop, value!, datatype);
+        var post = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+        var (added, removed) = Diff(pre, post);
 
         var audit = await WriteAuditAsync(ks.Id, user, "abox.add_assertion",
             BuildAssertionSummary(req, propLabels, subjectIri, "Added"),
@@ -319,29 +291,18 @@ public sealed class ABoxService
         var classLabels = await LoadClassLabelsAsync(ks, ct).ConfigureAwait(false);
         var propLabels = await LoadPropertyLabelsAsync(ks, ct).ConfigureAwait(false);
 
-        if (!IndividualExists(ksc, subjectIri))
+        if (!await IndividualExistsAsync(ksc, subjectIri, ct).ConfigureAwait(false))
             throw new InvalidOperationException("Subject not found.");
         if (kind == "object" && string.IsNullOrEmpty(targetIri))
             throw new InvalidOperationException("Target individual is required.");
 
         var factKey = StatementProvenanceService.AssertionKey(subjectIri, prop, kind, targetIri, value);
 
-        var pre = _store.DumpNQuads(ksc.ABoxGraph);
-        await using (var cap = await _store.CaptureAsync(ksc.ABoxGraph, revertOnError: false, waitTimeout: null, ct).ConfigureAwait(false))
-        {
-            try
-            {
-                if (kind == "object") _manager.RemoveObjectAssertion(ksc, subjectIri, prop, targetIri!);
-                else _manager.RemoveDataAssertion(ksc, subjectIri, prop, value!, datatype);
-            }
-            catch
-            {
-                cap.MarkError();
-                throw;
-            }
-        }
-        var post = _store.DumpNQuads(ksc.ABoxGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var pre = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+        if (kind == "object") _manager.RemoveObjectAssertion(ksc, subjectIri, prop, targetIri!);
+        else _manager.RemoveDataAssertion(ksc, subjectIri, prop, value!, datatype);
+        var post = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+        var (added, removed) = Diff(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "abox.remove_assertion",
             BuildAssertionSummary(req, propLabels, subjectIri, "Removed"),
@@ -378,22 +339,10 @@ public sealed class ABoxService
         if (existing is null)
             throw new InvalidOperationException("Individual not found");
 
-        var pre = _store.DumpNQuads(ksc.ABoxGraph);
-        int removed;
-        await using (var cap = await _store.CaptureAsync(ksc.ABoxGraph, revertOnError: false, waitTimeout: null, ct).ConfigureAwait(false))
-        {
-            try
-            {
-                removed = _manager.DeleteIndividual(ksc, iri);
-            }
-            catch
-            {
-                cap.MarkError();
-                throw;
-            }
-        }
-        var post = _store.DumpNQuads(ksc.ABoxGraph);
-        var (added, removedBytes) = StoreWrapper.DiffNQuads(pre, post);
+        var pre = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+        var removed = _manager.DeleteIndividual(ksc, iri);
+        var post = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+        var (added, removedBytes) = Diff(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "abox.delete_individual",
             $"Deleted individual \"{existing.Label}\"",
@@ -441,25 +390,25 @@ public sealed class ABoxService
         KnowledgeSystemEntity ks, CancellationToken ct)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        var tboxGraph = new Oxigraph.NamedNode(ks.GraphIri);
         var owlClass = Vocabulary.OwlClass.Value;
         var rdfsLabel = Vocabulary.RdfsLabel.Value;
         // Pull every triple in the TBox once; small graph, single scan is
         // simpler than two match queries.
-        var tboxQuads = _store.Match(graph: tboxGraph);
+        var tboxQuads = (await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false))
+            .Where(statement => statement.GraphIri == ks.GraphIri);
         var classes = new HashSet<string>(StringComparer.Ordinal);
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var q in tboxQuads)
         {
-            if (q.Subject is not Oxigraph.NamedNode subj) continue;
-            if (q.Predicate.Value == Vocabulary.RdfType.Value
-                && q.Object is Oxigraph.NamedNode obj
+            if (q.Subject is not RdfIri subj) continue;
+            if (q.PredicateIri == Vocabulary.RdfType.Value
+                && q.Object is RdfIri obj
                 && obj.Value == owlClass)
             {
                 classes.Add(subj.Value);
             }
-            else if (q.Predicate.Value == rdfsLabel
-                && q.Object is Oxigraph.Literal lit)
+            else if (q.PredicateIri == rdfsLabel
+                && q.Object is RdfLiteral lit)
             {
                 labels[subj.Value] = lit.Value;
             }
@@ -480,24 +429,24 @@ public sealed class ABoxService
         KnowledgeSystemEntity ks, CancellationToken ct)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        var tboxGraph = new Oxigraph.NamedNode(ks.GraphIri);
         var owlObjectProperty = Vocabulary.OwlObjectProperty.Value;
         var owlDatatypeProperty = Vocabulary.OwlDatatypeProperty.Value;
         var rdfsLabel = Vocabulary.RdfsLabel.Value;
-        var tboxQuads = _store.Match(graph: tboxGraph);
+        var tboxQuads = (await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false))
+            .Where(statement => statement.GraphIri == ks.GraphIri);
         var props = new HashSet<string>(StringComparer.Ordinal);
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var q in tboxQuads)
         {
-            if (q.Subject is not Oxigraph.NamedNode subj) continue;
-            if (q.Predicate.Value == Vocabulary.RdfType.Value
-                && q.Object is Oxigraph.NamedNode obj
+            if (q.Subject is not RdfIri subj) continue;
+            if (q.PredicateIri == Vocabulary.RdfType.Value
+                && q.Object is RdfIri obj
                 && (obj.Value == owlObjectProperty || obj.Value == owlDatatypeProperty))
             {
                 props.Add(subj.Value);
             }
-            else if (q.Predicate.Value == rdfsLabel
-                && q.Object is Oxigraph.Literal lit)
+            else if (q.PredicateIri == rdfsLabel
+                && q.Object is RdfLiteral lit)
             {
                 labels[subj.Value] = lit.Value;
             }
@@ -601,8 +550,23 @@ public sealed class ABoxService
     /// with just the subject + graph predicate. Avoids the cost of pulling
     /// the full <see cref="IndividualOut"/> envelope on the validation path.
     /// </summary>
-    private bool IndividualExists(KsContext ksc, string iri) =>
-        _store.Match(subjectIri: iri, graphIri: ksc.ABoxGraph).Count > 0;
+    private async Task<IReadOnlyList<RdfStatement>> SnapshotAsync(
+        Guid ksId, CancellationToken ct, string layer = "ABox") =>
+        await _statements.ListAsync(ksId, layer, ct).ConfigureAwait(false);
+
+    private static (byte[] Added, byte[] Removed) Diff(
+        IReadOnlyList<RdfStatement> before, IReadOnlyList<RdfStatement> after) =>
+        (Serialize(after.Except(before)), Serialize(before.Except(after)));
+
+    private static byte[] Serialize(IEnumerable<RdfStatement> statements) =>
+        Encoding.UTF8.GetBytes(string.Join("\n", statements.Select(statement =>
+            $"<{(statement.Subject as RdfIri)?.Value}> <{statement.PredicateIri}> " +
+            (statement.Object is RdfIri iri ? $"<{iri.Value}>" : $"\"{(statement.Object as RdfLiteral)?.Value}\"") +
+            $" <{statement.GraphIri}> .")) + "\n");
+
+    private async Task<bool> IndividualExistsAsync(KsContext ksc, string iri, CancellationToken ct) =>
+        (await SnapshotAsync(ksc.KnowledgeSystemId, ct).ConfigureAwait(false))
+            .Any(statement => statement.Subject is RdfIri subject && subject.Value == iri);
 
     /// <summary>
     /// Human-readable audit summary for an assertion operation. Mirrors
@@ -676,24 +640,10 @@ public sealed class ABoxService
             .CountAsync(r => r.KnowledgeSystemId == ks.Id, ct)
             .ConfigureAwait(false);
 
-        var aboxGraph = new OntoNamedNode(ks.GraphIri.TrimEnd('/') + "/abox");
-        var preBytes = _store.DumpNQuads(aboxGraph);
-        await using (var cap = await _store
-            .CaptureAsync(ks.GraphIri.TrimEnd('/') + "/abox", revertOnError: false, waitTimeout: null, ct)
-            .ConfigureAwait(false))
-        {
-            try
-            {
-                _store.ReplaceGraph(aboxGraph, Array.Empty<OntoQuad>());
-            }
-            catch
-            {
-                cap.MarkError();
-                throw;
-            }
-        }
-        var postBytes = _store.DumpNQuads(aboxGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(preBytes, postBytes);
+        var aboxGraphIri = ks.GraphIri.TrimEnd('/') + "/abox";
+        var pre = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+        await _statements.ReplaceLayerAsync(ks.Id, "ABox", Array.Empty<RdfStatement>(), ct).ConfigureAwait(false);
+        var (added, removed) = Diff(pre, Array.Empty<RdfStatement>());
 
         // SQL cleanup mirrors Python: drop AboxProvenance + EntityResolution
         // rows for this KS so a fresh extraction starts from a blank slate.
@@ -715,7 +665,7 @@ public sealed class ABoxService
                     ["provenance_rows"] = provenanceRows,
                     ["resolution_rows"] = resolutionRows,
             },
-            aboxGraph.Value, added, removed, ct).ConfigureAwait(false);
+            aboxGraphIri, added, removed, ct).ConfigureAwait(false);
 
         // ABox reset itself doesn't change TBox class/property/axiom
         // counts, but Python still calls refresh_ks_stats here for
@@ -788,17 +738,16 @@ public sealed class ABoxService
             var propLabel = op.AsString("prop_label") ?? propIri;
             var xsd = op.AsString("xsd");
             graphIri = ks.GraphIri;
-            var tboxGraph = new OntoNamedNode(graphIri);
-            var preBytes = _store.DumpNQuads(tboxGraph);
-            _editor.ApplyEditAsync(graphIri, ksc.BaseIri,
+            var preStatements = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+            await _editor.ApplyEditAsync(graphIri, ksc.BaseIri,
                 new Dictionary<string, object?>
                 {
                     ["op"] = "update_property",
                     ["iri"] = propIri,
                     ["range"] = "string",
-                }, ct).GetAwaiter().GetResult();
-            var postBytes = _store.DumpNQuads(tboxGraph);
-            (added, removed) = StoreWrapper.DiffNQuads(preBytes, postBytes);
+                }, ct).ConfigureAwait(false);
+            var postStatements = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+            (added, removed) = Diff(preStatements, postStatements);
 
             // Remember the human's preference so the future agent
             // doesn't re-judge this property next triage.
@@ -810,24 +759,10 @@ public sealed class ABoxService
         else
         {
             graphIri = ksc.ABoxGraph;
-            var aboxGraph = new OntoNamedNode(graphIri);
-            var preBytes = _store.DumpNQuads(aboxGraph);
-            await using (var cap = await _store
-                .CaptureAsync(graphIri, revertOnError: false, waitTimeout: null, ct)
-                .ConfigureAwait(false))
-            {
-                try
-                {
-                    ApplyFixOp(ksc, kind, op);
-                }
-                catch
-                {
-                    cap.MarkError();
-                    throw;
-                }
-            }
-            var postBytes = _store.DumpNQuads(aboxGraph);
-            (added, removed) = StoreWrapper.DiffNQuads(preBytes, postBytes);
+            var preStatements = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+            ApplyFixOp(ksc, kind, op);
+            var postStatements = await SnapshotAsync(ks.Id, ct).ConfigureAwait(false);
+            (added, removed) = Diff(preStatements, postStatements);
         }
 
         await WriteAuditAsync(ks.Id, user, "abox.fix_violation",

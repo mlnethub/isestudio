@@ -12,6 +12,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Extraction.Dovetail.Adapters;
+using ISEStudio.Tests.Infrastructure;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -42,7 +43,7 @@ public sealed class JobPipelineExecutionTests : IDisposable
     private readonly string _root;
     private readonly SqliteContextFactory _contexts;
     private readonly Guid _ksId = Guid.NewGuid();
-    private readonly StoreWrapper _store;
+    private readonly PostgresRdfFixture _rdf;
     private readonly ExtractionJobStore _jobs;
     private readonly ExtractionOrchestrator _orchestrator;
 
@@ -51,7 +52,8 @@ public sealed class JobPipelineExecutionTests : IDisposable
         _root = Path.Combine(Path.GetTempPath(), "isestudio-jobexec-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(_root);
 
-        _store = new StoreWrapper(Path.Combine(_root, "store"));
+        _rdf = new PostgresRdfFixture();
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
         _contexts = new SqliteContextFactory();
         SeedKnowledgeSystem();
 
@@ -66,10 +68,10 @@ public sealed class JobPipelineExecutionTests : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(_store),
+            new TerminologyService(_rdf.Statements),
             new PromptSnapshotService(),
-            new ExtractionMerger(_store),
-            _store,
+            new ExtractionMerger(_rdf.Statements),
+            _rdf.Statements,
             TimeProvider.System);
     }
 
@@ -153,7 +155,7 @@ public sealed class JobPipelineExecutionTests : IDisposable
 
     public void Dispose()
     {
-        _store.Dispose();
+        _rdf.DisposeAsync().GetAwaiter().GetResult();
         _contexts.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
     }

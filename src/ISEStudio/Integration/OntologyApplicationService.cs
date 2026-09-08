@@ -6,7 +6,6 @@ using ISEStudio.Application.Ontology;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Ontology;
 using Microsoft.EntityFrameworkCore;
-using Oxigraph;
 
 namespace ISEStudio.Integration;
 
@@ -220,17 +219,17 @@ public sealed class OntologyApplicationService : IOntologyApplicationService
     /// 11/13) can share the same parsing rules via a future call into
     /// the application service.
     /// </summary>
-    internal static RdfFormat ParseExportFormat(string fmt)
+    internal static RdfExportFormat ParseExportFormat(string fmt)
     {
         var normalized = fmt.Trim().ToLowerInvariant();
         return normalized switch
         {
-            "turtle" or "ttl" => RdfFormat.Turtle,
-            "ntriples" or "nt" or "n-triples" => RdfFormat.NTriples,
-            "nquads" or "n-quads" or "nq" => RdfFormat.NQuads,
-            "trig" => RdfFormat.TriG,
-            "rdfxml" or "rdf/xml" or "xml" or "rdf" => RdfFormat.RdfXml,
-            "jsonld" or "json-ld" or "json" => RdfFormat.JsonLd,
+            "turtle" or "ttl" => RdfExportFormat.Turtle,
+            "ntriples" or "nt" or "n-triples" => RdfExportFormat.NTriples,
+            "nquads" or "n-quads" or "nq" => RdfExportFormat.NQuads,
+            "trig" => RdfExportFormat.TriG,
+            "rdfxml" or "rdf/xml" or "xml" or "rdf" => RdfExportFormat.RdfXml,
+            "jsonld" or "json-ld" or "json" => RdfExportFormat.JsonLd,
             _ => throw new ISEStudio.Api.ValidationException(
                 $"Unsupported export format: {fmt}. Use turtle, ntriples, nquads, trig, rdfxml, or jsonld."),
         };

@@ -289,7 +289,7 @@ public sealed class DuplicateJudgeTests : IDisposable
             EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
-        var detected = await judge.DetectAsync(_store, graphIri, CancellationToken.None);
+        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri), graphIri, CancellationToken.None);
 
         // "Pump Station" + "Station" → Jaccard 1/2 = 0.5 below 0.86, but
         // CompositionalDistinct("Pump Station", "Station") is false (no
@@ -314,7 +314,7 @@ public sealed class DuplicateJudgeTests : IDisposable
             EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
-        var detected = await judge.DetectAsync(_store, graphIri, CancellationToken.None);
+        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri), graphIri, CancellationToken.None);
 
         // "Pump Station" vs "pumpstation" → normalised by Vocabulary.NormLabel
         // (lowercase + collapse whitespace) to identical tokens →
@@ -342,7 +342,7 @@ public sealed class DuplicateJudgeTests : IDisposable
             EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
-        var detected = await judge.DetectAsync(_store, graphIri, CancellationToken.None);
+        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri), graphIri, CancellationToken.None);
 
         Assert.Empty(detected);
     }
@@ -370,7 +370,7 @@ public sealed class DuplicateJudgeTests : IDisposable
             EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions { EnableSemanticConflicts = false }));
-        var detected = await judge.DetectAsync(_store, graphIri, CancellationToken.None);
+        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri), graphIri, CancellationToken.None);
 
         // EnableSemanticConflicts gates the entire DetectAsync call —
         // with it off, Detect returns the structural detector output

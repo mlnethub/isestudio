@@ -96,18 +96,15 @@ public sealed record TerminologyResult(
 /// </remarks>
 public sealed class TerminologyService : ITerminologySync
 {
-    private readonly StoreWrapper? _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly TimeProvider _clock;
 
-    // The store is optional so the contract-test factory (which registers
-    // a null StoreWrapper when no RocksDB root is provisioned) can still
-    // resolve this service. When the store is null, sync returns the
-    // zero summary and the vocabulary layer sees an empty graph; the
-    // public contract shape is preserved so the HTTP envelope still
-    // parses cleanly.
-    public TerminologyService(StoreWrapper? store, TimeProvider? clock = null)
+    public TerminologyService(
+        IRdfStatementRepository statements,
+        TimeProvider? clock = null)
     {
-        _store = store;
+        ArgumentNullException.ThrowIfNull(statements);
+        _statements = statements;
         _clock = clock ?? TimeProvider.System;
     }
 
@@ -147,7 +144,7 @@ public sealed class TerminologyService : ITerminologySync
     /// Build the shared state the four deterministic passes read: the TBox
     /// view, the resolved default ConceptScheme, and the vocabulary SKOS
     /// pre-view. Returns a <c>Skipped</c> carry on the zero paths where no
-    /// view can be built (<c>_store</c> null — contract-test path) or the
+    /// view can be built or the
     /// ontology has no entities; <see cref="FoldCarry"/> restores the
     /// original <see cref="TerminologyResult"/> shape from it.
     /// </summary>
@@ -155,14 +152,11 @@ public sealed class TerminologyService : ITerminologySync
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — vocabulary
-            // layer has nothing to scan or write, so report the
-            // deterministic zero summary.
-            return new TermSyncCarry(null, null, null, 0, Skipped: true);
-        }
-        var view = SchemaBuilder.BuildView(ks.TBoxGraph, _store);
+        var tboxStatements = _statements
+            .ListAsync(ks.KnowledgeSystemId, "TBox", cancellationToken)
+            .GetAwaiter()
+            .GetResult();
+        var view = SchemaBuilder.BuildView(ks.TBoxGraph, tboxStatements);
 
         // Python parity: `entities = classes + object_properties + data_properties`.
         // The property count surfaces separately in the audit row so reviewers
@@ -187,7 +181,7 @@ public sealed class TerminologyService : ITerminologySync
         // permanently disabled (empty selectedSchemeIri).
         var schemeIri = EnsureScheme(ks, view);
 
-        var skos = new SkosManager(_store);
+        var skos = new SkosManager(_statements);
         var preView = skos.BuildView(ks);
         return new TermSyncCarry(schemeIri, view, preView, propertyCount);
     }
@@ -205,7 +199,9 @@ public sealed class TerminologyService : ITerminologySync
     /// </summary>
     internal TermSyncCarry PassStaleMappings(KsContext ks, TermSyncCarry carry, CancellationToken cancellationToken)
     {
-        if (_store is null || carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+        if (carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+        var store = new PostgresRdfGraphStore(_statements, ks.KnowledgeSystemId, "Vocabulary");
+        var aboxStore = new PostgresRdfGraphStore(_statements, ks.KnowledgeSystemId, "ABox");
 
         var view = carry.View!;
         var ontologyIris = new HashSet<string>(StringComparer.Ordinal);
@@ -214,7 +210,7 @@ public sealed class TerminologyService : ITerminologySync
         foreach (var p in view.DataProperties) ontologyIris.Add(p.Iri);
 
         var aboxIris = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var q in _store.Match(graph: new OntoNamedNode(ks.ABoxGraph)))
+        foreach (var q in aboxStore.Match(graphIri: ks.ABoxGraph))
         {
             if (q.Subject is OntoNamedNode n) aboxIris.Add(n.Value);
         }
@@ -234,11 +230,11 @@ public sealed class TerminologyService : ITerminologySync
             // update_concept rewrites the whole concept payload; the
             // minimal RemoveQuads here produces the same final graph state
             // without the round-trip.
-            var stale = _store.Match(
+            var stale = store.Match(
                 subjectIri: concept.Iri,
                 predicateIri: SkosVocab.OpMapsTo.Value,
                 graphIri: ks.VocabularyGraph);
-            if (stale.Count > 0) _store.RemoveQuads(new OntoNamedNode(ks.VocabularyGraph), stale);
+            if (stale.Count > 0) store.RemoveQuads(new OntoNamedNode(ks.VocabularyGraph), stale);
             staleMappingsRemoved++;
         }
 
@@ -266,13 +262,14 @@ public sealed class TerminologyService : ITerminologySync
     /// </summary>
     internal TermSyncCarry PassEntitySync(KsContext ks, TermSyncCarry carry, CancellationToken cancellationToken)
     {
-        if (_store is null || carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+        if (carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+        var store = new PostgresRdfGraphStore(_statements, ks.KnowledgeSystemId, "Vocabulary");
 
         var view = carry.View!;
         var preView = carry.PreView!;
         var schemeIri = carry.SchemeIri!;
 
-        var skos = new SkosManager(_store);
+        var skos = new SkosManager(_statements);
         var conceptByMapping = new Dictionary<string, string>(StringComparer.Ordinal);
         var mappedIndex = new Dictionary<string, string>(skos.MappedAliases(ks), StringComparer.Ordinal);
         foreach (var c in preView.Concepts)
@@ -311,7 +308,7 @@ public sealed class TerminologyService : ITerminologySync
             var existingConcept = FindConceptIriByPrefLabel(ks, label);
             if (existingConcept is not null)
             {
-                _store.AddQuads(graph, new[]
+                store.AddQuads(graph, new[]
                 {
                     new Oxigraph.Quad(
                         new OntoNamedNode(existingConcept),
@@ -330,7 +327,7 @@ public sealed class TerminologyService : ITerminologySync
             // labels, "en" otherwise) so Chinese TBoxes mint Chinese
             // pref labels.
             var concept = new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(iri)}");
-            _store.AddQuads(graph, new[]
+            store.AddQuads(graph, new[]
             {
                 new Oxigraph.Quad(concept, Vocabulary.RdfType, SkosVocab.Concept, graph),
                 new Oxigraph.Quad(concept, SkosVocab.InScheme, new OntoNamedNode(schemeIri), graph),
@@ -377,12 +374,13 @@ public sealed class TerminologyService : ITerminologySync
     /// </remarks>
     internal TermSyncCarry PassAliasAdditions(KsContext ks, TermSyncCarry carry, CancellationToken cancellationToken)
     {
-        if (_store is null || carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+        if (carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+        var store = new PostgresRdfGraphStore(_statements, ks.KnowledgeSystemId, "Vocabulary");
 
         var view = carry.View!;
         var schemeIri = carry.SchemeIri!;
 
-        var skos = new SkosManager(_store);
+        var skos = new SkosManager(_statements);
         var aliasesAdded = 0;
         var postView = skos.BuildView(ks);
         var labelOwners = new HashSet<(string Norm, string Lang)>(NormLangOrdinalComparer.Instance);
@@ -409,7 +407,7 @@ public sealed class TerminologyService : ITerminologySync
                 existing.Add((Vocabulary.NormLabel(l.Value), l.Language.ToLowerInvariant()));
             if (existing.Contains(key)) continue;
             if (labelOwners.Contains(key)) continue;
-            _store.AddQuads(new OntoNamedNode(ks.VocabularyGraph), new[]
+            store.AddQuads(new OntoNamedNode(ks.VocabularyGraph), new[]
             {
                 new Oxigraph.Quad(
                     new OntoNamedNode(concept.Iri),
@@ -441,11 +439,12 @@ public sealed class TerminologyService : ITerminologySync
     /// </summary>
     internal TermSyncCarry PassBroaderAdditions(KsContext ks, TermSyncCarry carry, CancellationToken cancellationToken)
     {
-        if (_store is null || carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+        if (carry.Skipped || carry.Error is not null || carry.SchemeIri is null) return carry;
+        var store = new PostgresRdfGraphStore(_statements, ks.KnowledgeSystemId, "Vocabulary");
 
         var view = carry.View!;
 
-        var skos = new SkosManager(_store);
+        var skos = new SkosManager(_statements);
         var broaderAdded = 0;
         var finalView = skos.BuildView(ks);
         foreach (var cls in view.Classes)
@@ -474,7 +473,7 @@ public sealed class TerminologyService : ITerminologySync
                     new OntoNamedNode(parent),
                     new OntoNamedNode(ks.VocabularyGraph)));
             }
-            _store.AddQuads(new OntoNamedNode(ks.VocabularyGraph), broaderQuads);
+            store.AddQuads(new OntoNamedNode(ks.VocabularyGraph), broaderQuads);
             broaderAdded += additions.Count;
         }
 
@@ -569,7 +568,7 @@ public sealed class TerminologyService : ITerminologySync
         if (ontology.Classes.Count + ontology.ObjectProperties.Count + ontology.DataProperties.Count == 0)
             return null;
 
-        var view = new SkosManager(_store).BuildView(ks);
+        var view = new SkosManager(_statements).BuildView(ks);
         var fixedIri = $"{ks.VocabularyGraph}#scheme-extracted";
         var fixedScheme = view.Schemes.FirstOrDefault(s => s.Iri == fixedIri);
         if (fixedScheme is not null) return fixedScheme.Iri;
@@ -596,7 +595,7 @@ public sealed class TerminologyService : ITerminologySync
         // No schemes yet — create the default extracted scheme so the
         // vocabulary surface reports scheme_count >= 1.
         var (title, description, language) = SchemeTitle(ks.Name);
-        return new SkosManager(_store).CreateScheme(ks, new SkosSchemeData(
+        return new SkosManager(_statements).CreateScheme(ks, new SkosSchemeData(
             Iri: fixedIri,
             Title: title,
             DefaultLanguage: language,
@@ -638,8 +637,8 @@ public sealed class TerminologyService : ITerminologySync
     /// </summary>
     private string? FindConceptIriByPrefLabel(KsContext ks, string label)
     {
-        if (_store is null) return null;
-        var existing = _store.Match(
+        var store = new PostgresRdfGraphStore(_statements, ks.KnowledgeSystemId, "Vocabulary");
+        var existing = store.Match(
             predicateIri: SkosVocab.PrefLabel.Value,
             graphIri: ks.VocabularyGraph);
         var normalized = Vocabulary.NormLabel(label);

@@ -69,22 +69,16 @@ public static class ConflictDetection
     /// upsert/auto-clear reconciliation in <c>sync_conflicts</c> (see
     /// <c>ConflictService.DetectAsync</c>).
     /// </summary>
-    /// <param name="store">The TBox graph store.</param>
     /// <param name="graphIri">Named graph carrying the TBox quads.</param>
-    /// <param name="semantic">Reserved for the duplicate-class pass;
-    /// <see cref="Detect"/> itself stays purely structural. The full
-    /// surface (Detect + duplicate pass) is produced by calling
-    /// <see cref="DuplicateJudge.DetectAsync(StoreWrapper, string, CancellationToken)"/>
-    /// after this method and merging results.</param>
     public static IReadOnlyList<DetectedConflict> Detect(
-        StoreWrapper store,
+        IReadOnlyList<OntoQuad> quads,
         string graphIri,
         bool semantic = true)
     {
-        ArgumentNullException.ThrowIfNull(store);
+        ArgumentNullException.ThrowIfNull(quads);
         ArgumentException.ThrowIfNullOrEmpty(graphIri);
 
-        var model = ReadGraph(store, graphIri);
+        var model = ReadGraph(quads, graphIri);
         var found = new List<DetectedConflict>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
@@ -119,9 +113,9 @@ public static class ConflictDetection
     /// need a stable cross-call order should sort themselves.
     /// </summary>
     public static IReadOnlyList<ClassLabel> ReadClassLabels(
-        StoreWrapper store, string graphIri)
+        IReadOnlyList<OntoQuad> quads, string graphIri)
     {
-        var m = ReadGraph(store, graphIri);
+        var m = ReadGraph(quads, graphIri);
         var list = new List<ClassLabel>(m.Classes.Count);
         foreach (var iri in m.Classes)
         {
@@ -139,9 +133,9 @@ public static class ConflictDetection
     /// already declared subclass / disjoint / equivalent — those are
     /// deliberately distinct, not accidental duplicates).
     /// </summary>
-    public static GraphRelations ReadGraphRelations(StoreWrapper store, string graphIri)
+    public static GraphRelations ReadGraphRelations(IReadOnlyList<OntoQuad> quads, string graphIri)
     {
-        var m = ReadGraph(store, graphIri);
+        var m = ReadGraph(quads, graphIri);
         return new GraphRelations(
             Subclass: m.Subclass.Select(p => (p.Item1, p.Item2)).ToList(),
             Disjoint: m.Disjoint.Select(p => (p.Item1, p.Item2)).ToList(),
@@ -184,7 +178,7 @@ public static class ConflictDetection
             HashCode.Combine(obj.Item1, obj.Item2);
     }
 
-    private static GraphModel ReadGraph(StoreWrapper store, string graphIri)
+    private static GraphModel ReadGraph(IReadOnlyList<OntoQuad> quads, string graphIri)
     {
         var model = new GraphModel(
             Classes: new HashSet<string>(StringComparer.Ordinal),
@@ -199,7 +193,6 @@ public static class ConflictDetection
         var listFirst = new Dictionary<string, string>(StringComparer.Ordinal);
         var listRest = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        var quads = store.Match(graphIri: graphIri);
         foreach (var q in quads)
         {
             var si = TermIri(q.Subject);

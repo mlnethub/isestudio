@@ -71,7 +71,7 @@ public sealed class ConflictAgent : IConflictAgent
 
     private readonly IChatClientFactory _chatFactory;
     private readonly ISEStudioDbContext _db;
-    private readonly StoreWrapper? _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly ExtractionJobStore? _jobs;
     private readonly ISEStudioOptions _options;
     private readonly ILogger<ConflictAgent> _logger;
@@ -79,7 +79,7 @@ public sealed class ConflictAgent : IConflictAgent
     public ConflictAgent(
         IChatClientFactory chatFactory,
         ISEStudioDbContext db,
-        StoreWrapper? store = null,
+        IRdfStatementRepository statements,
         ExtractionJobStore? jobs = null,
         IOptions<ISEStudioOptions>? options = null,
         ILogger<ConflictAgent>? logger = null)
@@ -88,7 +88,7 @@ public sealed class ConflictAgent : IConflictAgent
         ArgumentNullException.ThrowIfNull(db);
         _chatFactory = chatFactory;
         _db = db;
-        _store = store;
+        _statements = statements;
         _jobs = jobs;
         _options = options?.Value ?? new ISEStudioOptions();
         _logger = logger ?? NullLogger<ConflictAgent>.Instance;
@@ -144,11 +144,6 @@ public sealed class ConflictAgent : IConflictAgent
         {
             return Array.Empty<string>();
         }
-        if (_store is null)
-        {
-            return Array.Empty<string>();
-        }
-
         if (_jobs is not null && !skipActiveExtractionGate)
         {
             var active = await _jobs.FindActiveJobAsync(ksId, ct).ConfigureAwait(false);
@@ -206,7 +201,7 @@ public sealed class ConflictAgent : IConflictAgent
             // auto-apply. Auto-apply needs the graph store; without it
             // (contract-test path) the loop degrades to the
             // recommendation-only behaviour.
-            var canAutoApply = _store is not null;
+            var canAutoApply = true;
             if (canAutoApply && decision.Confidence >= _options.AutoApplyFloor)
             {
                 if (await TryAutoApplyAsync(ks, conflict, chosen, decision, ct).ConfigureAwait(false))
@@ -395,7 +390,7 @@ public sealed class ConflictAgent : IConflictAgent
                 if (action == "get_neighborhood")
                 {
                     var name = ReadString(root, "name") ?? "";
-                    var neighborhood = Neighborhood(ks.GraphIri, name);
+                    var neighborhood = Neighborhood(ks.Id, ks.GraphIri, name);
                     messages.Add(new ChatMessage(ChatRole.Assistant, reply));
                     messages.Add(new ChatMessage(ChatRole.User,
                         "get_neighborhood result:\n" +
@@ -451,9 +446,11 @@ public sealed class ConflictAgent : IConflictAgent
     /// outgoing properties, built from <see cref="SchemaBuilder.BuildView"/>
     /// (the .NET equivalent of the Python <c>schema.build_view</c>).
     /// </summary>
-    private Dictionary<string, object?>? Neighborhood(string graphIri, string name)
+    private Dictionary<string, object?>? Neighborhood(Guid knowledgeSystemId, string graphIri, string name)
     {
-        var view = SchemaBuilder.BuildView(graphIri, _store!);
+        var statements = _statements.ListAsync(knowledgeSystemId, "TBox").GetAwaiter().GetResult();
+        var view = SchemaBuilder.BuildView(graphIri,
+            statements.Where(s => s.GraphIri == graphIri).ToList());
         var target = name.Trim();
         var cls = view.Classes.FirstOrDefault(c =>
             string.Equals(c.Label.Trim(), target, StringComparison.OrdinalIgnoreCase)
@@ -546,17 +543,17 @@ public sealed class ConflictAgent : IConflictAgent
     {
         var tboxIri = ks.GraphIri;
         var aboxIri = tboxIri.TrimEnd('/') + "/abox";
-        var tboxGraph = new OntoNamedNode(tboxIri);
-        var aboxGraph = new OntoNamedNode(aboxIri);
+        var tboxStore = new PostgresRdfGraphStore(_statements, ks.Id, "TBox");
+        var aboxStore = new PostgresRdfGraphStore(_statements, ks.Id, "ABox");
 
-        var tboxPre = _store!.DumpNQuads(tboxGraph);
-        var aboxPre = _store.DumpNQuads(aboxGraph);
+        var tboxPre = tboxStore.DumpNQuads(tboxIri);
+        var aboxPre = aboxStore.DumpNQuads(aboxIri);
 
         if (!IsNoOp(chosen.Op))
         {
             try
             {
-                var editor = new OntologyEditor(_store);
+                var editor = new OntologyEditor(new PostgresOntologyRepository(_db, _statements));
                 await editor.ApplyEditAsync(tboxIri, ks.BaseIri, chosen.Op, ct).ConfigureAwait(false);
             }
             catch (Exception)
@@ -567,8 +564,8 @@ public sealed class ConflictAgent : IConflictAgent
             }
         }
 
-        var (added, removed) = StoreWrapper.DiffNQuads(tboxPre, _store.DumpNQuads(tboxGraph));
-        var (aAdded, aRemoved) = StoreWrapper.DiffNQuads(aboxPre, _store.DumpNQuads(aboxGraph));
+        var (added, removed) = PostgresRdfGraphStore.DiffNQuads(tboxPre, tboxStore.DumpNQuads(tboxIri));
+        var (aAdded, aRemoved) = PostgresRdfGraphStore.DiffNQuads(aboxPre, aboxStore.DumpNQuads(aboxIri));
         var gid = aAdded.Length > 0 || aRemoved.Length > 0
             ? Guid.NewGuid().ToString("N")[..16]
             : null;

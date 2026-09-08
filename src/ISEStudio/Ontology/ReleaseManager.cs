@@ -1,73 +1,45 @@
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoQuad = Oxigraph.Quad;
 using ISEStudio.Application.Foundation;
+using ISEStudio.Infrastructure.Persistence;
+using ISEStudio.Infrastructure.Persistence.Entities;
+using Microsoft.EntityFrameworkCore;
 
 namespace ISEStudio.Ontology;
 
 /// <summary>
-/// Orchestrates immutable release lifecycle: <c>capture</c> freezes the three
-/// workspace layers into the artifact store; <c>publish</c> opens a
-/// physically separate read-only RocksDB for serving; <c>read published</c>
-/// queries that serving store; <c>delete</c> tears down both. The serving
-/// store is keyed by release <see cref="Release.Id"/> and lives under
-/// <c>{servingRoot}/{id}/</c> so workspace writes after publication never
-/// leak into the published view.
+/// Orchestrates the immutable release lifecycle backed by PostgreSQL release
+/// statement snapshots and deployment rows.
 /// </summary>
 public sealed class ReleaseManager : IDisposable
 {
-    private readonly StoreWrapper _workspace;
+    private readonly ISEStudioDbContext _db;
+    private readonly IRdfStatementRepository _statements;
     private readonly ReleaseArtifactStore _artifacts;
-    private readonly string _servingRoot;
-    private readonly Dictionary<string, PublishedEntry> _published = new(StringComparer.Ordinal);
-    // _lock guards the in-memory _published registry (read on publish /
-    // delete).
-    private readonly object _lock = new();
-    // _versionLock serializes the entire CaptureAsync body so two concurrent
-    // captures for the same knowledge system cannot both observe an empty
-    // artifact store and allocate the same version. Capture is an
-    // infrequent operation, so the simpler "one capture at a time" model
-    // is preferable to a more elaborate reservation scheme.
     private readonly SemaphoreSlim _versionLock = new(1, 1);
     private bool _disposed;
 
-    private sealed record PublishedEntry(KsContext Ks, StoreWrapper Store);
-
     public ReleaseManager(
-        StoreWrapper workspace,
-        ReleaseArtifactStore artifacts,
-        string servingRoot)
+        ISEStudioDbContext db,
+        IRdfStatementRepository statements,
+        ReleaseArtifactStore artifacts)
     {
-        ArgumentNullException.ThrowIfNull(workspace);
-        ArgumentNullException.ThrowIfNull(artifacts);
-        ArgumentException.ThrowIfNullOrEmpty(servingRoot);
-
-        _workspace = workspace;
-        _artifacts = artifacts;
-        _servingRoot = Path.GetFullPath(servingRoot);
-        Directory.CreateDirectory(_servingRoot);
+        _db = db ?? throw new ArgumentNullException(nameof(db));
+        _statements = statements ?? throw new ArgumentNullException(nameof(statements));
+        _artifacts = artifacts ?? throw new ArgumentNullException(nameof(artifacts));
     }
-
-    /// <summary>Path where a release's serving store is rooted (created at publish time).</summary>
-    public string ServingPath(string releaseId) =>
-        Path.Combine(_servingRoot, releaseId);
-
-    /// <summary>The artifact store backing this manager.</summary>
-    public ReleaseArtifactStore Artifacts => _artifacts;
 
     // ------------------------------------------------------------------
     // Capture
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Freeze the three workspace layers into the artifact store under the
+    /// Freeze the three workspace layers into PostgreSQL release statements under the
     /// given <paramref name="releaseId"/> (the DB row's
     /// <c>Id.ToString("N")</c>) and <paramref name="version"/> (the draft
     /// version string). All three layers are snapshotted inside their own
-    /// <see cref="StoreWrapper.CaptureAsync(string, bool, TimeSpan?, CancellationToken)"/>
-    /// windows so a failure in one layer reverts just that layer. The
-    /// releaseId connects the artifact/serving-store side to the EF
-    /// <see cref="ReleaseEntities.OntologyReleaseEntity"/> row so publish,
-    /// rollback, and delete can address the same immutable snapshot.
+    /// layer rows so publish, rollback, and delete can address the same
+    /// immutable snapshot.
     /// </summary>
     public async Task<Release> CaptureAsync(
         KsContext ks,
@@ -82,40 +54,10 @@ public sealed class ReleaseManager : IDisposable
         ArgumentNullException.ThrowIfNull(actor);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        // Serialize the entire capture against concurrent captures for the
-        // same KS. Version allocation + shard write + manifest write must
-        // be atomic w.r.t. AllocateVersion() callers; otherwise two
-        // concurrent captures can both observe an empty artifact store and
-        // both allocate "v1". The version reservation (write the manifest
-        // skeleton first, then update with shards) would also work; the
-        // whole-body semaphore is simpler and capture is infrequent.
         await _versionLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            var files = new List<ReleaseFileManifest>(3);
-            long provenanceCount = 0;
-
-            foreach (var layer in new[] { RdfLayer.TBox, RdfLayer.ABox, RdfLayer.Vocabulary })
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var graphIri = GraphIriFor(ks, layer);
-                var graph = new OntoNamedNode(graphIri);
-
-                await using var capture = await _workspace.CaptureAsync(
-                    graphIri, revertOnError: true, cancellationToken: cancellationToken)
-                    .ConfigureAwait(false);
-
-                var nQuads = _workspace.DumpNQuads(graph);
-                _artifacts.Write(releaseId, layer, nQuads);
-                files.Add(_artifacts.BuildFileManifest(releaseId, layer, nQuads));
-                provenanceCount += ReleaseArtifactStore.StatementCount(nQuads);
-            }
-
-            var manifest = new ReleaseManifest(version, files, provenanceCount);
-            _artifacts.SaveManifest(releaseId, manifest);
-            WriteKsHeader(_artifacts.ReleasePath(releaseId), ks);
-
-            return new Release(releaseId, version, ks, _artifacts.ReleasePath(releaseId));
+            return await CapturePostgresAsync(ks, releaseId, version, actor, cancellationToken).ConfigureAwait(false);
         }
         finally
         {
@@ -124,20 +66,18 @@ public sealed class ReleaseManager : IDisposable
     }
 
     /// <summary>
-    /// Re-save the artifact manifest with the published version string.
-    /// Capture writes the draft version (<c>draft-{id}</c>); publish
-    /// assigns the public <c>v{N}</c> and must re-stamp the manifest so
-    /// <see cref="PublishAsync"/> materialises the serving store under the
-    /// public version and <see cref="ReadPublished"/> returns the right
-    /// version. Called before <see cref="PublishAsync"/>.
+    /// Re-save the draft row with the public version assigned at publish time.
     /// </summary>
     public void FinalizeVersion(string releaseId, string publishedVersion)
     {
         ArgumentException.ThrowIfNullOrEmpty(releaseId);
         ArgumentException.ThrowIfNullOrEmpty(publishedVersion);
         ObjectDisposedException.ThrowIf(_disposed, this);
-        var manifest = _artifacts.LoadManifest(releaseId);
-        _artifacts.SaveManifest(releaseId, manifest with { Version = publishedVersion });
+        if (!Guid.TryParse(releaseId, out var releaseGuid)) throw new InvalidOperationException("Invalid release id.");
+        var release = _db.OntologyReleases.Find(releaseGuid)
+            ?? throw new InvalidOperationException($"Release '{releaseId}' does not exist.");
+        release.Version = publishedVersion;
+        _db.SaveChanges();
     }
 
     // ------------------------------------------------------------------
@@ -145,11 +85,8 @@ public sealed class ReleaseManager : IDisposable
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// Publish a previously captured release: copy its shards into a fresh
-    /// RocksDB at <see cref="ServingPath"/> and open it read-only via
-    /// <see cref="StoreWrapper.OpenReadOnly"/>. Workspace writes after
-    /// publication are physically isolated — the serving store does not
-    /// share storage with the workspace.
+    /// Publish a previously captured release by activating its PostgreSQL
+    /// deployment row.
     /// </summary>
     public async Task<Release> PublishAsync(
         string releaseId,
@@ -160,60 +97,7 @@ public sealed class ReleaseManager : IDisposable
         ArgumentNullException.ThrowIfNull(actor);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (!_artifacts.Exists(releaseId))
-            throw new InvalidOperationException($"Release '{releaseId}' does not exist.");
-
-        // Idempotency: if we've already published, return the existing record.
-        if (TryGetPublishedEntry(releaseId, out var existing))
-        {
-            return new Release(releaseId, _artifacts.LoadManifest(releaseId).Version,
-                existing.Ks, ServingPath(releaseId));
-        }
-
-        var manifest = _artifacts.LoadManifest(releaseId);
-        var servingPath = ServingPath(releaseId);
-
-        // Wipe any prior serving directory so the load is deterministic.
-        if (Directory.Exists(servingPath))
-        {
-            Directory.Delete(servingPath, recursive: true);
-        }
-        Directory.CreateDirectory(servingPath);
-
-        // Capture the Ks from the artifact path encoding. Production code
-        // (Stage 3) replaces this with a full EF lookup. We use a header
-        // file inside the artifact directory to round-trip the KS IRIs so
-        // a cross-process restart can re-open the serving store without
-        // re-capturing.
-        var ksContext = ReadKsHeader(_artifacts.ReleasePath(releaseId)) ??
-            throw new InvalidOperationException(
-                $"Release '{releaseId}' has no KsContext header; cannot publish.");
-
-        // 1) Materialize the shards into a fresh writable RocksDB.
-        StoreWrapper? writable = null;
-        try
-        {
-            writable = new StoreWrapper(servingPath);
-            foreach (var file in manifest.Files)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var bytes = File.ReadAllBytes(Path.Combine(_artifacts.ReleasePath(releaseId), file.FileName));
-                writable.LoadNQuads(bytes, null);
-            }
-        }
-        finally
-        {
-            writable?.Dispose();
-        }
-
-        // 2) Open the same directory read-only and register it.
-        var readOnly = StoreWrapper.OpenReadOnly(servingPath);
-        lock (_lock)
-        {
-            _published[releaseId] = new PublishedEntry(ksContext, readOnly);
-        }
-
-        return new Release(releaseId, manifest.Version, ksContext, servingPath);
+        return await PublishPostgresAsync(releaseId, actor, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -259,64 +143,103 @@ public sealed class ReleaseManager : IDisposable
         ArgumentException.ThrowIfNullOrEmpty(releaseId);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        if (!TryGetPublishedEntry(releaseId, out var entry))
-        {
-            throw new InvalidOperationException($"Release '{releaseId}' is not published.");
-        }
-        var graphIri = GraphIriFor(entry.Ks, layer);
-        return entry.Store.Match(graphIri: graphIri);
+        if (!Guid.TryParse(releaseId, out var releaseGuid))
+            throw new InvalidOperationException($"Release '{releaseId}' is invalid.");
+        var release = _db.OntologyReleases.FirstOrDefault(item => item.Id == releaseGuid)
+            ?? throw new InvalidOperationException($"Release '{releaseId}' does not exist.");
+        if (release.Status == "deleted")
+            throw new InvalidOperationException($"Release '{releaseId}' has been deleted.");
+        var ks = _db.KnowledgeSystems.Where(item => item.Id == release.KnowledgeSystemId)
+            .Select(item => new KsContext(item.GraphIri, item.BaseIri)).First();
+        var rows = _db.ReleaseStatements.AsNoTracking()
+            .Where(item => item.ReleaseId == releaseGuid && item.Layer == layer.ToString())
+            .ToList();
+        return rows.Select(ToQuad).ToList();
     }
 
     /// <summary>True once a release has been published and its serving store is open.</summary>
     public bool IsPublished(string releaseId)
     {
         ArgumentException.ThrowIfNullOrEmpty(releaseId);
-        return TryGetPublishedEntry(releaseId, out _);
+        return Guid.TryParse(releaseId, out var releaseGuid)
+            && _db.ReleaseDeployments.Any(item => item.ReleaseId == releaseGuid && item.Status == "active");
     }
 
-    private bool TryGetPublishedEntry(string releaseId, out PublishedEntry entry)
+    private async Task<Release> CapturePostgresAsync(
+        KsContext ks, string releaseId, string version, Actor actor, CancellationToken cancellationToken)
     {
-        lock (_lock)
+        if (!Guid.TryParse(releaseId, out var releaseGuid))
+            throw new InvalidOperationException($"Release id '{releaseId}' must be a GUID.");
+        var existingRelease = await _db!.OntologyReleases.FirstOrDefaultAsync(item => item.Id == releaseGuid, cancellationToken)
+            .ConfigureAwait(false);
+        if (existingRelease is null)
         {
-            if (_published.TryGetValue(releaseId, out entry!))
+            var now = DateTimeOffset.UtcNow;
+            _db.OntologyReleases.Add(new OntologyReleaseEntity
             {
-                return true;
-            }
+                Id = releaseGuid,
+                KnowledgeSystemId = ks.KnowledgeSystemId,
+                Version = version,
+                Status = "draft",
+                Title = string.Empty,
+                Notes = string.Empty,
+                SnapshotDir = string.Empty,
+                CreatedByName = actor.UserId,
+                CreatedAt = now,
+            });
         }
+        else
+        {
+            existingRelease.Status = "draft";
+            existingRelease.Version = version;
+        }
+        var existing = await _db!.ReleaseStatements.Where(item => item.ReleaseId == releaseGuid)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        _db.ReleaseStatements.RemoveRange(existing);
+        var files = new List<ReleaseFileManifest>(3);
+        long provenanceCount = 0;
+        foreach (var layer in new[] { RdfLayer.TBox, RdfLayer.ABox, RdfLayer.Vocabulary })
+        {
+            var layerName = layer.ToString();
+            var graphIri = GraphIriFor(ks, layer);
+            var statements = await _statements!.ListAsync(ks.KnowledgeSystemId, layerName, cancellationToken)
+                .ConfigureAwait(false);
+            var layerStatements = statements.Where(statement => statement.GraphIri == graphIri).ToList();
+            _db.ReleaseStatements.AddRange(layerStatements.Select(statement => new ReleaseStatementEntity
+            {
+                KnowledgeSystemId = ks.KnowledgeSystemId,
+                ReleaseId = releaseGuid,
+                Layer = layerName,
+                GraphIri = statement.GraphIri,
+                SubjectIri = statement.Subject is RdfIri iri ? iri.Value : statement.Subject.ToString() ?? string.Empty,
+                PredicateIri = statement.PredicateIri,
+                ObjectIri = statement.Object is RdfIri objectIri ? objectIri.Value : null,
+                ObjectValue = statement.Object is RdfLiteral literal ? literal.Value : null,
+                StatementHash = HashStatement(statement),
+            }));
+            var nQuads = RdfExportService.SerializeNQuads(layerStatements);
+            _artifacts.Write(releaseId, layer, nQuads);
+            files.Add(_artifacts.BuildFileManifest(releaseId, layer, nQuads));
+            provenanceCount += ReleaseArtifactStore.StatementCount(nQuads);
+        }
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        var manifest = new ReleaseManifest(version, files, provenanceCount);
+        _artifacts.SaveManifest(releaseId, manifest);
+        return new Release(releaseId, version, ks, _artifacts.ReleasePath(releaseId));
+    }
 
-        // Lazy open: if a serving directory exists on disk we can re-open it
-        // read-only without re-running publish. Useful for cross-process
-        // restart scenarios. We need the KS to resolve the layer IRI; fall
-        // back to the on-disk header.
-        var servingPath = ServingPath(releaseId);
-        if (Directory.Exists(servingPath))
-        {
-            try
-            {
-                var opened = StoreWrapper.OpenReadOnly(servingPath);
-                var ks = ReadKsHeader(_artifacts.ReleasePath(releaseId))
-                    ?? new KsContext(string.Empty, string.Empty);
-                var fresh = new PublishedEntry(ks, opened);
-                lock (_lock)
-                {
-                    if (!_published.TryGetValue(releaseId, out entry!))
-                    {
-                        _published[releaseId] = fresh;
-                        entry = fresh;
-                        return true;
-                    }
-                    opened.Dispose();
-                    return _published.TryGetValue(releaseId, out entry!);
-                }
-            }
-            catch
-            {
-                entry = null!;
-                return false;
-            }
-        }
-        entry = null!;
-        return false;
+    private static string HashStatement(RdfStatement statement) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes($"{statement.Subject}|{statement.PredicateIri}|{statement.Object}|{statement.GraphIri}")));
+
+    private static OntoQuad ToQuad(ReleaseStatementEntity row)
+    {
+        var subject = new OntoNamedNode(row.SubjectIri);
+        var predicate = new OntoNamedNode(row.PredicateIri);
+        var obj = row.ObjectIri is not null
+            ? (Oxigraph.ITerm)new OntoNamedNode(row.ObjectIri)
+            : new Oxigraph.Literal(row.ObjectValue ?? string.Empty);
+        return new OntoQuad(subject, predicate, obj, new OntoNamedNode(row.GraphIri ?? string.Empty));
     }
 
     // ------------------------------------------------------------------
@@ -336,23 +259,13 @@ public sealed class ReleaseManager : IDisposable
         ArgumentNullException.ThrowIfNull(actor);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        lock (_lock)
-        {
-            if (_published.TryGetValue(releaseId, out var entry))
-            {
-                entry.Store.Dispose();
-                _published.Remove(releaseId);
-            }
-        }
-
-        var servingPath = ServingPath(releaseId);
-        if (Directory.Exists(servingPath))
-        {
-            Directory.Delete(servingPath, recursive: true);
-        }
-
-        _artifacts.Delete(releaseId);
-        return Task.CompletedTask;
+        if (!Guid.TryParse(releaseId, out var releaseGuid)) return Task.CompletedTask;
+        _db.ReleaseStatements.RemoveRange(_db.ReleaseStatements.Where(item => item.ReleaseId == releaseGuid));
+        _db.ReleaseDeployments.RemoveRange(_db.ReleaseDeployments.Where(item => item.ReleaseId == releaseGuid));
+        _db.ReleaseStatementProvenances.RemoveRange(_db.ReleaseStatementProvenances.Where(item => item.ReleaseId == releaseGuid));
+        _db.ExportJobs.RemoveRange(_db.ExportJobs.Where(item => item.ReleaseId == releaseGuid));
+        _db.OntologyReleases.RemoveRange(_db.OntologyReleases.Where(item => item.Id == releaseGuid));
+        return _db.SaveChangesAsync(cancellationToken);
     }
 
     // ------------------------------------------------------------------
@@ -365,37 +278,53 @@ public sealed class ReleaseManager : IDisposable
     /// </summary>
     public string AllocateVersion()
     {
-        var existing = _artifacts.ListVersions();
-        var used = new HashSet<int>(existing.Count);
-        foreach (var id in existing)
-        {
-            try
-            {
-                var m = _artifacts.LoadManifest(id);
-                if (TryParseVersion(m.Version, out var n))
-                    used.Add(n);
-            }
-            catch
-            {
-                // ignore unreadable manifests
-            }
-        }
+        var postgresUsed = _db.OntologyReleases
+            .Where(item => item.Status != "deleted")
+            .Select(item => item.Version).ToHashSet(StringComparer.Ordinal);
         for (int i = 1; i < int.MaxValue; i++)
         {
-            if (!used.Contains(i)) return $"v{i}";
+            if (!postgresUsed.Contains($"v{i}")) return $"v{i}";
         }
         throw new InvalidOperationException("No free version slots.");
     }
 
     /// <summary>List versions of captured releases (artifact-dir-derived).</summary>
-    public IReadOnlyList<string> ListVersions() => _artifacts.ListVersions();
+    public IReadOnlyList<string> ListVersions() => _db.OntologyReleases.Select(item => item.Version).ToList();
 
-    private static bool TryParseVersion(string version, out int n)
+    private async Task<Release> PublishPostgresAsync(
+        string releaseId, Actor actor, CancellationToken cancellationToken)
     {
-        n = 0;
-        if (string.IsNullOrEmpty(version)) return false;
-        if (!version.StartsWith("v", StringComparison.Ordinal)) return false;
-        return int.TryParse(version.AsSpan(1), out n);
+        if (!Guid.TryParse(releaseId, out var releaseGuid))
+            throw new InvalidOperationException($"Release '{releaseId}' is invalid.");
+        var release = await _db!.OntologyReleases.FirstOrDefaultAsync(item => item.Id == releaseGuid, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Release '{releaseId}' does not exist.");
+        var ks = await _db.KnowledgeSystems.FirstAsync(item => item.Id == release.KnowledgeSystemId, cancellationToken)
+            .ConfigureAwait(false);
+        var rows = await _db.ReleaseStatements.Where(item => item.ReleaseId == releaseGuid)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+        var deployment = await _db.ReleaseDeployments.FirstOrDefaultAsync(item => item.ReleaseId == releaseGuid, cancellationToken)
+            .ConfigureAwait(false);
+        if (deployment is null)
+        {
+            deployment = new ReleaseDeploymentEntity
+            {
+                KnowledgeSystemId = release.KnowledgeSystemId,
+                ReleaseId = releaseGuid,
+                CreatedAt = DateTimeOffset.UtcNow,
+            };
+            _db.ReleaseDeployments.Add(deployment);
+        }
+        deployment.Status = "active";
+        deployment.TboxGraphIri = ks.GraphIri.TrimEnd('/');
+        deployment.AboxGraphIri = deployment.TboxGraphIri + "/abox";
+        deployment.VocabularyGraphIri = deployment.TboxGraphIri + "/vocabulary";
+        deployment.StatementCount = rows.Count;
+        deployment.ActivatedAt = DateTimeOffset.UtcNow;
+        release.Status = "published";
+        release.PublishedAt = DateTimeOffset.UtcNow;
+        await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        return new Release(releaseId, release.Version, KsContext.FromEntity(ks), string.Empty);
     }
 
     // ------------------------------------------------------------------
@@ -414,14 +343,6 @@ public sealed class ReleaseManager : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        lock (_lock)
-        {
-            foreach (var e in _published.Values)
-            {
-                e.Store.Dispose();
-            }
-            _published.Clear();
-        }
         _versionLock.Dispose();
     }
 }

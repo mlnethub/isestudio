@@ -24,12 +24,12 @@ namespace ISEStudio.Extraction;
 /// </remarks>
 public sealed class ExtractionMerger : IExtractionMerger
 {
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
 
-    public ExtractionMerger(StoreWrapper store)
+    public ExtractionMerger(IRdfStatementRepository statements)
     {
-        ArgumentNullException.ThrowIfNull(store);
-        _store = store;
+        ArgumentNullException.ThrowIfNull(statements);
+        _statements = statements;
     }
 
     /// <inheritdoc />
@@ -46,9 +46,13 @@ public sealed class ExtractionMerger : IExtractionMerger
         var axiomsAdded = 0;
         var provenance = new List<string>();
 
+        var existing = _statements.ListAsync(ks.KnowledgeSystemId, "TBox")
+            .GetAwaiter().GetResult()
+            .Select(FromStatement)
+            .ToHashSet();
         foreach (var quad in quads)
         {
-            if (_store.ContainsQuad(quad)) continue;
+            if (existing.Contains(quad)) continue;
 
             var predicate = quad.Predicate.Value;
             if (predicate == Vocabulary.RdfType.Value && quad.Object is OntoNamedNode type)
@@ -70,7 +74,9 @@ public sealed class ExtractionMerger : IExtractionMerger
             }
         }
 
-        _store.AddQuads(new OntoNamedNode(ks.TBoxGraph), quads);
+        var merged = existing.Concat(quads).Distinct().Select(ToStatement).ToList();
+        _statements.ReplaceLayerAsync(ks.KnowledgeSystemId, "TBox", merged)
+            .GetAwaiter().GetResult();
 
         return new ExtractionMergeResult(
             classesAdded,
@@ -92,12 +98,14 @@ public sealed class ExtractionMerger : IExtractionMerger
         ArgumentNullException.ThrowIfNull(delta);
         if (delta.IsEmpty) return ExtractionMergeResult.Empty;
 
-        var view = SchemaBuilder.BuildView(ks.TBoxGraph, _store);
+        var tboxStatements = _statements.ListAsync(ks.KnowledgeSystemId, "TBox")
+            .GetAwaiter().GetResult();
+        var view = SchemaBuilder.BuildView(ks.TBoxGraph, tboxStatements);
         var classIndex = BuildIndex(view.Classes.Select(c => (c.Label, c.Iri)));
         var objectProperties = BuildIndex(view.ObjectProperties.Select(p => (p.Label, p.Iri)));
         var dataProperties = BuildIndex(view.DataProperties.Select(p => (p.Label, p.Iri)));
 
-        var abox = new ABoxManager(_store);
+        var abox = new ABoxManager(_statements);
         var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
 
         // Individuals already in the graph, plus the ones this chunk mints —
@@ -130,10 +138,6 @@ public sealed class ExtractionMerger : IExtractionMerger
             if (!individuals.TryGetValue(key, out var iri))
             {
                 iri = abox.CreateIndividual(ks, mention.Label, classIri);
-                _store.AddQuads(aboxGraph, new[]
-                {
-                    new OntoQuad(new OntoNamedNode(iri), Vocabulary.RdfsLabel, new OntoLiteral(mention.Label), aboxGraph),
-                });
                 individuals[key] = iri;
                 individualsAdded++;
                 provenance.Add(FactKey.IndividualKey(iri));
@@ -210,5 +214,38 @@ public sealed class ExtractionMerger : IExtractionMerger
         OntoNamedNode n => n.Value,
         OntoLiteral l => l.Value,
         _ => term.ToString() ?? string.Empty,
+    };
+
+    private static RdfStatement ToStatement(OntoQuad quad) =>
+        new(FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object), quad.Graph?.ToString());
+
+    private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
+    {
+        OntoNamedNode iri => new RdfIri(iri.Value),
+        Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
+        OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
+        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+    };
+
+    private static OntoQuad FromStatement(RdfStatement statement)
+    {
+        var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("RDF graph is required"));
+        return new OntoQuad(ToSubject(statement.Subject), new OntoNamedNode(statement.PredicateIri), ToObject(statement.Object), graph);
+    }
+
+    private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
+    {
+        RdfIri iri => new OntoNamedNode(iri.Value),
+        RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+        _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
+    };
+
+    private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
+    {
+        RdfIri iri => new OntoNamedNode(iri.Value),
+        RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+        RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
+            literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
+        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
     };
 }

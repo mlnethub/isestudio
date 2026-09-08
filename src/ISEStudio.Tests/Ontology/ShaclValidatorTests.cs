@@ -1,5 +1,6 @@
 using ISEStudio.Application.Vocabulary;
 using ISEStudio.Ontology;
+using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
@@ -7,27 +8,8 @@ using KsContext = ISEStudio.Ontology.KsContext;
 
 namespace ISEStudio.Tests.Ontology;
 
-public sealed class ShaclValidatorFixture : IDisposable
+public sealed class ShaclValidatorFixture : PostgresRdfFixture
 {
-    public string Path { get; }
-    public StoreWrapper Store { get; }
-
-    public ShaclValidatorFixture()
-    {
-        Path = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "isestudio-shacl-" + Guid.NewGuid().ToString("N"));
-        Store = new StoreWrapper(Path);
-    }
-
-    public void Dispose()
-    {
-        Store.Dispose();
-        if (Directory.Exists(Path))
-        {
-            Directory.Delete(Path, recursive: true);
-        }
-    }
 }
 
 public class ShaclValidatorTests : IClassFixture<ShaclValidatorFixture>, IAsyncLifetime
@@ -43,11 +25,7 @@ public class ShaclValidatorTests : IClassFixture<ShaclValidatorFixture>, IAsyncL
             BaseIri: "http://goodcrew.local/ks/test/shacl/onto#");
     }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+    public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -59,7 +37,7 @@ public class ShaclValidatorTests : IClassFixture<ShaclValidatorFixture>, IAsyncL
     [Fact]
     public void Filter_combinations_match_python_list_concepts_contract()
     {
-        var skos = new SkosManager(_fx.Store);
+        var skos = new SkosManager(_fx.Statements);
 
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
             Iri: "urn:scheme", Title: "Pumps", DefaultLanguage: "en"));
@@ -124,8 +102,7 @@ public class ShaclValidatorTests : IClassFixture<ShaclValidatorFixture>, IAsyncL
             // missing its required rdfs:label. The type must be owl:Class so
             // the focus-node collection actually finds it (focus-node
             // collection is by `sh:targetClass` value).
-            var dataStore = _fx.Store;
-            dataStore.AddQuads(new OntoNamedNode("urn:data"), new[]
+            _fx.ABox.AddQuads(new OntoNamedNode("urn:data"), new[]
             {
                 new Oxigraph.Quad(
                     new OntoNamedNode("urn:i-missing-label"),
@@ -134,7 +111,13 @@ public class ShaclValidatorTests : IClassFixture<ShaclValidatorFixture>, IAsyncL
                     new OntoNamedNode("urn:data")),
             });
 
-            var validator = new ShaclValidator(shapeStore, dataStore);
+            var validator = new ShaclValidator(
+                shapeStore.Match(
+                    subject: null,
+                    predicate: null,
+                    @object: null,
+                    graph: (Oxigraph.NamedNode?)null),
+                _fx.ABox.Match(graphIri: "urn:data"));
             var report = validator.Validate("urn:data");
 
             // The focus node has no rdfs:label → at least one violation.

@@ -15,7 +15,7 @@ public class CandidateGatherStepTests
             JobId: Guid.NewGuid(),
             KnowledgeSystemId: Guid.NewGuid(),
             GraphIri: "http://example.org/g",
-            Store: null!,  // not used when judge is null
+            Quads: null!,  // not used when judge is null
             Chat: null!,
             Embedder: null!,
             MinConfidence: 0.90);
@@ -34,7 +34,7 @@ public class CandidateGatherStepTests
             JobId: Guid.NewGuid(),
             KnowledgeSystemId: Guid.NewGuid(),
             GraphIri: "http://example.org/g",
-            Store: null!,
+            Quads: null!,
             Chat: null!,
             Embedder: null!,
             MinConfidence: 0.90);

@@ -30,7 +30,7 @@ public sealed class VocabularyProposalService
 {
     private readonly ISEStudioDbContext _db;
     private readonly SkosManager _skos;
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly TimeProvider _clock;
     private readonly KnowledgeSystemAccessService _access;
     private readonly ExtractionJobStore _jobStore;
@@ -38,14 +38,14 @@ public sealed class VocabularyProposalService
     public VocabularyProposalService(
         ISEStudioDbContext db,
         SkosManager skos,
-        StoreWrapper store,
+        IRdfStatementRepository statements,
         TimeProvider clock,
         KnowledgeSystemAccessService access,
         ExtractionJobStore jobStore)
     {
         _db = db;
         _skos = skos;
-        _store = store;
+        _statements = statements;
         _clock = clock;
         _access = access;
         _jobStore = jobStore;
@@ -180,9 +180,10 @@ public sealed class VocabularyProposalService
         var action = proposal.Action.Trim().ToLowerInvariant();
         SkosConceptView? view = null;
 
-        var pre = _store.DumpNQuads(ksc.VocabularyGraph);
-        await using (var cap = await _store
-            .CaptureAsync(ksc.VocabularyGraph, revertOnError: false, waitTimeout: null, ct)
+        var store = new PostgresRdfGraphStore(_statements, ks.Id, "Vocabulary");
+        var pre = store.DumpNQuads(ksc.VocabularyGraph);
+        await using (var cap = await store
+            .CaptureAsync(ksc.VocabularyGraph, ct)
             .ConfigureAwait(false))
         {
             try
@@ -226,8 +227,8 @@ public sealed class VocabularyProposalService
                 throw;
             }
         }
-        var post = _store.DumpNQuads(ksc.VocabularyGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var post = store.DumpNQuads(ksc.VocabularyGraph);
+        var (added, removed) = PostgresRdfGraphStore.DiffNQuads(pre, post);
 
         var now = _clock.GetUtcNow();
         proposal.Status = "accepted";

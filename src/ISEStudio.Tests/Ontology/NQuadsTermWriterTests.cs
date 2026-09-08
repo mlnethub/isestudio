@@ -1,5 +1,6 @@
 using System.Text;
 using ISEStudio.Ontology;
+using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -12,36 +13,31 @@ namespace ISEStudio.Tests.Ontology;
 /// fresh temp directory, StoreWrapper, importer, and exporter; all are torn
 /// down on dispose.
 /// </summary>
-public sealed class NQuadsTermWriterFixture : IDisposable
+public sealed class NQuadsTermWriterFixture : IAsyncLifetime
 {
-    public string Path { get; }
-    public StoreWrapper Store { get; }
-    public RdfImportService Importer { get; }
-    public RdfExportService Exporter { get; }
-    public KsContext Ks { get; }
+    public PostgresRdfFixture Database { get; } = new();
+    public RdfImportService Importer { get; private set; } = null!;
+    public RdfExportService Exporter { get; private set; } = null!;
+    public KsContext Ks { get; private set; } = null!;
 
     public NQuadsTermWriterFixture()
     {
-        Path = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "isestudio-nquads-term-writer-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path);
-        Store = new StoreWrapper(Path);
-        Importer = new RdfImportService(Store);
-        Exporter = new RdfExportService(Store);
-        Ks = new KsContext(
-            GraphIri: "http://goodcrew.local/ks/test/nquads-term-writer",
-            BaseIri: "http://goodcrew.local/ks/test/nquads-term-writer/onto#");
+        Importer = null!;
+        Exporter = null!;
+        Ks = null!;
     }
 
-    public void Dispose()
+    public async Task InitializeAsync()
     {
-        Store.Dispose();
-        if (Directory.Exists(Path))
-        {
-            Directory.Delete(Path, recursive: true);
-        }
+        await Database.InitializeAsync();
+        Importer = new RdfImportService(Database.Statements, new RdfImportParser());
+        Exporter = new RdfExportService(Database.Statements);
+        Ks = new KsContext(Database.Db.KnowledgeSystems.Single().GraphIri,
+            Database.Db.KnowledgeSystems.Single().BaseIri,
+            KnowledgeSystemId: Database.KnowledgeSystemId);
     }
+
+    public Task DisposeAsync() => Database.DisposeAsync();
 }
 
 /// <summary>
@@ -57,11 +53,7 @@ public class NQuadsTermWriterTests : IClassFixture<NQuadsTermWriterFixture>, IAs
 
     public NQuadsTermWriterTests(NQuadsTermWriterFixture fx) { _fx = fx; }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+    public Task InitializeAsync() => _fx.Database.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -101,44 +93,21 @@ public class NQuadsTermWriterTests : IClassFixture<NQuadsTermWriterFixture>, IAs
     [Trait("Category", "RdfCore")]
     public async Task Three_call_sites_produce_identical_bytes_for()
     {
-        var tbox = new OntoNamedNode(_fx.Ks.TBoxGraph);
-        _fx.Store.AddQuads(tbox,
+        await _fx.Database.Statements.ReplaceLayerAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString(),
         [
-            // Plain named-node subject with a plain string literal object.
-            new OntoQuad(
-                new OntoNamedNode("urn:s1"),
-                new OntoNamedNode("urn:p1"),
-                new OntoLiteral("plain string"),
-                tbox),
-            // Language-tagged literal — exercises the `@lang` branch.
-            new OntoQuad(
-                new OntoNamedNode("urn:s2"),
-                new OntoNamedNode("urn:p2"),
-                new OntoLiteral("hello", Language: "en"),
-                tbox),
-            // Explicitly-typed literal (xsd:integer) — exercises the
-            // `^^<datatype>` branch.
-            new OntoQuad(
-                new OntoNamedNode("urn:s3"),
-                new OntoNamedNode("urn:p3"),
-                new OntoLiteral("42", Datatype: OntoLiteral.XsdInteger),
-                tbox),
-            // A literal whose value contains a backslash, a double quote,
-            // and a newline — the three escape sequences every writer
-            // must handle identically.
-            new OntoQuad(
-                new OntoNamedNode("urn:s4"),
-                new OntoNamedNode("urn:p4"),
-                new OntoLiteral("a\\b\"c\nd"),
-                tbox),
+            new(new RdfIri("urn:s1"), "urn:p1", new RdfLiteral("plain string"), _fx.Ks.TBoxGraph),
+            new(new RdfIri("urn:s2"), "urn:p2", new RdfLiteral("hello", "en"), _fx.Ks.TBoxGraph),
+            new(new RdfIri("urn:s3"), "urn:p3", new RdfLiteral("42", null, OntoLiteral.XsdInteger.Value), _fx.Ks.TBoxGraph),
+            new(new RdfIri("urn:s4"), "urn:p4", new RdfLiteral("a\\b\"c\nd"), _fx.Ks.TBoxGraph),
         ]);
 
         // Call site 1: StoreWrapper.DumpNQuads (uses AppendNQuadsTerm).
-        var dumpBytes = _fx.Store.DumpNQuads(tbox);
+        var statements = await _fx.Database.Statements.ListAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString());
+        var dumpBytes = RdfExportService.SerializeNQuads(statements);
 
         // Call site 2: RdfExportService.ExportAsync (uses AppendTerm).
         var exportBytes = await _fx.Exporter.ExportAsync(
-            _fx.Ks, RdfLayer.TBox, RdfFormat.NQuads);
+            _fx.Ks, RdfLayer.TBox, RdfExportFormat.NQuads);
 
         // Byte-exact equality between the two N-Quads producers.
         Assert.Equal(

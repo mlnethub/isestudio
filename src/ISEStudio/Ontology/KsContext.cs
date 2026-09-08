@@ -24,7 +24,8 @@ namespace ISEStudio.Ontology;
 public sealed record KsContext(
     string GraphIri,
     string BaseIri,
-    string Name = "")
+    string Name = "",
+    Guid KnowledgeSystemId = default)
 {
     /// <summary>The TBox (schema) graph for this knowledge system.</summary>
     public string TBoxGraph => GraphIri.TrimEnd('/');
@@ -39,6 +40,6 @@ public sealed record KsContext(
     public static KsContext FromEntity(KnowledgeSystemEntity entity)
     {
         ArgumentNullException.ThrowIfNull(entity);
-        return new KsContext(entity.GraphIri, entity.BaseIri, entity.Name);
+        return new KsContext(entity.GraphIri, entity.BaseIri, entity.Name, entity.Id);
     }
 }

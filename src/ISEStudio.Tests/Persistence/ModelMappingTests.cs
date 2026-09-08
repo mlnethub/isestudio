@@ -17,7 +17,7 @@ public sealed class ModelMappingTests
     {
         using var db = DbContextFactory.CreateSqlite();
         var entities = db.Model.GetEntityTypes().ToDictionary(x => x.ClrType.Name);
-        Assert.Equal(35, entities.Count);
+        Assert.Equal(38, entities.Count);
         Assert.All(entities.Values, entity => Assert.NotNull(entity.FindPrimaryKey()));
     }
 

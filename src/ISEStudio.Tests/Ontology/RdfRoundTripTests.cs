@@ -1,5 +1,6 @@
 using System.Text;
 using ISEStudio.Ontology;
+using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -8,35 +9,26 @@ using OntoLiteral = Oxigraph.Literal;
 namespace ISEStudio.Tests.Ontology;
 
 /// <summary>
-/// Fixture for import / export round-trip tests. Owns a temp RocksDB store
-/// + an importer + an exporter; wipes the store between tests.
+/// Fixture for import / export round-trip tests backed by PostgreSQL.
 /// </summary>
-public sealed class RdfRoundTripFixture : IDisposable
+public sealed class RdfRoundTripFixture : IAsyncLifetime
 {
-    public string Path { get; }
-    public StoreWrapper Store { get; }
-    public RdfImportService Importer { get; }
-    public RdfExportService Exporter { get; }
+    public PostgresRdfFixture Database { get; } = new();
+    public RdfImportService Importer { get; private set; } = null!;
+    public RdfExportService Exporter { get; private set; } = null!;
 
     public RdfRoundTripFixture()
     {
-        Path = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "isestudio-rdf-rt-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(Path);
-        Store = new StoreWrapper(Path);
-        Importer = new RdfImportService(Store);
-        Exporter = new RdfExportService(Store);
     }
 
-    public void Dispose()
+    public async Task InitializeAsync()
     {
-        Store.Dispose();
-        if (Directory.Exists(Path))
-        {
-            Directory.Delete(Path, recursive: true);
-        }
+        await Database.InitializeAsync();
+        Importer = new RdfImportService(Database.Statements, new RdfImportParser());
+        Exporter = new RdfExportService(Database.Statements);
     }
+
+    public Task DisposeAsync() => Database.DisposeAsync();
 }
 
 public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifetime
@@ -49,13 +41,13 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
         _fx = fx;
         _ks = new KsContext(
             GraphIri: "http://goodcrew.local/ks/test/rdf-rt",
-            BaseIri: "http://goodcrew.local/ks/test/rdf-rt/onto#");
+            BaseIri: "http://goodcrew.local/ks/test/rdf-rt/onto#",
+            KnowledgeSystemId: _fx.Database.KnowledgeSystemId);
     }
 
     public Task InitializeAsync()
     {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
+        return _fx.Database.ResetAsync();
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -70,24 +62,15 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
         // Seed the Vocabulary layer with two literals that have language tags
         // and one with an explicit datatype.
         var vocabGraph = new OntoNamedNode(_ks.VocabularyGraph);
-        _fx.Store.AddQuads(vocabGraph,
+        await _fx.Database.Statements.ReplaceLayerAsync(_fx.Database.KnowledgeSystemId, RdfLayer.Vocabulary.ToString(),
         [
-            new OntoQuad(new OntoNamedNode("urn:s"),
-                         new OntoNamedNode("http://www.w3.org/2004/02/skos/core#prefLabel"),
-                         new OntoLiteral("Pump", Language: "en"),
-                         vocabGraph),
-            new OntoQuad(new OntoNamedNode("urn:s"),
-                         new OntoNamedNode("http://www.w3.org/2004/02/skos/core#prefLabel"),
-                         new OntoLiteral("泵", Language: "zh-cn"),
-                         vocabGraph),
-            new OntoQuad(new OntoNamedNode("urn:s"),
-                         new OntoNamedNode("urn:count"),
-                         new OntoLiteral("42", Datatype: OntoLiteral.XsdInteger),
-                         vocabGraph),
+            new(new RdfIri("urn:s"), "http://www.w3.org/2004/02/skos/core#prefLabel", new RdfLiteral("Pump", "en"), _ks.VocabularyGraph),
+            new(new RdfIri("urn:s"), "http://www.w3.org/2004/02/skos/core#prefLabel", new RdfLiteral("泵", "zh-cn"), _ks.VocabularyGraph),
+            new(new RdfIri("urn:s"), "urn:count", new RdfLiteral("42", null, OntoLiteral.XsdInteger.Value), _ks.VocabularyGraph),
         ]);
 
         // Four formats from the plan: N-Quads, N-Triples, Turtle, TriG.
-        var formats = new[] { RdfFormat.NQuads, RdfFormat.NTriples, RdfFormat.Turtle, RdfFormat.TriG };
+        var formats = new[] { RdfExportFormat.NQuads, RdfExportFormat.NTriples, RdfExportFormat.Turtle, RdfExportFormat.TriG };
         foreach (var format in formats)
         {
             var bytes = await _fx.Exporter.ExportAsync(_ks, RdfLayer.Vocabulary, format, default);
@@ -96,7 +79,14 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
             // Parse the bytes back into a fresh in-memory store and verify
             // the language tag survived.
             using var fresh = new Oxigraph.Store();
-            fresh.Load(Encoding.UTF8.GetString(bytes), format);
+            fresh.Load(Encoding.UTF8.GetString(bytes), format switch
+            {
+                RdfExportFormat.NQuads => Oxigraph.RdfFormat.NQuads,
+                RdfExportFormat.NTriples => Oxigraph.RdfFormat.NTriples,
+                RdfExportFormat.Turtle => Oxigraph.RdfFormat.Turtle,
+                RdfExportFormat.TriG => Oxigraph.RdfFormat.TriG,
+                _ => throw new ArgumentOutOfRangeException(nameof(format)),
+            });
 
             var all = fresh.Match();
             var literals = all
@@ -119,22 +109,18 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
     {
         var graph = new OntoNamedNode(_ks.TBoxGraph);
 
-        _fx.Store.AddQuads(graph, [new OntoQuad(
-            new OntoNamedNode("urn:s1"),
-            new OntoNamedNode("urn:p"),
-            new OntoLiteral("v1"),
-            graph)]);
+        await _fx.Database.Statements.ReplaceLayerAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString(),
+            [new(new RdfIri("urn:s1"), "urn:p", new RdfLiteral("v1"), _ks.TBoxGraph)]);
 
         var payload = Encoding.UTF8.GetBytes(
             "<urn:s2> <urn:p> <urn:o2> <" + _ks.TBoxGraph + "> .\n");
 
         await _fx.Importer.ImportAsync(_ks, RdfLayer.TBox, payload, ImportMode.Merge, default);
 
-        Assert.Equal(2ul, _fx.Store.Count(graph: graph));
-        Assert.Contains(_fx.Store.Match(graph: graph),
-            q => ((OntoNamedNode)q.Subject).Value == "urn:s1");
-        Assert.Contains(_fx.Store.Match(graph: graph),
-            q => ((OntoNamedNode)q.Subject).Value == "urn:s2");
+        var merged = await _fx.Database.Statements.ListAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString());
+        Assert.Equal(2, merged.Count);
+        Assert.Contains(merged, q => q.Subject is RdfIri { Value: "urn:s1" });
+        Assert.Contains(merged, q => q.Subject is RdfIri { Value: "urn:s2" });
     }
 
     // ------------------------------------------------------------------
@@ -144,24 +130,18 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
     [Trait("Category", "RdfCore")]
     public async Task Import_Replace_wipes_existing_layer()
     {
-        var graph = new OntoNamedNode(_ks.TBoxGraph);
-
-        _fx.Store.AddQuads(graph, [new OntoQuad(
-            new OntoNamedNode("urn:s1"),
-            new OntoNamedNode("urn:p"),
-            new OntoLiteral("v1"),
-            graph)]);
+        await _fx.Database.Statements.ReplaceLayerAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString(),
+            [new(new RdfIri("urn:s1"), "urn:p", new RdfLiteral("v1"), _ks.TBoxGraph)]);
 
         var payload = Encoding.UTF8.GetBytes(
             "<urn:s2> <urn:p> <urn:o2> <" + _ks.TBoxGraph + "> .\n");
 
         await _fx.Importer.ImportAsync(_ks, RdfLayer.TBox, payload, ImportMode.Replace, default);
 
-        Assert.Equal(1ul, _fx.Store.Count(graph: graph));
-        Assert.DoesNotContain(_fx.Store.Match(graph: graph),
-            q => ((OntoNamedNode)q.Subject).Value == "urn:s1");
-        Assert.Contains(_fx.Store.Match(graph: graph),
-            q => ((OntoNamedNode)q.Subject).Value == "urn:s2");
+        var replaced = await _fx.Database.Statements.ListAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString());
+        Assert.Single(replaced);
+        Assert.DoesNotContain(replaced, q => q.Subject is RdfIri { Value: "urn:s1" });
+        Assert.Contains(replaced, q => q.Subject is RdfIri { Value: "urn:s2" });
     }
 
     // ------------------------------------------------------------------
@@ -171,14 +151,11 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
     [Trait("Category", "RdfCore")]
     public async Task Import_reverts_on_parse_failure()
     {
-        var graph = new OntoNamedNode(_ks.TBoxGraph);
-        _fx.Store.AddQuads(graph, [new OntoQuad(
-            new OntoNamedNode("urn:keep"),
-            new OntoNamedNode("urn:p"),
-            new OntoLiteral("v"),
-            graph)]);
+        await _fx.Database.Statements.ReplaceLayerAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString(),
+            [new(new RdfIri("urn:keep"), "urn:p", new RdfLiteral("v"), _ks.TBoxGraph)]);
 
-        var beforeBytes = _fx.Store.DumpNQuads(graph);
+        var before = await _fx.Database.Statements.ListAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString());
+        var beforeBytes = RdfExportService.SerializeNQuads(before);
 
         // Malformed N-Quads: unterminated string.
         var bad = Encoding.UTF8.GetBytes("<urn:s2> <urn:p> \"unterminated .\n");
@@ -187,7 +164,8 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
             await _fx.Importer.ImportAsync(_ks, RdfLayer.TBox, bad, ImportMode.Merge, default));
 
         // Layer must be byte-identical to before.
-        Assert.Equal(beforeBytes, _fx.Store.DumpNQuads(graph));
+        var after = await _fx.Database.Statements.ListAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString());
+        Assert.Equal(beforeBytes, RdfExportService.SerializeNQuads(after));
     }
 
     // ------------------------------------------------------------------
@@ -197,14 +175,10 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
     [Trait("Category", "RdfCore")]
     public async Task Export_NQuads_preserves_language_tags_in_bytes()
     {
-        var graph = new OntoNamedNode(_ks.VocabularyGraph);
-        _fx.Store.AddQuads(graph, [new OntoQuad(
-            new OntoNamedNode("urn:s"),
-            new OntoNamedNode("urn:p"),
-            new OntoLiteral("hello", Language: "en"),
-            graph)]);
+        await _fx.Database.Statements.ReplaceLayerAsync(_fx.Database.KnowledgeSystemId, RdfLayer.Vocabulary.ToString(),
+            [new(new RdfIri("urn:s"), "urn:p", new RdfLiteral("hello", "en"), _ks.VocabularyGraph)]);
 
-        var bytes = await _fx.Exporter.ExportAsync(_ks, RdfLayer.Vocabulary, RdfFormat.NQuads, default);
+        var bytes = await _fx.Exporter.ExportAsync(_ks, RdfLayer.Vocabulary, RdfExportFormat.NQuads, default);
         var text = Encoding.UTF8.GetString(bytes);
         Assert.Contains("\"hello\"@en", text);
     }
@@ -216,14 +190,10 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
     [Trait("Category", "RdfCore")]
     public async Task Export_Turtle_preserves_datatypes()
     {
-        var graph = new OntoNamedNode(_ks.TBoxGraph);
-        _fx.Store.AddQuads(graph, [new OntoQuad(
-            new OntoNamedNode("urn:s"),
-            new OntoNamedNode("urn:p"),
-            new OntoLiteral("3.14", Datatype: OntoLiteral.XsdDouble),
-            graph)]);
+        await _fx.Database.Statements.ReplaceLayerAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString(),
+            [new(new RdfIri("urn:s"), "urn:p", new RdfLiteral("3.14", null, OntoLiteral.XsdDouble.Value), _ks.TBoxGraph)]);
 
-        var bytes = await _fx.Exporter.ExportAsync(_ks, RdfLayer.TBox, RdfFormat.Turtle, default);
+        var bytes = await _fx.Exporter.ExportAsync(_ks, RdfLayer.TBox, RdfExportFormat.Turtle, default);
         var text = Encoding.UTF8.GetString(bytes);
         // Turtle uses ^^<...> for datatypes, but Oxigraph may use the
         // xsd:double prefix form. Either way the IRI must be present.
@@ -237,14 +207,10 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
     [Trait("Category", "RdfCore")]
     public async Task Export_TriG_emits_named_graph_block()
     {
-        var graph = new OntoNamedNode(_ks.TBoxGraph);
-        _fx.Store.AddQuads(graph, [new OntoQuad(
-            new OntoNamedNode("urn:s"),
-            new OntoNamedNode("urn:p"),
-            new OntoLiteral("v"),
-            graph)]);
+        await _fx.Database.Statements.ReplaceLayerAsync(_fx.Database.KnowledgeSystemId, RdfLayer.TBox.ToString(),
+            [new(new RdfIri("urn:s"), "urn:p", new RdfLiteral("v"), _ks.TBoxGraph)]);
 
-        var bytes = await _fx.Exporter.ExportAsync(_ks, RdfLayer.TBox, RdfFormat.TriG, default);
+        var bytes = await _fx.Exporter.ExportAsync(_ks, RdfLayer.TBox, RdfExportFormat.TriG, default);
         var text = Encoding.UTF8.GetString(bytes);
         // TriG: <graphIri> { ... } or graph <graphIri> { ... }. The exact
         // syntax Oxigraph emits is checked via the substring test below —
@@ -261,7 +227,7 @@ public class RdfRoundTripTests : IClassFixture<RdfRoundTripFixture>, IAsyncLifet
     [Trait("Category", "RdfCore")]
     public async Task Export_empty_layer_returns_bytes_for_each_format()
     {
-        foreach (var format in new[] { RdfFormat.NQuads, RdfFormat.NTriples, RdfFormat.Turtle, RdfFormat.TriG })
+        foreach (var format in new[] { RdfExportFormat.NQuads, RdfExportFormat.NTriples, RdfExportFormat.Turtle, RdfExportFormat.TriG })
         {
             var bytes = await _fx.Exporter.ExportAsync(_ks, RdfLayer.ABox, format, default);
             // Empty bytes are valid; Oxigraph returns at least a header in

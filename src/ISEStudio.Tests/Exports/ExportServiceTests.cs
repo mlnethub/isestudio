@@ -6,6 +6,7 @@ using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Extraction;
+using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
 using OntoLiteral = Oxigraph.Literal;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -20,19 +21,21 @@ namespace ISEStudio.Tests.Exports;
 /// <c>ExtractionStateTests</c> "real collaborators + seeded KS" wiring
 /// so the runner actually traverses every layer.
 /// </summary>
-public sealed class ExportServiceFixture : IDisposable
+public sealed class ExportServiceFixture : PostgresRdfFixture
 {
     private const string GraphIri = "http://goodcrew.local/ks/export-tests";
     private const string BaseIri = GraphIri + "/onto#";
 
     public string Root { get; }
     public SqliteContextFactory Contexts { get; }
-    public StoreWrapper Store { get; }
     public ExportArtifactStore Artifacts { get; }
     public ReleaseArtifactStore ReleaseArtifacts { get; }
     public ExportJobStore Jobs { get; }
-    public ExportRunner Runner { get; }
+    public ExportRunner Runner => _runner ??= new(
+        Jobs, Artifacts, new RdfExportService(Statements), ReleaseArtifacts,
+        TimeProvider.System);
     public KsContext KsCtx { get; }
+    private ExportRunner? _runner;
 
     public ExportServiceFixture()
     {
@@ -40,22 +43,18 @@ public sealed class ExportServiceFixture : IDisposable
             "isestudio-export-svc-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(Root);
 
-        Store = new StoreWrapper(Path.Combine(Root, "store"));
-        SeedAllLayers();
-
         Contexts = new SqliteContextFactory();
 
         Artifacts = new ExportArtifactStore(Path.Combine(Root, "exports"));
         ReleaseArtifacts = new ReleaseArtifactStore(Path.Combine(Root, "releases"));
         Jobs = new ExportJobStore(Contexts, TimeProvider.System);
-        Runner = new ExportRunner(Jobs, Artifacts, Store, ReleaseArtifacts, TimeProvider.System);
         KsCtx = new KsContext(GraphIri, BaseIri);
     }
 
     public void Dispose()
     {
-        Store.Dispose();
         Contexts.Dispose();
+        base.DisposeAsync().GetAwaiter().GetResult();
         try { Directory.Delete(Root, recursive: true); }
         catch (IOException) { /* Oxigraph handle can linger briefly. */ }
     }
@@ -80,6 +79,7 @@ public sealed class ExportServiceFixture : IDisposable
         using var db = Contexts.CreateDbContext();
         db.KnowledgeSystems.Add(ks);
         db.SaveChanges();
+        SeedLayers(ks.Id);
         return ks;
     }
 
@@ -90,7 +90,7 @@ public sealed class ExportServiceFixture : IDisposable
     public ExportService CreateService() =>
         new(Contexts.CreateDbContext(), Jobs, Runner, Artifacts);
 
-    private void SeedAllLayers()
+    private void SeedLayers(Guid knowledgeSystemId)
     {
         // TBox: one rdf:type owl:Class triple.
         var tboxQuad = new Oxigraph.Quad(
@@ -98,7 +98,22 @@ public sealed class ExportServiceFixture : IDisposable
             new OntoNamedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
             new OntoNamedNode("http://www.w3.org/2002/07/owl#Class"),
             new OntoNamedNode(GraphIri));
-        Store.AddQuads(new OntoNamedNode(GraphIri), new[] { tboxQuad });
+        var statements = new[]
+        {
+            new RdfStatement(new RdfIri(BaseIri + "Person"), ISEStudio.Ontology.Vocabulary.RdfType.Value,
+                new RdfIri(ISEStudio.Ontology.Vocabulary.OwlClass.Value), GraphIri),
+            new RdfStatement(new RdfIri(BaseIri + "vocab/Person"),
+                "http://www.w3.org/2004/02/skos/core#prefLabel", new RdfLiteral("Person"),
+                GraphIri + "/vocabulary"),
+            new RdfStatement(new RdfIri(BaseIri + "alice"), ISEStudio.Ontology.Vocabulary.RdfType.Value,
+                new RdfIri(BaseIri + "Person"), GraphIri + "/abox"),
+        };
+        Statements.ReplaceLayerAsync(knowledgeSystemId, RdfLayer.TBox.ToString(),
+            statements[..1]).GetAwaiter().GetResult();
+        Statements.ReplaceLayerAsync(knowledgeSystemId, RdfLayer.Vocabulary.ToString(),
+            statements[1..2]).GetAwaiter().GetResult();
+        Statements.ReplaceLayerAsync(knowledgeSystemId, RdfLayer.ABox.ToString(),
+            statements[2..]).GetAwaiter().GetResult();
 
         // Vocabulary: one skos:Concept triple in the vocabulary graph.
         var vocabQuad = new Oxigraph.Quad(
@@ -106,15 +121,6 @@ public sealed class ExportServiceFixture : IDisposable
             new OntoNamedNode("http://www.w3.org/2004/02/skos/core#prefLabel"),
             new OntoLiteral("Person"),
             new OntoNamedNode(GraphIri + "/vocabulary"));
-        Store.AddQuads(new OntoNamedNode(GraphIri + "/vocabulary"), new[] { vocabQuad });
-
-        // ABox: one instance triple in the abox graph.
-        var aboxQuad = new Oxigraph.Quad(
-            new OntoNamedNode(BaseIri + "alice"),
-            new OntoNamedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
-            new OntoNamedNode(BaseIri + "Person"),
-            new OntoNamedNode(GraphIri + "/abox"));
-        Store.AddQuads(new OntoNamedNode(GraphIri + "/abox"), new[] { aboxQuad });
     }
 }
 

@@ -51,7 +51,7 @@ public sealed class StructureAgent : IStructureAgent
 
     private readonly IChatClientFactory _chatFactory;
     private readonly ISEStudioDbContext _db;
-    private readonly StoreWrapper? _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly ExtractionJobStore? _jobs;
     private readonly ISEStudioOptions _options;
     private readonly ILogger<StructureAgent> _logger;
@@ -59,7 +59,7 @@ public sealed class StructureAgent : IStructureAgent
     public StructureAgent(
         IChatClientFactory chatFactory,
         ISEStudioDbContext db,
-        StoreWrapper? store = null,
+        IRdfStatementRepository statements,
         ExtractionJobStore? jobs = null,
         IOptions<ISEStudioOptions>? options = null,
         ILogger<StructureAgent>? logger = null)
@@ -68,7 +68,7 @@ public sealed class StructureAgent : IStructureAgent
         ArgumentNullException.ThrowIfNull(db);
         _chatFactory = chatFactory;
         _db = db;
-        _store = store;
+        _statements = statements;
         _jobs = jobs;
         _options = options?.Value ?? new ISEStudioOptions();
         _logger = logger ?? NullLogger<StructureAgent>.Instance;
@@ -121,11 +121,6 @@ public sealed class StructureAgent : IStructureAgent
         {
             return Array.Empty<string>();
         }
-        if (_store is null)
-        {
-            return Array.Empty<string>();
-        }
-
         if (_jobs is not null && !skipActiveExtractionGate)
         {
             var active = await _jobs.FindActiveJobAsync(ksId, ct).ConfigureAwait(false);
@@ -143,7 +138,8 @@ public sealed class StructureAgent : IStructureAgent
             return Array.Empty<string>();
         }
 
-        var view = SchemaBuilder.BuildView(ks.GraphIri, _store);
+        var tbox = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
+        var view = SchemaBuilder.BuildView(ks.GraphIri, tbox);
         var isolated = IsolatedClasses(view);
         if (isolated.Count == 0)
         {
@@ -264,7 +260,8 @@ public sealed class StructureAgent : IStructureAgent
             }
             var createdNew = pIri is null;
             var graph = new OntoNamedNode(ks.GraphIri);
-            var preBytes = _store.DumpNQuads(graph);
+            var store = new PostgresRdfGraphStore(_statements, ks.Id, "TBox");
+            var preBytes = store.DumpNQuads(ks.GraphIri);
             byte[] added = Array.Empty<byte>();
             byte[] removed = Array.Empty<byte>();
             try
@@ -274,8 +271,7 @@ public sealed class StructureAgent : IStructureAgent
                 // .NET revertOnError:true would ALWAYS revert (opposite
                 // semantics), so we open revertOnError:false and MarkError
                 // on the throw path — the ABoxService/OntologyEditor pattern.
-                await using (var cap = await _store.CaptureAsync(
-                    ks.GraphIri, revertOnError: false, waitTimeout: null, ct).ConfigureAwait(false))
+                await using (var cap = await store.CaptureAsync(ks.GraphIri, ct).ConfigureAwait(false))
                 {
                     try
                     {
@@ -300,7 +296,7 @@ public sealed class StructureAgent : IStructureAgent
                         {
                             quads.Add(new OntoQuad(subNode, Vocabulary.RdfsSubClassOf, pNode, graph));
                         }
-                        _store.AddQuads(graph, quads);
+                        store.AddQuads(graph, quads);
                     }
                     catch
                     {
@@ -308,7 +304,7 @@ public sealed class StructureAgent : IStructureAgent
                         throw;
                     }
                 }
-                var postBytes = _store.DumpNQuads(graph);
+                var postBytes = store.DumpNQuads(ks.GraphIri);
                 (added, removed) = StoreWrapper.DiffNQuads(preBytes, postBytes);
             }
             catch (Exception)

@@ -8,6 +8,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 
 namespace ISEStudio.Tests.Extraction;
 
@@ -37,11 +38,12 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
     {
         var root = Path.Combine(Path.GetTempPath(), "isestudio-recovery-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(root);
+        var rdf = new PostgresRdfFixture();
+        rdf.InitializeAsync().GetAwaiter().GetResult();
         try
         {
-            using var store = new StoreWrapper(Path.Combine(root, "store"));
             using var contexts = new SqliteContextFactory();
-            var ksId = Guid.NewGuid();
+            var ksId = rdf.KnowledgeSystemId;
             const string graphIri = "http://goodcrew.local/ks/recovery-tests";
             const string baseIri = graphIri + "/onto#";
             using (var db = contexts.CreateDbContext())
@@ -61,7 +63,7 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
 
             // Seed Person so the delta's property domains resolve against
             // an existing class.
-            store.AddQuads(new Oxigraph.NamedNode(graphIri), SchemaBuilder.BuildMutation(
+            rdf.TBox.AddQuads(new Oxigraph.NamedNode(graphIri), SchemaBuilder.BuildMutation(
                 baseIri,
                 new OntologyMutation(
                     Classes: new[] { new ClassMutation("Person", "Seeded fixture class") },
@@ -93,10 +95,10 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
                     new EndpointCapacityCoordinator(),
                     new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
                     new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-                    new TerminologyService(store),
+                    new TerminologyService(rdf.Statements),
                     new PromptSnapshotService(),
-                    new FakeMerger(new ExtractionMerger(store)),
-                    store,
+                    new FakeMerger(new ExtractionMerger(rdf.Statements)),
+                    rdf.Statements,
                     TimeProvider.System,
                     verify: verifyService,
                     corpus: new CorpusRecoveryService(
@@ -150,6 +152,7 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
             {
                 // Stale Oxigraph handles on Windows must never fail the run.
             }
+            rdf.DisposeAsync().GetAwaiter().GetResult();
         }
     }
 

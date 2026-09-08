@@ -14,6 +14,7 @@ public sealed class EntityTypeEntityConfiguration : IEntityTypeConfiguration<Ent
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.KnowledgeSystemId).HasColumnName("knowledge_system_id");
+        builder.Property(x => x.Iri).HasColumnName("iri").HasMaxLength(2048).IsRequired();
         builder.Property(x => x.Key).HasColumnName("key").HasMaxLength(255).IsRequired();
         builder.Property(x => x.Label).HasColumnName("label").HasMaxLength(255);
         builder.Property(x => x.Description).HasColumnName("description");
@@ -21,6 +22,10 @@ public sealed class EntityTypeEntityConfiguration : IEntityTypeConfiguration<Ent
         builder.HasIndex(x => new { x.KnowledgeSystemId, x.Key })
             .IsUnique()
             .HasDatabaseName("ux_entity_types_knowledge_system_id_key");
+
+        builder.HasIndex(x => new { x.KnowledgeSystemId, x.Iri })
+            .IsUnique()
+            .HasDatabaseName("ux_entity_types_knowledge_system_id_iri");
 
         builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Cascade);
     }
@@ -36,6 +41,7 @@ public sealed class RelationTypeEntityConfiguration : IEntityTypeConfiguration<R
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.KnowledgeSystemId).HasColumnName("knowledge_system_id");
+        builder.Property(x => x.Iri).HasColumnName("iri").HasMaxLength(2048).IsRequired();
         builder.Property(x => x.Key).HasColumnName("key").HasMaxLength(255).IsRequired();
         builder.Property(x => x.Label).HasColumnName("label").HasMaxLength(255);
         builder.Property(x => x.Description).HasColumnName("description");
@@ -43,6 +49,10 @@ public sealed class RelationTypeEntityConfiguration : IEntityTypeConfiguration<R
         builder.HasIndex(x => new { x.KnowledgeSystemId, x.Key })
             .IsUnique()
             .HasDatabaseName("ux_relation_types_knowledge_system_id_key");
+
+        builder.HasIndex(x => new { x.KnowledgeSystemId, x.Iri })
+            .IsUnique()
+            .HasDatabaseName("ux_relation_types_knowledge_system_id_iri");
 
         builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Cascade);
     }
@@ -106,12 +116,17 @@ public sealed class GraphEntityEntityConfiguration : IEntityTypeConfiguration<Gr
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.KnowledgeSystemId).HasColumnName("knowledge_system_id");
+        builder.Property(x => x.Iri).HasColumnName("iri").HasMaxLength(2048).IsRequired();
         builder.Property(x => x.EntityTypeId).HasColumnName("entity_type_id");
         builder.Property(x => x.Label).HasColumnName("label").HasMaxLength(255);
         builder.Property(x => x.Description).HasColumnName("description");
 
         builder.HasIndex(x => x.KnowledgeSystemId)
             .HasDatabaseName("ix_graph_entities_knowledge_system_id");
+
+        builder.HasIndex(x => new { x.KnowledgeSystemId, x.Iri })
+            .IsUnique()
+            .HasDatabaseName("ux_graph_entities_knowledge_system_id_iri");
 
         builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne<EntityTypeEntity>().WithMany().HasForeignKey(x => x.EntityTypeId).OnDelete(DeleteBehavior.Cascade);

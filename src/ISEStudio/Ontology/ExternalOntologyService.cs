@@ -14,16 +14,16 @@ namespace ISEStudio.Ontology;
 public sealed class ExternalOntologyService
 {
     private readonly ISEStudioDbContext _db;
-    private readonly StoreWrapper? _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly OntologyViewBuilder _builder;
 
     public ExternalOntologyService(
         ISEStudioDbContext db,
-        StoreWrapper? store,
+        IRdfStatementRepository statements,
         OntologyViewBuilder builder)
     {
         _db = db;
-        _store = store;
+        _statements = statements;
         _builder = builder;
     }
 
@@ -36,8 +36,10 @@ public sealed class ExternalOntologyService
             .ConfigureAwait(false);
         if (ks is null) return null;
 
+        var statements = await _statements.ListAsync(ks.Id, "TBox", ct)
+            .ConfigureAwait(false);
         var view = await _builder
-            .BuildFromStoreAsync(_store, ks.GraphIri, ct)
+            .BuildFromStatementsAsync(statements, ks.GraphIri, ct)
             .ConfigureAwait(false);
 
         return view with

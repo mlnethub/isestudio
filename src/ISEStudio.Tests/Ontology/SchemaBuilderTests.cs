@@ -1,4 +1,5 @@
 using ISEStudio.Ontology;
+using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -12,27 +13,8 @@ namespace ISEStudio.Tests.Ontology;
 /// <see cref="SchemaBuilder.BuildView"/>. Each test owns a fresh on-disk
 /// Oxigraph store so cases do not leak quads.
 /// </summary>
-public sealed class SchemaBuilderFixture : IDisposable
+public sealed class SchemaBuilderFixture : PostgresRdfFixture
 {
-    public string Path { get; }
-    public StoreWrapper Store { get; }
-
-    public SchemaBuilderFixture()
-    {
-        Path = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "isestudio-schema-" + Guid.NewGuid().ToString("N"));
-        Store = new StoreWrapper(Path);
-    }
-
-    public void Dispose()
-    {
-        Store.Dispose();
-        if (Directory.Exists(Path))
-        {
-            Directory.Delete(Path, recursive: true);
-        }
-    }
 }
 
 public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLifetime
@@ -43,11 +25,7 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
 
     public SchemaBuilderTests(SchemaBuilderFixture fx) { _fx = fx; }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+    public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -143,9 +121,9 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
         Assert.NotEmpty(quads);
 
         // Apply to the store via the standard capture pattern.
-        _fx.Store.AddQuads(_graph, quads);
+        _fx.TBox.AddQuads(_graph, quads);
 
-        Assert.True(_fx.Store.Count(graph: _graph) > 0);
+        Assert.NotEmpty(_fx.TBox.Match(graphIri: _graph.Value));
     }
 
     // ------------------------------------------------------------------
@@ -166,9 +144,11 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
             Axioms: [new AxiomMutation(Type: "subclass", Sub: "Wine Region", Super: "Region")]);
 
         var quads = SchemaBuilder.BuildMutation(_baseIri, mut, _graph.Value);
-        _fx.Store.AddQuads(_graph, quads);
+        _fx.TBox.AddQuads(_graph, quads);
 
-        var view = SchemaBuilder.BuildView(_graph.Value, _fx.Store);
+        var view = SchemaBuilder.BuildView(
+            _graph.Value,
+            _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
 
         var wineRegion = view.Classes.SingleOrDefault(c => c.Label == "Wine Region");
         Assert.NotNull(wineRegion);
@@ -192,9 +172,11 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
             Axioms: []);
 
         var quads = SchemaBuilder.BuildMutation(_baseIri, mut, _graph.Value);
-        _fx.Store.AddQuads(_graph, quads);
+        _fx.TBox.AddQuads(_graph, quads);
 
-        var view = SchemaBuilder.BuildView(_graph.Value, _fx.Store);
+        var view = SchemaBuilder.BuildView(
+            _graph.Value,
+            _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
 
         var dataProp = view.DataProperties.Single();
         Assert.Equal("value", dataProp.Label);
@@ -205,7 +187,9 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
     [Fact]
     public void BuildView_returns_empty_when_graph_is_empty()
     {
-        var view = SchemaBuilder.BuildView(_graph.Value, _fx.Store);
+        var view = SchemaBuilder.BuildView(
+            _graph.Value,
+            _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
 
         Assert.Empty(view.Classes);
         Assert.Empty(view.ObjectProperties);

@@ -8,6 +8,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Extraction.Dovetail.Adapters;
+using ISEStudio.Tests.Infrastructure;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -25,6 +26,7 @@ public sealed class JobStepTests : IDisposable
     private readonly List<IDisposable> _disposables = new();
     private ExtractionOrchestrator? _orchestrator;
     private string? _root;
+    private PostgresRdfFixture? _rdf;
 
     private static JobState EmptyState() => JobState.From(new JobInput(
         JobId: Guid.NewGuid(),
@@ -60,8 +62,8 @@ public sealed class JobStepTests : IDisposable
         _root = Path.Combine(Path.GetTempPath(), "isestudio-jobstep-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(_root);
 
-        var store = new StoreWrapper(Path.Combine(_root, "store"));
-        _disposables.Add(store);
+        _rdf = new PostgresRdfFixture();
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
         var contexts = new SqliteContextFactory();
         _disposables.Add(contexts);
 
@@ -74,16 +76,17 @@ public sealed class JobStepTests : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(store),
+            new TerminologyService(_rdf.Statements),
             new PromptSnapshotService(),
-            new ExtractionMerger(store),
-            store,
+            new ExtractionMerger(_rdf.Statements),
+            _rdf.Statements,
             TimeProvider.System);
     }
 
     public void Dispose()
     {
         foreach (var disposable in _disposables) disposable.Dispose();
+        _rdf?.DisposeAsync().GetAwaiter().GetResult();
         if (_root is not null)
         {
             try { Directory.Delete(_root, recursive: true); } catch (IOException) { }

@@ -1,5 +1,6 @@
 using ISEStudio.Application.Vocabulary;
 using ISEStudio.Ontology;
+using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -13,27 +14,8 @@ namespace ISEStudio.Tests.Ontology;
 /// directory; both are torn down on dispose. The store is reset (cleared) at
 /// the start of every test so cases do not leak quads.
 /// </summary>
-public sealed class ABoxManagerFixture : IDisposable
+public sealed class ABoxManagerFixture : PostgresRdfFixture
 {
-    public string Path { get; }
-    public StoreWrapper Store { get; }
-
-    public ABoxManagerFixture()
-    {
-        Path = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "isestudio-abox-" + Guid.NewGuid().ToString("N"));
-        Store = new StoreWrapper(Path);
-    }
-
-    public void Dispose()
-    {
-        Store.Dispose();
-        if (Directory.Exists(Path))
-        {
-            Directory.Delete(Path, recursive: true);
-        }
-    }
 }
 
 public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetime
@@ -46,14 +28,11 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
         _fx = fx;
         _ks = new KsContext(
             GraphIri: "http://goodcrew.local/ks/test/abox-mgr",
-            BaseIri: "http://goodcrew.local/ks/test/abox-mgr/onto#");
+                BaseIri: "http://goodcrew.local/ks/test/abox-mgr/onto#",
+                KnowledgeSystemId: fx.KnowledgeSystemId);
     }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+            public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -64,8 +43,8 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     [Fact]
     public void Tbox_abox_and_vocabulary_are_isolated_named_graphs()
     {
-        var abox = new ABoxManager(_fx.Store);
-        var skos = new SkosManager(_fx.Store);
+        var abox = new ABoxManager(_fx.Statements);
+        var skos = new SkosManager(_fx.Statements);
 
         var indIri = abox.CreateIndividual(_ks, "urn:i", "urn:Class");
         var schemeIri = skos.CreateScheme(_ks, new SkosSchemeData(
@@ -74,18 +53,18 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
             Iri: "urn:c", PrefLabel: "Pump", Language: "en"));
 
         // ABox individual must NOT show up in the TBox graph...
-        Assert.Empty(_fx.Store.Match(subjectIri: indIri, graphIri: _ks.TBoxGraph));
+        Assert.Empty(_fx.ABox.Match(subjectIri: indIri, graphIri: _ks.TBoxGraph));
         // ...nor in the vocabulary (SKOS) graph.
-        Assert.Empty(_fx.Store.Match(subjectIri: indIri, graphIri: _ks.VocabularyGraph));
+        Assert.Empty(_fx.Vocabulary.Match(subjectIri: indIri, graphIri: _ks.VocabularyGraph));
 
         // Concept must NOT show up in the ABox graph...
-        Assert.Empty(_fx.Store.Match(subjectIri: conceptIri, graphIri: _ks.ABoxGraph));
+        Assert.Empty(_fx.ABox.Match(subjectIri: conceptIri, graphIri: _ks.ABoxGraph));
         // ...nor in the TBox graph.
-        Assert.Empty(_fx.Store.Match(subjectIri: conceptIri, graphIri: _ks.TBoxGraph));
+        Assert.Empty(_fx.TBox.Match(subjectIri: conceptIri, graphIri: _ks.TBoxGraph));
 
         // Sanity: the right triples ARE in the right graphs.
-        Assert.NotEmpty(_fx.Store.Match(subjectIri: indIri, graphIri: _ks.ABoxGraph));
-        Assert.NotEmpty(_fx.Store.Match(subjectIri: conceptIri, graphIri: _ks.VocabularyGraph));
+        Assert.NotEmpty(_fx.ABox.Match(subjectIri: indIri, graphIri: _ks.ABoxGraph));
+        Assert.NotEmpty(_fx.Vocabulary.Match(subjectIri: conceptIri, graphIri: _ks.VocabularyGraph));
     }
 
     // ------------------------------------------------------------------
@@ -107,13 +86,13 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     [Fact]
     public void CreateIndividual_writes_rdf_type_to_abox_graph()
     {
-        var abox = new ABoxManager(_fx.Store);
+        var abox = new ABoxManager(_fx.Statements);
         var iri = abox.CreateIndividual(_ks, "urn:ind-1", "urn:Class");
 
         Assert.False(string.IsNullOrWhiteSpace(iri));
 
         // rdf:type cls must be present in the ABox graph
-        var types = _fx.Store.Match(
+        var types = _fx.ABox.Match(
             subjectIri: iri,
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
             graphIri: _ks.ABoxGraph);
@@ -125,7 +104,7 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     {
         // IRI is auto-minted from the BaseIri; never echo the caller-supplied
         // individual IRI back (mirrors Python mint_iri that uses uuid4).
-        var abox = new ABoxManager(_fx.Store);
+        var abox = new ABoxManager(_fx.Statements);
         var iri = abox.CreateIndividual(_ks, "urn:ind-1", "urn:Class");
         Assert.StartsWith(_ks.BaseIri, iri);
     }
@@ -133,7 +112,7 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     [Fact]
     public void AddDataAssertion_is_idempotent_and_returns_false_on_duplicate()
     {
-        var abox = new ABoxManager(_fx.Store);
+        var abox = new ABoxManager(_fx.Statements);
         var subj = abox.CreateIndividual(_ks, "urn:ind-1", "urn:Class");
 
         Assert.True(abox.AddDataAssertion(_ks, subj, "urn:age", "42", null));
@@ -143,13 +122,13 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     [Fact]
     public void AddObjectAssertion_writes_object_property_triple()
     {
-        var abox = new ABoxManager(_fx.Store);
+        var abox = new ABoxManager(_fx.Statements);
         var a = abox.CreateIndividual(_ks, "urn:ind-a", "urn:Class");
         var b = abox.CreateIndividual(_ks, "urn:ind-b", "urn:Class");
 
         Assert.True(abox.AddObjectAssertion(_ks, a, "urn:knows", b));
 
-        var triples = _fx.Store.Match(
+        var triples = _fx.ABox.Match(
             subjectIri: a, predicateIri: "urn:knows", graphIri: _ks.ABoxGraph);
         Assert.Contains(triples, q => q.Object is OntoNamedNode n && n.Value == b);
     }
@@ -157,26 +136,26 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     [Fact]
     public void RemoveDataAssertion_removes_triple()
     {
-        var abox = new ABoxManager(_fx.Store);
+        var abox = new ABoxManager(_fx.Statements);
         var subj = abox.CreateIndividual(_ks, "urn:ind-1", "urn:Class");
         abox.AddDataAssertion(_ks, subj, "urn:age", "42", null);
 
         abox.RemoveDataAssertion(_ks, subj, "urn:age", "42", null);
 
-        Assert.Empty(_fx.Store.Match(
+        Assert.Empty(_fx.ABox.Match(
             subjectIri: subj, predicateIri: "urn:age", graphIri: _ks.ABoxGraph));
     }
 
     [Fact]
     public void DeleteIndividual_removes_all_its_quads()
     {
-        var abox = new ABoxManager(_fx.Store);
+        var abox = new ABoxManager(_fx.Statements);
         var subj = abox.CreateIndividual(_ks, "urn:ind-1", "urn:Class");
         abox.AddDataAssertion(_ks, subj, "urn:age", "42", null);
 
         abox.DeleteIndividual(_ks, subj);
 
-        Assert.Empty(_fx.Store.Match(subjectIri: subj, graphIri: _ks.ABoxGraph));
+        Assert.Empty(_fx.ABox.Match(subjectIri: subj, graphIri: _ks.ABoxGraph));
     }
 
     // ------------------------------------------------------------------
@@ -185,13 +164,13 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     [Fact]
     public void Validator_flags_placeholder_label_as_error()
     {
-        var abox = new ABoxManager(_fx.Store);
-        var validator = new ABoxValidator(_fx.Store);
+        var abox = new ABoxManager(_fx.Statements);
+        var validator = new ABoxValidator(_fx.Statements);
 
         var subj = abox.CreateIndividual(_ks, "urn:ind-1", "urn:Class");
         // The validator reads the TBox schema; for this test we only need
         // the individual + label so the placeholder rule fires.
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.ABoxGraph), new[]
+        _fx.ABox.AddQuads(new OntoNamedNode(_ks.ABoxGraph), new[]
         {
             new OntoQuad(new OntoNamedNode(subj),
                 new OntoNamedNode("http://www.w3.org/2000/01/rdf-schema#label"),
@@ -209,10 +188,10 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     [Fact]
     public async Task Failed_create_individual_reverts_via_MarkError()
     {
-        var abox = new ABoxManager(_fx.Store);
+        var abox = new ABoxManager(_fx.Statements);
         // Create one individual so the ABox graph is non-empty.
         var before = abox.CreateIndividual(_ks, "urn:ind-before", "urn:Class");
-        byte[] snapshot = _fx.Store.DumpNQuads(new OntoNamedNode(_ks.ABoxGraph));
+        byte[] snapshot = _fx.ABox.DumpNQuads(_ks.ABoxGraph);
 
         // Capture the after IRI too so we can assert it was actually
         // rolled back. The previous form used `$"{_ks.BaseIri}"` as the
@@ -221,18 +200,22 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
         string? after = null;
         await Assert.ThrowsAsync<InvalidOperationException>(async () =>
         {
-            await using var capture = await _fx.Store.CaptureAsync(_ks.ABoxGraph, revertOnError: false);
+            await using var capture = await _fx.ABox.CaptureAsync(
+                _ks.ABoxGraph,
+                revertOnError: false,
+                waitTimeout: null,
+                cancellationToken: CancellationToken.None);
             after = abox.CreateIndividual(_ks, "urn:ind-after", "urn:Class");
             capture.MarkError();
             throw new InvalidOperationException();
         });
 
         // Bytes match — the second create is gone.
-        Assert.Equal(snapshot, _fx.Store.DumpNQuads(new OntoNamedNode(_ks.ABoxGraph)));
+        Assert.Equal(snapshot, _fx.ABox.DumpNQuads(_ks.ABoxGraph));
         // Only the original individual remains: the before individual
         // still has its triples, and the after individual was rolled back.
-        Assert.NotEmpty(_fx.Store.Match(subjectIri: before, graphIri: _ks.ABoxGraph));
+        Assert.NotEmpty(_fx.ABox.Match(subjectIri: before, graphIri: _ks.ABoxGraph));
         Assert.False(string.IsNullOrEmpty(after));
-        Assert.Empty(_fx.Store.Match(subjectIri: after!, graphIri: _ks.ABoxGraph));
+        Assert.Empty(_fx.ABox.Match(subjectIri: after!, graphIri: _ks.ABoxGraph));
     }
 }

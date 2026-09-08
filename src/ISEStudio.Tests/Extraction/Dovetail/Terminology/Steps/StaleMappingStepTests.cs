@@ -21,14 +21,11 @@ public class StaleMappingStepTests : IClassFixture<TerminologyServiceFixture>, I
         _ks = new KsContext(
             GraphIri: "http://goodcrew.local/ks/test/term-step1",
             BaseIri: "http://goodcrew.local/ks/test/term-step1/onto#",
-            Name: "Step tests");
+                Name: "Step tests",
+                KnowledgeSystemId: fx.KnowledgeSystemId);
     }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+            public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -40,7 +37,7 @@ public class StaleMappingStepTests : IClassFixture<TerminologyServiceFixture>, I
         // clear the Motor concept's op:mapsTo triple (stale_mappings_removed
         // == 1) exactly like the Sync_clears_stale_mappings whole-sync test.
         SeedClasses("Pump", "Motor");
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         svc.SyncAsync(_ks, CancellationToken.None);
 
         ReplaceTBox("Pump");
@@ -57,7 +54,7 @@ public class StaleMappingStepTests : IClassFixture<TerminologyServiceFixture>, I
         Assert.NotNull(carry.PreView);
         Assert.Equal(0, carry.TermsAdded);
 
-        var view = new SkosManager(_fx.Store).BuildView(_ks);
+        var view = new SkosManager(_fx.Statements).BuildView(_ks);
         var motor = view.Concepts.Single(c => c.DisplayLabel == "Motor");
         Assert.Null(motor.MappedEntityIri);
     }
@@ -68,7 +65,7 @@ public class StaleMappingStepTests : IClassFixture<TerminologyServiceFixture>, I
         // PrepareCarry dereferences the KsContext — a null one throws
         // inside the step, which must convert it to an Error carry (D5)
         // instead of propagating.
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var step = new StaleMappingStep(svc, NullLogger<StaleMappingStep>.Instance);
 
         var carry = await step.ExecuteAsync(
@@ -99,15 +96,15 @@ public class StaleMappingStepTests : IClassFixture<TerminologyServiceFixture>, I
             DataProperties: dataProperties.Select(l => new PropertyMutation(l, "data")).ToArray(),
             Axioms: axioms);
         var quads = SchemaBuilder.BuildMutation(_ks.BaseIri, mutation, _ks.TBoxGraph);
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
     }
 
     private void ReplaceTBox(params string[] labels)
     {
-        var existing = _fx.Store.Match(graphIri: _ks.TBoxGraph);
+        var existing = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
         if (existing.Count > 0)
         {
-            _fx.Store.RemoveQuads(new OntoNamedNode(_ks.TBoxGraph), existing);
+            _fx.TBox.RemoveQuads(new OntoNamedNode(_ks.TBoxGraph), existing);
         }
         SeedClasses(labels);
     }

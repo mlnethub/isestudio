@@ -1,11 +1,6 @@
 using System.Text;
-using Oxigraph;
 using VDS.RDF;
 using VDS.RDF.Writing;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoBlankNode = Oxigraph.BlankNode;
-using OntoLiteral = Oxigraph.Literal;
-using OntoQuad = Oxigraph.Quad;
 
 namespace ISEStudio.Ontology;
 
@@ -17,12 +12,11 @@ namespace ISEStudio.Ontology;
 /// </summary>
 public sealed class RdfExportService
 {
-    private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
 
-    public RdfExportService(StoreWrapper store)
+    public RdfExportService(IRdfStatementRepository statements)
     {
-        ArgumentNullException.ThrowIfNull(store);
-        _store = store;
+        _statements = statements ?? throw new ArgumentNullException(nameof(statements));
     }
 
     /// <summary>
@@ -30,32 +24,35 @@ public sealed class RdfExportService
     /// The bytes preserve blank-node labels, language tags, and explicit
     /// datatypes for all four formats (N-Quads / N-Triples / Turtle / TriG).
     /// </summary>
-    public Task<byte[]> ExportAsync(
+    public async Task<byte[]> ExportAsync(
         KsContext ks,
         RdfLayer layer,
-        RdfFormat format,
+        RdfExportFormat format,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(ks);
         cancellationToken.ThrowIfCancellationRequested();
 
         var graphIri = ReleaseManager.GraphIriFor(ks, layer);
-        var graph = new OntoNamedNode(graphIri);
-        var quads = _store.Match(graph: graph);
+        var statements = await _statements.ListAsync(
+            ks.KnowledgeSystemId, layer.ToString(), cancellationToken).ConfigureAwait(false);
 
         byte[] bytes = format switch
         {
-            RdfFormat.NQuads => _store.DumpNQuads(graph),
-            RdfFormat.TriG => DumpTriG(quads, graphIri),
-            RdfFormat.Turtle => DumpTurtle(quads),
-            RdfFormat.NTriples => DumpNTriples(quads),
-            RdfFormat.RdfXml => WriteGraphWithDotNetRdf(quads, new RdfXmlWriter()),
-            RdfFormat.JsonLd => WriteStoreWithDotNetRdf(quads, new JsonLdWriter()),
+            RdfExportFormat.NQuads => DumpNQuads(statements),
+            RdfExportFormat.TriG => DumpTriG(statements, graphIri),
+            RdfExportFormat.Turtle => DumpTurtle(statements),
+            RdfExportFormat.NTriples => DumpNTriples(statements),
+            RdfExportFormat.RdfXml => WriteGraphWithDotNetRdf(statements, new RdfXmlWriter()),
+            RdfExportFormat.JsonLd => WriteStoreWithDotNetRdf(statements, new JsonLdWriter()),
             _ => throw new ArgumentOutOfRangeException(nameof(format),
                 $"Format {format} is not a single-layer export format."),
         };
-        return Task.FromResult(bytes);
+        return bytes;
     }
+
+    public static byte[] SerializeNQuads(IReadOnlyList<RdfStatement> statements) =>
+        DumpNQuads(statements);
 
     // ------------------------------------------------------------------
     // dotNetRDF-backed formats (RDF/XML, JSON-LD). Oxigraph's 0.5.8 bindings
@@ -68,19 +65,19 @@ public sealed class RdfExportService
     // dataset format (IStoreWriter), so the graph is wrapped in a
     // TripleStore for the JSON-LD writer.
     // ------------------------------------------------------------------
-    private static byte[] WriteGraphWithDotNetRdf(IReadOnlyList<OntoQuad> quads, IRdfWriter writer)
+    private static byte[] WriteGraphWithDotNetRdf(IReadOnlyList<RdfStatement> statements, IRdfWriter writer)
     {
-        if (quads.Count == 0) return Array.Empty<byte>();
-        var graph = BuildDotNetRdfGraph(quads);
+        if (statements.Count == 0) return Array.Empty<byte>();
+        var graph = BuildDotNetRdfGraph(statements);
         using var sw = new System.IO.StringWriter();
         writer.Save(graph, sw);
         return Encoding.UTF8.GetBytes(sw.ToString());
     }
 
-    private static byte[] WriteStoreWithDotNetRdf(IReadOnlyList<OntoQuad> quads, IStoreWriter writer)
+    private static byte[] WriteStoreWithDotNetRdf(IReadOnlyList<RdfStatement> statements, IStoreWriter writer)
     {
-        if (quads.Count == 0) return Array.Empty<byte>();
-        var graph = BuildDotNetRdfGraph(quads);
+        if (statements.Count == 0) return Array.Empty<byte>();
+        var graph = BuildDotNetRdfGraph(statements);
         var store = new TripleStore();
         store.Add(graph);
         using var sw = new System.IO.StringWriter();
@@ -88,34 +85,33 @@ public sealed class RdfExportService
         return Encoding.UTF8.GetBytes(sw.ToString());
     }
 
-    private static VDS.RDF.Graph BuildDotNetRdfGraph(IReadOnlyList<OntoQuad> quads)
+    private static VDS.RDF.Graph BuildDotNetRdfGraph(IReadOnlyList<RdfStatement> statements)
     {
         var graph = new VDS.RDF.Graph();
-        foreach (var q in quads)
+        foreach (var statement in statements)
         {
-            var s = ToDotNetRdfNode(graph, q.Subject);
-            var p = ToDotNetRdfNode(graph, q.Predicate);
-            var o = ToDotNetRdfNode(graph, q.Object);
+            var s = ToDotNetRdfNode(graph, statement.Subject);
+            var p = graph.CreateUriNode(new Uri(statement.PredicateIri, UriKind.RelativeOrAbsolute));
+            var o = ToDotNetRdfNode(graph, statement.Object);
             graph.Assert(s, p, o);
         }
         return graph;
     }
 
-    private static INode ToDotNetRdfNode(IGraph g, object term) => term switch
+    private static INode ToDotNetRdfNode(IGraph g, RdfTerm term) => term switch
     {
-        OntoNamedNode n => g.CreateUriNode(new Uri(n.Value, UriKind.RelativeOrAbsolute)),
-        OntoBlankNode b => g.CreateBlankNode(b.Value),
-        OntoLiteral lit => ToDotNetRdfLiteral(g, lit),
-        _ => throw new InvalidOperationException(
-            $"Unsupported Oxigraph term for dotNetRDF conversion: {term?.GetType().Name ?? "null"}"),
+        RdfIri iri => g.CreateUriNode(new Uri(iri.Value, UriKind.RelativeOrAbsolute)),
+        RdfBlankNode blank => g.CreateBlankNode(blank.Id),
+        RdfLiteral literal => ToDotNetRdfLiteral(g, literal),
+        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
     };
 
-    private static ILiteralNode ToDotNetRdfLiteral(IGraph g, OntoLiteral lit)
+    private static ILiteralNode ToDotNetRdfLiteral(IGraph g, RdfLiteral lit)
     {
         if (!string.IsNullOrEmpty(lit.Language))
             return g.CreateLiteralNode(lit.Value, lit.Language);
         if (lit.Datatype is not null)
-            return g.CreateLiteralNode(lit.Value, new Uri(lit.Datatype.Value, UriKind.RelativeOrAbsolute));
+            return g.CreateLiteralNode(lit.Value, new Uri(lit.Datatype, UriKind.RelativeOrAbsolute));
         return g.CreateLiteralNode(lit.Value);
     }
 
@@ -142,60 +138,77 @@ public sealed class RdfExportService
     //    abbreviated IRX blank-node `[]`).
     // ------------------------------------------------------------------
 
-    private static byte[] DumpTriG(IReadOnlyList<OntoQuad> quads, string graphIri)
+    private static byte[] DumpTriG(IReadOnlyList<RdfStatement> statements, string graphIri)
     {
-        if (quads.Count == 0)
+        if (statements.Count == 0)
         {
             return Array.Empty<byte>();
         }
 
         var sb = new StringBuilder();
-        var g = new OntoNamedNode(graphIri);
         sb.Append('<').Append(graphIri).Append("> {\n");
-        foreach (var q in quads)
+        foreach (var statement in statements)
         {
-            AppendTerm(sb, q.Subject);
+            AppendTerm(sb, statement.Subject);
             sb.Append(' ');
-            AppendTerm(sb, q.Predicate);
+            AppendTerm(sb, new RdfIri(statement.PredicateIri));
             sb.Append(' ');
-            AppendTerm(sb, q.Object);
+            AppendTerm(sb, statement.Object);
             sb.Append(" .\n");
         }
         sb.Append("}\n");
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
-    private static byte[] DumpNTriples(IReadOnlyList<OntoQuad> quads)
+    private static byte[] DumpNQuads(IReadOnlyList<RdfStatement> statements)
     {
-        if (quads.Count == 0) return Array.Empty<byte>();
+        if (statements.Count == 0) return Array.Empty<byte>();
         var sb = new StringBuilder();
-        foreach (var q in quads)
+        foreach (var statement in statements)
         {
-            AppendTerm(sb, q.Subject);
+            AppendTerm(sb, statement.Subject);
             sb.Append(' ');
-            AppendTerm(sb, q.Predicate);
+            AppendTerm(sb, new RdfIri(statement.PredicateIri));
             sb.Append(' ');
-            AppendTerm(sb, q.Object);
+            AppendTerm(sb, statement.Object);
+            if (!string.IsNullOrWhiteSpace(statement.GraphIri)) sb.Append(" <").Append(statement.GraphIri).Append('>');
             sb.Append(" .\n");
         }
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
-    private static byte[] DumpTurtle(IReadOnlyList<OntoQuad> quads)
+    private static byte[] DumpNTriples(IReadOnlyList<RdfStatement> statements)
     {
-        if (quads.Count == 0) return Array.Empty<byte>();
+        if (statements.Count == 0) return Array.Empty<byte>();
+
+        var sb = new StringBuilder();
+        foreach (var statement in statements)
+        {
+            AppendTerm(sb, statement.Subject);
+            sb.Append(' ');
+            AppendTerm(sb, new RdfIri(statement.PredicateIri));
+            sb.Append(' ');
+            AppendTerm(sb, statement.Object);
+            sb.Append(" .\n");
+        }
+        return Encoding.UTF8.GetBytes(sb.ToString());
+    }
+
+    private static byte[] DumpTurtle(IReadOnlyList<RdfStatement> statements)
+    {
+        if (statements.Count == 0) return Array.Empty<byte>();
 
         // Group by subject so we can use Turtle's `;` continuation form.
-        var bySubject = new Dictionary<string, (object Key, List<(OntoNamedNode P, object O)> Rows)>(StringComparer.Ordinal);
-        foreach (var q in quads)
+        var bySubject = new Dictionary<string, (RdfTerm Key, List<(RdfIri P, RdfTerm O)> Rows)>(StringComparer.Ordinal);
+        foreach (var statement in statements)
         {
-            var key = SubjectKey(q.Subject);
+            var key = SubjectKey(statement.Subject);
             if (!bySubject.TryGetValue(key, out var entry))
             {
-                entry = (q.Subject, new List<(OntoNamedNode, object)>());
+                entry = (statement.Subject, new List<(RdfIri, RdfTerm)>());
                 bySubject[key] = entry;
             }
-            entry.Rows.Add((q.Predicate, q.Object));
+            entry.Rows.Add((new RdfIri(statement.PredicateIri), statement.Object));
         }
 
         var sb = new StringBuilder();
@@ -221,11 +234,11 @@ public sealed class RdfExportService
         return Encoding.UTF8.GetBytes(sb.ToString());
     }
 
-    private static string SubjectKey(object subject) => subject switch
+    private static string SubjectKey(RdfTerm subject) => subject switch
     {
-        OntoNamedNode n => "<" + n.Value + ">",
-        OntoBlankNode b => "_:" + b.Value,
-        _ => subject.ToString() ?? "",
+        RdfIri iri => "<" + iri.Value + ">",
+        RdfBlankNode blank => "_:" + blank.Id,
+        _ => subject.ToString() ?? string.Empty,
     };
 
     // ------------------------------------------------------------------
@@ -233,6 +246,17 @@ public sealed class RdfExportService
     // Delegates to NQuadsTermWriter so conflict signatures, store dumps,
     // and export bytes all share one implementation (and cannot drift).
     // ------------------------------------------------------------------
-    private static void AppendTerm(StringBuilder sb, object term) =>
-        NQuadsTermWriter.Append(sb, term);
+    private static void AppendTerm(StringBuilder sb, RdfTerm term)
+    {
+        switch (term)
+        {
+            case RdfIri iri: sb.Append('<').Append(iri.Value).Append('>'); break;
+            case RdfBlankNode blank: sb.Append("_:").Append(blank.Id); break;
+            case RdfLiteral literal:
+                sb.Append('"').Append(literal.Value.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n")).Append('"');
+                if (!string.IsNullOrWhiteSpace(literal.Language)) sb.Append('@').Append(literal.Language);
+                else if (!string.IsNullOrWhiteSpace(literal.Datatype)) sb.Append("^^<").Append(literal.Datatype).Append('>');
+                break;
+        }
+    }
 }

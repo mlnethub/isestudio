@@ -14,6 +14,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Extraction;
@@ -132,8 +133,9 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
     private readonly SqliteContextFactory _contexts;
     private readonly Guid _ksId = Guid.NewGuid();
     private readonly IBlobStore _blobs;
+    private readonly PostgresRdfFixture _rdf = new();
 
-    private StoreWrapper Store { get; }
+    private PostgresRdfGraphStore Store => _rdf.TBox;
 
     private KsContext Ks { get; } = new(GraphIri, BaseIri);
 
@@ -156,7 +158,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
             "isestudio-term-agent-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(_root);
 
-        Store = new StoreWrapper(Path.Combine(_root, "store"));
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
         SeedTBox();
 
         _contexts = new SqliteContextFactory();
@@ -502,10 +504,10 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(Store),
+            new TerminologyService(_rdf.Statements),
             new PromptSnapshotService(),
-            new ExtractionMerger(Store),
-            Store,
+            new ExtractionMerger(_rdf.Statements),
+            _rdf.Statements,
             TimeProvider.System,
             Options.Create(new ISEStudioOptions
             {
@@ -519,7 +521,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         FakeChatClientFactory.Default.Reset();
         FakeChat.Release();
         Services.Dispose();
-        Store.Dispose();
+        _rdf.DisposeAsync().GetAwaiter().GetResult();
         _contexts.Dispose();
         try
         {

@@ -9,6 +9,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 
 namespace ISEStudio.Tests.Extraction;
 
@@ -28,7 +29,7 @@ public sealed class ExtractionLlmFailureTests : IDisposable
     private readonly string _root;
     private readonly SqliteContextFactory _contexts;
     private readonly Guid _ksId = Guid.NewGuid();
-    private readonly StoreWrapper _store;
+    private readonly PostgresRdfFixture _rdf = new();
     private readonly ExtractionJobStore _jobs;
     private readonly ExtractionOrchestrator _orchestrator;
     private readonly ThrowingChat _chat;
@@ -39,7 +40,7 @@ public sealed class ExtractionLlmFailureTests : IDisposable
         _root = Path.Combine(Path.GetTempPath(), "isestudio-llm-failure-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(_root);
 
-        _store = new StoreWrapper(Path.Combine(_root, "store"));
+        _rdf.InitializeAsync().GetAwaiter().GetResult();
         SeedTBox();
 
         _contexts = new SqliteContextFactory();
@@ -63,10 +64,10 @@ public sealed class ExtractionLlmFailureTests : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(_store),
+            new TerminologyService(_rdf.Statements),
             new PromptSnapshotService(),
-            new ExtractionMerger(_store),
-            _store,
+            new ExtractionMerger(_rdf.Statements),
+            _rdf.Statements,
             TimeProvider.System);
     }
 
@@ -126,7 +127,7 @@ public sealed class ExtractionLlmFailureTests : IDisposable
     public void Dispose()
     {
         FakeChatClientFactory.Default.Reset();
-        _store.Dispose();
+        _rdf.DisposeAsync().GetAwaiter().GetResult();
         _contexts.Dispose();
         try { Directory.Delete(_root, recursive: true); } catch (IOException) { }
     }
@@ -144,7 +145,7 @@ public sealed class ExtractionLlmFailureTests : IDisposable
         ConcurrencyLimit: 2);
 
     private int ClassCount() =>
-        _store.Match(
+        _rdf.TBox.Match(
             predicateIri: Vocabulary.RdfType.Value,
             objectIri: Vocabulary.OwlClass.Value,
             graphIri: GraphIri).Count;
@@ -159,7 +160,16 @@ public sealed class ExtractionLlmFailureTests : IDisposable
                 DataProperties: new[] { new PropertyMutation("age", "data", Domain: "Person", Range: "integer") },
                 Axioms: Array.Empty<AxiomMutation>()),
             GraphIri);
-        _store.AddQuads(new Oxigraph.NamedNode(GraphIri), quads);
+        _rdf.Statements.ReplaceLayerAsync(
+            _rdf.KnowledgeSystemId,
+            RdfLayer.TBox.ToString(),
+            quads.Select(quad => new RdfStatement(
+                new RdfIri(quad.Subject.ToString()),
+                quad.Predicate.Value,
+                quad.Object is Oxigraph.NamedNode named
+                    ? new RdfIri(named.Value)
+                    : new RdfLiteral(quad.Object.ToString()),
+                GraphIri)).ToList()).GetAwaiter().GetResult();
     }
 
     private void SeedKnowledgeSystem()

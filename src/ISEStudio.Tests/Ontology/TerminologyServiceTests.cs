@@ -1,6 +1,7 @@
 using ISEStudio.Application.Vocabulary;
 using ISEStudio.Extraction;
 using ISEStudio.Ontology;
+using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoNamedNode = Oxigraph.NamedNode;
 using KsContext = ISEStudio.Ontology.KsContext;
@@ -16,27 +17,8 @@ namespace ISEStudio.Tests.Ontology;
 /// <c>scheme_count = 0</c> (which disables the "New term" button because
 /// <c>selectedSchemeIri</c> is empty). These tests pin the parity fix.
 /// </summary>
-public sealed class TerminologyServiceFixture : IDisposable
+public sealed class TerminologyServiceFixture : PostgresRdfFixture
 {
-    public string Path { get; }
-    public StoreWrapper Store { get; }
-
-    public TerminologyServiceFixture()
-    {
-        Path = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            "isestudio-term-" + Guid.NewGuid().ToString("N"));
-        Store = new StoreWrapper(Path);
-    }
-
-    public void Dispose()
-    {
-        Store.Dispose();
-        if (Directory.Exists(Path))
-        {
-            Directory.Delete(Path, recursive: true);
-        }
-    }
 }
 
 public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>, IAsyncLifetime
@@ -50,14 +32,11 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
         _ks = new KsContext(
             GraphIri: "http://goodcrew.local/ks/test/term-sync",
             BaseIri: "http://goodcrew.local/ks/test/term-sync/onto#",
-            Name: "Pump systems");
+                Name: "Pump systems",
+                KnowledgeSystemId: fx.KnowledgeSystemId);
     }
 
-    public Task InitializeAsync()
-    {
-        _fx.Store.Clear();
-        return Task.CompletedTask;
-    }
+            public Task InitializeAsync() => _fx.ResetAsync();
 
     public Task DisposeAsync() => Task.CompletedTask;
 
@@ -70,13 +49,13 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
     {
         SeedClasses("Pump", "Motor");
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var result = svc.SyncAsync(_ks, CancellationToken.None);
 
         Assert.Null(result.Error);
         Assert.Equal(2, result.TermsAdded);
 
-        var view = new SkosManager(_fx.Store).BuildView(_ks);
+        var view = new SkosManager(_fx.Statements).BuildView(_ks);
         Assert.Equal(1, view.Stats.SchemeCount);
         Assert.Equal(2, view.Stats.ConceptCount);
 
@@ -94,7 +73,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
     {
         SeedClasses("Pump");
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         svc.SyncAsync(_ks, CancellationToken.None);
         var second = svc.SyncAsync(_ks, CancellationToken.None);
 
@@ -102,7 +81,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
         // The concept is already mapped on the second pass, so nothing new.
         Assert.Equal(0, second.TermsAdded);
 
-        var view = new SkosManager(_fx.Store).BuildView(_ks);
+        var view = new SkosManager(_fx.Statements).BuildView(_ks);
         Assert.Equal(1, view.Stats.SchemeCount);
         Assert.Equal(1, view.Stats.ConceptCount);
     }
@@ -113,10 +92,10 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
         SeedClasses("Pump");
         var zh = _ks with { Name = "泵系统" };
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         svc.SyncAsync(zh, CancellationToken.None);
 
-        var view = new SkosManager(_fx.Store).BuildView(zh);
+        var view = new SkosManager(_fx.Statements).BuildView(zh);
         var scheme = Assert.Single(view.Schemes);
         Assert.Equal("泵系统术语表", scheme.Title);
         Assert.Equal("zh-CN", scheme.DefaultLanguage);
@@ -125,13 +104,13 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
     [Fact]
     public void Sync_without_tbox_classes_creates_nothing()
     {
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var result = svc.SyncAsync(_ks, CancellationToken.None);
 
         Assert.Null(result.Error);
         Assert.Equal(0, result.TermsAdded);
 
-        var view = new SkosManager(_fx.Store).BuildView(_ks);
+        var view = new SkosManager(_fx.Statements).BuildView(_ks);
         Assert.Equal(0, view.Stats.SchemeCount);
         Assert.Equal(0, view.Stats.ConceptCount);
     }
@@ -147,7 +126,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
     {
         SeedClasses("Pump");
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var result = svc.SyncAsync(_ks, CancellationToken.None);
 
         Assert.Null(result.Error);
@@ -158,7 +137,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
     public void Sync_sets_scheme_iri_when_reusing_existing_scheme()
     {
         SeedClasses("Pump");
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
 
         // First pass seeds the scheme; second pass reuses it (no new
         // terms). Both must report the scheme IRI so the agent step the
@@ -176,7 +155,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
         // sync short-circuits before resolving a scheme. The orchestrator
         // uses SchemeIri as the gate for the agent step, so null must
         // round-trip cleanly (the proposal stage is skipped).
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var result = svc.SyncAsync(_ks, CancellationToken.None);
 
         Assert.Null(result.Error);
@@ -206,14 +185,14 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
             dataProperties: new[] { "maxSpeed" },
             axioms: Array.Empty<AxiomMutation>());
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var result = svc.SyncAsync(_ks, CancellationToken.None);
 
         Assert.Null(result.Error);
         Assert.Equal(2, result.Properties);
         Assert.Equal(3, result.TermsAdded);
 
-        var view = new SkosManager(_fx.Store).BuildView(_ks);
+        var view = new SkosManager(_fx.Statements).BuildView(_ks);
         Assert.Equal(3, view.Stats.ConceptCount);
         Assert.Equal(3, view.Stats.MappedCount);
     }
@@ -226,7 +205,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
         // removed (stale_mappings_removed == 1) so a human can remap or
         // deprecate it. Mirrors Python `valid_mapping_iris` pruning.
         SeedClasses("Pump", "Motor");
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         svc.SyncAsync(_ks, CancellationToken.None);
 
         ReplaceTBox("Pump");
@@ -235,7 +214,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
         Assert.Null(second.Error);
         Assert.Equal(1, second.StaleMappingsRemoved);
 
-        var view = new SkosManager(_fx.Store).BuildView(_ks);
+        var view = new SkosManager(_fx.Statements).BuildView(_ks);
         var motor = view.Concepts.Single(c => c.DisplayLabel == "Motor");
         Assert.Null(motor.MappedEntityIri);
         var pump = view.Concepts.Single(c => c.DisplayLabel == "Pump");
@@ -251,7 +230,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
         // skos:altLabel (aliases_added == 1) without touching the curated
         // pref label. Mirrors Python's `existing_keys / label_owner` loop.
         SeedClasses("Pump");
-        var manager = new SkosManager(_fx.Store);
+        var manager = new SkosManager(_fx.Statements);
         // The sync's EnsureScheme will reuse this pre-created default scheme.
         SeedDefaultScheme(manager);
         var pumpIri = $"{_ks.BaseIri}Pump";
@@ -263,7 +242,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
                 Language: "en",
                 MappedEntityIri: pumpIri));
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var result = svc.SyncAsync(_ks, CancellationToken.None);
 
         Assert.Null(result.Error);
@@ -290,14 +269,14 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
             dataProperties: Array.Empty<string>(),
             axioms: new[] { new AxiomMutation("subclass", Sub: "Centrifugal Pump", Super: "Pump") });
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var result = svc.SyncAsync(_ks, CancellationToken.None);
 
         Assert.Null(result.Error);
         Assert.Equal(1, result.BroaderAdded);
         Assert.Equal(2, result.TermsAdded);
 
-        var view = new SkosManager(_fx.Store).BuildView(_ks);
+        var view = new SkosManager(_fx.Statements).BuildView(_ks);
         var child = view.Concepts.Single(c => c.DisplayLabel == "Centrifugal Pump");
         var parent = view.Concepts.Single(c => c.DisplayLabel == "Pump");
         Assert.Contains(parent.Iri, child.Broader);
@@ -313,7 +292,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
         // curated one, and must report mapping_conflicts == 1 (Python's
         // `elif exact: mapping_conflicts += 1; continue`).
         SeedClasses("Pump", "Other");
-        var manager = new SkosManager(_fx.Store);
+        var manager = new SkosManager(_fx.Statements);
         SeedDefaultScheme(manager);
         var otherIri = $"{_ks.BaseIri}Other";
         manager.CreateConcept(_ks,
@@ -324,7 +303,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
                 Language: "en",
                 MappedEntityIri: otherIri));
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         var result = svc.SyncAsync(_ks, CancellationToken.None);
 
         Assert.Null(result.Error);
@@ -347,7 +326,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
             dataProperties: Array.Empty<string>(),
             axioms: new[] { new AxiomMutation("subclass", Sub: "Centrifugal Pump", Super: "Pump") });
 
-        var svc = new TerminologyService(_fx.Store);
+        var svc = new TerminologyService(_fx.Statements);
         svc.SyncAsync(_ks, CancellationToken.None);
         var second = svc.SyncAsync(_ks, CancellationToken.None);
 
@@ -382,7 +361,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
             DataProperties: dataProperties.Select(l => new PropertyMutation(l, "data")).ToArray(),
             Axioms: axioms);
         var quads = SchemaBuilder.BuildMutation(_ks.BaseIri, mutation, _ks.TBoxGraph);
-        _fx.Store.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
+        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
     }
 
     /// <summary>
@@ -403,10 +382,10 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
     /// </summary>
     private void ReplaceTBox(params string[] labels)
     {
-        var existing = _fx.Store.Match(graphIri: _ks.TBoxGraph);
+        var existing = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
         if (existing.Count > 0)
         {
-            _fx.Store.RemoveQuads(new OntoNamedNode(_ks.TBoxGraph), existing);
+            _fx.TBox.RemoveQuads(new OntoNamedNode(_ks.TBoxGraph), existing);
         }
         SeedClasses(labels);
     }

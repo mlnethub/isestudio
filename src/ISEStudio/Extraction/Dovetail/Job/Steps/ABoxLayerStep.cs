@@ -43,7 +43,7 @@ public sealed class ABoxLayerStep : IPipelineSegment<JobState, ABoxLayerCarry>
         // ground the extracted individuals against the schema. Pull the
         // live labels off the KsContext's TBox graph via the orchestrator's
         // forwarder (ExistingClassLabels is private).
-        var labels = _orchestrator.ExistingClassLabelsForStep(input.KsContext);
+        var labels = _orchestrator.ExistingClassLabelsForStep(input.KsContext, input.KnowledgeSystemId);
 
         var state = await _orchestrator.RunLayerAsync(
             input,
