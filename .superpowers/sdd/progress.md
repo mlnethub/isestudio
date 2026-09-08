@@ -40,3 +40,47 @@
 	from the immutable `PromptSnapshot`; migration and Testcontainers coverage
 	pass. Worker claiming is scoped to `plain_text`, so existing TBox/ABox
 	pending rows are left for their own orchestration route.
+
+# Gap Closure Task 1
+
+- Durable handler dispatch for plain_text, tbox, and abox complete. Review fixes
+	terminate failed pipeline results and reject replay chunk identities that do
+	not match the claimed job. Focused worker/extraction tests and independent
+	review passed.
+
+# Gap Closure Task 2
+
+- Multi-format durable ingestion complete and independently approved. HTML, RSS,
+	RDF, OWL, PDF, DOCX, XLSX, and plain text preserve the parser/version/chunk
+	contract; RDF serialization is content-preserving and deterministic, blob
+	bytes are verified against SHA-256, and non-seekable stores are supported.
+	Focused parser, processor, worker, workflow, and ingestion suites pass.
+
+# Gap Closure Task 3
+
+- Provider-neutral PostgreSQL search complete and independently approved. FTS
+	searches immutable document-version chunks with owner/grant authorization,
+	tenant isolation, AsOf/current-version snapshot selection, stable pagination,
+	and explicit no-vector capability. Cross-KS document/version corruption is
+	rejected at the query boundary; focused unit, PostgreSQL, and persistence
+	tests pass.
+
+# Gap Closure Task 4
+
+- Migration rehearsal gates complete and independently reviewed. Fresh,
+	restored, and upgrade modes have explicit preconditions, durable JSON
+	manifests, before/after SQL and graph evidence, checksum-integrity gates,
+	PowerShell validation, and PostgreSQL Testcontainers coverage. Restore and
+	production cutover remain externally authorized operations; a real
+	`pg_restore` happy path and marker provenance require an environment with
+	production-like backup tooling and operator evidence.
+
+# Gap Closure Task 5
+
+- Production-scale graph, search, ingestion, and concurrent-write benchmarks
+  complete. The deterministic PostgreSQL 16 Testcontainers fixture uses 10,000
+  facts, 5,000 chunks, eight concurrent writers, and depth-4 traversal. The
+  runner supports explicit `-Record`, stable result hashes, p95/throughput
+  tolerance gates, and nonzero-error rejection. The recorded baseline and a
+  subsequent non-record gate both pass; four benchmark tests pass using Docker
+  Desktop 29.2.0.

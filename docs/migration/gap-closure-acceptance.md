@@ -90,3 +90,20 @@ External MinIO, provider backup-restore, and production stop-write gates were
 not run in this workspace. The PostgreSQL fresh path is covered by a real
 Testcontainers rehearsal; restored and upgrade require externally prepared
 database state and artifacts before they can be accepted.
+
+## Benchmark Baseline
+
+The versioned benchmark fixture is `graph-search-ingestion.v1.json` with 10,000
+facts, 5,000 document chunks, eight concurrent writers, and traversal depth 4.
+The benchmark runner measures graph traversal, PostgreSQL FTS search, batch
+ingestion, and concurrent graph writes. The production-scale baseline was
+recorded on 2026-09-08 with Docker Desktop 29.2.0 and PostgreSQL 16. All four
+paths reported zero errors, and a subsequent non-record run passed stable-hash,
+p95, throughput, and error-count gates. Current recorded p95 values are about
+65.78 ms for concurrent writes, 42.77 ms for traversal, 49.88 ms for ingestion,
+and 292.51 ms for FTS search. Exact values and hashes are in
+`graph-search-ingestion-baseline.json`.
+
+```powershell
+powershell -File scripts\bench\graph-search-ingestion.ps1 -Baseline docs\migration\graph-search-ingestion-baseline.json -Output .artifacts\graph-search-ingestion.json
+```

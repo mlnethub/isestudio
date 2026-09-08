@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "fixture": "graph-search-ingestion.v1.json",
+  "source": "dotnet Testcontainers PostgreSQL 16",
+  "tolerance": {
+    "p95_multiplier": 2.0,
+    "throughput_floor": 0.5
+  },
+  "benchmarks": [
+    {
+      "name": "concurrent_graph_writes",
+      "p50_ms": 37.5542,
+      "p95_ms": 65.7773,
+      "throughput_per_second": 21.907180735701548,
+      "error_count": 0,
+      "result_hash": "32b13fcd54cfc635ae8adc53143c2ab21c7a37502a6bead7231ef7107b8896bf"
+    },
+    {
+      "name": "graph_traversal",
+      "p50_ms": 26.7827,
+      "p95_ms": 42.7706,
+      "throughput_per_second": 33.34778403975056,
+      "error_count": 0,
+      "result_hash": "94639499dd30032c72df8b026463c54e044fcff979dbcb8bee53c41339f86d4c"
+    },
+    {
+      "name": "ingestion",
+      "p50_ms": 44.181,
+      "p95_ms": 49.8839,
+      "throughput_per_second": 23.29163612874374,
+      "error_count": 0,
+      "result_hash": "13b5f61f2822f3704963e4ea596a91de5dae82a72025c8ca32cce6a3ff6b3ad8"
+    },
+    {
+      "name": "search",
+      "p50_ms": 290.318,
+      "p95_ms": 292.5109,
+      "throughput_per_second": 3.4710716262572223,
+      "error_count": 0,
+      "result_hash": "95d7815fb80a354f3285dde8891f2dd0a3f7b210ae3afa56aa11a2a34fcd994a"
+    }
+  ]
+}

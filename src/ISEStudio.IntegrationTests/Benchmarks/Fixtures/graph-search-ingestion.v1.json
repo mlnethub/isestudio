@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "fact_count": 10000,
+  "chunk_count": 5000,
+  "concurrent_writers": 8,
+  "query_depth": 4,
+  "expected_result_hashes": {
+    "concurrent_graph_writes": "32b13fcd54cfc635ae8adc53143c2ab21c7a37502a6bead7231ef7107b8896bf",
+    "graph_traversal": "94639499dd30032c72df8b026463c54e044fcff979dbcb8bee53c41339f86d4c",
+    "ingestion": "13b5f61f2822f3704963e4ea596a91de5dae82a72025c8ca32cce6a3ff6b3ad8",
+    "search": "95d7815fb80a354f3285dde8891f2dd0a3f7b210ae3afa56aa11a2a34fcd994a"
+  }
+}
