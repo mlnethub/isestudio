@@ -84,3 +84,14 @@
   tolerance gates, and nonzero-error rejection. The recorded baseline and a
   subsequent non-record gate both pass; four benchmark tests pass using Docker
   Desktop 29.2.0.
+
+# Gap Closure Task 6
+
+- Production cutover and rollback package complete. Cutover requires explicit
+	stop-write confirmation, verified backup and rehearsal manifests, and a smoke
+	URL; it records ordered gates and redacts sensitive command output. Rollback
+	enforces stop .NET, restore database permissions/backup, unlock Rust, and
+	start Rust, retaining backups and resuming from its machine-readable state.
+	Container smoke covers health, ingestion, graph, search, and MCP surfaces.
+	PowerShell contract/AST checks and focused compilation pass; live container
+	execution remains environment-dependent and was skipped when Docker timed out.

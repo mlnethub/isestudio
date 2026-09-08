@@ -70,6 +70,33 @@ public sealed class ContainerSmokeTests : IClassFixture<ContainerSmokeFixture>
         Assert.Contains("ok", body, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Post_cutover_smoke_reaches_health_ingestion_graph_search_and_mcp_surfaces()
+    {
+        if (SkipIfDockerUnavailable()) return;
+
+        var health = await Client.GetAsync("/api/health");
+        Assert.Equal(HttpStatusCode.OK, health.StatusCode);
+
+        var knowledgeSystemId = Guid.Empty;
+        await AssertSurfaceRespondsAsync(
+            () => Client.PostAsync(
+                $"/api/knowledge/{knowledgeSystemId}/documents/parse-batch",
+                new StringContent("{}", System.Text.Encoding.UTF8, "application/json")),
+            "ingestion");
+        await AssertSurfaceRespondsAsync(
+            () => Client.GetAsync($"/api/knowledge/{knowledgeSystemId}/abox/classes"),
+            "graph");
+        await AssertSurfaceRespondsAsync(
+            () => Client.PostAsync(
+                "/api/v1/knowledge-systems/00000000-0000-0000-0000-000000000000/query",
+                new StringContent("{}", System.Text.Encoding.UTF8, "application/json")),
+            "search");
+        await AssertSurfaceRespondsAsync(
+            () => Client.GetAsync($"/api/knowledge/{knowledgeSystemId}/mcp/tokens"),
+            "MCP");
+    }
+
     /// <summary>
     /// Sibling test: the Serilog startup log stream MUST NOT include the
     /// <c>ISEStudio__LlmApiKey</c> canary value the fixture seeded. The
@@ -90,6 +117,15 @@ public sealed class ContainerSmokeTests : IClassFixture<ContainerSmokeFixture>
         Assert.DoesNotContain("sk-or-v1-CANARY", logs, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("minioadmin-smoke", logs, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("isestudio-smoke", logs, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static async Task AssertSurfaceRespondsAsync(
+        Func<Task<HttpResponseMessage>> request,
+        string surface)
+    {
+        using var response = await request();
+        Assert.True(response.StatusCode is not HttpStatusCode.NotFound and not >= HttpStatusCode.InternalServerError,
+            $"{surface} surface returned {response.StatusCode}; the production workflow is unavailable.");
     }
 
     private bool SkipIfDockerUnavailable()
