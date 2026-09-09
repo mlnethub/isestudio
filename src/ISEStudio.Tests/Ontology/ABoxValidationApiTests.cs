@@ -6,6 +6,7 @@ using Microsoft.Extensions.DependencyInjection;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Authentication;
+using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
 using Oxigraph;
 using OntoNamedNode = Oxigraph.NamedNode;
@@ -61,7 +62,7 @@ public sealed class ABoxValidationApiTests
         // Override the auto-written rdfs:label to force the placeholder path.
         // (The mint flow writes the label we pass; "Untitled" is in the
         // NonIdentifyingLabels set so the validator will flag it.)
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
 
         var response = await client.GetAsync($"/api/knowledge/{ksId}/abox/validate");
@@ -81,7 +82,7 @@ public sealed class ABoxValidationApiTests
 
         // The ABox graph still has the placeholder quad — validate is
         // read-only.
-        Assert.NotEmpty(store.Match(subjectIri: placeholderIri, graphIri: aboxGraph));
+        Assert.NotEmpty(db.MatchPostgres(ksId, RdfLayer.ABox, subjectIri: placeholderIri, graphIri: aboxGraph));
     }
 
     // -----------------------------------------------------------------
@@ -98,9 +99,9 @@ public sealed class ABoxValidationApiTests
         var dogClass = await AddTBoxClassAsync(client, ksId, "Dog");
         var placeholderIri = await CreateIndividualAsync(client, ksId, "Untitled", dogClass);
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        Assert.NotEmpty(store.Match(subjectIri: placeholderIri, graphIri: aboxGraph));
+        Assert.NotEmpty(db.MatchPostgres(ksId, RdfLayer.ABox, subjectIri: placeholderIri, graphIri: aboxGraph));
 
         var response = await PostFixAsync(client, ksId, new
         {
@@ -115,7 +116,7 @@ public sealed class ABoxValidationApiTests
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(0, body.GetProperty("violations").GetArrayLength());
 
-        Assert.Empty(store.Match(subjectIri: placeholderIri, graphIri: aboxGraph));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.ABox, subjectIri: placeholderIri, graphIri: aboxGraph));
 
         // Audit row exists with the fix op captured in Detail.
         var audits = LookupAuditEventsFor(app, ksId)
@@ -136,14 +137,14 @@ public sealed class ABoxValidationApiTests
 
         // Write a non-integer value to age so the validator flags a
         // datatype violation.
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        var ageNode = new OntoNamedNode(ageProp);
-        store.AddQuads(new OntoNamedNode(aboxGraph), new[]
+        var abox = new PostgresRdfGraphStore(new PostgresRdfStatementRepository(db), ksId, RdfLayer.ABox.ToString());
+        abox.AddQuads(new OntoNamedNode(aboxGraph), new[]
         {
             new OntoQuad(
                 new OntoNamedNode(rexIri),
-                ageNode,
+                new OntoNamedNode(ageProp),
                 new OntoLiteral("not-a-number"),
                 new OntoNamedNode(aboxGraph)),
         });
@@ -172,7 +173,7 @@ public sealed class ABoxValidationApiTests
 
         // The TBox graph carries the relaxed range (xsd:string) for age.
         var tboxGraph = LookupKsTboxIri(app, ksId);
-        Assert.NotEmpty(store.Match(
+        Assert.NotEmpty(db.MatchPostgres(ksId, RdfLayer.TBox,
             subjectIri: ageProp,
             predicateIri: "http://www.w3.org/2000/01/rdf-schema#range",
             objectIri: "http://www.w3.org/2001/XMLSchema#string",
@@ -225,9 +226,9 @@ public sealed class ABoxValidationApiTests
             target = aliceIri,
         });
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        Assert.NotEmpty(store.Match(graphIri: aboxGraph));
+        Assert.NotEmpty(db.MatchPostgres(ksId, RdfLayer.ABox, graphIri: aboxGraph));
         var provenanceBefore = LookupProvenanceRows(app, ksId);
         Assert.NotEmpty(provenanceBefore);
 
@@ -239,7 +240,7 @@ public sealed class ABoxValidationApiTests
         Assert.True(body.GetProperty("removed_triples").GetInt32() > 0);
         Assert.Equal(provenanceBefore.Count, body.GetProperty("provenance_rows").GetInt32());
 
-        Assert.Empty(store.Match(graphIri: aboxGraph));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.ABox, graphIri: aboxGraph));
         Assert.Empty(LookupProvenanceRows(app, ksId));
 
         var audits = LookupAuditEventsFor(app, ksId)
@@ -255,9 +256,9 @@ public sealed class ABoxValidationApiTests
         var (client, _) = await SeedAdminAndClientAsync(app);
         var ksId = await CreateKsAsync(client, "abox-reset-noconf");
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        var before = store.Match(graphIri: aboxGraph).Count;
+        var before = db.MatchPostgres(ksId, RdfLayer.ABox, graphIri: aboxGraph).Count;
 
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/abox/reset",
@@ -265,7 +266,7 @@ public sealed class ABoxValidationApiTests
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
 
         // Nothing changed.
-        Assert.Equal(before, store.Match(graphIri: aboxGraph).Count);
+        Assert.Equal(before, db.MatchPostgres(ksId, RdfLayer.ABox, graphIri: aboxGraph).Count);
     }
 
     // -----------------------------------------------------------------
@@ -283,9 +284,10 @@ public sealed class ABoxValidationApiTests
         var ageProp = await AddTBoxDataPropertyAsync(client, ksId, "age", rangeXsd: "integer");
         var rexIri = await CreateIndividualAsync(client, ksId, "Rex", dogClass);
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        store.AddQuads(new OntoNamedNode(aboxGraph), new[]
+        var abox = new PostgresRdfGraphStore(new PostgresRdfStatementRepository(db), ksId, RdfLayer.ABox.ToString());
+        abox.AddQuads(new OntoNamedNode(aboxGraph), new[]
         {
             new OntoQuad(
                 new OntoNamedNode(rexIri),
@@ -327,9 +329,10 @@ public sealed class ABoxValidationApiTests
         var ageProp = await AddTBoxDataPropertyAsync(client, ksId, "age", rangeXsd: "integer");
         var rexIri = await CreateIndividualAsync(client, ksId, "Rex", dogClass);
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        store.AddQuads(new OntoNamedNode(aboxGraph), new[]
+        var abox = new PostgresRdfGraphStore(new PostgresRdfStatementRepository(db), ksId, RdfLayer.ABox.ToString());
+        abox.AddQuads(new OntoNamedNode(aboxGraph), new[]
         {
             new OntoQuad(
                 new OntoNamedNode(rexIri),

@@ -7,8 +7,10 @@ using Microsoft.Extensions.DependencyInjection;
 using ISEStudio.Authentication;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Ontology;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Authentication;
+using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
 
 namespace ISEStudio.Tests.Extraction;
@@ -71,10 +73,12 @@ public sealed class ExtractionRunApiTests
         // Animal / Dog / Collar from FakeChat.ValidTBoxDelta — the
         // schema-builder writes `rdf:type` (not `owl:Class`) as the
         // predicate and `owl:Class` as the object, so we filter on the
-        // rdf:type predicate across the KS's TBox graph.
-        var store = app.Services.GetRequiredService<ISEStudio.Ontology.StoreWrapper>();
+        // rdf:type predicate across the KS's TBox graph. Workspace storage
+        // migrated off Oxigraph — read the PostgreSQL layer instead of the
+        // legacy StoreWrapper.
+        var db = app.CreateDbContext();
         var tboxGraph = LookupKsTboxIri(app, ksGuid);
-        Assert.NotEmpty(store.Match(
+        Assert.NotEmpty(db.MatchPostgres(ksGuid, RdfLayer.TBox,
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
             graphIri: tboxGraph));
     }
@@ -173,9 +177,11 @@ public sealed class ExtractionRunApiTests
 
         await WaitForJobAsync(client, ksId, jobId, TimeSpan.FromSeconds(30));
 
-        var store = app.Services.GetRequiredService<ISEStudio.Ontology.StoreWrapper>();
+        // Workspace storage migrated off Oxigraph — read the PostgreSQL
+        // ABox layer instead of the legacy StoreWrapper.
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAboxIri(app, ksGuid);
-        Assert.NotEmpty(store.Match(
+        Assert.NotEmpty(db.MatchPostgres(ksGuid, RdfLayer.ABox,
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
             graphIri: aboxGraph));
     }
@@ -219,9 +225,11 @@ public sealed class ExtractionRunApiTests
 
         await WaitForJobAsync(client, ksId, jobId, TimeSpan.FromSeconds(30));
 
-        var store = app.Services.GetRequiredService<ISEStudio.Ontology.StoreWrapper>();
+        // Workspace storage migrated off Oxigraph — read the PostgreSQL
+        // TBox layer instead of the legacy StoreWrapper.
+        var db = app.CreateDbContext();
         var tboxGraph = LookupKsTboxIri(app, ksGuid);
-        Assert.NotEmpty(store.Match(graphIri: tboxGraph));
+        Assert.NotEmpty(db.MatchPostgres(ksGuid, RdfLayer.TBox, graphIri: tboxGraph));
     }
 
     [Fact]

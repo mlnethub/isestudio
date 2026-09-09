@@ -7,6 +7,7 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Authentication;
 using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -149,19 +150,19 @@ public sealed class ABoxApiTests
 
         // The ABox graph has the three triples (rdf:type named individual,
         // rdf:type Dog, rdfs:label Rex).
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        Assert.Single(store.Match(
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.ABox,
             subjectIri: iri,
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
             objectIri: "http://www.w3.org/2002/07/owl#NamedIndividual",
             graphIri: aboxGraph));
-        Assert.Single(store.Match(
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.ABox,
             subjectIri: iri,
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
             objectIri: dogClassIri,
             graphIri: aboxGraph));
-        Assert.Single(store.Match(
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.ABox,
             subjectIri: iri,
             predicateIri: "http://www.w3.org/2000/01/rdf-schema#label",
             graphIri: aboxGraph));
@@ -182,9 +183,9 @@ public sealed class ABoxApiTests
         var (client, _) = await SeedAdminAndClientAsync(app);
         var ksId = await CreateKsAsync(client, "abox-bad-class");
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        var before = store.Match(graphIri: aboxGraph).Count;
+        var before = db.MatchPostgres(ksId, RdfLayer.ABox, graphIri: aboxGraph).Count;
 
         // The service throws InvalidOperationException("Unknown class"),
         // which the FastApiErrorMiddleware translates to a 500 with the
@@ -195,7 +196,7 @@ public sealed class ABoxApiTests
             new { label = "Mystery", class_iri = "http://nope/unknown" });
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
 
-        var after = store.Match(graphIri: aboxGraph).Count;
+        var after = db.MatchPostgres(ksId, RdfLayer.TBox, graphIri: aboxGraph).Count;
         Assert.Equal(before, after);
     }
 
@@ -209,9 +210,9 @@ public sealed class ABoxApiTests
         var dogClassIri = await AddTBoxClassAsync(client, ksId, "Dog");
         var iri = await CreateIndividualAsync(client, ksId, "Rex", dogClassIri);
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        Assert.True(store.Match(subjectIri: iri, graphIri: aboxGraph).Count > 0);
+        Assert.True(db.MatchPostgres(ksId, RdfLayer.ABox, subjectIri: iri, graphIri: aboxGraph).Count > 0);
 
         var response = await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/abox/individuals/delete",
@@ -220,7 +221,7 @@ public sealed class ABoxApiTests
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.True(body.GetProperty("removed").GetInt32() >= 3);
 
-        Assert.Empty(store.Match(subjectIri: iri, graphIri: aboxGraph));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.ABox, subjectIri: iri, graphIri: aboxGraph));
 
         var audits = LookupAuditEventsFor(app, ksId)
             .Where(e => e.Action == "abox.delete_individual").ToList();
@@ -252,9 +253,9 @@ public sealed class ABoxApiTests
         Assert.Equal(string.Empty, body.GetProperty("iri").GetString());
         Assert.Equal(0, body.GetProperty("types").GetArrayLength());
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        Assert.Empty(store.Match(graphIri: aboxGraph));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.ABox, graphIri: aboxGraph));
     }
 
     // -----------------------------------------------------------------

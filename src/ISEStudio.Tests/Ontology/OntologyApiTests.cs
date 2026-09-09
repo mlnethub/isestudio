@@ -8,8 +8,8 @@ using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Authentication;
+using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -81,13 +81,15 @@ public sealed class OntologyApiTests
         var conflicts = body.GetProperty("open_conflicts");
         Assert.Equal(JsonValueKind.Array, conflicts.ValueKind);
 
-        var store = app.Services.GetRequiredService<ISEStudio.Ontology.StoreWrapper>();
+        // The import lands in the workspace statements layer — the
+        // authoritative runtime graph since the PostgreSQL cutover.
+        var db = app.CreateDbContext();
         var graphIri = LookupKsGraphIri(app, ksId);
-        Assert.Single(store.Match(
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.TBox,
+            graphIri: graphIri,
             subjectIri: "urn:Pump",
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
-            objectIri: "http://www.w3.org/2002/07/owl#Class",
-            graphIri: graphIri));
+            objectIri: "http://www.w3.org/2002/07/owl#Class"));
         Assert.Equal(1, body.GetProperty("tbox_triples").GetInt32());
         Assert.Equal(0, body.GetProperty("abox_triples").GetInt32());
         Assert.Equal(1, body.GetProperty("tbox_added").GetInt32());
@@ -140,9 +142,9 @@ public sealed class OntologyApiTests
         };
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync($"/api/knowledge/{ksId}/rdf/import", first)).StatusCode);
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var graphIri = LookupKsGraphIri(app, ksId);
-        Assert.NotEmpty(store.Match(graphIri: graphIri));
+        Assert.NotEmpty(db.MatchPostgres(ksId, RdfLayer.TBox, graphIri: graphIri));
 
         var second = new MultipartFormDataContent
         {
@@ -157,9 +159,9 @@ public sealed class OntologyApiTests
         var body = await replace.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Equal(1, body.GetProperty("tbox_added").GetInt32());
         Assert.True(body.GetProperty("tbox_removed").GetInt32() >= 1);
-        Assert.Empty(store.Match(subjectIri: "urn:Pump", graphIri: graphIri));
-        Assert.Empty(store.Match(subjectIri: "urn:Valve", graphIri: graphIri));
-        Assert.NotEmpty(store.Match(subjectIri: "urn:OnlyOne", graphIri: graphIri));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.TBox, graphIri: graphIri, subjectIri: "urn:Pump"));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.TBox, graphIri: graphIri, subjectIri: "urn:Valve"));
+        Assert.NotEmpty(db.MatchPostgres(ksId, RdfLayer.TBox, graphIri: graphIri, subjectIri: "urn:OnlyOne"));
     }
 
     [Fact]
@@ -223,7 +225,7 @@ public sealed class OntologyApiTests
         var (client, _) = await SeedAdminAndClientAsync(app);
         var ksId = await CreateKsAsync(client, "ontology-edit");
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var graphIri = LookupKsGraphIri(app, ksId);
 
         var response = await client.PostAsJsonAsync(
@@ -236,15 +238,15 @@ public sealed class OntologyApiTests
         Assert.EndsWith("Animal", iri);
 
         // The graph now contains the class declaration + label + comment.
-        Assert.Single(store.Match(
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.TBox,
+            graphIri: graphIri,
             subjectIri: iri,
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
-            objectIri: "http://www.w3.org/2002/07/owl#Class",
-            graphIri: graphIri));
-        Assert.Single(store.Match(
+            objectIri: "http://www.w3.org/2002/07/owl#Class"));
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.TBox,
+            graphIri: graphIri,
             subjectIri: iri,
-            predicateIri: "http://www.w3.org/2000/01/rdf-schema#label",
-            graphIri: graphIri));
+            predicateIri: "http://www.w3.org/2000/01/rdf-schema#label"));
 
         // Audit row captured the byte-exact N-Quads diff (the three
         // triples the editor added in this op).
@@ -364,7 +366,7 @@ public sealed class OntologyApiTests
         var (client, _) = await SeedAdminAndClientAsync(app);
         var ksId = await CreateKsAsync(client, "ontology-subclass");
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var graphIri = LookupKsGraphIri(app, ksId);
 
         // Seed Animal first so the subclass axiom has a super-class to
@@ -390,11 +392,11 @@ public sealed class OntologyApiTests
 
         // The subclass axiom landed in the graph (subject + graph
         // scoped; the predicate is the canonical rdfs:subClassOf).
-        Assert.Single(store.Match(
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.TBox,
+            graphIri: graphIri,
             subjectIri: dogIri,
             predicateIri: "http://www.w3.org/2000/01/rdf-schema#subClassOf",
-            objectIri: animalIri,
-            graphIri: graphIri));
+            objectIri: animalIri));
     }
 
     [Fact]
@@ -408,7 +410,7 @@ public sealed class OntologyApiTests
         var (client, _) = await SeedAdminAndClientAsync(app);
         var ksId = await CreateKsAsync(client, "ontology-delete");
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var graphIri = LookupKsGraphIri(app, ksId);
 
         var add = await client.PostAsJsonAsync(
@@ -424,9 +426,9 @@ public sealed class OntologyApiTests
         Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
 
         // The class is gone from the graph.
-        Assert.Empty(store.Match(
-            subjectIri: iri,
-            graphIri: graphIri));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.TBox,
+            graphIri: graphIri,
+            subjectIri: iri));
 
         // The most recent audit row carries the Removed blob.
         var audits = LookupAuditEventsFor(app, ksId)
@@ -483,9 +485,9 @@ public sealed class OntologyApiTests
 
         // The store stayed untouched — the role gate refused the
         // mutation before it reached the editor.
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var graphIri = LookupKsGraphIri(app, ksId);
-        Assert.Empty(store.Match(graphIri: graphIri));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.TBox, graphIri: graphIri));
     }
 
     // -----------------------------------------------------------------
@@ -499,7 +501,7 @@ public sealed class OntologyApiTests
         var (client, _) = await SeedAdminAndClientAsync(app);
         var ksId = await CreateKsAsync(client, "ontology-reset");
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var graphIri = LookupKsGraphIri(app, ksId);
         var aboxIri = graphIri.TrimEnd('/') + "/abox";
 
@@ -510,7 +512,7 @@ public sealed class OntologyApiTests
         await client.PostAsJsonAsync(
             $"/api/knowledge/{ksId}/ontology/edit",
             new { op = "add_class", label = "Dog" });
-        Assert.True(store.Match(graphIri: graphIri).Count > 0);
+        Assert.NotEmpty(db.MatchPostgres(ksId, RdfLayer.TBox, graphIri: graphIri));
 
         var reset = await client.PostAsync(
             $"/api/knowledge/{ksId}/ontology/reset",
@@ -518,8 +520,8 @@ public sealed class OntologyApiTests
         Assert.Equal(HttpStatusCode.OK, reset.StatusCode);
 
         // Both TBox and ABox graphs are empty.
-        Assert.Empty(store.Match(graphIri: graphIri));
-        Assert.Empty(store.Match(graphIri: aboxIri));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.TBox, graphIri: graphIri));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.ABox, graphIri: aboxIri));
 
         // Audit row carries the Removed blob for the cleared triples.
         var audits = LookupAuditEventsFor(app, ksId)
@@ -773,18 +775,21 @@ public sealed class OntologyApiTests
         var ksId = await CreateKsAsync(client, "history-rollback-http");
         var db = app.CreateDbContext();
         var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
-        var store = app.Services.GetRequiredService<StoreWrapper>();
-        var graphIri = $"http://example.com/graph/history-rollback-http";
-        var gName = new Oxigraph.NamedNode(graphIri);
-        store.AddQuads(gName, new[] { new Oxigraph.Quad(
-            new Oxigraph.NamedNode("urn:X"), new Oxigraph.NamedNode("urn:p"),
-            new Oxigraph.NamedNode("urn:Y"), gName) });
+        // RollbackAsync derives the layer from ks.GraphIri, so the seed
+        // must live in the workspace TBox layer under the real graph IRI.
+        var graphIri = LookupKsGraphIri(app, ksId);
+        await new PostgresRdfStatementRepository(db).ReplaceLayerAsync(
+            ksId, RdfLayer.TBox.ToString(), new[]
+            {
+                new RdfStatement(new RdfIri("urn:X"), "urn:p", new RdfIri("urn:Y"), graphIri),
+            });
         db.AuditEvents.Add(new AuditEventEntity
         {
             Id = Guid.NewGuid(),
             KnowledgeSystemId = ksId, ActorId = admin.Id, ActorName = "Admin",
             Action = "ontology.edit", Summary = "add X", Graph = null,
-            Added = store.DumpNQuads(gName), Removed = null, CreatedAt = DateTimeOffset.UtcNow,
+            Added = System.Text.Encoding.UTF8.GetBytes($"<urn:X> <urn:p> <urn:Y> <{graphIri}> .\n"),
+            Removed = null, CreatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();
         var eventId = db.AuditEvents.AsNoTracking().First(e => e.KnowledgeSystemId == ksId).Id;
@@ -798,7 +803,9 @@ public sealed class OntologyApiTests
         Assert.True(body.TryGetProperty("view", out _));
         Assert.True(body.TryGetProperty("open_conflicts", out _));
         // 三元已回滚移除
-        Assert.Empty(store.Match(subjectIri: "urn:X", predicateIri: "urn:p", objectIri: "urn:Y", graphIri: graphIri));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.TBox,
+            graphIri: graphIri,
+            subjectIri: "urn:X", predicateIri: "urn:p", objectIri: "urn:Y"));
     }
 
     // -----------------------------------------------------------------

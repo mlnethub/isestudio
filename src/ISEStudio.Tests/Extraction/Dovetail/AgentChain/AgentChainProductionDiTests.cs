@@ -4,6 +4,7 @@ using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Knowledge;
 using ISEStudio.Llm;
 using ISEStudio.Ontology;
+using ISEStudio.Tests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -106,6 +107,10 @@ public sealed class AgentChainProductionDiTests : IDisposable
         services.AddSingleton(TimeProvider.System);
         services.AddSingleton(Options.Create(new ISEStudioOptions()));
         services.AddSingleton(_store);
+        // Workspace storage migrated off Oxigraph — ConflictAgent now
+        // takes IRdfStatementRepository; resolution-only tests never call
+        // it, so the throw-on-use stub satisfies the ctor.
+        services.AddSingleton<IRdfStatementRepository>(new StubRdfStatementRepository());
         configure(services);
         return services.BuildServiceProvider();
     }

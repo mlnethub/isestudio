@@ -5,6 +5,7 @@ using ISEStudio.Extraction.Dovetail.Terminology;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Llm;
 using ISEStudio.Tests.Extraction;
+using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,7 +28,7 @@ public class ExtractionOrchestratorTerminologyPipelineTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(Options.Create(new ISEStudioOptions()));
-        services.AddSingleton(new TerminologyService(null));
+        services.AddSingleton(new TerminologyService(new StubRdfStatementRepository()));
         services.AddSingleton<IDbContextFactory<ISEStudioDbContext>>(contexts);
         services.AddScoped<ISEStudioDbContext>(sp =>
             sp.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>().CreateDbContext());

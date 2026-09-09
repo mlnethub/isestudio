@@ -30,6 +30,17 @@ public sealed class ExportLegacyLayoutFixture : PostgresRdfFixture
 
     private ExportRunner? _runner;
 
+    /// <summary>
+    /// Lazy: <see cref="PostgresRdfFixture.Statements"/> is only wired up
+    /// in <c>IAsyncLifetime.InitializeAsync</c>, which xUnit runs AFTER the
+    /// fixture constructor — touching it here throws
+    /// <see cref="ArgumentNullException"/>. Defer the runner until a test
+    /// actually creates a service.
+    /// </summary>
+    public ExportRunner Runner => _runner ??= new ExportRunner(
+        Jobs, Artifacts, new RdfExportService(Statements), releaseArtifacts: null,
+        TimeProvider.System);
+
     public ExportLegacyLayoutFixture()
     {
         Root = Path.Combine(Path.GetTempPath(),
@@ -39,9 +50,6 @@ public sealed class ExportLegacyLayoutFixture : PostgresRdfFixture
         Contexts = new SqliteContextFactory();
         Artifacts = new ExportArtifactStore(Path.Combine(Root, "exports"));
         Jobs = new ExportJobStore(Contexts, TimeProvider.System);
-        _runner = new ExportRunner(
-            Jobs, Artifacts, new RdfExportService(Statements), releaseArtifacts: null,
-            TimeProvider.System);
     }
 
     public void Dispose()
@@ -73,7 +81,7 @@ public sealed class ExportLegacyLayoutFixture : PostgresRdfFixture
 
     /// <summary>Scoped <see cref="ExportService"/> over this fixture.</summary>
     public ExportService CreateService() =>
-        new(Contexts.CreateDbContext(), Jobs, _runner!, Artifacts);
+        new(Contexts.CreateDbContext(), Jobs, Runner, Artifacts);
 }
 
 /// <summary>

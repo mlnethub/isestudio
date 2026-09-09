@@ -202,13 +202,34 @@ public sealed class SparqlQueryExecutorTests
     private static async Task SeedTurtleAsync(
         AuthTestWebApplicationFactory app, KnowledgeSystemEntity ks, string turtle)
     {
-        // Use a scope to grab the live StoreWrapper so the test bytes land
-        // in the same Oxigraph instance the executor reads.
+        // The SPARQL executor reads from the PostgreSQL WorkspaceStatements
+        // table via IRdfStatementRepository, so seed bytes through the same
+        // repository. Parse the Turtle into Oxigraph quads (one row per
+        // triple) and replace the TBox layer for this knowledge system.
         using var scope = app.Services.CreateScope();
-        var store = scope.ServiceProvider.GetRequiredService<StoreWrapper>();
+        var statements = scope.ServiceProvider.GetRequiredService<IRdfStatementRepository>();
         var ctx = KsContext.FromEntity(ks);
-        store.LoadTurtle(
-            Encoding.UTF8.GetBytes(turtle),
-            new OntoNamedNode(ctx.TBoxGraph));
+        var graph = new OntoNamedNode(ctx.TBoxGraph);
+        using var parsed = new Oxigraph.Store();
+        parsed.Load(turtle, Oxigraph.RdfFormat.Turtle);
+        var quads = parsed.Match().ToList();
+        var rdfStatements = quads.Select(quad => new RdfStatement(
+            quad.Subject switch
+            {
+                OntoNamedNode si => new RdfIri(si.Value),
+                Oxigraph.BlankNode sb => new RdfBlankNode(sb.Value),
+                _ => throw new InvalidOperationException("Unsupported subject term")
+            },
+            ((OntoNamedNode)quad.Predicate).Value,
+            quad.Object switch
+            {
+                OntoNamedNode oi => new RdfIri(oi.Value),
+                Oxigraph.BlankNode ob => new RdfBlankNode(ob.Value),
+                Oxigraph.Literal ol => new RdfLiteral(ol.Value, ol.Language,
+                    ol.Datatype is null ? null : ((OntoNamedNode)ol.Datatype).Value),
+                _ => throw new InvalidOperationException("Unsupported object term")
+            },
+            ctx.TBoxGraph)).ToList();
+        await statements.ReplaceLayerAsync(ks.Id, "TBox", rdfStatements);
     }
 }

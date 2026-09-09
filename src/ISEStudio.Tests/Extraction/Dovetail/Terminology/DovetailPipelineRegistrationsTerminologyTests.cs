@@ -6,6 +6,7 @@ using ISEStudio.Extraction.Dovetail.Terminology.Steps;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Llm;
 using ISEStudio.Tests.Extraction;
+using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -28,7 +29,7 @@ public class DovetailPipelineRegistrationsTerminologyTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton(new TerminologyService(null));
+        services.AddSingleton(new TerminologyService(new StubRdfStatementRepository()));
         services.AddDovetailPipelines();
         using var sp = services.BuildServiceProvider();
 
@@ -47,7 +48,7 @@ public class DovetailPipelineRegistrationsTerminologyTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(Options.Create(new ISEStudioOptions()));
-        services.AddSingleton(new TerminologyService(null));
+        services.AddSingleton(new TerminologyService(new StubRdfStatementRepository()));
         AddDbContexts(services, contexts);
         services.AddDovetailPipelines();
         using var sp = services.BuildServiceProvider();
@@ -62,7 +63,7 @@ public class DovetailPipelineRegistrationsTerminologyTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(Options.Create(new ISEStudioOptions()));
-        services.AddSingleton(new TerminologyService(null));
+        services.AddSingleton(new TerminologyService(new StubRdfStatementRepository()));
         AddDbContexts(services, contexts);
         services.AddSingleton<IChatClientFactory>(FakeChatClientFactory.Default);
         services.AddScoped<TerminologyAgent>();

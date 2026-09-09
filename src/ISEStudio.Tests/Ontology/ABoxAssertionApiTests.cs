@@ -7,6 +7,7 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Authentication;
 using ISEStudio.Tests.Persistence;
+using ISEStudio.Tests.Infrastructure;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -56,9 +57,9 @@ public sealed class ABoxAssertionApiTests
         Assert.Equal(aliceIri, objectAssertions[0].GetProperty("target").GetString());
 
         // The ABox graph has the new object-property triple.
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        Assert.Single(store.Match(
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.ABox, 
             subjectIri: rexIri,
             predicateIri: ownsProp,
             objectIri: aliceIri,
@@ -101,9 +102,9 @@ public sealed class ABoxAssertionApiTests
             kind = "object",
             target = aliceIri,
         });
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        Assert.Single(store.Match(
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.ABox, 
             subjectIri: rexIri, predicateIri: ownsProp, objectIri: aliceIri,
             graphIri: aboxGraph));
 
@@ -116,7 +117,7 @@ public sealed class ABoxAssertionApiTests
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        Assert.Empty(store.Match(
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.ABox, 
             subjectIri: rexIri, predicateIri: ownsProp, objectIri: aliceIri,
             graphIri: aboxGraph));
 
@@ -180,9 +181,9 @@ public sealed class ABoxAssertionApiTests
         var rexIri = await CreateIndividualAsync(client, ksId, "Rex", dogClass);
         var aliceIri = await CreateIndividualAsync(client, ksId, "Alice", ownerClass);
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        var before = store.Match(graphIri: aboxGraph).Count;
+        var before = db.MatchPostgres(ksId, RdfLayer.ABox, graphIri: aboxGraph).Count;
 
         var response = await PostAssertionAsync(client, ksId, new
         {
@@ -194,7 +195,7 @@ public sealed class ABoxAssertionApiTests
         // InvalidOperationException("Unknown property") surfaces as 500.
         Assert.Equal(HttpStatusCode.InternalServerError, response.StatusCode);
 
-        Assert.Equal(before, store.Match(graphIri: aboxGraph).Count);
+        Assert.Equal(before, db.MatchPostgres(ksId, RdfLayer.ABox, graphIri: aboxGraph).Count);
         Assert.Empty(LookupProvenanceRows(app, ksId));
     }
 
@@ -226,9 +227,9 @@ public sealed class ABoxAssertionApiTests
         Assert.Equal(string.Empty, body.GetProperty("iri").GetString());
 
         // The RDF graph + provenance table stay clean.
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        Assert.Empty(store.Match(predicateIri: ownsProp, graphIri: aboxGraph));
+        Assert.Empty(db.MatchPostgres(ksId, RdfLayer.ABox, predicateIri: ownsProp, graphIri: aboxGraph));
         Assert.Empty(LookupProvenanceRows(app, ksId));
     }
 
@@ -258,9 +259,9 @@ public sealed class ABoxAssertionApiTests
         var second = await PostAssertionAsync(client, ksId, body);
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
 
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
-        Assert.Single(store.Match(
+        Assert.Single(db.MatchPostgres(ksId, RdfLayer.ABox, 
             subjectIri: rexIri, predicateIri: ownsProp, objectIri: aliceIri,
             graphIri: aboxGraph));
 

@@ -54,6 +54,17 @@ public sealed class PublishedDataServiceFixture : PostgresRdfFixture
     /// </summary>
     public PublishedSeed SeedPublished(string version, IEnumerable<Oxigraph.Quad> aboxQuads)
     {
+        // Clear prior release / deployment rows for this KS so the
+        // partial unique index (KnowledgeSystemId, Version) where
+        // Status<>'draft' doesn't reject a second published v1. We share
+        // a single fixture (and KS) across tests in this class.
+        Db.ChangeTracker.Clear();
+        Db.ReleaseDeployments.RemoveRange(
+            Db.ReleaseDeployments.Where(d => d.KnowledgeSystemId == KnowledgeSystemId));
+        Db.OntologyReleases.RemoveRange(
+            Db.OntologyReleases.Where(r => r.KnowledgeSystemId == KnowledgeSystemId));
+        Db.SaveChanges();
+
         var ks = Db.KnowledgeSystems.Single(item => item.Id == KnowledgeSystemId);
         ks.PublicId = Guid.NewGuid().ToString("N");
         ks.Name = "Published data fixture";
@@ -66,6 +77,12 @@ public sealed class PublishedDataServiceFixture : PostgresRdfFixture
         var ksContext = new KsContext(ks.GraphIri, ks.BaseIri,
             KnowledgeSystemId: KnowledgeSystemId);
         var deploymentId = Guid.NewGuid();
+
+        // Persist KS update BEFORE the TBox/ABox AddQuads calls below.
+        // Each PostgresRdfGraphStore.ReplaceLayerAsync implementation calls
+        // ChangeTracker.Clear(), which would silently drop the KS
+        // modification if we left it dangling in the tracker.
+        Db.SaveChanges();
 
         TBox.AddQuads(new OntoNamedNode(ksContext.TBoxGraph),
             [new Oxigraph.Quad(
@@ -122,8 +139,15 @@ public sealed class PublishedDataServiceFixture : PostgresRdfFixture
         return new PublishedSeed(this, ks, releaseId, releaseKey, ksContext);
     }
 
-    public PublishedDataService CreateService() =>
-        new(Db, Releases!, Artifacts, ViewBuilder, Statements);
+    public PublishedDataService CreateService()
+    {
+        // Some tests (e.g. ResolveAsync_returns_null_for_unknown_*) never
+        // call SeedPublished, so Releases is null until first use. Materialise
+        // it lazily so the constructor doesn't NRE on the missing release
+        // manager.
+        Releases ??= new ReleaseManager(Db, Statements, Artifacts);
+        return new PublishedDataService(Db, Releases, Artifacts, ViewBuilder, Statements);
+    }
 
     public new async Task DisposeAsync()
     {

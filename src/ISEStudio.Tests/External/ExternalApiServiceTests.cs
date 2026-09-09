@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using ISEStudio.Application.Foundation;
@@ -11,6 +10,7 @@ using ISEStudio.Tests.Persistence;
 using Oxigraph;
 using Xunit;
 using OntoNamedNode = Oxigraph.NamedNode;
+using OntoQuad = Oxigraph.Quad;
 
 namespace ISEStudio.Tests.External;
 
@@ -271,12 +271,23 @@ public sealed class ExternalApiServiceTests
         AuthTestWebApplicationFactory app, KnowledgeSystemEntity ks,
         string turtle, bool toABox)
     {
-        // Use a scope to grab the live StoreWrapper so the test bytes land
-        // in the same Oxigraph instance the service reads.
-        using var scope = app.Services.CreateScope();
-        var store = scope.ServiceProvider.GetRequiredService<StoreWrapper>();
+        // Workspace storage migrated off Oxigraph — seed through the
+        // PostgreSQL-backed statement repository so the app services
+        // (list / get / export) see the rows.
+        var db = app.CreateDbContext();
         var ctx = KsContext.FromEntity(ks);
         var graph = new OntoNamedNode(toABox ? ctx.ABoxGraph : ctx.TBoxGraph);
-        store.LoadTurtle(Encoding.UTF8.GetBytes(turtle), graph);
+        using var parsed = new Store();
+        parsed.Load(turtle, RdfFormat.Turtle);
+        // Turtle triples land in the default graph — re-point each one at
+        // the layer graph before persisting.
+        var quads = parsed.Match()
+            .Select(q => new OntoQuad(q.Subject, q.Predicate, q.Object, graph))
+            .ToList();
+        var store = new PostgresRdfGraphStore(
+            new PostgresRdfStatementRepository(db), ks.Id,
+            (toABox ? RdfLayer.ABox : RdfLayer.TBox).ToString());
+        store.AddQuads(graph, quads);
+        await Task.CompletedTask;
     }
 }

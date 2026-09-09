@@ -302,9 +302,13 @@ public sealed class TerminologyAgentPromptShapeTests
             skos: skos);
     }
 
-    private static KnowledgeSystemEntity MakeKnowledgeSystem() => new()
+    // The agent reads the vocabulary layer via KsContext.FromEntity(ks),
+    // so the entity's Id must match the fixture's KnowledgeSystemId or the
+    // PostgreSQL layer filter finds nothing (pre-migration the Oxigraph
+    // store scoped reads by graph IRI and the Id never mattered).
+    private KnowledgeSystemEntity MakeKnowledgeSystem() => new()
     {
-        Id = Guid.NewGuid(),
+        Id = _fx.KnowledgeSystemId,
         PublicId = Guid.NewGuid().ToString("N"),
         Name = "Prompt shape fixture",
         GraphIri = GraphIri,

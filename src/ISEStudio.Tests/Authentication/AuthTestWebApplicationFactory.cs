@@ -5,8 +5,10 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using ISEStudio.Authentication;
 using ISEStudio.Documents;
+using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Llm;
@@ -150,6 +152,19 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             // so all extraction tests drive the orchestrator through FakeChat.
             services.RemoveAll<IChatClientFactory>();
             services.AddSingleton<IChatClientFactory>(FakeChatClientFactory.Default);
+
+            // Remove the production durable-extraction BackgroundService.
+            // Contract tests seed pending job rows deliberately (409-guard
+            // fixtures); if the worker claims one, the test host's DI lacks
+            // the Dovetail pipeline factories, the unhandled
+            // BackgroundService exception stops the whole host
+            // (HostOptions.BackgroundServiceExceptionBehavior = StopHost),
+            // and every later request hits a disposed TestServer.
+            var workerDescriptors = services
+                .Where(d => d.ServiceType == typeof(IHostedService)
+                    && d.ImplementationType == typeof(DurableExtractionWorker))
+                .ToList();
+            foreach (var desc in workerDescriptors) services.Remove(desc);
         });
     }
 

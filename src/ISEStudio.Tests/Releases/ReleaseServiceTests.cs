@@ -8,10 +8,12 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Authentication;
 using ISEStudio.Tests.Extraction;
+using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
 using Oxigraph;
 using Xunit;
 using OntoNamedNode = Oxigraph.NamedNode;
+using OntoQuad = Oxigraph.Quad;
 
 namespace ISEStudio.Tests.Releases;
 
@@ -163,15 +165,17 @@ public sealed class ReleaseServiceTests
     }
 
     [Fact]
-    public async Task DeleteAsync_succeeds_for_stuck_pending_capture_and_flips_manifest()
+    public async Task DeleteAsync_succeeds_for_stuck_pending_capture()
     {
         // Regression: a draft whose capture_status is stuck at "pending"
         // (because the create-draft request was interrupted) could not be
         // deleted — DeleteAsync threw 409 "capture is still running" even
         // though no background capture was actually running (MVP is
-        // synchronous). The fix removes the stale "pending" check and
-        // flips capture_status to "deleted" so the UI stops showing
-        // "正在生成" after the release is deleted.
+        // synchronous). The fix removes the stale "pending" check.
+        // PostgreSQL DeleteAsync hard-deletes the row (ReleaseManager
+        // removes it so the released-version unique index can't be
+        // violated by a later re-publish), so the UI stops showing
+        // "正在生成" because the row is gone entirely.
         await using var app = new AuthTestWebApplicationFactory();
         var ks = await SeedKsAsync(app, "rel-stuck-pending");
         var actor = await AdminActorAsync(app);
@@ -201,12 +205,11 @@ public sealed class ReleaseServiceTests
         Assert.NotNull(deleted);
         Assert.Equal("deleted", deleted!.Status);
 
-        // Manifest must now show capture_status="deleted" (not "pending")
-        // so the UI stops showing "正在生成".
+        // Hard delete: the row (and its stuck "pending" manifest) is gone,
+        // and the released-version unique index is free for a re-publish.
         var row = await app.CreateDbContext().OntologyReleases.AsNoTracking()
-            .FirstAsync(r => r.Id == stuckId);
-        Assert.Equal("deleted",
-            row.Manifest!.RootElement.GetProperty("capture_status").GetString());
+            .FirstOrDefaultAsync(r => r.Id == stuckId);
+        Assert.Null(row);
     }
 
     // -- rollback --
@@ -235,8 +238,8 @@ public sealed class ReleaseServiceTests
         var res = await svc.RollbackAsync(ks.Id, draftId, actor, CancellationToken.None);
         Assert.NotNull(res);
 
-        var store = scope.ServiceProvider.GetRequiredService<StoreWrapper>();
-        var tboxQuads = store.Match(graph: new OntoNamedNode(ks.GraphIri));
+        var db = app.CreateDbContext();
+        var tboxQuads = db.MatchPostgres(ks.Id, RdfLayer.TBox);
         Assert.Contains(tboxQuads, q => q.Subject is OntoNamedNode n && n.Value == "http://example.com/rel-rollback#Original");
         Assert.DoesNotContain(tboxQuads, q => q.Subject is OntoNamedNode n && n.Value == "http://example.com/rel-rollback#Mutated");
     }
@@ -330,11 +333,23 @@ public sealed class ReleaseServiceTests
     private static async Task SeedTurtleAsync(
         AuthTestWebApplicationFactory app, KnowledgeSystemEntity ks, string turtle, bool toABox)
     {
-        using var scope = app.Services.CreateScope();
-        var store = scope.ServiceProvider.GetRequiredService<StoreWrapper>();
+        // Workspace storage migrated off Oxigraph — seed through the
+        // PostgreSQL-backed statement repository so the app services
+        // (capture / rollback / diff) see the rows.
+        var db = app.CreateDbContext();
         var ctx = KsContext.FromEntity(ks);
-        store.LoadTurtle(Encoding.UTF8.GetBytes(turtle),
-            new OntoNamedNode(toABox ? ctx.ABoxGraph : ctx.TBoxGraph));
+        var graph = new OntoNamedNode(toABox ? ctx.ABoxGraph : ctx.TBoxGraph);
+        using var parsed = new Store();
+        parsed.Load(turtle, RdfFormat.Turtle);
+        // Turtle triples land in the default graph — re-point each one at
+        // the layer graph before persisting.
+        var quads = parsed.Match()
+            .Select(q => new OntoQuad(q.Subject, q.Predicate, q.Object, graph))
+            .ToList();
+        var store = new PostgresRdfGraphStore(
+            new PostgresRdfStatementRepository(db), ks.Id,
+            (toABox ? RdfLayer.ABox : RdfLayer.TBox).ToString());
+        store.AddQuads(graph, quads);
         await Task.CompletedTask;
     }
 

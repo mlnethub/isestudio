@@ -131,7 +131,11 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
 
     private readonly string _root;
     private readonly SqliteContextFactory _contexts;
-    private readonly Guid _ksId = Guid.NewGuid();
+    // Must equal PostgresRdfFixture.KnowledgeSystemId: the orchestrator
+    // binds the RDF layer by (KnowledgeSystemId, layer) and every read
+    // helper here goes through _rdf's repository — two different ids would
+    // land the extraction in an orphan layer the assertions never see.
+    private readonly Guid _ksId;
     private readonly IBlobStore _blobs;
     private readonly PostgresRdfFixture _rdf = new();
 
@@ -159,6 +163,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         Directory.CreateDirectory(_root);
 
         _rdf.InitializeAsync().GetAwaiter().GetResult();
+        _ksId = _rdf.KnowledgeSystemId;
         SeedTBox();
 
         _contexts = new SqliteContextFactory();
@@ -476,6 +481,11 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         services.AddScoped<ISEStudioDbContext>(sp =>
             sp.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>().CreateDbContext());
         services.AddSingleton(Store);
+        // Workspace storage migrated off Oxigraph — the agent-chain
+        // services resolve IRdfStatementRepository (interface-keyed), so
+        // the fixture's PG repository must be registered alongside the
+        // concrete graph store (mirror ExtractionAgentChainTests).
+        services.AddSingleton<IRdfStatementRepository>(_rdf.Statements);
         services.AddSingleton(Jobs);
         services.AddSingleton<IChatClientFactory>(FakeChatClientFactory.Default);
         services.AddSingleton(TimeProvider.System);

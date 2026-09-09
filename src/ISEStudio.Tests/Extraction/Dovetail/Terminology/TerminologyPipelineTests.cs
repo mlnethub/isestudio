@@ -2,6 +2,7 @@ using ISEStudio.Extraction;
 using ISEStudio.Extraction.Dovetail;
 using ISEStudio.Extraction.Dovetail.Terminology;
 using ISEStudio.Extraction.Dovetail.Terminology.Steps;
+using ISEStudio.Tests.Infrastructure;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -14,11 +15,12 @@ public class TerminologyPipelineTests
     {
         var services = new ServiceCollection();
         services.AddLogging();
-        // StoreWrapper is nullable on TerminologyService's ctor, so a null
-        // store is enough to make the 4 pass steps resolvable; the
+        // Workspace storage migrated off Oxigraph — TerminologyService now
+        // requires a real IRdfStatementRepository, so a throw-on-use stub
+        // is enough to make the 4 pass steps resolvable; the
         // ProposalStep factory yields null! (no agent registered) and the
         // pipeline still constructs (latent — production always wires it).
-        services.AddSingleton(new TerminologyService(null));
+        services.AddSingleton(new TerminologyService(new StubRdfStatementRepository()));
         services.AddDovetailPipelines();
         // Task 6's §8 factory (DovetailPipelineRegistrations) yields a null!
         // ProposalStep when no TerminologyAgent is registered; until then the

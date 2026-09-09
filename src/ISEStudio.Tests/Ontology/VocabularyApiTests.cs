@@ -11,6 +11,7 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Authentication;
 using ISEStudio.Tests.Extraction;
+using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
 
 namespace ISEStudio.Tests.Ontology;
@@ -128,16 +129,17 @@ public sealed class VocabularyApiTests
         var conceptIri = conceptBody.GetProperty("iri").GetString();
         Assert.False(string.IsNullOrEmpty(conceptIri));
 
-        // Vocabulary graph should now contain an rdf:type owl:Concept triple.
-        var store = app.Services.GetRequiredService<ISEStudio.Ontology.StoreWrapper>();
+        // Vocabulary graph should now contain an rdf:type owl:Concept
+        // triple. Workspace storage migrated off Oxigraph — read the layer
+        // back through the PostgreSQL statement repository.
+        var db = app.CreateDbContext();
         var vocabGraph = LookupKsVocabIri(app, ksGuid);
-        Assert.NotEmpty(store.Match(
+        Assert.NotEmpty(db.MatchPostgres(ksGuid, RdfLayer.Vocabulary,
             subjectIri: conceptIri,
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
             graphIri: vocabGraph));
 
         // Audit row should capture the add.
-        var db = app.CreateDbContext();
         Assert.NotNull(db.AuditEvents.SingleOrDefault(
             e => e.KnowledgeSystemId == ksGuid
                  && e.Action == "vocabulary.create_concept"
@@ -211,15 +213,16 @@ public sealed class VocabularyApiTests
         // Graph should no longer carry any triple whose subject is the
         // concept IRI in the vocabulary graph. A no-op delete would still
         // pass the audit assertion above, so this is the load-bearing
-        // check that the SKOS write actually happened.
-        var store = app.Services.GetRequiredService<ISEStudio.Ontology.StoreWrapper>();
+        // check that the SKOS write actually happened. Read the layer
+        // through the PostgreSQL statement repository (workspace storage
+        // migrated off Oxigraph).
+        var db = app.CreateDbContext();
         var vocabGraph = LookupKsVocabIri(app, ksGuid);
-        var remaining = store.Match(
+        var remaining = db.MatchPostgres(ksGuid, RdfLayer.Vocabulary,
             subjectIri: conceptIri,
             graphIri: vocabGraph);
         Assert.Empty(remaining);
 
-        var db = app.CreateDbContext();
         Assert.NotNull(db.AuditEvents.SingleOrDefault(
             e => e.KnowledgeSystemId == ksGuid
                  && e.Action == "vocabulary.delete_concept"));
@@ -312,10 +315,13 @@ public sealed class VocabularyApiTests
 
         // Post-state assertion: the vocabulary graph must NOT carry the
         // stub's partial mutation quad because the CaptureAsync rolled
-        // the graph back to its pre-state snapshot on dispose.
-        var store = app.Services.GetRequiredService<StoreWrapper>();
+        // the graph back to its pre-state snapshot on dispose. Read the
+        // layer through the PostgreSQL statement repository (workspace
+        // storage migrated off Oxigraph).
+        var db = app.CreateDbContext();
         var ksc = LookupKsContext(app, ksGuid);
-        var postQuads = store.Match(graph: new Oxigraph.NamedNode(ksc.VocabularyGraph));
+        var postQuads = db.MatchPostgres(ksGuid, RdfLayer.Vocabulary,
+            graphIri: ksc.VocabularyGraph);
         Assert.DoesNotContain(postQuads,
             q => q.Subject is Oxigraph.NamedNode n
                  && n.Value.EndsWith("/partial-mutation-marker", StringComparison.Ordinal));
@@ -324,7 +330,6 @@ public sealed class VocabularyApiTests
         // capture block before the post-sync audit code runs. That is the
         // load-bearing difference vs the happy path: partial-failure
         // callers see no audit row.
-        var db = app.CreateDbContext();
         Assert.Null(db.AuditEvents.SingleOrDefault(
             e => e.KnowledgeSystemId == ksGuid
                  && e.Action == "vocabulary.sync"));
@@ -691,7 +696,9 @@ public sealed class VocabularyApiTests
                     .Where(d => d.ServiceType == typeof(ITerminologySync))
                     .ToList();
                 foreach (var desc in descriptors) services.Remove(desc);
-                services.AddSingleton<ITerminologySync, ThrowingTerminologySync>();
+                // Scoped: the stub writes the PostgreSQL vocabulary layer,
+                // so it needs the request-scoped ISEStudioDbContext.
+                services.AddScoped<ITerminologySync, ThrowingTerminologySync>();
             });
         }
     }
@@ -702,15 +709,23 @@ public sealed class VocabularyApiTests
     /// the vocabulary graph (so the rollback has something to roll back)
     /// and then throws. Mirrors the partial-mutation-then-fail failure
     /// mode the production TerminologyService.SyncCore could exhibit if
-    /// <c>_store.AddQuads</c> or one of its collaborators threw mid-loop.
+    /// <c>AddQuads</c> or one of its collaborators threw mid-loop.
     /// </summary>
+    /// <remarks>
+    /// Workspace storage migrated off Oxigraph — the stub must write the
+    /// PostgreSQL vocabulary layer (via
+    /// <see cref="PostgresRdfGraphStore"/>), otherwise the production
+    /// <c>VocabularyService.SyncAsync</c> capture/rollback (which snapshots
+    /// the PostgreSQL layer) would never see the partial mutation and the
+    /// marker would survive the rollback untouched.
+    /// </remarks>
     private sealed class ThrowingTerminologySync : ITerminologySync
     {
-        private readonly StoreWrapper _store;
+        private readonly ISEStudioDbContext _db;
 
-        public ThrowingTerminologySync(StoreWrapper store)
+        public ThrowingTerminologySync(ISEStudioDbContext db)
         {
-            _store = store;
+            _db = db;
         }
 
         public TerminologyResult SyncAsync(KsContext ks, CancellationToken cancellationToken)
@@ -718,7 +733,10 @@ public sealed class VocabularyApiTests
             var graph = new Oxigraph.NamedNode(ks.VocabularyGraph);
             var marker = new Oxigraph.NamedNode(
                 $"{ks.VocabularyGraph.TrimEnd('/')}/partial-mutation-marker");
-            _store.AddQuads(graph, new[]
+            var store = new PostgresRdfGraphStore(
+                new PostgresRdfStatementRepository(_db),
+                ks.KnowledgeSystemId, "Vocabulary");
+            store.AddQuads(graph, new[]
             {
                 new Oxigraph.Quad(
                     marker,

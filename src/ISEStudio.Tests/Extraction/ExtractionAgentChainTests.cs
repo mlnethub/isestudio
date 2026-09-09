@@ -71,7 +71,11 @@ public sealed class ExtractionAgentChainTests : IDisposable
 
     private readonly string _root;
     private readonly SqliteContextFactory _contexts;
-    private readonly Guid _ksId = Guid.NewGuid();
+    // Must equal PostgresRdfFixture.KnowledgeSystemId: the orchestrator
+    // binds the RDF layer by (KnowledgeSystemId, layer) and every read
+    // helper here goes through _rdf's repository — two different ids would
+    // land the extraction in an orphan layer the assertions never see.
+    private readonly Guid _ksId;
     private readonly PostgresRdfFixture _rdf = new();
     private readonly IBlobStore _blobs;
 
@@ -101,6 +105,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
         Directory.CreateDirectory(_root);
 
         _rdf.InitializeAsync().GetAwaiter().GetResult();
+        _ksId = _rdf.KnowledgeSystemId;
         SeedTBox();
 
         _contexts = new SqliteContextFactory();
