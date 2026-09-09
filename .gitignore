@@ -29,3 +29,4 @@ tmp/
 *.user
 *.vs
 .artifacts
+**/TestResults/
