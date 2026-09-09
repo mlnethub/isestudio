@@ -8,8 +8,6 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Extraction;
 using ISEStudio.Tests.Persistence;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoQuad = Oxigraph.Quad;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -25,8 +23,8 @@ namespace ISEStudio.Tests.Ontology;
 /// <para>Each test owns a <see cref="FakeChat"/> instance (fresh per test
 /// method via xUnit's per-test class construction), so the tests run in
 /// parallel without shared chat state. The DB is a shared-cache SQLite
-/// database through <see cref="SqliteContextFactory"/>; the Oxigraph store
-/// is a per-instance RocksDB temp directory. Providers are seeded with
+/// database through <see cref="SqliteContextFactory"/>; the RDF layers
+/// live in the shared PostgreSQL test fixture. Providers are seeded with
 /// <c>ConcurrencyLimit = 1</c> so the Pass-1 fan-out runs the proposals in
 /// deterministic class-label order.</para>
 /// </summary>
@@ -531,11 +529,11 @@ public sealed class StructureAgentTests : IDisposable
             ObjectProperties: objectProperties,
             DataProperties: Array.Empty<PropertyMutation>(),
             Axioms: axioms);
-        var quads = SchemaBuilder.BuildMutation($"{graphIri}#", mutation, graphIri);
+        var statements = SchemaBuilder.BuildMutationStatements($"{graphIri}#", mutation, graphIri);
         _statements.ReplaceLayerAsync(
             _dbFactory.CreateDbContext().KnowledgeSystems.Single(k => k.GraphIri == graphIri).Id,
             "TBox",
-            quads.Select(TestRdfStatementRepository.FromQuad).ToList()).GetAwaiter().GetResult();
+            statements).GetAwaiter().GetResult();
     }
 }
 
@@ -557,17 +555,4 @@ internal sealed class TestRdfStatementRepository : IRdfStatementRepository
         return Task.FromResult<IReadOnlyList<RdfStatement>>(statements.ToList());
     }
 
-    public static RdfStatement FromQuad(OntoQuad quad) => new(
-        FromTerm(quad.Subject),
-        quad.Predicate.Value,
-        FromTerm(quad.Object),
-        quad.Graph?.ToString());
-
-    private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
-    {
-        Oxigraph.NamedNode iri => new RdfIri(iri.Value),
-        Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
-        Oxigraph.Literal literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
-        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-    };
 }

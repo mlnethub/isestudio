@@ -1,10 +1,3 @@
-using Oxigraph;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoBlankNode = Oxigraph.BlankNode;
-using OntoLiteral = Oxigraph.Literal;
-using OntoDefaultGraph = Oxigraph.DefaultGraph;
-
 namespace ISEStudio.Ontology;
 
 // ----------------------------------------------------------------------
@@ -54,8 +47,9 @@ public sealed record AxiomMutation(
 
 /// <summary>
 /// Aggregate of class / property / axiom mutations to translate into RDF
-/// quads. <see cref="SchemaBuilder.BuildMutation"/> consumes one of these and
-/// returns the corresponding <c>IReadOnlyList&lt;Quad&gt;</c>.
+/// statements. <see cref="SchemaBuilder.BuildMutationStatements"/> consumes
+/// one of these and returns the corresponding
+/// <c>IReadOnlyList&lt;RdfStatement&gt;</c>.
 /// </summary>
 public sealed record OntologyMutation(
     IReadOnlyList<ClassMutation> Classes,
@@ -107,72 +101,72 @@ public sealed record AxiomPair(string A, string B);
 /// <summary>
 /// .NET port of the Python <c>schema.build_mutation</c> /
 /// <c>schema.build_view</c> pair. Translates structured mutation DTOs into
-/// RDF quads that the caller applies through <see cref="StoreWrapper"/>, and
-/// reads a named graph back into the curated view the frontend consumes.
+/// RDF statements that the caller applies through the PostgreSQL RDF
+/// layer, and reads a named graph back into the curated view the
+/// frontend consumes.
 /// </summary>
 public static class SchemaBuilder
 {
     /// <summary>
-    /// Translate an <see cref="OntologyMutation"/> into quads against
-    /// <paramref name="baseIri"/> and emit them into <paramref name="graphIri"/>.
-    /// Referenced-but-undeclared classes are auto-declared in this run;
-    /// Oxigraph collapses identical quads so re-running across chunks is
-    /// idempotent at the triple level.
+    /// Translate an <see cref="OntologyMutation"/> into statements against
+    /// <paramref name="baseIri"/> and emit them into
+    /// <paramref name="graphIri"/>. Referenced-but-undeclared classes are
+    /// auto-declared in this run; duplicate statements collapse so
+    /// re-running across chunks is idempotent at the triple level.
     /// </summary>
-    public static IReadOnlyList<OntoQuad> BuildMutation(
+    public static IReadOnlyList<RdfStatement> BuildMutationStatements(
         string baseIri, OntologyMutation mutation, string graphIri)
     {
         ArgumentNullException.ThrowIfNull(baseIri);
         ArgumentNullException.ThrowIfNull(mutation);
         ArgumentException.ThrowIfNullOrEmpty(graphIri);
 
-        var graph = new OntoNamedNode(graphIri);
-        var triples = new List<OntoQuad>();
+        var statements = new List<RdfStatement>();
         var seenClasses = new HashSet<string>(StringComparer.Ordinal);
         var seenProps = new HashSet<string>(StringComparer.Ordinal);
         var labeledRun = new HashSet<string>(StringComparer.Ordinal);
 
-        void AddLabel(OntoNamedNode node, string label)
+        void AddLabel(RdfIri iri, string label)
         {
-            if (labeledRun.Add(node.Value))
+            if (labeledRun.Add(iri.Value))
             {
-                triples.Add(new OntoQuad(node, Vocabulary.RdfsLabel, new OntoLiteral(label), graph));
+                statements.Add(new RdfStatement(iri, Vocabulary.RdfsLabel, new RdfLiteral(label), graphIri));
             }
         }
 
-        OntoNamedNode EnsureClass(string label)
+        RdfIri EnsureClass(string label)
         {
             var local = Vocabulary.ClassLocalName(label);
             if (seenClasses.Add(local))
             {
-                var node = new OntoNamedNode(baseIri + local);
-                triples.Add(new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlClass, graph));
-                AddLabel(node, label);
+                var iri = new RdfIri(baseIri + local);
+                statements.Add(new RdfStatement(iri, Vocabulary.RdfType, new RdfIri(Vocabulary.OwlClass), graphIri));
+                AddLabel(iri, label);
             }
-            return new OntoNamedNode(baseIri + local);
+            return new RdfIri(baseIri + local);
         }
 
-        OntoNamedNode DeclareProperty(string label, bool isObject)
+        RdfIri DeclareProperty(string label, bool isObject)
         {
             var local = Vocabulary.PropertyLocalName(label);
             if (seenProps.Add(local))
             {
-                var node = new OntoNamedNode(baseIri + local);
-                var ptype = isObject ? Vocabulary.OwlObjectProperty : Vocabulary.OwlDatatypeProperty;
-                triples.Add(new OntoQuad(node, Vocabulary.RdfType, ptype, graph));
-                AddLabel(node, label);
+                var iri = new RdfIri(baseIri + local);
+                var ptypeIri = new RdfIri(isObject ? Vocabulary.OwlObjectProperty : Vocabulary.OwlDatatypeProperty);
+                statements.Add(new RdfStatement(iri, Vocabulary.RdfType, ptypeIri, graphIri));
+                AddLabel(iri, label);
             }
-            return new OntoNamedNode(baseIri + local);
+            return new RdfIri(baseIri + local);
         }
 
         // Classes (explicit first so their comments/labels take precedence).
         foreach (var c in mutation.Classes ?? Array.Empty<ClassMutation>())
         {
             if (string.IsNullOrWhiteSpace(c.Label)) continue;
-            var node = EnsureClass(c.Label);
+            var iri = EnsureClass(c.Label);
             if (!string.IsNullOrEmpty(c.Comment))
             {
-                triples.Add(new OntoQuad(node, Vocabulary.RdfsComment, new OntoLiteral(c.Comment), graph));
+                statements.Add(new RdfStatement(iri, Vocabulary.RdfsComment, new RdfLiteral(c.Comment), graphIri));
             }
         }
 
@@ -180,20 +174,20 @@ public static class SchemaBuilder
         foreach (var p in mutation.ObjectProperties ?? Array.Empty<PropertyMutation>())
         {
             if (string.IsNullOrWhiteSpace(p.Label)) continue;
-            var node = DeclareProperty(p.Label, isObject: true);
+            var iri = DeclareProperty(p.Label, isObject: true);
             if (!string.IsNullOrEmpty(p.Comment))
             {
-                triples.Add(new OntoQuad(node, Vocabulary.RdfsComment, new OntoLiteral(p.Comment), graph));
+                statements.Add(new RdfStatement(iri, Vocabulary.RdfsComment, new RdfLiteral(p.Comment), graphIri));
             }
             if (!string.IsNullOrWhiteSpace(p.Domain))
             {
-                var dnode = EnsureClass(p.Domain);
-                triples.Add(new OntoQuad(node, Vocabulary.RdfsDomain, dnode, graph));
+                var diri = EnsureClass(p.Domain);
+                statements.Add(new RdfStatement(iri, Vocabulary.RdfsDomain, diri, graphIri));
             }
             if (!string.IsNullOrWhiteSpace(p.Range))
             {
-                var rnode = EnsureClass(p.Range);
-                triples.Add(new OntoQuad(node, Vocabulary.RdfsRange, rnode, graph));
+                var riri = EnsureClass(p.Range);
+                statements.Add(new RdfStatement(iri, Vocabulary.RdfsRange, riri, graphIri));
             }
         }
 
@@ -201,19 +195,19 @@ public static class SchemaBuilder
         foreach (var p in mutation.DataProperties ?? Array.Empty<PropertyMutation>())
         {
             if (string.IsNullOrWhiteSpace(p.Label)) continue;
-            var node = DeclareProperty(p.Label, isObject: false);
+            var iri = DeclareProperty(p.Label, isObject: false);
             if (!string.IsNullOrEmpty(p.Comment))
             {
-                triples.Add(new OntoQuad(node, Vocabulary.RdfsComment, new OntoLiteral(p.Comment), graph));
+                statements.Add(new RdfStatement(iri, Vocabulary.RdfsComment, new RdfLiteral(p.Comment), graphIri));
             }
             if (!string.IsNullOrWhiteSpace(p.Domain))
             {
-                var dnode = EnsureClass(p.Domain);
-                triples.Add(new OntoQuad(node, Vocabulary.RdfsDomain, dnode, graph));
+                var diri = EnsureClass(p.Domain);
+                statements.Add(new RdfStatement(iri, Vocabulary.RdfsDomain, diri, graphIri));
             }
             // Range defaults to xsd:string if the caller passes nothing.
-            var rangeNode = Vocabulary.DatatypeNode(p.Range);
-            triples.Add(new OntoQuad(node, Vocabulary.RdfsRange, rangeNode, graph));
+            var rangeIri = new RdfIri(Vocabulary.DatatypeNode(p.Range));
+            statements.Add(new RdfStatement(iri, Vocabulary.RdfsRange, rangeIri, graphIri));
         }
 
         // Class axioms.
@@ -223,48 +217,45 @@ public static class SchemaBuilder
             {
                 case "subclass":
                     if (string.IsNullOrWhiteSpace(ax.Sub) || string.IsNullOrWhiteSpace(ax.Super)) break;
-                    var subNode = EnsureClass(ax.Sub!);
-                    var supNode = EnsureClass(ax.Super!);
-                    if (subNode.Value != supNode.Value)
+                    var subIri = EnsureClass(ax.Sub!);
+                    var supIri = EnsureClass(ax.Super!);
+                    if (subIri.Value != supIri.Value)
                     {
-                        triples.Add(new OntoQuad(subNode, Vocabulary.RdfsSubClassOf, supNode, graph));
+                        statements.Add(new RdfStatement(subIri, Vocabulary.RdfsSubClassOf, supIri, graphIri));
                     }
                     break;
                 case "disjoint":
                     if (string.IsNullOrWhiteSpace(ax.A) || string.IsNullOrWhiteSpace(ax.B)) break;
-                    var aNode = EnsureClass(ax.A!);
-                    var bNode = EnsureClass(ax.B!);
-                    if (aNode.Value != bNode.Value)
+                    var aIri = EnsureClass(ax.A!);
+                    var bIri = EnsureClass(ax.B!);
+                    if (aIri.Value != bIri.Value)
                     {
-                        triples.Add(new OntoQuad(aNode, Vocabulary.OwlDisjointWith, bNode, graph));
+                        statements.Add(new RdfStatement(aIri, Vocabulary.OwlDisjointWith, bIri, graphIri));
                     }
                     break;
                 case "equivalent":
                     if (string.IsNullOrWhiteSpace(ax.A) || string.IsNullOrWhiteSpace(ax.B)) break;
-                    var eaNode = EnsureClass(ax.A!);
-                    var ebNode = EnsureClass(ax.B!);
-                    if (eaNode.Value != ebNode.Value)
+                    var eaIri = EnsureClass(ax.A!);
+                    var ebIri = EnsureClass(ax.B!);
+                    if (eaIri.Value != ebIri.Value)
                     {
-                        triples.Add(new OntoQuad(eaNode, Vocabulary.OwlEquivalentClass, ebNode, graph));
+                        statements.Add(new RdfStatement(eaIri, Vocabulary.OwlEquivalentClass, ebIri, graphIri));
                     }
                     break;
             }
         }
 
-        return triples;
+        return statements;
     }
 
     // ------------------------------------------------------------------
     // BuildView
     // ------------------------------------------------------------------
 
-    public static OntologyView BuildView(string graphIri, IReadOnlyList<RdfStatement> statements) =>
-        BuildView(graphIri, statements.Select(ToQuad).ToList());
-
-    public static OntologyView BuildView(string graphIri, IReadOnlyList<OntoQuad> quads)
+    public static OntologyView BuildView(string graphIri, IReadOnlyList<RdfStatement> statements)
     {
         ArgumentNullException.ThrowIfNull(graphIri);
-        ArgumentNullException.ThrowIfNull(quads);
+        ArgumentNullException.ThrowIfNull(statements);
 
         var classes = new Dictionary<string, ClassView>(StringComparer.Ordinal);
         var objProps = new Dictionary<string, PropertyView>(StringComparer.Ordinal);
@@ -288,15 +279,15 @@ public static class SchemaBuilder
         var listRest = new Dictionary<string, string>(StringComparer.Ordinal);
         var bnodeSubjects = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var q in quads)
+        foreach (var s in statements)
         {
-            var siri = TermIri(q.Subject);
-            var piri = q.Predicate.Value;
-            var oiri = TermIri(q.Object);
+            var siri = TermIri(s.Subject);
+            var piri = s.PredicateIri;
+            var oiri = TermIri(s.Object);
 
-            if (piri == Vocabulary.RdfType.Value)
+            if (piri == Vocabulary.RdfType)
             {
-                if (oiri == Vocabulary.OwlClass.Value && q.Subject is OntoNamedNode)
+                if (oiri == Vocabulary.OwlClass && s.Subject is RdfIri)
                 {
                     if (!classes.ContainsKey(siri))
                     {
@@ -305,7 +296,7 @@ public static class SchemaBuilder
                             Superclasses: new List<string>());
                     }
                 }
-                else if (oiri == Vocabulary.OwlObjectProperty.Value)
+                else if (oiri == Vocabulary.OwlObjectProperty)
                 {
                     if (!objProps.ContainsKey(siri))
                     {
@@ -317,7 +308,7 @@ public static class SchemaBuilder
                             RangeMembers: new List<string>());
                     }
                 }
-                else if (oiri == Vocabulary.OwlDatatypeProperty.Value)
+                else if (oiri == Vocabulary.OwlDatatypeProperty)
                 {
                     if (!dataProps.ContainsKey(siri))
                     {
@@ -330,25 +321,25 @@ public static class SchemaBuilder
                     }
                 }
             }
-            else if (piri == Vocabulary.RdfsLabel.Value)
+            else if (piri == Vocabulary.RdfsLabel)
             {
-                if (q.Object is OntoLiteral lbl)
+                if (s.Object is RdfLiteral lbl)
                 {
                     labels[siri] = lbl.Value;
                 }
             }
-            else if (piri == Vocabulary.RdfsComment.Value)
+            else if (piri == Vocabulary.RdfsComment)
             {
-                if (q.Object is OntoLiteral cmt)
+                if (s.Object is RdfLiteral cmt)
                 {
                     comments[siri] = cmt.Value;
                 }
             }
-            else if (piri == Vocabulary.RdfsSubClassOf.Value)
+            else if (piri == Vocabulary.RdfsSubClassOf)
             {
                 subClassOf.Add(new AxiomPair(siri, oiri));
             }
-            else if (piri == Vocabulary.RdfsDomain.Value)
+            else if (piri == Vocabulary.RdfsDomain)
             {
                 domains[siri] = oiri;
                 if (!domainAll.TryGetValue(siri, out var list))
@@ -358,7 +349,7 @@ public static class SchemaBuilder
                 }
                 list.Add(oiri);
             }
-            else if (piri == Vocabulary.RdfsRange.Value)
+            else if (piri == Vocabulary.RdfsRange)
             {
                 ranges[siri] = oiri;
                 if (!rangeAll.TryGetValue(siri, out var list))
@@ -368,35 +359,57 @@ public static class SchemaBuilder
                 }
                 list.Add(oiri);
             }
-            else if (piri == Vocabulary.OwlDisjointWith.Value)
+            else if (piri == Vocabulary.OwlDisjointWith)
             {
                 disjoint.Add(new AxiomPair(siri, oiri));
             }
-            else if (piri == Vocabulary.OwlEquivalentClass.Value)
+            else if (piri == Vocabulary.OwlEquivalentClass)
             {
                 equivalent.Add(new AxiomPair(siri, oiri));
             }
-            else if (piri == Vocabulary.OwlUnionOf.Value)
+            else if (piri == Vocabulary.OwlUnionOf)
             {
                 // The subject is the anonymous union bnode; the object is the
                 // head cell of its rdf:List.
                 unionHead[siri] = oiri;
             }
-            else if (piri == Vocabulary.RdfFirst.Value)
+            else if (piri == Vocabulary.RdfFirst)
             {
                 listFirst[siri] = oiri;
             }
-            else if (piri == Vocabulary.RdfRest.Value)
+            else if (piri == Vocabulary.RdfRest)
             {
                 listRest[siri] = oiri;
             }
 
-            if (q.Subject is OntoBlankNode)
+            if (s.Subject is RdfBlankNode)
             {
                 bnodeSubjects.Add(siri);
             }
         }
 
+        return FinalizeView(classes, objProps, dataProps, labels, comments, subClassOf,
+            disjoint, equivalent, domains, ranges, domainAll, rangeAll,
+            unionHead, listFirst, listRest);
+    }
+
+    private static OntologyView FinalizeView(
+        Dictionary<string, ClassView> classes,
+        Dictionary<string, PropertyView> objProps,
+        Dictionary<string, PropertyView> dataProps,
+        Dictionary<string, string> labels,
+        Dictionary<string, string> comments,
+        List<AxiomPair> subClassOf,
+        List<AxiomPair> disjoint,
+        List<AxiomPair> equivalent,
+        Dictionary<string, string> domains,
+        Dictionary<string, string> ranges,
+        Dictionary<string, List<string>> domainAll,
+        Dictionary<string, List<string>> rangeAll,
+        Dictionary<string, string> unionHead,
+        Dictionary<string, string> listFirst,
+        Dictionary<string, string> listRest)
+    {
         var superMap = new Dictionary<string, List<string>>(StringComparer.Ordinal);
         foreach (var r in subClassOf)
         {
@@ -438,21 +451,18 @@ public static class SchemaBuilder
             Axioms: new AxiomView(subClassOf, disjoint, equivalent));
     }
 
-    // The graph the schema writes into. BuildMutation is a pure projection
-    // (it returns quads but doesn't write), so the graph is purely a
-    // serialization placeholder; callers add the quads to whatever named
-    // graph they want.
-    // BuildMutation now takes the target graph IRI as a parameter so the
-    // emitted quads land in the caller's graph, not a placeholder.
+    // BuildMutationStatements is a pure projection (it returns statements
+    // but doesn't write); the graph IRI is a parameter so the emitted
+    // statements land in the caller's graph, not a placeholder.
 
     private static string LocalOf(string iri) =>
         iri.Contains('#') ? iri[(iri.LastIndexOf('#') + 1)..] : iri.TrimEnd('/').Split('/')[^1];
 
-    private static string TermIri(object term) => term switch
+    private static string TermIri(RdfTerm term) => term switch
     {
-        OntoNamedNode n => n.Value,
-        OntoBlankNode b => b.Value,
-        OntoLiteral l => l.Value,
+        RdfIri n => n.Value,
+        RdfBlankNode b => b.Id,
+        RdfLiteral l => l.Value,
         _ => term.ToString() ?? "",
     };
 
@@ -472,7 +482,7 @@ public static class SchemaBuilder
         var cur = headValue;
         int guard = 0;
         while (!string.IsNullOrEmpty(cur)
-            && cur != Vocabulary.RdfNil.Value
+            && cur != Vocabulary.RdfNil
             && guard < 1000)
         {
             if (listFirst.TryGetValue(cur, out var first))
@@ -556,26 +566,4 @@ public static class SchemaBuilder
             DomainMembers: dMembers,
             RangeMembers: rMembers);
     }
-
-    private static OntoQuad ToQuad(RdfStatement statement)
-    {
-        var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("RDF graph is required"));
-        return new OntoQuad(ToSubject(statement.Subject), new OntoNamedNode(statement.PredicateIri), ToObject(statement.Object), graph);
-    }
-
-    private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
-    {
-        RdfIri iri => new OntoNamedNode(iri.Value),
-        RdfBlankNode blank => new OntoBlankNode(blank.Id),
-        _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
-    };
-
-    private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
-    {
-        RdfIri iri => new OntoNamedNode(iri.Value),
-        RdfBlankNode blank => new OntoBlankNode(blank.Id),
-        RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
-            literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
-        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-    };
 }

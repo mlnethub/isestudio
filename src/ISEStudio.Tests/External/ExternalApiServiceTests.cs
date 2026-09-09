@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using ISEStudio.Application.Foundation;
@@ -7,10 +8,8 @@ using ISEStudio.Ontology;
 using ISEStudio.Tests.Authentication;
 using ISEStudio.Tests.Extraction;
 using ISEStudio.Tests.Persistence;
-using Oxigraph;
+using VDS.RDF.Parsing;
 using Xunit;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoQuad = Oxigraph.Quad;
 
 namespace ISEStudio.Tests.External;
 
@@ -206,7 +205,7 @@ public sealed class ExternalApiServiceTests
         using var scope = app.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<ExternalApiService>();
         var rdf = await svc.ExportAsync(
-            ks.PublicId, RdfFormat.Turtle, MakeActor("u"), CancellationToken.None);
+            ks.PublicId, RdfExportFormat.Turtle, MakeActor("u"), CancellationToken.None);
 
         Assert.NotNull(rdf);
         // DumpTurtle declares only rdf/rdfs/xsd prefixes, so owl:Class
@@ -220,7 +219,7 @@ public sealed class ExternalApiServiceTests
         await using var app = new AuthTestWebApplicationFactory();
         using var scope = app.Services.CreateScope();
         var svc = scope.ServiceProvider.GetRequiredService<ExternalApiService>();
-        var rdf = await svc.ExportAsync("nope", RdfFormat.Turtle, MakeActor("u"), CancellationToken.None);
+        var rdf = await svc.ExportAsync("nope", RdfExportFormat.Turtle, MakeActor("u"), CancellationToken.None);
         Assert.Null(rdf);
     }
 
@@ -271,23 +270,23 @@ public sealed class ExternalApiServiceTests
         AuthTestWebApplicationFactory app, KnowledgeSystemEntity ks,
         string turtle, bool toABox)
     {
-        // Workspace storage migrated off Oxigraph — seed through the
-        // PostgreSQL-backed statement repository so the app services
-        // (list / get / export) see the rows.
+        // Workspace storage migrated off Oxigraph — parse through
+        // dotNetRDF, attach every statement to the layer graph, and seed
+        // through the PostgreSQL-backed statement repository so the app
+        // services (list / get / export) see the rows.
         var db = app.CreateDbContext();
         var ctx = KsContext.FromEntity(ks);
-        var graph = new OntoNamedNode(toABox ? ctx.ABoxGraph : ctx.TBoxGraph);
-        using var parsed = new Store();
-        parsed.Load(turtle, RdfFormat.Turtle);
-        // Turtle triples land in the default graph — re-point each one at
-        // the layer graph before persisting.
-        var quads = parsed.Match()
-            .Select(q => new OntoQuad(q.Subject, q.Predicate, q.Object, graph))
-            .ToList();
+        var graphIri = toABox ? ctx.ABoxGraph : ctx.TBoxGraph;
+        var statements = RdfDotNetRdfCodec.ParseDocument(
+            Encoding.UTF8.GetBytes(turtle),
+            new TurtleParser(),
+            ctx.BaseIri,
+            $"external-seed-{Guid.NewGuid():N}",
+            graphIri);
         var store = new PostgresRdfGraphStore(
             new PostgresRdfStatementRepository(db), ks.Id,
             (toABox ? RdfLayer.ABox : RdfLayer.TBox).ToString());
-        store.AddQuads(graph, quads);
+        store.AddStatements(graphIri, statements);
         await Task.CompletedTask;
     }
 }

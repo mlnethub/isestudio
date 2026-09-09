@@ -53,12 +53,16 @@ public sealed class HistoryServiceTests
         var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
         var ks = await CreateKsAsync(db, "history-rollback");
         // 在 live store 建一条 TBox 三元,再记一条 added-only 的 audit(回滚应移除它)
-        var gName = new Oxigraph.NamedNode(ks.GraphIri);
         var graphStore = new PostgresRdfGraphStore(
             new PostgresRdfStatementRepository(db), ks.Id, RdfLayer.TBox.ToString());
-        graphStore.AddQuads(gName, new[] { new Oxigraph.Quad(
-            new Oxigraph.NamedNode("urn:Pump"), new Oxigraph.NamedNode("urn:type"),
-            new Oxigraph.NamedNode("urn:Class"), gName) });
+        graphStore.AddStatements(ks.GraphIri, new[]
+        {
+            new RdfStatement(
+                new RdfIri("urn:Pump"),
+                "urn:type",
+                new RdfIri("urn:Class"),
+                ks.GraphIri),
+        });
         var addedBlob = graphStore.DumpNQuads(ks.GraphIri);  // raw N-Quads(含该三元)
         AddAudit(db, ks.Id, admin.Id, "ontology.edit", "added Pump", graph: ks.GraphIri, added: addedBlob, actorName: admin.DisplayName);
         await db.SaveChangesAsync();

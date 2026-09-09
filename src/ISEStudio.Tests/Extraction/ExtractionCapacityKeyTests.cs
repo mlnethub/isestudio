@@ -205,7 +205,7 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
         var ks = db.KnowledgeSystems.First(k => k.Id == knowledgeSystemId);
         var graphIri = ks.GraphIri;
         var baseIri = ks.BaseIri;
-        var quads = SchemaBuilder.BuildMutation(
+        var statements = SchemaBuilder.BuildMutationStatements(
             baseIri,
             new OntologyMutation(
                 Classes: new[] { new ClassMutation("Person", "Seeded fixture class") },
@@ -216,13 +216,7 @@ public sealed class ExtractionCapacityKeyTests : IDisposable
         _rdf.Statements.ReplaceLayerAsync(
             knowledgeSystemId,
             RdfLayer.TBox.ToString(),
-            quads.Select(quad => new RdfStatement(
-                new RdfIri(quad.Subject.ToString()),
-                quad.Predicate.Value,
-                quad.Object is Oxigraph.NamedNode named
-                    ? new RdfIri(named.Value)
-                    : new RdfLiteral(quad.Object.ToString()),
-                graphIri)).ToList()).GetAwaiter().GetResult();
+            statements).GetAwaiter().GetResult();
     }
 
     private static string PutDocument(IBlobStore blobs)

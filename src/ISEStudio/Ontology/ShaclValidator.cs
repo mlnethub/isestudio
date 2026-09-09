@@ -1,10 +1,4 @@
-using Oxigraph;
 using ISEStudio.Observability;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
-using OntoBlankNode = Oxigraph.BlankNode;
-using OntoTerm = Oxigraph.INamedOrBlankNode;
 
 namespace ISEStudio.Ontology;
 
@@ -13,22 +7,22 @@ public static class ShaclVocab
 {
     public const string Shacl = "http://www.w3.org/ns/shacl#";
 
-    public static readonly OntoNamedNode NodeShape = new(Shacl + "NodeShape");
-    public static readonly OntoNamedNode PropertyShape = new(Shacl + "PropertyShape");
-    public static readonly OntoNamedNode TargetClass = new(Shacl + "targetClass");
-    public static readonly OntoNamedNode Property = new(Shacl + "property");
-    public static readonly OntoNamedNode Path = new(Shacl + "path");
-    public static readonly OntoNamedNode MinCount = new(Shacl + "minCount");
-    public static readonly OntoNamedNode Datatype = new(Shacl + "datatype");
-    public static readonly OntoNamedNode NodeKind = new(Shacl + "nodeKind");
-    public static readonly OntoNamedNode Class = new(Shacl + "class");
-    public static readonly OntoNamedNode Iri = new(Shacl + "IRI");
-    public static readonly OntoNamedNode LiteralKind = new(Shacl + "Literal");
-    public static readonly OntoNamedNode Message = new(Shacl + "message");
-    public static readonly OntoNamedNode Severity = new(Shacl + "severity");
-    public static readonly OntoNamedNode Violation = new(Shacl + "Violation");
-    public static readonly OntoNamedNode SourceShape = new(Shacl + "sourceShape");
-    public static readonly OntoNamedNode SourceConstraintComponent = new(Shacl + "sourceConstraintComponent");
+    public const string NodeShape = Shacl + "NodeShape";
+    public const string PropertyShape = Shacl + "PropertyShape";
+    public const string TargetClass = Shacl + "targetClass";
+    public const string Property = Shacl + "property";
+    public const string Path = Shacl + "path";
+    public const string MinCount = Shacl + "minCount";
+    public const string Datatype = Shacl + "datatype";
+    public const string NodeKind = Shacl + "nodeKind";
+    public const string Class = Shacl + "class";
+    public const string Iri = Shacl + "IRI";
+    public const string LiteralKind = Shacl + "Literal";
+    public const string Message = Shacl + "message";
+    public const string Severity = Shacl + "severity";
+    public const string Violation = Shacl + "Violation";
+    public const string SourceShape = Shacl + "sourceShape";
+    public const string SourceConstraintComponent = Shacl + "sourceConstraintComponent";
 }
 
 /// <summary>One violation surfaced by <see cref="ShaclValidator.Validate"/>.</summary>
@@ -56,33 +50,43 @@ public sealed record ShaclReport(
 /// </list>
 /// </summary>
 /// <remarks>
-/// <para>This is intentionally NOT a full W3C SHACL implementation; Oxigraph
-/// 0.5.8 has no built-in SHACL validator and bundling a third-party one
-/// would expand the dependency surface significantly. The shapes we ship
-/// in <c>Shapes/tbox-shapes.ttl</c> use only this subset, and the
-/// authoritative role-evidence and normalization logic continues to live
-/// in <see cref="Guard"/>.</para>
+/// <para>This is intentionally NOT a full W3C SHACL implementation —
+/// bundling a third-party one would expand the dependency surface
+/// significantly. The shapes we ship in <c>Shapes/tbox-shapes.ttl</c> use
+/// only this subset, and the authoritative role-evidence and
+/// normalization logic continues to live in <see cref="Guard"/>.</para>
+///
+/// <para>The algorithm hot path is defined on
+/// <see cref="RdfStatement"/>; the validator consumes the PostgreSQL
+/// statement layer directly.</para>
 /// </remarks>
 public sealed class ShaclValidator
 {
-    private readonly IReadOnlyList<Oxigraph.Quad> _shapeQuads;
-    private readonly IReadOnlyList<Oxigraph.Quad> _dataQuads;
+    private readonly IReadOnlyList<RdfStatement> _shapeStatements;
+    private readonly IReadOnlyList<RdfStatement> _dataStatements;
 
-    public ShaclValidator(IReadOnlyList<Oxigraph.Quad> shapeQuads,
-        IReadOnlyList<Oxigraph.Quad> dataQuads)
+    /// <summary>
+    /// Accepts the shape graph and the data graph as
+    /// <see cref="RdfStatement"/> lists. This is the runtime boundary:
+    /// the Postgres statement store returns <see cref="RdfStatement"/>
+    /// directly.
+    /// </summary>
+    public ShaclValidator(IReadOnlyList<RdfStatement> shapeStatements,
+        IReadOnlyList<RdfStatement> dataStatements)
     {
-        _shapeQuads = shapeQuads ?? throw new ArgumentNullException(nameof(shapeQuads));
-        _dataQuads = dataQuads ?? throw new ArgumentNullException(nameof(dataQuads));
+        _shapeStatements = shapeStatements ?? throw new ArgumentNullException(nameof(shapeStatements));
+        _dataStatements = dataStatements ?? throw new ArgumentNullException(nameof(dataStatements));
     }
 
-    private static IEnumerable<Oxigraph.Quad> Match(
-        IEnumerable<Oxigraph.Quad> quads,
+    private static IEnumerable<RdfStatement> Match(
+        IEnumerable<RdfStatement> statements,
         string? graphIri = null,
-        OntoNamedNode? subject = null,
-        OntoNamedNode? predicate = null) =>
-        quads.Where(q => graphIri is null || (q.Graph is OntoNamedNode gn && gn.Value == graphIri))
-            .Where(q => subject is null || q.Subject.Equals(subject))
-            .Where(q => predicate is null || q.Predicate.Equals(predicate));
+        RdfIri? subject = null,
+        string? predicate = null) =>
+        statements
+            .Where(s => graphIri is null || s.GraphIri == graphIri)
+            .Where(s => subject is null || s.Subject.Equals(subject))
+            .Where(s => predicate is null || s.PredicateIri == predicate);
 
     /// <summary>
     /// Validate the data in <paramref name="dataGraphIri"/> against every
@@ -138,25 +142,22 @@ public sealed class ShaclValidator
         // named resources; property shapes (their sh:property values) are
         // commonly blank nodes in Turtle form, but that doesn't change
         // shape identification.
-        // Use the OntoNamedNode-based Match overload (passing null graph)
-        // so Oxigraph treats `graph == null` as a wildcard across all named
-        // graphs — not as a filter on the default graph.
-        var shPredicate = (OntoNamedNode?)new OntoNamedNode(ShaclVocab.TargetClass.Value);
-        foreach (var q in Match(_shapeQuads, predicate: shPredicate))
+        // Pass null graph so RdfStatement treats it as a wildcard across
+        // all named graphs — not as a filter on the default graph.
+        foreach (var s in Match(_shapeStatements, predicate: ShaclVocab.TargetClass))
         {
-            if (q.Subject is OntoNamedNode s && q.Object is OntoNamedNode t)
+            if (s.Subject is RdfIri si && s.Object is RdfIri ti)
             {
-                shapeIris.Add(s.Value);
+                shapeIris.Add(si.Value);
             }
         }
-        var rdfTypePredicate = (OntoNamedNode?)new OntoNamedNode(Vocabulary.RdfType.Value);
-        foreach (var q in Match(_shapeQuads, predicate: rdfTypePredicate))
+        foreach (var s in Match(_shapeStatements, predicate: Vocabulary.RdfType))
         {
-            if (q.Subject is OntoNamedNode s
-                && q.Object is OntoNamedNode t
-                && t.Value == ShaclVocab.NodeShape.Value)
+            if (s.Subject is RdfIri si
+                && s.Object is RdfIri ti
+                && ti.Value == ShaclVocab.NodeShape)
             {
-                shapeIris.Add(s.Value);
+                shapeIris.Add(si.Value);
             }
         }
 
@@ -168,16 +169,16 @@ public sealed class ShaclValidator
         foreach (var shapeIri in shapeIris)
         {
             var targets = new List<string>();
-            var propertyShapes = new List<OntoTerm>();
-            foreach (var q in Match(_shapeQuads,
-                subject: (OntoNamedNode?)new OntoNamedNode(shapeIri)))
+            var propertyShapes = new List<RdfTerm>();
+            var shapeNode = new RdfIri(shapeIri);
+            foreach (var s in Match(_shapeStatements, subject: shapeNode))
             {
-                if (q.Predicate.Value == ShaclVocab.TargetClass.Value && q.Object is OntoNamedNode t)
-                    targets.Add(t.Value);
-                if (q.Predicate.Value == ShaclVocab.Property.Value
-                    && q.Object is OntoTerm psTerm)
+                if (s.PredicateIri == ShaclVocab.TargetClass && s.Object is RdfIri ti)
+                    targets.Add(ti.Value);
+                if (s.PredicateIri == ShaclVocab.Property
+                    && (s.Object is RdfIri || s.Object is RdfBlankNode))
                 {
-                    propertyShapes.Add(psTerm);
+                    propertyShapes.Add(s.Object);
                 }
             }
             var props = new List<PropertyShapeDef>();
@@ -191,7 +192,7 @@ public sealed class ShaclValidator
         return result;
     }
 
-    private PropertyShapeDef? ReadPropertyShape(OntoTerm psTerm)
+    private PropertyShapeDef? ReadPropertyShape(RdfTerm psTerm)
     {
         string? path = null;
         int? minCount = null;
@@ -199,35 +200,35 @@ public sealed class ShaclValidator
         string? nodeKind = null;
         string? cls = null;
         string? message = null;
-        foreach (var q in _shapeQuads.Where(q => q.Subject.Equals(psTerm)))
+        foreach (var s in _shapeStatements.Where(s => s.Subject.Equals(psTerm)))
         {
-            switch (q.Predicate.Value)
+            switch (s.PredicateIri)
             {
-                case "http://www.w3.org/ns/shacl#path":
-                    if (q.Object is OntoNamedNode n) path = n.Value;
+                case ShaclVocab.Path:
+                    if (s.Object is RdfIri n) path = n.Value;
                     break;
-                case "http://www.w3.org/ns/shacl#minCount":
-                    if (q.Object is OntoLiteral l && int.TryParse(l.Value, out var minValue)) minCount = minValue;
+                case ShaclVocab.MinCount:
+                    if (s.Object is RdfLiteral l && int.TryParse(l.Value, out var minValue)) minCount = minValue;
                     break;
-                case "http://www.w3.org/ns/shacl#datatype":
-                    if (q.Object is OntoNamedNode d) datatype = d.Value;
+                case ShaclVocab.Datatype:
+                    if (s.Object is RdfIri d) datatype = d.Value;
                     break;
-                case "http://www.w3.org/ns/shacl#nodeKind":
-                    if (q.Object is OntoNamedNode k) nodeKind = k.Value;
+                case ShaclVocab.NodeKind:
+                    if (s.Object is RdfIri k) nodeKind = k.Value;
                     break;
-                case "http://www.w3.org/ns/shacl#class":
-                    if (q.Object is OntoNamedNode c) cls = c.Value;
+                case ShaclVocab.Class:
+                    if (s.Object is RdfIri c) cls = c.Value;
                     break;
-                case "http://www.w3.org/ns/shacl#message":
-                    if (q.Object is OntoLiteral m) message = m.Value;
+                case ShaclVocab.Message:
+                    if (s.Object is RdfLiteral m) message = m.Value;
                     break;
             }
         }
         if (path is null) return null;
         // Use the blank-node label (or named IRI) as the stable identifier
-        // for violation reporting. Oxigraph assigns blank node labels at
-        // load time and they don't change for the lifetime of the store.
-        var id = psTerm is OntoNamedNode nn ? nn.Value : ((OntoBlankNode)psTerm).Value;
+        // for violation reporting. RdfStatement blank-node labels are
+        // preserved verbatim from the source so they remain stable.
+        var id = psTerm is RdfIri nn ? nn.Value : ((RdfBlankNode)psTerm).Id;
         return new PropertyShapeDef(id, path, minCount, datatype, nodeKind, cls, message);
     }
 
@@ -237,16 +238,16 @@ public sealed class ShaclValidator
 
     private IEnumerable<ShaclViolation> ValidateShape(ShapeDef shape, string targetClass, string dataGraphIri)
     {
-        var data = Match(_dataQuads, graphIri: dataGraphIri);
+        var data = Match(_dataStatements, graphIri: dataGraphIri);
         var focusNodes = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var q in data)
+        foreach (var s in data)
         {
-            if (q.Predicate.Value == Vocabulary.RdfType.Value
-                && q.Object is OntoNamedNode t
+            if (s.PredicateIri == Vocabulary.RdfType
+                && s.Object is RdfIri t
                 && t.Value == targetClass
-                && q.Subject is OntoNamedNode s)
+                && s.Subject is RdfIri si)
             {
-                focusNodes.Add(s.Value);
+                focusNodes.Add(si.Value);
             }
         }
         foreach (var focus in focusNodes)
@@ -261,9 +262,9 @@ public sealed class ShaclValidator
 
     private IEnumerable<ShaclViolation> ValidateProperty(string focus, PropertyShapeDef prop, string dataGraphIri)
     {
-        var values = _dataQuads.Where(q => (q.Graph is OntoNamedNode gn && gn.Value == dataGraphIri)
-            && q.Subject is OntoNamedNode subject && subject.Value == focus
-            && q.Predicate.Value == prop.PathIri).ToList();
+        var values = _dataStatements.Where(s => s.GraphIri == dataGraphIri
+            && s.Subject is RdfIri subject && subject.Value == focus
+            && s.PredicateIri == prop.PathIri).ToList();
         if (prop.MinCount is int minCount && values.Count < minCount)
         {
             yield return new ShaclViolation(
@@ -273,19 +274,19 @@ public sealed class ShaclValidator
                 ValueKind: "missing",
                 Message: prop.Message ?? $"Property {prop.PathIri} requires at least {prop.MinCount} value(s) on {focus}.");
         }
-        foreach (var q in values)
+        foreach (var s in values)
         {
-            string kind = q.Object switch
+            string kind = s.Object switch
             {
-                OntoNamedNode => "iri",
-                OntoBlankNode => "blank",
-                OntoLiteral => "literal",
+                RdfIri => "iri",
+                RdfBlankNode => "blank",
+                RdfLiteral => "literal",
                 _ => "unknown",
             };
             if (prop.NodeKind is { } nk)
             {
-                bool ok = (nk == ShaclVocab.Iri.Value && kind == "iri")
-                    || (nk == ShaclVocab.LiteralKind.Value && kind == "literal");
+                bool ok = (nk == ShaclVocab.Iri && kind == "iri")
+                    || (nk == ShaclVocab.LiteralKind && kind == "literal");
                 if (!ok)
                 {
                     yield return new ShaclViolation(
@@ -297,8 +298,8 @@ public sealed class ShaclValidator
                 }
             }
             if (prop.DatatypeIri is { } dt
-                && q.Object is OntoLiteral lit
-                && (lit.Datatype?.Value ?? "http://www.w3.org/2001/XMLSchema#string") != dt)
+                && s.Object is RdfLiteral lit
+                && (lit.Datatype ?? "http://www.w3.org/2001/XMLSchema#string") != dt)
             {
                 yield return new ShaclViolation(
                     SourceShapeIri: prop.Id,
@@ -310,10 +311,10 @@ public sealed class ShaclValidator
             if (prop.ClassIri is { } cls && kind == "iri")
             {
                 // Verify the value has an rdf:type that includes cls (transitively not enforced).
-                var types = _dataQuads.Where(tq => (tq.Graph is OntoNamedNode gn && gn.Value == dataGraphIri)
-                    && tq.Subject is OntoNamedNode subject && subject.Value == ((OntoNamedNode)q.Object).Value
-                    && tq.Predicate.Value == Vocabulary.RdfType.Value).ToList();
-                var hasClass = types.Any(tq => tq.Object is OntoNamedNode tn && tn.Value == cls);
+                var types = _dataStatements.Where(ts => ts.GraphIri == dataGraphIri
+                    && ts.Subject is RdfIri subject && subject.Value == ((RdfIri)s.Object).Value
+                    && ts.PredicateIri == Vocabulary.RdfType).ToList();
+                var hasClass = types.Any(ts => ts.Object is RdfIri tn && tn.Value == cls);
                 if (!hasClass)
                 {
                     yield return new ShaclViolation(

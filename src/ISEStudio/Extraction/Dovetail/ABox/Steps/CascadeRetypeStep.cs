@@ -12,8 +12,8 @@ namespace ISEStudio.Extraction.Dovetail.ABox.Steps;
 /// Per-merge isolation: one cascade failure does not roll back prior merges.
 ///
 /// <para>
-/// <b>Signature adaptation</b>: the plan sketch assumed
-/// <c>OntologyEditor.CascadeClassMergeAsync(StoreWrapper, string, string, string, CancellationToken)</c>
+/// <b>Signature adaptation</b>: the plan sketch assumed an editor-level
+/// <c>CascadeClassMergeAsync(store, string, string, string, CancellationToken)</c>
 /// returning <c>IReadOnlyList&lt;Guid&gt;</c>. The actual editor's
 /// <c>CascadeClassMergeAsync</c> does not exist as a public method — the
 /// cascade retype is performed as a side-effect inside the

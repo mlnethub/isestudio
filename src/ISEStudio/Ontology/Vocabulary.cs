@@ -1,5 +1,3 @@
-using OntoNamedNode = Oxigraph.NamedNode;
-
 namespace ISEStudio.Ontology;
 
 /// <summary>
@@ -16,29 +14,29 @@ public static class Vocabulary
     public const string Owl = "http://www.w3.org/2002/07/owl#";
     public const string Xsd = "http://www.w3.org/2001/XMLSchema#";
 
-    public static readonly OntoNamedNode RdfType = new(Rdf + "type");
-    public static readonly OntoNamedNode RdfFirst = new(Rdf + "first");
-    public static readonly OntoNamedNode RdfRest = new(Rdf + "rest");
-    public static readonly OntoNamedNode RdfNil = new(Rdf + "nil");
+    public const string RdfType = Rdf + "type";
+    public const string RdfFirst = Rdf + "first";
+    public const string RdfRest = Rdf + "rest";
+    public const string RdfNil = Rdf + "nil";
 
-    public static readonly OntoNamedNode RdfsLabel = new(Rdfs + "label");
-    public static readonly OntoNamedNode RdfsComment = new(Rdfs + "comment");
-    public static readonly OntoNamedNode RdfsClass = new(Rdfs + "Class");
-    public static readonly OntoNamedNode RdfsDatatype = new(Rdfs + "Datatype");
-    public static readonly OntoNamedNode RdfsSubClassOf = new(Rdfs + "subClassOf");
-    public static readonly OntoNamedNode RdfsSubPropertyOf = new(Rdfs + "subPropertyOf");
-    public static readonly OntoNamedNode RdfsDomain = new(Rdfs + "domain");
-    public static readonly OntoNamedNode RdfsRange = new(Rdfs + "range");
+    public const string RdfsLabel = Rdfs + "label";
+    public const string RdfsComment = Rdfs + "comment";
+    public const string RdfsClass = Rdfs + "Class";
+    public const string RdfsDatatype = Rdfs + "Datatype";
+    public const string RdfsSubClassOf = Rdfs + "subClassOf";
+    public const string RdfsSubPropertyOf = Rdfs + "subPropertyOf";
+    public const string RdfsDomain = Rdfs + "domain";
+    public const string RdfsRange = Rdfs + "range";
 
-    public static readonly OntoNamedNode OwlClass = new(Owl + "Class");
-    public static readonly OntoNamedNode OwlNamedIndividual = new(Owl + "NamedIndividual");
-    public static readonly OntoNamedNode OwlObjectProperty = new(Owl + "ObjectProperty");
-    public static readonly OntoNamedNode OwlDatatypeProperty = new(Owl + "DatatypeProperty");
-    public static readonly OntoNamedNode OwlDisjointWith = new(Owl + "disjointWith");
-    public static readonly OntoNamedNode OwlEquivalentClass = new(Owl + "equivalentClass");
-    public static readonly OntoNamedNode OwlUnionOf = new(Owl + "unionOf");
+    public const string OwlClass = Owl + "Class";
+    public const string OwlNamedIndividual = Owl + "NamedIndividual";
+    public const string OwlObjectProperty = Owl + "ObjectProperty";
+    public const string OwlDatatypeProperty = Owl + "DatatypeProperty";
+    public const string OwlDisjointWith = Owl + "disjointWith";
+    public const string OwlEquivalentClass = Owl + "equivalentClass";
+    public const string OwlUnionOf = Owl + "unionOf";
 
-    public static readonly OntoNamedNode XsdString = new(Xsd + "string");
+    public const string XsdString = Xsd + "string";
 
     // Canonical XSD alias table (mirrors _XSD_MAP in schema.py).
     private static readonly Dictionary<string, string> XsdAliases = new(StringComparer.OrdinalIgnoreCase)
@@ -88,13 +86,13 @@ public static class Vocabulary
     }
 
     /// <summary>
-    /// Resolve a datatype token to the canonical <c>xsd:</c> IRI node. Falls
+    /// Resolve a datatype token to the canonical <c>xsd:</c> IRI. Falls
     /// back to <c>xsd:string</c> when no alias is recognised.
     /// </summary>
-    public static OntoNamedNode DatatypeNode(string? name)
+    public static string DatatypeNode(string? name)
     {
         var canonical = CanonicalDatatypeName(name) ?? "string";
-        return new OntoNamedNode(Xsd + canonical);
+        return Xsd + canonical;
     }
 
     // ------------------------------------------------------------------
@@ -149,10 +147,10 @@ public static class Vocabulary
     }
 
     /// <summary>Convenience: build a class IRI by local name from a label.</summary>
-    public static OntoNamedNode ClassNode(string baseIri, string label) =>
-        new(baseIri + ClassLocalName(label));
+    public static string ClassNode(string baseIri, string label) =>
+        baseIri + ClassLocalName(label);
 
     /// <summary>Convenience: build a property IRI by local name from a label.</summary>
-    public static OntoNamedNode PropertyNode(string baseIri, string label) =>
-        new(baseIri + PropertyLocalName(label));
+    public static string PropertyNode(string baseIri, string label) =>
+        baseIri + PropertyLocalName(label);
 }

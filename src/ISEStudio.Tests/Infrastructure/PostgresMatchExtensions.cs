@@ -40,6 +40,29 @@ public static class PostgresMatchExtensions
             .Select(ToQuad).ToList();
     }
 
+    /// <summary>
+    /// Convert one Oxigraph quad (hand-built seed or Migration
+    /// <c>StoreWrapper</c> read-back) to the runtime
+    /// <see cref="RdfStatement"/> shape. Tests that feed runtime APIs from
+    /// migration-reader data use this at the boundary.
+    /// </summary>
+    public static RdfStatement ToStatement(this Oxigraph.Quad quad)
+    {
+        return new RdfStatement(
+            ToStatementTerm(quad.Subject),
+            quad.Predicate.Value,
+            ToStatementTerm(quad.Object),
+            quad.Graph is Oxigraph.NamedNode graph ? graph.Value : null);
+    }
+
+    private static RdfTerm ToStatementTerm(Oxigraph.ITerm term) => term switch
+    {
+        Oxigraph.NamedNode named => new RdfIri(named.Value),
+        Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
+        Oxigraph.Literal literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
+        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+    };
+
     private static OntoQuad ToQuad(RdfStatement statement)
     {
         var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("RDF graph is required"));

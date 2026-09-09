@@ -6,7 +6,6 @@ using ISEStudio.Ontology;
 using ISEStudio.Tests.Ontology;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Extraction.Dovetail.Terminology.Steps;
 
@@ -57,7 +56,7 @@ public class EntitySyncStepTests : IClassFixture<TerminologyServiceFixture>, IAs
         // SchemeIri non-null passes the guard; the null View then throws
         // inside the pass — the step must convert that to an Error carry
         // (D5) instead of propagating. (Inducing a real store exception is
-        // nondeterministic on Windows — Oxigraph handle behavior — so the
+        // nondeterministic on Windows — file-handle timing — so the
         // catch contract is pinned with a synthetic throw.)
         var svc = new TerminologyService(_fx.Statements);
         var step = new EntitySyncStep(svc, NullLogger<EntitySyncStep>.Instance);
@@ -92,7 +91,7 @@ public class EntitySyncStepTests : IClassFixture<TerminologyServiceFixture>, IAs
             ObjectProperties: objectProperties.Select(l => new PropertyMutation(l, "object")).ToArray(),
             DataProperties: dataProperties.Select(l => new PropertyMutation(l, "data")).ToArray(),
             Axioms: axioms);
-        var quads = SchemaBuilder.BuildMutation(_ks.BaseIri, mutation, _ks.TBoxGraph);
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
+        var statements = SchemaBuilder.BuildMutationStatements(_ks.BaseIri, mutation, _ks.TBoxGraph);
+        _fx.TBox.AddStatements(_ks.TBoxGraph, statements);
     }
 }

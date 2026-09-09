@@ -9,10 +9,11 @@ namespace ISEStudio.Conflicts;
 /// <summary>
 /// DI helpers for the conflicts slice. Mirrors <see cref="Providers.ProviderServiceCollectionExtensions"/>:
 /// the service is Scoped (it depends on the scoped <c>ISEStudioDbContext</c>);
-/// the optional <c>StoreWrapper</c> + <c>ExtractionJobStore</c> dependencies
-/// are resolved per-request through <see cref="IServiceProvider"/> rather
-/// than constructor-injected so the SQLite-backed contract-test factory can
-/// run the SQL paths without an Oxigraph store.
+/// the optional <c>IRdfStatementRepository</c> + <c>ExtractionJobStore</c>
+/// dependencies are resolved per-request through
+/// <see cref="IServiceProvider"/> rather than constructor-injected so the
+/// SQLite-backed contract-test factory can run the SQL paths without an
+/// RDF store.
 /// <para>
 /// The <see cref="ISEStudio.Conflicts.ConflictDetectionOrchestrator"/> +
 /// <see cref="IConflictApplicationService"/> pair is the application-layer

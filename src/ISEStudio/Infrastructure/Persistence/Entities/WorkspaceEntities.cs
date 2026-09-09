@@ -7,7 +7,7 @@ namespace ISEStudio.Infrastructure.Persistence.Entities;
 // ---------------------------------------------------------------------------
 
 /// <summary>
-/// A named ontology graph. Maps to one named graph (IRI) in the Oxigraph
+/// A named ontology graph. Maps to one named graph (IRI) in the RDF
 /// store.
 /// </summary>
 public sealed class KnowledgeSystemEntity : EntityBase
@@ -24,7 +24,7 @@ public sealed class KnowledgeSystemEntity : EntityBase
     /// <summary>FK to the owning user. Owners have full control implicitly.</summary>
     public Guid? OwnerId { get; set; }
 
-    /// <summary>Named graph IRI in Oxigraph (e.g. <c>http://goodcrew.local/ks/3</c>).</summary>
+    /// <summary>Named graph IRI in the RDF store (e.g. <c>http://goodcrew.local/ks/3</c>).</summary>
     public string GraphIri { get; set; } = string.Empty;
 
     /// <summary>Entity namespace IRI (e.g. <c>http://goodcrew.local/ks/3/onto#</c>).</summary>

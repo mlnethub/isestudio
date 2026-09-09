@@ -8,10 +8,6 @@ using ISEStudio.Ontology;
 using ISEStudio.Tests.Authentication;
 using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
-using Oxigraph;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoQuad = Oxigraph.Quad;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -140,13 +136,13 @@ public sealed class ABoxValidationApiTests
         var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
         var abox = new PostgresRdfGraphStore(new PostgresRdfStatementRepository(db), ksId, RdfLayer.ABox.ToString());
-        abox.AddQuads(new OntoNamedNode(aboxGraph), new[]
+        abox.AddStatements(aboxGraph, new[]
         {
-            new OntoQuad(
-                new OntoNamedNode(rexIri),
-                new OntoNamedNode(ageProp),
-                new OntoLiteral("not-a-number"),
-                new OntoNamedNode(aboxGraph)),
+            new RdfStatement(
+                new RdfIri(rexIri),
+                ageProp,
+                new RdfLiteral("not-a-number"),
+                aboxGraph),
         });
 
         var response = await PostFixAsync(client, ksId, new
@@ -287,13 +283,13 @@ public sealed class ABoxValidationApiTests
         var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
         var abox = new PostgresRdfGraphStore(new PostgresRdfStatementRepository(db), ksId, RdfLayer.ABox.ToString());
-        abox.AddQuads(new OntoNamedNode(aboxGraph), new[]
+        abox.AddStatements(aboxGraph, new[]
         {
-            new OntoQuad(
-                new OntoNamedNode(rexIri),
-                new OntoNamedNode(ageProp),
-                new OntoLiteral("oops"),
-                new OntoNamedNode(aboxGraph)),
+            new RdfStatement(
+                new RdfIri(rexIri),
+                ageProp,
+                new RdfLiteral("oops"),
+                aboxGraph),
         });
         await PostFixAsync(client, ksId, new
         {
@@ -332,13 +328,13 @@ public sealed class ABoxValidationApiTests
         var db = app.CreateDbContext();
         var aboxGraph = LookupKsAbboxIri(app, ksId);
         var abox = new PostgresRdfGraphStore(new PostgresRdfStatementRepository(db), ksId, RdfLayer.ABox.ToString());
-        abox.AddQuads(new OntoNamedNode(aboxGraph), new[]
+        abox.AddStatements(aboxGraph, new[]
         {
-            new OntoQuad(
-                new OntoNamedNode(rexIri),
-                new OntoNamedNode(ageProp),
-                new OntoLiteral("oops"),
-                new OntoNamedNode(aboxGraph)),
+            new RdfStatement(
+                new RdfIri(rexIri),
+                ageProp,
+                new RdfLiteral("oops"),
+                aboxGraph),
         });
         await PostFixAsync(client, ksId, new
         {

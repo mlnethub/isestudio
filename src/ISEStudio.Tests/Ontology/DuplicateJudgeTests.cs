@@ -1,11 +1,13 @@
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
 using ISEStudio.Llm;
-using ISEStudio.Ontology;
 using Oxigraph;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
 using OntoQuad = Oxigraph.Quad;
+using ISEStudio.Ontology;
+using ISEStudio.Migration.Ontology;
+using ISEStudio.Tests.Infrastructure;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -289,7 +291,7 @@ public sealed class DuplicateJudgeTests : IDisposable
             EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
-        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri), graphIri, CancellationToken.None);
+        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri).Select(q => q.ToStatement()).ToList(), graphIri, CancellationToken.None);
 
         // "Pump Station" + "Station" → Jaccard 1/2 = 0.5 below 0.86, but
         // CompositionalDistinct("Pump Station", "Station") is false (no
@@ -314,7 +316,7 @@ public sealed class DuplicateJudgeTests : IDisposable
             EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
-        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri), graphIri, CancellationToken.None);
+        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri).Select(q => q.ToStatement()).ToList(), graphIri, CancellationToken.None);
 
         // "Pump Station" vs "pumpstation" → normalised by Vocabulary.NormLabel
         // (lowercase + collapse whitespace) to identical tokens →
@@ -342,7 +344,7 @@ public sealed class DuplicateJudgeTests : IDisposable
             EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions()));
-        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri), graphIri, CancellationToken.None);
+        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri).Select(q => q.ToStatement()).ToList(), graphIri, CancellationToken.None);
 
         Assert.Empty(detected);
     }
@@ -370,7 +372,7 @@ public sealed class DuplicateJudgeTests : IDisposable
             EmbeddingGeneratorFactory.CreateForTest(),
             chats: null,
             options: Options.Create(new ISEStudioOptions { EnableSemanticConflicts = false }));
-        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri), graphIri, CancellationToken.None);
+        var detected = await judge.DetectAsync(_store.Match(graphIri: graphIri).Select(q => q.ToStatement()).ToList(), graphIri, CancellationToken.None);
 
         // EnableSemanticConflicts gates the entire DetectAsync call —
         // with it off, Detect returns the structural detector output
@@ -390,8 +392,8 @@ public sealed class DuplicateJudgeTests : IDisposable
         var node = new OntoNamedNode(iri);
         store.AddQuads(graph, new[]
         {
-            new OntoQuad(node, Vocabulary.RdfType, Vocabulary.OwlClass, graph),
-            new OntoQuad(node, Vocabulary.RdfsLabel, new OntoLiteral(label), graph),
+            new OntoQuad(node, new OntoNamedNode(Vocabulary.RdfType), new OntoNamedNode(Vocabulary.OwlClass), graph),
+            new OntoQuad(node, new OntoNamedNode(Vocabulary.RdfsLabel), new OntoLiteral(label), graph),
         });
     }
 }

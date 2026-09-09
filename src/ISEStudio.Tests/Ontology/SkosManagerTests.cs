@@ -79,14 +79,14 @@ public class SkosManagerTests : IClassFixture<SkosManagerFixture>, IAsyncLifetim
 
         // The concept must be typed skos:Concept
         Assert.Contains(matches,
-            q => q.Predicate.Value == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
-                 && q.Object is OntoNamedNode t
+            q => q.PredicateIri == "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
+                 && q.Object is RdfIri t
                  && t.Value == "http://www.w3.org/2004/02/skos/core#Concept");
 
         // The pref label must exist with the right language tag.
         Assert.Contains(matches,
-            q => q.Predicate.Value == "http://www.w3.org/2004/02/skos/core#prefLabel"
-                 && q.Object is OntoLiteral lit
+            q => q.PredicateIri == "http://www.w3.org/2004/02/skos/core#prefLabel"
+                 && q.Object is RdfLiteral lit
                  && lit.Value == "Pump"
                  && lit.Language == "en");
     }

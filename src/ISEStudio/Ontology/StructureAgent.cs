@@ -13,9 +13,6 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Llm;
 using ISEStudio.Observability;
 using ISEStudio.Prompts;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Ontology;
 
@@ -259,9 +256,9 @@ public sealed class StructureAgent : IStructureAgent
                 continue; // agent named a non-existent "existing" class → don't invent it
             }
             var createdNew = pIri is null;
-            var graph = new OntoNamedNode(ks.GraphIri);
+            var graphIri = ks.GraphIri;
             var store = new PostgresRdfGraphStore(_statements, ks.Id, "TBox");
-            var preBytes = store.DumpNQuads(ks.GraphIri);
+            var preBytes = store.DumpNQuads(graphIri);
             byte[] added = Array.Empty<byte>();
             byte[] removed = Array.Empty<byte>();
             try
@@ -271,32 +268,35 @@ public sealed class StructureAgent : IStructureAgent
                 // .NET revertOnError:true would ALWAYS revert (opposite
                 // semantics), so we open revertOnError:false and MarkError
                 // on the throw path — the ABoxService/OntologyEditor pattern.
-                await using (var cap = await store.CaptureAsync(ks.GraphIri, ct).ConfigureAwait(false))
+                await using (var cap = await store.CaptureAsync(graphIri, ct).ConfigureAwait(false))
                 {
                     try
                     {
-                        OntoNamedNode pNode;
-                        var quads = new List<OntoQuad>();
+                        RdfIri pNode;
+                        var statements = new List<RdfStatement>();
                         if (createdNew)
                         {
                             // Python editor.apply_edit({"op": "add_class", ...}):
                             // rdf:type owl:Class + rdfs:label for a label the
                             // graph does not already hold.
-                            pNode = Vocabulary.ClassNode(ks.BaseIri, parent);
+                            pNode = new RdfIri(Vocabulary.ClassNode(ks.BaseIri, parent));
                             pIri = pNode.Value;
-                            quads.Add(new OntoQuad(pNode, Vocabulary.RdfType, Vocabulary.OwlClass, graph));
-                            quads.Add(new OntoQuad(pNode, Vocabulary.RdfsLabel, new OntoLiteral(parent), graph));
+                            statements.Add(new RdfStatement(pNode, Vocabulary.RdfType,
+                                new RdfIri(Vocabulary.OwlClass), graphIri));
+                            statements.Add(new RdfStatement(pNode, Vocabulary.RdfsLabel,
+                                new RdfLiteral(parent), graphIri));
                         }
                         else
                         {
-                            pNode = new OntoNamedNode(pIri!);
+                            pNode = new RdfIri(pIri!);
                         }
-                        var subNode = new OntoNamedNode(c.Iri);
+                        var subNode = new RdfIri(c.Iri);
                         if (subNode.Value != pNode.Value)
                         {
-                            quads.Add(new OntoQuad(subNode, Vocabulary.RdfsSubClassOf, pNode, graph));
+                            statements.Add(new RdfStatement(subNode, Vocabulary.RdfsSubClassOf,
+                                pNode, graphIri));
                         }
-                        store.AddQuads(graph, quads);
+                        store.AddStatements(graphIri, statements);
                     }
                     catch
                     {
@@ -304,8 +304,8 @@ public sealed class StructureAgent : IStructureAgent
                         throw;
                     }
                 }
-                var postBytes = store.DumpNQuads(ks.GraphIri);
-                (added, removed) = StoreWrapper.DiffNQuads(preBytes, postBytes);
+                var postBytes = store.DumpNQuads(graphIri);
+                (added, removed) = PostgresRdfGraphStore.DiffNQuads(preBytes, postBytes);
             }
             catch (Exception)
             {

@@ -7,7 +7,6 @@ using ISEStudio.Authorization;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Knowledge;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Ontology;
 
@@ -19,10 +18,9 @@ namespace ISEStudio.Ontology;
 /// <see cref="AuditEventEntity"/> row with the byte-exact N-Quads diff
 /// the change produced so future rollback paths can replay the
 /// negation. The diff is captured by snapshotting the TBox graph before
-/// and after the editor call &mdash; the editor's own
-/// <see cref="QuadChangeCapture"/> handles the Oxigraph lock and
-/// revert-on-error semantics, so the service stays above the capture
-/// abstraction.
+/// and after the editor call &mdash; the editor's own layer replacement
+/// carries the revert-on-error semantics, so the service stays above
+/// the capture abstraction.
 /// </summary>
 public sealed class OntologyService
 {

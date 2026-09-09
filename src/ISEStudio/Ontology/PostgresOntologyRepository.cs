@@ -219,7 +219,7 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
     private static string? Optional(IReadOnlyDictionary<string, object?> payload, string name) => payload.TryGetValue(name, out var value) ? value switch { string text => text.Trim(), JsonElement element when element.ValueKind == JsonValueKind.String => element.GetString()?.Trim(), _ => value?.ToString()?.Trim() } : null;
     private static string ClassIri(string baseIri, string value) => value.StartsWith("http://", StringComparison.Ordinal) || value.StartsWith("https://", StringComparison.Ordinal) ? value : baseIri + PascalCase(value);
     private static string PropertyIri(string baseIri, string value) => value.StartsWith("http://", StringComparison.Ordinal) || value.StartsWith("https://", StringComparison.Ordinal) ? value : baseIri + CamelCase(value);
-    private static string XsdIri(string value) => Vocabulary.DatatypeNode(value).Value;
+    private static string XsdIri(string value) => Vocabulary.DatatypeNode(value);
     private static string PascalCase(string value) => string.Concat(value.Split(new[] { ' ', '-', '_' }, StringSplitOptions.RemoveEmptyEntries).Select(item => char.ToUpperInvariant(item[0]) + item[1..]));
     private static string CamelCase(string value) { var pascal = PascalCase(value); return pascal.Length == 0 ? "property" : char.ToLowerInvariant(pascal[0]) + pascal[1..]; }
     private static string Key(string value) => value.Trim().ToLowerInvariant().Replace(' ', '_');
@@ -425,9 +425,9 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
             case "add_class":
             {
                 var iri = ClassIri(system.BaseIri, Required(payload, "label"));
-                tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfType.Value,
-                    new RdfIri(Vocabulary.OwlClass.Value), tboxGraph));
-                tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfsLabel.Value,
+                tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfType,
+                    new RdfIri(Vocabulary.OwlClass), tboxGraph));
+                tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfsLabel,
                     new RdfLiteral(Required(payload, "label")), tboxGraph));
                 break;
             }
@@ -443,11 +443,11 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
                 var iri = PropertyIri(system.BaseIri, Required(payload, "label"));
                 var kind = Optional(payload, "kind") ?? "object";
                 var typeIri = kind == "data"
-                    ? Vocabulary.OwlDatatypeProperty.Value
-                    : Vocabulary.OwlObjectProperty.Value;
-                tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfType.Value,
+                    ? Vocabulary.OwlDatatypeProperty
+                    : Vocabulary.OwlObjectProperty;
+                tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfType,
                     new RdfIri(typeIri), tboxGraph));
-                tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfsLabel.Value,
+                tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfsLabel,
                     new RdfLiteral(Required(payload, "label")), tboxGraph));
                 break;
             }
@@ -470,18 +470,18 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
                 tbox.RemoveAll(statement =>
                     statement.Subject is RdfIri subject
                     && subject.Value == iri
-                    && (statement.PredicateIri == Vocabulary.RdfsDomain.Value
-                        || statement.PredicateIri == Vocabulary.RdfsRange.Value));
+                    && (statement.PredicateIri == Vocabulary.RdfsDomain
+                        || statement.PredicateIri == Vocabulary.RdfsRange));
                 var domain = Optional(payload, "domain");
                 var range = Optional(payload, "range");
                 if (!string.IsNullOrWhiteSpace(domain))
                 {
-                    tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfsDomain.Value,
+                    tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfsDomain,
                         new RdfIri(ClassIri(system.BaseIri, domain)), tboxGraph));
                 }
                 if (!string.IsNullOrWhiteSpace(range))
                 {
-                    tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfsRange.Value,
+                    tbox.Add(new RdfStatement(new RdfIri(iri), Vocabulary.RdfsRange,
                         new RdfIri(XsdIri(range)), tboxGraph));
                 }
                 break;
@@ -558,11 +558,11 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
                     {
                         // A source property's own definition triple → drop, harvest d/r.
                         tbox.RemoveAt(i);
-                        if (statement.PredicateIri == Vocabulary.RdfsDomain.Value && statement.Object is RdfIri domain)
+                        if (statement.PredicateIri == Vocabulary.RdfsDomain && statement.Object is RdfIri domain)
                         {
                             domains.Add(domain.Value);
                         }
-                        else if (statement.PredicateIri == Vocabulary.RdfsRange.Value && statement.Object is RdfIri range)
+                        else if (statement.PredicateIri == Vocabulary.RdfsRange && statement.Object is RdfIri range)
                         {
                             ranges.Add(range.Value);
                         }
@@ -580,8 +580,8 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
                     abox.Add(statement with { PredicateIri = target });
                 }
                 EnsureTypedProperty(tbox, tboxGraph, target, Optional(payload, "target_label"));
-                UnionSlot(tbox, tboxGraph, target, Vocabulary.RdfsDomain.Value, domains);
-                UnionSlot(tbox, tboxGraph, target, Vocabulary.RdfsRange.Value, ranges);
+                UnionSlot(tbox, tboxGraph, target, Vocabulary.RdfsDomain, domains);
+                UnionSlot(tbox, tboxGraph, target, Vocabulary.RdfsRange, ranges);
                 break;
             }
             case "subordinate_properties":
@@ -597,11 +597,11 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
                 var ranges = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var statement in tbox.Where(s => s.Subject is RdfIri subj && srcSet.Contains(subj.Value)))
                 {
-                    if (statement.PredicateIri == Vocabulary.RdfsDomain.Value && statement.Object is RdfIri domain)
+                    if (statement.PredicateIri == Vocabulary.RdfsDomain && statement.Object is RdfIri domain)
                     {
                         domains.Add(domain.Value);
                     }
-                    else if (statement.PredicateIri == Vocabulary.RdfsRange.Value && statement.Object is RdfIri range)
+                    else if (statement.PredicateIri == Vocabulary.RdfsRange && statement.Object is RdfIri range)
                     {
                         ranges.Add(range.Value);
                     }
@@ -609,17 +609,17 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
                 EnsureTypedProperty(tbox, tboxGraph, target, Optional(payload, "target_label"));
                 foreach (var src in sources)
                 {
-                    tbox.Add(new RdfStatement(new RdfIri(src), Vocabulary.RdfsSubPropertyOf.Value, new RdfIri(target), tboxGraph));
+                    tbox.Add(new RdfStatement(new RdfIri(src), Vocabulary.RdfsSubPropertyOf, new RdfIri(target), tboxGraph));
                 }
-                UnionSlot(tbox, tboxGraph, target, Vocabulary.RdfsDomain.Value, domains);
-                UnionSlot(tbox, tboxGraph, target, Vocabulary.RdfsRange.Value, ranges);
+                UnionSlot(tbox, tboxGraph, target, Vocabulary.RdfsDomain, domains);
+                UnionSlot(tbox, tboxGraph, target, Vocabulary.RdfsRange, ranges);
                 break;
             }
             case "set_property_union":
             {
                 var iri = Required(payload, "iri");
                 var slot = Optional(payload, "slot") ?? "range";
-                var predicateIri = slot == "domain" ? Vocabulary.RdfsDomain.Value : Vocabulary.RdfsRange.Value;
+                var predicateIri = slot == "domain" ? Vocabulary.RdfsDomain : Vocabulary.RdfsRange;
                 var members = ReadStringArray(payload, "members");
                 if (members.Count < 2)
                 {
@@ -628,14 +628,14 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
                 GcBlankSubject(tbox, iri, predicateIri);
                 var union = "u" + Guid.NewGuid().ToString("N")[..12];
                 var cells = members.Select(_ => "c" + Guid.NewGuid().ToString("N")[..12]).ToList();
-                tbox.Add(new RdfStatement(new RdfBlankNode(union), Vocabulary.RdfType.Value, new RdfIri(Vocabulary.OwlClass.Value), tboxGraph));
+                tbox.Add(new RdfStatement(new RdfBlankNode(union), Vocabulary.RdfType, new RdfIri(Vocabulary.OwlClass), tboxGraph));
                 for (var k = 0; k < cells.Count; k++)
                 {
-                    tbox.Add(new RdfStatement(new RdfBlankNode(cells[k]), Vocabulary.RdfFirst.Value, new RdfIri(members[k]), tboxGraph));
-                    RdfTerm rest = k + 1 < cells.Count ? new RdfBlankNode(cells[k + 1]) : new RdfIri(Vocabulary.RdfNil.Value);
-                    tbox.Add(new RdfStatement(new RdfBlankNode(cells[k]), Vocabulary.RdfRest.Value, rest, tboxGraph));
+                    tbox.Add(new RdfStatement(new RdfBlankNode(cells[k]), Vocabulary.RdfFirst, new RdfIri(members[k]), tboxGraph));
+                    RdfTerm rest = k + 1 < cells.Count ? new RdfBlankNode(cells[k + 1]) : new RdfIri(Vocabulary.RdfNil);
+                    tbox.Add(new RdfStatement(new RdfBlankNode(cells[k]), Vocabulary.RdfRest, rest, tboxGraph));
                 }
-                tbox.Add(new RdfStatement(new RdfBlankNode(union), Vocabulary.OwlUnionOf.Value, new RdfBlankNode(cells[0]), tboxGraph));
+                tbox.Add(new RdfStatement(new RdfBlankNode(union), Vocabulary.OwlUnionOf, new RdfBlankNode(cells[0]), tboxGraph));
                 tbox.Add(new RdfStatement(new RdfIri(iri), predicateIri, new RdfBlankNode(union), tboxGraph));
                 break;
             }
@@ -655,20 +655,20 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
         List<RdfStatement> tbox, string graphIri, string targetIri, string? label)
     {
         var typed = tbox.Any(s => s.Subject is RdfIri subj && subj.Value == targetIri
-            && s.PredicateIri == Vocabulary.RdfType.Value
-            && s.Object is RdfIri obj && obj.Value == Vocabulary.OwlObjectProperty.Value);
+            && s.PredicateIri == Vocabulary.RdfType
+            && s.Object is RdfIri obj && obj.Value == Vocabulary.OwlObjectProperty);
         if (!typed)
         {
-            tbox.Add(new RdfStatement(new RdfIri(targetIri), Vocabulary.RdfType.Value,
-                new RdfIri(Vocabulary.OwlObjectProperty.Value), graphIri));
+            tbox.Add(new RdfStatement(new RdfIri(targetIri), Vocabulary.RdfType,
+                new RdfIri(Vocabulary.OwlObjectProperty), graphIri));
         }
         if (!string.IsNullOrEmpty(label))
         {
             var labelled = tbox.Any(s => s.Subject is RdfIri subj && subj.Value == targetIri
-                && s.PredicateIri == Vocabulary.RdfsLabel.Value);
+                && s.PredicateIri == Vocabulary.RdfsLabel);
             if (!labelled)
             {
-                tbox.Add(new RdfStatement(new RdfIri(targetIri), Vocabulary.RdfsLabel.Value,
+                tbox.Add(new RdfStatement(new RdfIri(targetIri), Vocabulary.RdfsLabel,
                     new RdfLiteral(label), graphIri));
             }
         }
@@ -706,14 +706,14 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
         var memberList = members.ToList();
         var union = "u" + Guid.NewGuid().ToString("N")[..12];
         var cells = memberList.Select(_ => "c" + Guid.NewGuid().ToString("N")[..12]).ToList();
-        tbox.Add(new RdfStatement(new RdfBlankNode(union), Vocabulary.RdfType.Value, new RdfIri(Vocabulary.OwlClass.Value), graphIri));
+        tbox.Add(new RdfStatement(new RdfBlankNode(union), Vocabulary.RdfType, new RdfIri(Vocabulary.OwlClass), graphIri));
         for (var k = 0; k < cells.Count; k++)
         {
-            tbox.Add(new RdfStatement(new RdfBlankNode(cells[k]), Vocabulary.RdfFirst.Value, new RdfIri(memberList[k]), graphIri));
-            RdfTerm rest = k + 1 < cells.Count ? new RdfBlankNode(cells[k + 1]) : new RdfIri(Vocabulary.RdfNil.Value);
-            tbox.Add(new RdfStatement(new RdfBlankNode(cells[k]), Vocabulary.RdfRest.Value, rest, graphIri));
+            tbox.Add(new RdfStatement(new RdfBlankNode(cells[k]), Vocabulary.RdfFirst, new RdfIri(memberList[k]), graphIri));
+            RdfTerm rest = k + 1 < cells.Count ? new RdfBlankNode(cells[k + 1]) : new RdfIri(Vocabulary.RdfNil);
+            tbox.Add(new RdfStatement(new RdfBlankNode(cells[k]), Vocabulary.RdfRest, rest, graphIri));
         }
-        tbox.Add(new RdfStatement(new RdfBlankNode(union), Vocabulary.OwlUnionOf.Value, new RdfBlankNode(cells[0]), graphIri));
+        tbox.Add(new RdfStatement(new RdfBlankNode(union), Vocabulary.OwlUnionOf, new RdfBlankNode(cells[0]), graphIri));
         tbox.Add(new RdfStatement(new RdfIri(targetIri), predicateIri, new RdfBlankNode(union), graphIri));
     }
 

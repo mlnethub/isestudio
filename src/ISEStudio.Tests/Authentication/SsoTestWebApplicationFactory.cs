@@ -112,11 +112,11 @@ public sealed class SsoTestWebApplicationFactory : WebApplicationFactory<Program
             services.AddSingleton<IBlobStore>(_ => new LocalCasBlobStore(_blobRoot));
 
             var rdfDescriptors = services
-                .Where(d => d.ServiceType.FullName == "ISEStudio.Ontology.StoreWrapper")
+                .Where(d => d.ServiceType.FullName == "ISEStudio.Migration.Ontology.StoreWrapper")
                 .ToList();
             foreach (var desc in rdfDescriptors) services.Remove(desc);
-            services.AddSingleton(typeof(ISEStudio.Ontology.StoreWrapper),
-                _ => new ISEStudio.Ontology.StoreWrapper(_rdfRoot));
+            services.AddSingleton(typeof(ISEStudio.Migration.Ontology.StoreWrapper),
+                _ => new ISEStudio.Migration.Ontology.StoreWrapper(_rdfRoot));
 
             services.RemoveAll<IChatClientFactory>();
             services.AddSingleton<IChatClientFactory>(FakeChatClientFactory.Default);

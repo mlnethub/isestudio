@@ -1,8 +1,6 @@
 using ISEStudio.Application.Vocabulary;
 using ISEStudio.Extraction.Dovetail.Terminology;
 using ISEStudio.Ontology;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Extraction;
 
@@ -210,9 +208,9 @@ public sealed class TerminologyService : ITerminologySync
         foreach (var p in view.DataProperties) ontologyIris.Add(p.Iri);
 
         var aboxIris = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var q in aboxStore.Match(graphIri: ks.ABoxGraph))
+        foreach (var s in aboxStore.Match(graphIri: ks.ABoxGraph))
         {
-            if (q.Subject is OntoNamedNode n) aboxIris.Add(n.Value);
+            if (s.Subject is RdfIri n) aboxIris.Add(n.Value);
         }
         var validMappingIris = new HashSet<string>(ontologyIris, StringComparer.Ordinal);
         validMappingIris.UnionWith(aboxIris);
@@ -232,9 +230,9 @@ public sealed class TerminologyService : ITerminologySync
             // without the round-trip.
             var stale = store.Match(
                 subjectIri: concept.Iri,
-                predicateIri: SkosVocab.OpMapsTo.Value,
+                predicateIri: SkosVocab.OpMapsTo,
                 graphIri: ks.VocabularyGraph);
-            if (stale.Count > 0) store.RemoveQuads(new OntoNamedNode(ks.VocabularyGraph), stale);
+            if (stale.Count > 0) store.RemoveStatements(ks.VocabularyGraph, stale);
             staleMappingsRemoved++;
         }
 
@@ -278,7 +276,7 @@ public sealed class TerminologyService : ITerminologySync
                 conceptByMapping[c.MappedEntityIri!] = c.Iri;
         }
 
-        var graph = new OntoNamedNode(ks.VocabularyGraph);
+        var graph = ks.VocabularyGraph;
         var now = _clock.GetUtcNow().UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ");
         var added = 0;
         var mapped = 0;
@@ -308,12 +306,12 @@ public sealed class TerminologyService : ITerminologySync
             var existingConcept = FindConceptIriByPrefLabel(ks, label);
             if (existingConcept is not null)
             {
-                store.AddQuads(graph, new[]
+                store.AddStatements(graph, new[]
                 {
-                    new Oxigraph.Quad(
-                        new OntoNamedNode(existingConcept),
+                    new RdfStatement(
+                        new RdfIri(existingConcept),
                         SkosVocab.OpMapsTo,
-                        new OntoNamedNode(iri),
+                        new RdfIri(iri),
                         graph),
                 });
                 mapped++;
@@ -326,22 +324,22 @@ public sealed class TerminologyService : ITerminologySync
             // Python's `_language(label)` CJK heuristic ("zh-CN" for CJK
             // labels, "en" otherwise) so Chinese TBoxes mint Chinese
             // pref labels.
-            var concept = new OntoNamedNode($"{ks.VocabularyGraph}#concept-{LocalName(iri)}");
-            store.AddQuads(graph, new[]
+            var conceptIri = $"{ks.VocabularyGraph}#concept-{LocalName(iri)}";
+            store.AddStatements(graph, new[]
             {
-                new Oxigraph.Quad(concept, Vocabulary.RdfType, SkosVocab.Concept, graph),
-                new Oxigraph.Quad(concept, SkosVocab.InScheme, new OntoNamedNode(schemeIri), graph),
-                new Oxigraph.Quad(concept, SkosVocab.PrefLabel, new OntoLiteral(label, ContainsCjk(label) ? "zh-CN" : "en"), graph),
-                new Oxigraph.Quad(concept, SkosVocab.OpStatus, new OntoLiteral("active"), graph),
-                new Oxigraph.Quad(concept, SkosVocab.OpMapsTo, new OntoNamedNode(iri), graph),
-                new Oxigraph.Quad(concept, SkosVocab.DcCreated, new OntoLiteral(now), graph),
+                new RdfStatement(new RdfIri(conceptIri), Vocabulary.RdfType, new RdfIri(SkosVocab.Concept), graph),
+                new RdfStatement(new RdfIri(conceptIri), SkosVocab.InScheme, new RdfIri(schemeIri), graph),
+                new RdfStatement(new RdfIri(conceptIri), SkosVocab.PrefLabel, new RdfLiteral(label, ContainsCjk(label) ? "zh-CN" : "en"), graph),
+                new RdfStatement(new RdfIri(conceptIri), SkosVocab.OpStatus, new RdfLiteral("active"), graph),
+                new RdfStatement(new RdfIri(conceptIri), SkosVocab.OpMapsTo, new RdfIri(iri), graph),
+                new RdfStatement(new RdfIri(conceptIri), SkosVocab.DcCreated, new RdfLiteral(now), graph),
             });
             // Python parity: a fresh concept is both `terms_added` and
             // `terms_mapped` (its mapping exists by construction).
             added++;
             mapped++;
             mappedIndex[normalized] = iri;
-            conceptByMapping[iri] = concept.Value;
+            conceptByMapping[iri] = conceptIri;
         }
 
         return carry with
@@ -407,13 +405,13 @@ public sealed class TerminologyService : ITerminologySync
                 existing.Add((Vocabulary.NormLabel(l.Value), l.Language.ToLowerInvariant()));
             if (existing.Contains(key)) continue;
             if (labelOwners.Contains(key)) continue;
-            store.AddQuads(new OntoNamedNode(ks.VocabularyGraph), new[]
+            store.AddStatements(ks.VocabularyGraph, new[]
             {
-                new Oxigraph.Quad(
-                    new OntoNamedNode(concept.Iri),
+                new RdfStatement(
+                    new RdfIri(concept.Iri),
                     SkosVocab.AltLabel,
-                    new OntoLiteral(label, lang),
-                    new OntoNamedNode(ks.VocabularyGraph)),
+                    new RdfLiteral(label, lang),
+                    ks.VocabularyGraph),
             });
             aliasesAdded++;
             // Python refreshes `label_owner[key] = concept` after each
@@ -464,16 +462,16 @@ public sealed class TerminologyService : ITerminologySync
                 additions.Add(parentConcept.Iri);
             }
             if (additions.Count == 0) continue;
-            var broaderQuads = new List<Oxigraph.Quad>(additions.Count);
+            var broaderStatements = new List<RdfStatement>(additions.Count);
             foreach (var parent in additions)
             {
-                broaderQuads.Add(new Oxigraph.Quad(
-                    new OntoNamedNode(concept.Iri),
+                broaderStatements.Add(new RdfStatement(
+                    new RdfIri(concept.Iri),
                     SkosVocab.Broader,
-                    new OntoNamedNode(parent),
-                    new OntoNamedNode(ks.VocabularyGraph)));
+                    new RdfIri(parent),
+                    ks.VocabularyGraph));
             }
-            store.AddQuads(new OntoNamedNode(ks.VocabularyGraph), broaderQuads);
+            store.AddStatements(ks.VocabularyGraph, broaderStatements);
             broaderAdded += additions.Count;
         }
 
@@ -639,15 +637,15 @@ public sealed class TerminologyService : ITerminologySync
     {
         var store = new PostgresRdfGraphStore(_statements, ks.KnowledgeSystemId, "Vocabulary");
         var existing = store.Match(
-            predicateIri: SkosVocab.PrefLabel.Value,
+            predicateIri: SkosVocab.PrefLabel,
             graphIri: ks.VocabularyGraph);
         var normalized = Vocabulary.NormLabel(label);
-        foreach (var quad in existing)
+        foreach (var s in existing)
         {
-            if (quad.Object is OntoLiteral l &&
+            if (s.Object is RdfLiteral l &&
                 string.Equals(Vocabulary.NormLabel(l.Value), normalized, StringComparison.Ordinal))
             {
-                return quad.Subject is OntoNamedNode n ? n.Value : null;
+                return s.Subject is RdfIri n ? n.Value : null;
             }
         }
         return null;

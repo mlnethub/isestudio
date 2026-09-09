@@ -3,12 +3,13 @@ using ISEStudio.Conflicts;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Knowledge;
 using ISEStudio.Llm;
-using ISEStudio.Ontology;
 using ISEStudio.Tests.Infrastructure;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Xunit;
+using ISEStudio.Ontology;
+using ISEStudio.Migration.Ontology;
 
 namespace ISEStudio.Tests.Extraction.Dovetail.AgentChain;
 

@@ -3,7 +3,6 @@ using ISEStudio.Application.Foundation;
 using ISEStudio.Application.Ontology;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
-using Oxigraph;
 
 namespace ISEStudio.Ontology;
 
@@ -133,20 +132,6 @@ public sealed class ExternalApiService
             .ConfigureAwait(false);
         return System.Text.Encoding.UTF8.GetString(bytes);
     }
-
-    [Obsolete("Use RdfExportFormat with the PostgreSQL exporter.")]
-    public Task<string?> ExportAsync(
-        string publicId, Oxigraph.RdfFormat format, Actor actor, CancellationToken ct) =>
-        ExportAsync(publicId, format switch
-        {
-            Oxigraph.RdfFormat.NQuads => RdfExportFormat.NQuads,
-            Oxigraph.RdfFormat.TriG => RdfExportFormat.TriG,
-            Oxigraph.RdfFormat.Turtle => RdfExportFormat.Turtle,
-            Oxigraph.RdfFormat.NTriples => RdfExportFormat.NTriples,
-            Oxigraph.RdfFormat.RdfXml => RdfExportFormat.RdfXml,
-            Oxigraph.RdfFormat.JsonLd => RdfExportFormat.JsonLd,
-            _ => throw new ArgumentOutOfRangeException(nameof(format)),
-        }, actor, ct);
 
     // ------------------------------------------------------------------
     // individual (GET /{public_id}/individual?iri=)

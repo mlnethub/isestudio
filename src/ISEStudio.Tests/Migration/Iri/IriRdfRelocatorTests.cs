@@ -1,9 +1,10 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using ISEStudio.Ontology;
 using ISEStudio.Migration.Iri;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
 using OntoQuad = Oxigraph.Quad;
+using ISEStudio.Ontology;
+using ISEStudio.Migration.Ontology;
 
 namespace ISEStudio.Tests.Migration.Iri;
 

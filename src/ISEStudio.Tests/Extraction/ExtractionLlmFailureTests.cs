@@ -146,13 +146,13 @@ public sealed class ExtractionLlmFailureTests : IDisposable
 
     private int ClassCount() =>
         _rdf.TBox.Match(
-            predicateIri: Vocabulary.RdfType.Value,
-            objectIri: Vocabulary.OwlClass.Value,
+            predicateIri: Vocabulary.RdfType,
+            objectIri: Vocabulary.OwlClass,
             graphIri: GraphIri).Count;
 
     private void SeedTBox()
     {
-        var quads = SchemaBuilder.BuildMutation(
+        var statements = SchemaBuilder.BuildMutationStatements(
             BaseIri,
             new OntologyMutation(
                 Classes: new[] { new ClassMutation("Person", "Seeded fixture class") },
@@ -163,13 +163,7 @@ public sealed class ExtractionLlmFailureTests : IDisposable
         _rdf.Statements.ReplaceLayerAsync(
             _rdf.KnowledgeSystemId,
             RdfLayer.TBox.ToString(),
-            quads.Select(quad => new RdfStatement(
-                new RdfIri(quad.Subject.ToString()),
-                quad.Predicate.Value,
-                quad.Object is Oxigraph.NamedNode named
-                    ? new RdfIri(named.Value)
-                    : new RdfLiteral(quad.Object.ToString()),
-                GraphIri)).ToList()).GetAwaiter().GetResult();
+            statements).GetAwaiter().GetResult();
     }
 
     private void SeedKnowledgeSystem()

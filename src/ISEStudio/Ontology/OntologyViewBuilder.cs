@@ -9,6 +9,15 @@ namespace ISEStudio.Ontology;
 /// matches Python `backend/app/ontology/schema.py::build_view`
 /// identically for live and release endpoints.
 /// </summary>
+/// <remarks>
+/// The algorithm hot path operates directly on <see cref="RdfStatement"/>
+/// — there is no foreign-store round-trip on either adapter. The byte
+/// adapter parses N-Quads into <see cref="RdfStatement"/> values via
+/// <see cref="RdfDotNetRdfCodec.ParseNQuads"/> (Task 1 codec) so the
+/// release path matches the runtime statement path byte-for-byte at
+/// the shape level. This class lives entirely on the RdfStatement
+/// boundary.
+/// </remarks>
 public sealed class OntologyViewBuilder
 {
     public Task<OntologyResponse> BuildFromStatementsAsync(
@@ -17,46 +26,23 @@ public sealed class OntologyViewBuilder
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        var quads = statements
+        var inGraph = statements
             .Where(statement => statement.GraphIri == graphIri)
-            .Select(ToQuad)
             .ToList();
-        return Task.FromResult(BuildCore(quads));
+        return Task.FromResult(BuildCore(inGraph));
     }
 
-    private static Oxigraph.Quad ToQuad(RdfStatement statement)
-    {
-        static Oxigraph.ITerm Term(RdfTerm term) => term switch
-        {
-            RdfIri iri => new Oxigraph.NamedNode(iri.Value),
-            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-            RdfLiteral literal => new Oxigraph.Literal(literal.Value, literal.Language,
-                literal.Datatype is null ? null : new Oxigraph.NamedNode(literal.Datatype)),
-            _ => throw new InvalidOperationException("Unsupported RDF term."),
-        };
-
-        static Oxigraph.INamedOrBlankNode Subject(RdfTerm term) => term switch
-        {
-            RdfIri iri => new Oxigraph.NamedNode(iri.Value),
-            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-            _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node."),
-        };
-
-        return new Oxigraph.Quad(
-            Subject(statement.Subject),
-            new Oxigraph.NamedNode(statement.PredicateIri),
-            Term(statement.Object),
-            new Oxigraph.NamedNode(statement.GraphIri ?? throw new InvalidOperationException("RDF graph is required.")));
-    }
-
-    /// <summary>Release TBox read from a pre-serialized N-Quads shard
-    /// (no Oxigraph dependency). Used by published.ontology.</summary>
+    /// <summary>Release TBox read from a pre-serialized N-Quads shard.
+    /// Uses the Task 1 <see cref="RdfDotNetRdfCodec"/> to parse into
+    /// <see cref="RdfStatement"/> values so the algorithm path is the
+    /// same as the runtime statement path.</summary>
     public Task<OntologyResponse> BuildFromNQuadsAsync(
         byte[] tboxShard,
         CancellationToken cancellationToken)
     {
-        var quads = ParseNQuads(tboxShard);
-        return Task.FromResult(BuildCore(quads));
+        cancellationToken.ThrowIfCancellationRequested();
+        var parsed = RdfDotNetRdfCodec.ParseNQuads(tboxShard);
+        return Task.FromResult(BuildCore(parsed.Statements));
     }
 
     private static OntologyResponse EmptyResponse() => new(
@@ -71,13 +57,11 @@ public sealed class OntologyViewBuilder
         Stats: new OntologyStats(0, 0, 0),
         KnowledgeSystem: null);
 
-    // BuildCore + ParseNQuads implemented in Tasks 3-5.
-
     private static OntologyResponse BuildCore(
-        IEnumerable<Oxigraph.Quad> quads)
+        IEnumerable<RdfStatement> statements)
     {
         // Mirrors Python backend/app/ontology/schema.py::build_view (lines 241-371).
-        // V1: classes + superclasses + properties. Task 5 adds disjoint /
+        // V1: classes + superclasses + properties. Task 5 added disjoint /
         // equivalent-class axioms and the final Stats alignment.
 
         var classes = new Dictionary<string, OntologyClass>(StringComparer.Ordinal);
@@ -94,6 +78,8 @@ public sealed class OntologyViewBuilder
         const string OwlClass = "http://www.w3.org/2002/07/owl#Class";
         const string OwlObjectProperty = "http://www.w3.org/2002/07/owl#ObjectProperty";
         const string OwlDatatypeProperty = "http://www.w3.org/2002/07/owl#DatatypeProperty";
+        const string OwlDisjointWith = "http://www.w3.org/2002/07/owl#disjointWith";
+        const string OwlEquivalentClass = "http://www.w3.org/2002/07/owl#equivalentClass";
         const string RdfsLabel = "http://www.w3.org/2000/01/rdf-schema#label";
         const string RdfsComment = "http://www.w3.org/2000/01/rdf-schema#comment";
         const string RdfsDomain = "http://www.w3.org/2000/01/rdf-schema#domain";
@@ -101,14 +87,13 @@ public sealed class OntologyViewBuilder
         const string RdfsSubClassOf = "http://www.w3.org/2000/01/rdf-schema#subClassOf";
         const string RdfType = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 
-        foreach (var q in quads)
+        foreach (var s in statements)
         {
-            if (q.Subject is not Oxigraph.NamedNode s) continue;
-            if (q.Predicate is not Oxigraph.NamedNode p) continue;
-            var siri = s.Value;
-            var piri = p.Value;
+            if (s.Subject is not RdfIri si) continue;
+            var siri = si.Value;
+            var piri = s.PredicateIri;
 
-            if (piri == RdfType && q.Object is Oxigraph.NamedNode oType)
+            if (piri == RdfType && s.Object is RdfIri oType)
             {
                 if (oType.Value == OwlObjectProperty)
                     objectProps.TryAdd(siri, new OntologyProperty(siri, Label: null));
@@ -117,31 +102,31 @@ public sealed class OntologyViewBuilder
                 else if (oType.Value == OwlClass)
                     classes.TryAdd(siri, new OntologyClass(siri, Label: null));
             }
-            else if (piri == RdfsDomain && q.Object is Oxigraph.NamedNode d)
+            else if (piri == RdfsDomain && s.Object is RdfIri d)
             {
                 domains[siri] = d.Value;
             }
-            else if (piri == RdfsRange && q.Object is Oxigraph.NamedNode rn)
+            else if (piri == RdfsRange && s.Object is RdfIri rn)
             {
                 ranges[siri] = rn.Value;
             }
-            else if (piri == RdfsLabel && q.Object is Oxigraph.Literal lit)
+            else if (piri == RdfsLabel && s.Object is RdfLiteral lit)
             {
                 labels[siri] = lit.Value;
             }
-            else if (piri == RdfsComment && q.Object is Oxigraph.Literal lit2)
+            else if (piri == RdfsComment && s.Object is RdfLiteral lit2)
             {
                 comments[siri] = lit2.Value;
             }
-            else if (piri == RdfsSubClassOf && q.Object is Oxigraph.NamedNode sup)
+            else if (piri == RdfsSubClassOf && s.Object is RdfIri sup)
             {
                 subclassOf.Add(new SubclassAxiom(siri, sup.Value));
             }
-            else if (piri == "http://www.w3.org/2002/07/owl#disjointWith" && q.Object is Oxigraph.NamedNode dj)
+            else if (piri == OwlDisjointWith && s.Object is RdfIri dj)
             {
                 disjointWith.Add(new PairAxiom(siri, dj.Value));
             }
-            else if (piri == "http://www.w3.org/2002/07/owl#equivalentClass" && q.Object is Oxigraph.NamedNode ec)
+            else if (piri == OwlEquivalentClass && s.Object is RdfIri ec)
             {
                 equivalentClass.Add(new PairAxiom(siri, ec.Value));
             }
@@ -217,140 +202,5 @@ public sealed class OntologyViewBuilder
         var colonIdx = iri.LastIndexOf(':');
         var idx = Math.Max(hashIdx, Math.Max(slashIdx, colonIdx));
         return idx >= 0 ? iri[(idx + 1)..] : iri;
-    }
-
-    private static IEnumerable<Oxigraph.Quad> ParseNQuads(byte[] shard)
-    {
-        if (shard.Length == 0) yield break;
-        var text = System.Text.Encoding.UTF8.GetString(shard);
-        foreach (var rawLine in text.Split('\n'))
-        {
-            var line = rawLine.TrimEnd('\r');
-            if (line.Length == 0 || line.StartsWith('#')) continue;
-            var q = TryParseLine(line);
-            if (q is not null) yield return q;
-        }
-    }
-
-    private static Oxigraph.Quad? TryParseLine(string line)
-    {
-        var tokens = Tokenize(line);
-        if (tokens.Count < 4) return null;
-        if (tokens[^1] != ".") return null;
-        var subject = ParseTerm(tokens[0]);
-        var predicate = ParseTerm(tokens[1]);
-        var obj = ParseTerm(tokens[2]);
-        if (subject is not Oxigraph.INamedOrBlankNode sn
-            || predicate is not Oxigraph.NamedNode pn
-            || obj is null) return null;
-
-        Oxigraph.IGraphName? graph = null;
-        if (tokens.Count >= 5 && tokens[3] != ".")
-        {
-            var g = ParseTerm(tokens[3]);
-            // ParseTerm only ever yields NamedNode / BlankNode / Literal, so a
-            // `g is DefaultGraph` branch would be unreachable (CS0184). A null
-            // `graph` already carries the "default graph" meaning below.
-            if (g is Oxigraph.NamedNode gn) graph = gn;
-            else return null;
-        }
-
-        // Oxigraph 0.5.8 declares `Quad.Graph` as non-nullable `IGraphName` but
-        // accepts null at runtime to denote the default graph, so the null-forgiving
-        // operator documents the intentional null rather than suppressing a defect.
-        if (obj is Oxigraph.NamedNode on) return new Oxigraph.Quad(sn, pn, on, graph!);
-        if (obj is Oxigraph.BlankNode ob) return new Oxigraph.Quad(sn, pn, ob, graph!);
-        if (obj is Oxigraph.Literal ol) return new Oxigraph.Quad(sn, pn, ol, graph!);
-        return null;
-    }
-
-    private static Oxigraph.ITerm? ParseTerm(string token)
-    {
-        if (token.StartsWith("<") && token.EndsWith(">"))
-            return new Oxigraph.NamedNode(token[1..^1]);
-        if (token.StartsWith("_:"))
-            return new Oxigraph.BlankNode(token[2..]);
-        if (token.StartsWith("\""))
-        {
-            var endQuote = token.IndexOf('"', 1);
-            if (endQuote < 0) return null;
-            var value = token[1..endQuote];
-            var rest = token[(endQuote + 1)..];
-            if (rest.StartsWith("@"))
-                return new Oxigraph.Literal(value, Language: rest[1..]);
-            if (rest.StartsWith("^^<") && rest.EndsWith(">"))
-                return new Oxigraph.Literal(value, Datatype: new Oxigraph.NamedNode(rest[3..^1]));
-            return new Oxigraph.Literal(value);
-        }
-        return null;
-    }
-
-    private static List<string> Tokenize(string line)
-    {
-        var tokens = new List<string>();
-        var i = 0;
-        while (i < line.Length)
-        {
-            while (i < line.Length && char.IsWhiteSpace(line[i])) i++;
-            if (i >= line.Length) break;
-            if (line[i] == '<')
-            {
-                var end = line.IndexOf('>', i + 1);
-                if (end < 0) break;
-                tokens.Add(line[i..(end + 1)]);
-                i = end + 1;
-            }
-            else if (line[i] == '_')
-            {
-                var j = i;
-                while (j < line.Length && !char.IsWhiteSpace(line[j])) j++;
-                tokens.Add(line[i..j]);
-                i = j;
-            }
-            else if (line[i] == '"')
-            {
-                var j = i + 1;
-                while (j < line.Length && line[j] != '"')
-                {
-                    if (line[j] == '\\' && j + 1 < line.Length) j += 2;
-                    else j++;
-                }
-                if (j >= line.Length) break;
-                j++;
-                if (j < line.Length && line[j] == '@')
-                {
-                    var k = j;
-                    while (k < line.Length && !char.IsWhiteSpace(line[k])) k++;
-                    tokens.Add(line[i..k]);
-                    i = k;
-                }
-                else if (j + 1 < line.Length && line[j] == '^' && line[j + 1] == '^')
-                {
-                    var open = line.IndexOf('<', j);
-                    var close = line.IndexOf('>', open + 1);
-                    if (open < 0 || close < 0) break;
-                    tokens.Add(line[i..(close + 1)]);
-                    i = close + 1;
-                }
-                else
-                {
-                    tokens.Add(line[i..j]);
-                    i = j;
-                }
-            }
-            else if (line[i] == '.')
-            {
-                tokens.Add(".");
-                i++;
-            }
-            else
-            {
-                var j = i;
-                while (j < line.Length && !char.IsWhiteSpace(line[j]) && line[j] != '.') j++;
-                tokens.Add(line[i..j]);
-                i = j;
-            }
-        }
-        return tokens;
     }
 }

@@ -41,7 +41,7 @@ namespace ISEStudio.Ontology;
 ///     candidate generator — the LLM judge decides which candidates are
 ///     truly one concept.</description></item>
 ///   <item><description><b>LLM judge</b> — a single chat completion per
-///     quad-list <see cref="DetectAsync(IReadOnlyList{Oxigraph.Quad}, string, CancellationToken)"/>
+///     quad-list <see cref="DetectAsync(IReadOnlyList{RdfStatement}, string, CancellationToken)"/>
 ///     call batches every candidate pair (number-indexed) into the
 ///     <c>conflict.duplicate_judge</c> prompt, returning the indices of
 ///     "same" pairs. Fail-closed (empty set on any error) so a flaky
@@ -69,7 +69,7 @@ public sealed class DuplicateJudge
     /// Minimum normalised token-set Jaccard overlap for a string-similarity
     /// candidate. Mirrors Python <c>DUP_THRESHOLD = 0.86</c>. Public so the
     /// tests can reuse the same threshold; production callers go through
-        /// <see cref="DetectAsync(IReadOnlyList{Oxigraph.Quad}, string, CancellationToken)"/>.
+        /// <see cref="DetectAsync(IReadOnlyList{RdfStatement}, string, CancellationToken)"/>.
     /// </summary>
     public const double StringThreshold = 0.86;
 
@@ -110,20 +110,29 @@ public sealed class DuplicateJudge
     /// cannot build a client.
     /// </remarks>
     public async Task<IReadOnlyList<ConflictDetection.DetectedConflict>> DetectAsync(
-        IReadOnlyList<Oxigraph.Quad> quads,
+        IReadOnlyList<RdfStatement> statements,
         string graphIri,
         CancellationToken ct)
     {
-        ArgumentNullException.ThrowIfNull(quads);
+        ArgumentNullException.ThrowIfNull(statements);
         ArgumentException.ThrowIfNullOrEmpty(graphIri);
 
-        var labels = ConflictDetection.ReadClassLabels(quads, graphIri);
+        var labels = ConflictDetection.ReadClassLabels(statements, graphIri);
         if (labels.Count < 2)
         {
             return Array.Empty<ConflictDetection.DetectedConflict>();
         }
 
-        var relations = ConflictDetection.ReadGraphRelations(quads, graphIri);
+        var relations = ConflictDetection.ReadGraphRelations(statements, graphIri);
+
+        return await RunPipelineAsync(labels, relations, ct).ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<ConflictDetection.DetectedConflict>> RunPipelineAsync(
+        IReadOnlyList<ConflictDetection.ClassLabel> labels,
+        ConflictDetection.GraphRelations relations,
+        CancellationToken ct)
+    {
         var seen = new HashSet<(string, string)>(PairKeyComparer.Ordinal);
         var found = new List<ConflictDetection.DetectedConflict>();
 

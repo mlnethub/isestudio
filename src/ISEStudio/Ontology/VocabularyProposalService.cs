@@ -149,11 +149,13 @@ public sealed class VocabularyProposalService
     ///   <see cref="TermProposalEntity.TargetIri"/>.</item>
     /// </list>
     ///
-    /// <para>Writes run inside <see cref="StoreWrapper.CaptureAsync"/> with
-    /// <c>revertOnError: false</c> &mdash; any <see cref="SkosValidationException"/>
-    /// surfaces <c>GraphWriteConflictException</c> only when an extraction job
-    /// is in flight. Audit row carries the byte-exact pre/post N-Quads diff
-    /// computed by <see cref="StoreWrapper.DiffNQuads"/>.</para>
+    /// <para>Writes run inside a
+    /// <see cref="PostgresRdfGraphStore.CaptureAsync"/> lease with
+    /// <c>revertOnError: false</c> &mdash; any
+    /// <see cref="SkosValidationException"/> surfaces
+    /// <c>GraphWriteConflictException</c> only when an extraction job is in
+    /// flight. Audit row carries the byte-exact pre/post N-Quads diff
+    /// computed by <see cref="PostgresRdfGraphStore.DiffNQuads"/>.</para>
     /// </summary>
     public async Task<(TermProposalEntity Proposal, SkosConceptView? Concept)?> AcceptProposalAsync(
         KnowledgeSystemEntity ks,
@@ -263,11 +265,11 @@ public sealed class VocabularyProposalService
     /// Mark a pending proposal <c>rejected</c> without writing to the SKOS
     /// graph. Mirrors Python <c>vocabulary.reject_proposal</c>.
     ///
-    /// <para>No <see cref="StoreWrapper.CaptureAsync"/> + no <c>DumpNQuads</c>:
-    /// the graph is untouched, so the audit row carries an empty diff and
-    /// the action is <c>terminology.reject</c>. No rejection of in-flight
-    /// extraction either &mdash; humans must be able to prune the proposal
-    /// backlog while a job is running.</para>
+    /// <para>No RDF capture + no <c>DumpNQuads</c>: the graph is
+    /// untouched, so the audit row carries an empty diff and the action
+    /// is <c>terminology.reject</c>. No rejection of in-flight extraction
+    /// either &mdash; humans must be able to prune the proposal backlog
+    /// while a job is running.</para>
     /// </summary>
     public async Task<TermProposalEntity?> RejectProposalAsync(
         KnowledgeSystemEntity ks,
@@ -454,10 +456,12 @@ public sealed class VocabularyProposalService
 
     /// <summary>
     /// Append the audit row that records the change. Mirrors
-    /// <see cref="VocabularyService.WriteAuditAsync"/>: pre/post N-Quads byte
-    /// blobs round-trip through <see cref="StoreWrapper.DumpNQuads"/> and
-    /// <see cref="StoreWrapper.DiffNQuads"/>. <paramref name="graph"/> is
-    /// <c>null</c> for graph-untouched events (reject path).
+    /// <see cref="VocabularyService.WriteAuditAsync"/>: pre/post N-Quads
+    /// byte blobs round-trip through
+    /// <see cref="PostgresRdfGraphStore.DumpNQuads"/> and
+    /// <see cref="PostgresRdfGraphStore.DiffNQuads"/>.
+    /// <paramref name="graph"/> is <c>null</c> for graph-untouched events
+    /// (reject path).
     /// </summary>
     private async Task WriteAuditAsync(
         Guid ksId, UserEntity actor, string action, string summary,

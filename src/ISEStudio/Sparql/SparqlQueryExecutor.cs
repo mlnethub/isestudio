@@ -9,7 +9,8 @@ namespace ISEStudio.Sparql;
 
 /// <summary>
 /// Concrete <see cref="ISparqlQueryExecutor"/> backed by the workspace
-/// <see cref="StoreWrapper"/> and the EF <see cref="ISEStudioDbContext"/>.
+/// <see cref="IRdfStatementRepository"/> and the EF
+/// <see cref="ISEStudioDbContext"/>.
 /// Resolves the public-id to a <see cref="KsContext"/> and binds the
 /// SPARQL execution to its three graphs so cross-KS reads are
 /// structurally impossible.
@@ -71,8 +72,8 @@ public sealed class SparqlQueryExecutor : ISparqlQueryExecutor
     {
         var trimmed = sparql.TrimEnd().TrimEnd(';').TrimEnd();
         // Look for " LIMIT <int>" near the end; if absent, append.
-        // Simple case-insensitive substring search; Oxigraph will reject
-        // malformed queries upstream so a missed LIMIT is benign.
+        // Simple case-insensitive substring search; malformed queries are
+        // rejected upstream so a missed LIMIT is benign.
         if (System.Text.RegularExpressions.Regex.IsMatch(
                 trimmed, @"\bLIMIT\s+\d+(\s+OFFSET\s+\d+)?\s*$",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase))

@@ -1,17 +1,12 @@
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Infrastructure;
-using Oxigraph;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoBlankNode = Oxigraph.BlankNode;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Tests.Ontology;
 
 /// <summary>
-/// Round-trip tests for <see cref="SchemaBuilder.BuildMutation"/> and
-/// <see cref="SchemaBuilder.BuildView"/>. Each test owns a fresh on-disk
-/// Oxigraph store so cases do not leak quads.
+/// Round-trip tests for <see cref="SchemaBuilder.BuildMutationStatements"/> and
+/// <see cref="SchemaBuilder.BuildView"/>. Each test owns a fresh store so
+/// cases do not leak statements.
 /// </summary>
 public sealed class SchemaBuilderFixture : PostgresRdfFixture
 {
@@ -20,7 +15,7 @@ public sealed class SchemaBuilderFixture : PostgresRdfFixture
 public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLifetime
 {
     private readonly SchemaBuilderFixture _fx;
-    private readonly OntoNamedNode _graph = new("urn:tbox");
+    private readonly string _graph = "urn:tbox";
     private readonly string _baseIri = "http://example.com/ontology#";
 
     public SchemaBuilderTests(SchemaBuilderFixture fx) { _fx = fx; }
@@ -29,11 +24,11 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    private static string SubjectIri(OntoQuad q) => q.Subject switch
+    private static string SubjectIri(RdfStatement s) => s.Subject switch
     {
-        OntoNamedNode n => n.Value,
-        OntoBlankNode b => b.Value,
-        _ => q.Subject.ToString() ?? "",
+        RdfIri iri => iri.Value,
+        RdfBlankNode blank => blank.Id,
+        _ => s.Subject.ToString() ?? "",
     };
 
     // ------------------------------------------------------------------
@@ -49,15 +44,24 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
             DataProperties: [],
             Axioms: []);
 
-        var quads = SchemaBuilder.BuildMutation(_baseIri, mut, _graph.Value);
+        var statements = SchemaBuilder.BuildMutationStatements(_baseIri, mut, _graph);
 
-        var classNode = new OntoNamedNode(_baseIri + "Country");
-        var typeQuad = quads.Single(q => q.Predicate.Value.EndsWith("type") && SubjectIri(q).Equals(classNode.Value));
-        Assert.Equal("http://www.w3.org/2002/07/owl#Class", typeQuad.Object is OntoNamedNode n ? n.Value : ((OntoLiteral)typeQuad.Object).Value);
+        var classIri = new RdfIri(_baseIri + "Country");
+        var typeStatement = statements.Single(s =>
+            s.PredicateIri.EndsWith("type") && SubjectIri(s).Equals(classIri.Value));
+        Assert.Equal("http://www.w3.org/2002/07/owl#Class",
+            typeStatement.Object is RdfIri iri ? iri.Value : ((RdfLiteral)typeStatement.Object).Value);
 
-        var labelQuad = quads.Single(q =>
-            q.Predicate.Value.EndsWith("label") && q.Subject.Equals(classNode));
-        Assert.Equal("Country", ((OntoLiteral)labelQuad.Object).Value);
+        var labelStatement = statements.Single(s =>
+            s.PredicateIri.EndsWith("label") && s.Subject.Equals(classIri));
+        Assert.Equal("Country", ((RdfLiteral)labelStatement.Object).Value);
+
+        Assert.Contains(statements, s => s.Subject.Equals(classIri)
+            && s.PredicateIri == Vocabulary.RdfType
+            && s.Object is RdfIri rdfType && rdfType.Value == Vocabulary.OwlClass);
+        Assert.Contains(statements, s => s.Subject.Equals(classIri)
+            && s.PredicateIri == Vocabulary.RdfsLabel
+            && s.Object is RdfLiteral lit && lit.Value == "Country");
     }
 
     [Fact]
@@ -73,15 +77,15 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
             DataProperties: [],
             Axioms: [new AxiomMutation(Type: "subclass", Sub: "Wine Region", Super: "Region")]);
 
-        var quads = SchemaBuilder.BuildMutation(_baseIri, mut, _graph.Value);
+        var statements = SchemaBuilder.BuildMutationStatements(_baseIri, mut, _graph);
 
-        var sub = new OntoNamedNode(_baseIri + "WineRegion");
-        var sup = new OntoNamedNode(_baseIri + "Region");
-        var subQuad = quads.Single(q =>
-            SubjectIri(q).Equals(sub.Value)
-            && q.Predicate.Value.EndsWith("subClassOf")
-            && q.Object is OntoNamedNode subObj && subObj.Value == sup.Value);
-        Assert.NotNull(subQuad);
+        var sub = new RdfIri(_baseIri + "WineRegion");
+        var sup = new RdfIri(_baseIri + "Region");
+        var subStatement = statements.Single(s =>
+            SubjectIri(s).Equals(sub.Value)
+            && s.PredicateIri.EndsWith("subClassOf")
+            && s.Object is RdfIri subObj && subObj.Value == sup.Value);
+        Assert.NotNull(subStatement);
     }
 
     [Fact]
@@ -100,12 +104,12 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
             ],
             Axioms: []);
 
-        var quads = SchemaBuilder.BuildMutation(_baseIri, mut, _graph.Value);
+        var statements = SchemaBuilder.BuildMutationStatements(_baseIri, mut, _graph);
 
-        var propNode = new OntoNamedNode(_baseIri + "value");
-        var rangeQuad = quads.Single(q => SubjectIri(q) == propNode.Value && q.Predicate.Value.EndsWith("range"));
+        var propNode = new RdfIri(_baseIri + "value");
+        var rangeStatement = statements.Single(s => SubjectIri(s) == propNode.Value && s.PredicateIri.EndsWith("range"));
         Assert.Equal("http://www.w3.org/2001/XMLSchema#decimal",
-            rangeQuad.Object is OntoNamedNode ro ? ro.Value : "");
+            rangeStatement.Object is RdfIri ro ? ro.Value : "");
     }
 
     [Fact]
@@ -117,13 +121,13 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
             DataProperties: [],
             Axioms: []);
 
-        var quads = SchemaBuilder.BuildMutation(_baseIri, mut, _graph.Value);
-        Assert.NotEmpty(quads);
+        var statements = SchemaBuilder.BuildMutationStatements(_baseIri, mut, _graph);
+        Assert.NotEmpty(statements);
 
         // Apply to the store via the standard capture pattern.
-        _fx.TBox.AddQuads(_graph, quads);
+        _fx.TBox.AddStatements(_graph, statements);
 
-        Assert.NotEmpty(_fx.TBox.Match(graphIri: _graph.Value));
+        Assert.NotEmpty(_fx.TBox.Match(graphIri: _graph));
     }
 
     // ------------------------------------------------------------------
@@ -143,11 +147,11 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
             DataProperties: [],
             Axioms: [new AxiomMutation(Type: "subclass", Sub: "Wine Region", Super: "Region")]);
 
-        var quads = SchemaBuilder.BuildMutation(_baseIri, mut, _graph.Value);
-        _fx.TBox.AddQuads(_graph, quads);
+        var statements = SchemaBuilder.BuildMutationStatements(_baseIri, mut, _graph);
+        _fx.TBox.AddStatements(_graph, statements);
 
         var view = SchemaBuilder.BuildView(
-            _graph.Value,
+            _graph,
             _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
 
         var wineRegion = view.Classes.SingleOrDefault(c => c.Label == "Wine Region");
@@ -171,11 +175,11 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
             ],
             Axioms: []);
 
-        var quads = SchemaBuilder.BuildMutation(_baseIri, mut, _graph.Value);
-        _fx.TBox.AddQuads(_graph, quads);
+        var statements = SchemaBuilder.BuildMutationStatements(_baseIri, mut, _graph);
+        _fx.TBox.AddStatements(_graph, statements);
 
         var view = SchemaBuilder.BuildView(
-            _graph.Value,
+            _graph,
             _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
 
         var dataProp = view.DataProperties.Single();
@@ -188,7 +192,7 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
     public void BuildView_returns_empty_when_graph_is_empty()
     {
         var view = SchemaBuilder.BuildView(
-            _graph.Value,
+            _graph,
             _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
 
         Assert.Empty(view.Classes);

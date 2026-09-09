@@ -18,7 +18,6 @@ using ISEStudio.Llm;
 using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Extraction;
 
@@ -1303,13 +1302,13 @@ public sealed class ExtractionOrchestrator
     public async Task<ABoxJobResult> RunABoxLayerAsync(
         Guid knowledgeSystemId,
         string graphIri,
-        IReadOnlyList<Oxigraph.Quad> quads,
+        IReadOnlyList<RdfStatement> statements,
         IChatClient? chat,
         IEmbeddingGenerator<string, Embedding<float>>? embedder,
         CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrEmpty(graphIri);
-        ArgumentNullException.ThrowIfNull(quads);
+        ArgumentNullException.ThrowIfNull(statements);
 
         if (_aboxPipeline is not null)
         {
@@ -1328,7 +1327,7 @@ public sealed class ExtractionOrchestrator
                     JobId: Guid.NewGuid(),
                     KnowledgeSystemId: knowledgeSystemId,
                     GraphIri: graphIri,
-                    Quads: quads,
+                    Quads: statements,
                     Chat: resolvedChat,
                     Embedder: resolvedEmbedder,
                     MinConfidence: _options.DuplicateAutoApplyFloor);
@@ -1346,7 +1345,7 @@ public sealed class ExtractionOrchestrator
             throw new InvalidOperationException(
                 "ABox pipeline fallback requires DuplicateJudge to be registered.");
         }
-        var conflicts = await _duplicateJudge.DetectAsync(quads, graphIri, cancellationToken)
+        var conflicts = await _duplicateJudge.DetectAsync(statements, graphIri, cancellationToken)
             .ConfigureAwait(false);
         return new ABoxJobResult(
             Applied: new AppliedMerges(Array.Empty<MergedClassPair>()),

@@ -67,9 +67,9 @@ public sealed class CorpusRecoveryService
     /// <summary>
     /// Run the corpus recovery pass over one job's per-chunk rejections.
     /// Returns the labels accepted by <see cref="ApplyCorpusRoleDecisions"/>
-    /// — the caller is responsible for merging them into the graph under the
-    /// appropriate <see cref="StoreWrapper"/> capture. Recovery is silent
-    /// when there are no rejected candidates to revisit.
+    /// — the caller is responsible for merging them into the graph under
+    /// the appropriate layer capture. Recovery is silent when there are no
+    /// rejected candidates to revisit.
     /// </summary>
     public async Task<CorpusRecoveryResult> RecoverAsync(
         IChatClient chat,

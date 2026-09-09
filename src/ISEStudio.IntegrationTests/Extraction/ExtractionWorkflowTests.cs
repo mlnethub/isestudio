@@ -5,9 +5,13 @@ using ISEStudio.Configuration;
 using ISEStudio.Extraction;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Llm;
-using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
+using ISEStudio.Ontology;
+using ISEStudio.Migration.Ontology;
+using OntoNamedNode = Oxigraph.NamedNode;
+using OntoLiteral = Oxigraph.Literal;
+using OntoQuad = Oxigraph.Quad;
 
 namespace ISEStudio.IntegrationTests.Extraction;
 
@@ -29,6 +33,7 @@ public sealed class ExtractionWorkflowTests : IDisposable
 {
     private readonly string _root;
     private readonly StoreWrapper _store;
+    private readonly IRdfStatementRepository _statements;
     private readonly IDbContextFactory<ISEStudioDbContext> _contexts;
     private readonly LocalCasBlobStore _blobs;
     private readonly ITChatClient _chat = new();
@@ -39,6 +44,7 @@ public sealed class ExtractionWorkflowTests : IDisposable
         Directory.CreateDirectory(_root);
 
         _store = new StoreWrapper(Path.Combine(_root, "store"));
+        _statements = new OxigraphStatementRepository(_store);
 
         // Per-test in-memory SQLite (unique shared-cache name) so the
         // schema is private to this fixture and concurrent context creation
@@ -107,10 +113,10 @@ public sealed class ExtractionWorkflowTests : IDisposable
             new EndpointCapacityCoordinator(),
             new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
             new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-            new TerminologyService(_store),
+            new TerminologyService(_statements),
             new PromptSnapshotService(),
-            new ExtractionMerger(_store),
-            _store,
+            new ExtractionMerger(_statements),
+            _statements,
             TimeProvider.System);
 
         var job = await orchestrator.StartTBoxAsync(
@@ -134,8 +140,8 @@ public sealed class ExtractionWorkflowTests : IDisposable
         // The TBox graph for this KS must now contain at least one
         // owl:Class quad (the chat reply always mints a fresh class).
         var classCount = _store.Match(
-            predicateIri: Vocabulary.RdfType.Value,
-            objectIri: Vocabulary.OwlClass.Value,
+            predicateIri: Vocabulary.RdfType,
+            objectIri: Vocabulary.OwlClass,
             graphIri: graphIri).Count;
         Assert.True(classCount > 0, "Extracted classes should land in the KS TBox graph.");
     }
@@ -153,6 +159,86 @@ public sealed class ExtractionWorkflowTests : IDisposable
         private readonly IChatClient _client;
         public SingleClientFactory(IChatClient client) => _client = client;
         public IChatClient Create(LlmProviderConfig config) => _client;
+    }
+
+    /// <summary>
+    /// Bridges the Oxigraph-backed <see cref="StoreWrapper"/> fixture to the
+    /// runtime's <see cref="IRdfStatementRepository"/> seam. The runtime
+    /// collaborators (merger / terminology / orchestrator) all write through
+    /// the repository; this adapter mirrors each layer replacement into the
+    /// Oxigraph store under each statement's graph IRI so the end-of-test
+    /// <c>Match</c> assertion reads the axioms the workflow produced. The
+    /// read-modify-write cycles are guarded by a lock because the workflow
+    /// fans chunk processing out over parallel tasks.
+    /// </summary>
+    private sealed class OxigraphStatementRepository : IRdfStatementRepository
+    {
+        private readonly StoreWrapper _store;
+        private readonly Dictionary<(Guid KnowledgeSystemId, string Layer), List<RdfStatement>> _layers = new();
+        private readonly object _gate = new();
+
+        public OxigraphStatementRepository(StoreWrapper store) => _store = store;
+
+        public Task ReplaceLayerAsync(Guid knowledgeSystemId, string layer,
+            IReadOnlyList<RdfStatement> statements, CancellationToken cancellationToken = default)
+        {
+            lock (_gate)
+            {
+                var key = (knowledgeSystemId, layer);
+                if (_layers.TryGetValue(key, out var previous))
+                {
+                    foreach (var group in previous.GroupBy(s => s.GraphIri))
+                    {
+                        if (group.Key is null) continue;
+                        _store.RemoveQuads(new OntoNamedNode(group.Key), group.Select(ToQuad).ToList());
+                    }
+                }
+                _layers[key] = statements.ToList();
+                foreach (var group in statements.GroupBy(s => s.GraphIri))
+                {
+                    if (group.Key is null) continue;
+                    _store.AddQuads(new OntoNamedNode(group.Key), group.Select(ToQuad).ToList());
+                }
+                return Task.CompletedTask;
+            }
+        }
+
+        public Task<IReadOnlyList<RdfStatement>> ListAsync(Guid knowledgeSystemId,
+            string? layer = null, CancellationToken cancellationToken = default)
+        {
+            lock (_gate)
+            {
+                IEnumerable<RdfStatement> result = layer is null
+                    ? _layers.Where(pair => pair.Key.KnowledgeSystemId == knowledgeSystemId)
+                        .SelectMany(pair => pair.Value)
+                    : _layers.TryGetValue((knowledgeSystemId, layer), out var list)
+                        ? list
+                        : Enumerable.Empty<RdfStatement>();
+                return Task.FromResult<IReadOnlyList<RdfStatement>>(result.ToList());
+            }
+        }
+
+        private static OntoQuad ToQuad(RdfStatement statement) => new(
+            ToSubject(statement.Subject),
+            new OntoNamedNode(statement.PredicateIri),
+            ToObject(statement.Object),
+            new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("RDF graph is required")));
+
+        private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
+        {
+            RdfIri iri => new OntoNamedNode(iri.Value),
+            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+            _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
+        };
+
+        private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
+        {
+            RdfIri iri => new OntoNamedNode(iri.Value),
+            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
+            RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
+                literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
+            _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
+        };
     }
 
     /// <summary>

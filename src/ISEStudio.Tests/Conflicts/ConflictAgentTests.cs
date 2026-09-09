@@ -10,9 +10,6 @@ using ISEStudio.Ontology;
 using ISEStudio.Tests.Extraction;
 using ISEStudio.Tests.Persistence;
 using ISEStudio.Tests.Infrastructure;
-using Oxigraph;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Conflicts;
 
@@ -35,8 +32,8 @@ namespace ISEStudio.Tests.Conflicts;
 /// <para>Each test owns a <see cref="FakeChat"/> instance (fresh per test
 /// method via xUnit's per-test class construction), so the tests run in
 /// parallel without shared chat state. The DB is a shared-cache SQLite
-/// database through <see cref="SqliteContextFactory"/>; the Oxigraph store
-/// is a per-instance RocksDB temp directory.</para>
+/// database through <see cref="SqliteContextFactory"/>; the RDF layers
+/// live in the shared PostgreSQL test fixture.</para>
 /// </summary>
 public sealed class ConflictAgentTests : IDisposable
 {
@@ -465,12 +462,13 @@ public sealed class ConflictAgentTests : IDisposable
 
         SeedTBox(graphIri, baseIri); // classes incl. Pump
         var aboxIri = $"{graphIri}/abox";
-        var aboxGraph = new OntoNamedNode(aboxIri);
-        var alice = new OntoNamedNode($"{baseIri}alice");
-        var pump = new OntoNamedNode($"{baseIri}Pump");
-        _rdf.ABox.AddQuads(aboxGraph, new[]
+        _rdf.ABox.AddStatements(aboxIri, new[]
         {
-            new OntoQuad(alice, Vocabulary.RdfType, pump, aboxGraph),
+            new RdfStatement(
+                new RdfIri($"{baseIri}alice"),
+                Vocabulary.RdfType,
+                new RdfIri($"{baseIri}Pump"),
+                aboxIri),
         });
 
         await SeedConflictWithOpAsync(ksId, "duplicate", "keep-general", "Keep general",
@@ -544,14 +542,17 @@ public sealed class ConflictAgentTests : IDisposable
 
         // An individual typed as Centrifugal Pump — must survive and be
         // retyped to Pump after the merge.
-        var aboxGraph = new OntoNamedNode($"{graphIri}/abox");
-        var alice = new OntoNamedNode($"{baseIri}alice");
-        var pump = new OntoNamedNode($"{baseIri}Pump");
-        // SchemaBuilder.BuildMutation normalises "Centrifugal Pump" → PascalCase local "CentrifugalPump".
-        var cp = new OntoNamedNode($"{baseIri}CentrifugalPump");
-        _rdf.ABox.AddQuads(aboxGraph, new[]
+        var aboxIri = $"{graphIri}/abox";
+        var pumpIri = $"{baseIri}Pump";
+        // SchemaBuilder.BuildMutationStatements normalises "Centrifugal Pump" → PascalCase local "CentrifugalPump".
+        var cpIri = $"{baseIri}CentrifugalPump";
+        _rdf.ABox.AddStatements(aboxIri, new[]
         {
-            new OntoQuad(alice, Vocabulary.RdfType, cp, aboxGraph),
+            new RdfStatement(
+                new RdfIri($"{baseIri}alice"),
+                Vocabulary.RdfType,
+                new RdfIri(cpIri),
+                aboxIri),
         });
 
         // Duplicate conflict: merge CentrifugalPump → Pump.
@@ -577,8 +578,8 @@ public sealed class ConflictAgentTests : IDisposable
         Assert.Empty(_rdf.TBox.Match(subjectIri: $"{baseIri}CentrifugalPump", graphIri: graphIri));
 
         // alice is now typed as Pump, no longer as CentrifugalPump.
-        Assert.Empty(_rdf.ABox.Match(objectIri: cp.Value, graphIri: aboxGraph.Value));
-        Assert.Single(_rdf.ABox.Match(objectIri: pump.Value, graphIri: aboxGraph.Value));
+        Assert.Empty(_rdf.ABox.Match(objectIri: cpIri, graphIri: aboxIri));
+        Assert.Single(_rdf.ABox.Match(objectIri: pumpIri, graphIri: aboxIri));
 
         // One audit row carrying the agent flag + merge reason (the
         // TBox row — the ABox cascade's audit row, when present, shares
@@ -741,7 +742,7 @@ public sealed class ConflictAgentTests : IDisposable
                 new AxiomMutation("subclass", Sub: "Centrifugal Pump", Super: "Pump"),
                 new AxiomMutation("disjoint", A: "Pump", B: "Station"),
             });
-        var quads = SchemaBuilder.BuildMutation(baseIri, mutation, graphIri);
-        _rdf.TBox.AddQuads(new OntoNamedNode(graphIri), quads);
+        var statements = SchemaBuilder.BuildMutationStatements(baseIri, mutation, graphIri);
+        _rdf.TBox.AddStatements(graphIri, statements);
     }
 }

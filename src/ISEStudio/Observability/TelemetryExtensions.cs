@@ -134,7 +134,7 @@ public static class TelemetryExtensions
         ArgumentNullException.ThrowIfNull(action);
 
         using var activity = source.StartActivity(operationName, ActivityKind.Internal);
-        activity?.SetTag(PeerServiceTag, "oxigraph");
+        activity?.SetTag(PeerServiceTag, "postgresql");
         activity?.SetTag(OperationTag, operationName);
         if (!string.IsNullOrEmpty(graphIri)) activity?.SetTag(GraphTag, graphIri);
 

@@ -1,10 +1,11 @@
 using ISEStudio.Application.Vocabulary;
-using ISEStudio.Ontology;
 using ISEStudio.Tests.Infrastructure;
 using Oxigraph;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
 using KsContext = ISEStudio.Ontology.KsContext;
+using ISEStudio.Ontology;
+using ISEStudio.Migration.Ontology;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -102,22 +103,24 @@ public class ShaclValidatorTests : IClassFixture<ShaclValidatorFixture>, IAsyncL
             // missing its required rdfs:label. The type must be owl:Class so
             // the focus-node collection actually finds it (focus-node
             // collection is by `sh:targetClass` value).
-            _fx.ABox.AddQuads(new OntoNamedNode("urn:data"), new[]
+            _fx.ABox.AddStatements("urn:data", new[]
             {
-                new Oxigraph.Quad(
-                    new OntoNamedNode("urn:i-missing-label"),
-                    new OntoNamedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
-                    new OntoNamedNode("http://www.w3.org/2002/07/owl#Class"),
-                    new OntoNamedNode("urn:data")),
+                new RdfStatement(
+                    new RdfIri("urn:i-missing-label"),
+                    "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+                    new RdfIri("http://www.w3.org/2002/07/owl#Class"),
+                    "urn:data"),
             });
 
             var validator = new ShaclValidator(
                 shapeStore.Match(
-                    subject: null,
-                    predicate: null,
-                    @object: null,
-                    graph: (Oxigraph.NamedNode?)null),
-                _fx.ABox.Match(graphIri: "urn:data"));
+                        subject: null,
+                        predicate: null,
+                        @object: null,
+                        graph: (Oxigraph.NamedNode?)null)
+                    .Select(q => q.ToStatement())
+                    .ToList(),
+                _fx.ABox.Match("urn:data"));
             var report = validator.Validate("urn:data");
 
             // The focus node has no rdfs:label → at least one violation.

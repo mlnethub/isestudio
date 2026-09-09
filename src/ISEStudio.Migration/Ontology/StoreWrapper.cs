@@ -1,14 +1,14 @@
 using System.Diagnostics;
 using System.Text;
 using Oxigraph;
-using ISEStudio.Observability;
+// Migration-local Telemetry shim — avoids pulling ISEStudio.Observability into the migration tool.
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoBlankNode = Oxigraph.BlankNode;
 using OntoLiteral = Oxigraph.Literal;
 using OntoDefaultGraph = Oxigraph.DefaultGraph;
 
-namespace ISEStudio.Ontology;
+namespace ISEStudio.Migration.Ontology;
 
 /// <summary>
 /// Thin, application-facing wrapper around <see cref="Oxigraph.Store"/>.
@@ -585,7 +585,7 @@ public sealed class StoreWrapper : IDisposable
         ArgumentNullException.ThrowIfNull(graph);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        return await Telemetry.RdfSource.WithRdfActivity(
+        return await Telemetry.WithRdfActivity(
             "rdf.store.capture",
             graph.Value,
             async ct =>

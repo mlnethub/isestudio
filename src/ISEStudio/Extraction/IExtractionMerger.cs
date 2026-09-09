@@ -91,18 +91,16 @@ public sealed record ExtractionMergeResult(
 /// Applies an extracted delta to the RDF store.
 ///
 /// <para><b>Locking contract (load-bearing).</b> Implementations must write
-/// through <see cref="StoreWrapper"/> primitives only, and must
-/// <em>never</em> open their own <see cref="StoreWrapper.CaptureAsync(string, bool, TimeSpan?, CancellationToken)"/>.
+/// through the <see cref="IRdfStatementRepository"/> primitives only, and
+/// must <em>never</em> open their own capture on the same graph.
 /// <see cref="ExtractionOrchestrator"/> already holds an exclusive capture on
-/// the target graph when it calls these methods, and
-/// <see cref="GraphWriteCoordinator"/> uses
-/// <see cref="System.Threading.LockRecursionPolicy.NoRecursion"/> — a nested
-/// capture on the same graph raises
+/// the target graph when it calls these methods, and the write path uses
+/// non-recursive locking — a nested capture on the same graph raises
 /// <see cref="GraphWriteConflictException"/> instead of deadlocking. That is
 /// why the merge path bypasses <see cref="OntologyEditor"/> (which takes its
 /// own capture per edit) and goes through
-/// <see cref="SchemaBuilder.BuildMutation"/> + <see cref="StoreWrapper.AddQuads"/>
-/// instead.</para>
+/// <see cref="SchemaBuilder.BuildMutationStatements"/> + the repository's
+/// layer-replace primitive instead.</para>
 ///
 /// <para>The interface exists so tests can inject a merger that fails
 /// deterministically and assert the orchestrator reverts the RDF writes and

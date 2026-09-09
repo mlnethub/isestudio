@@ -7,12 +7,11 @@ using ISEStudio.Knowledge;
 namespace ISEStudio.Ontology;
 
 /// <summary>
-/// DI helpers for the ontology slice. The service is Scoped (it
-/// depends on the request-scoped <c>ISEStudioDbContext</c>). The
-/// <see cref="OntologyEditor"/> and <see cref="StoreWrapper"/> are
-/// singletons registered in <c>Program.cs</c> so the Oxigraph handle
-/// is reused across requests and the write coordinator survives
-/// HTTP-request boundaries.
+/// DI helpers for the ontology slice. The services are Scoped (they
+/// depend on the request-scoped <c>ISEStudioDbContext</c>), so every
+/// write shares the request's PostgreSQL transaction. The statement
+/// repository (<see cref="IRdfStatementRepository"/>) is the RDF
+/// boundary for all of them.
 /// </summary>
 public static class OntologyServiceCollectionExtensions
 {
@@ -34,7 +33,7 @@ public static class OntologyServiceCollectionExtensions
         // Public read-only API surface for external token holders
         // (/api/v1/knowledge-systems/{public_id}/* read endpoints minus
         // ontology/query). Scoped — shares the request DbContext and the
-        // singleton StoreWrapper / ABoxManager / SkosManager / RdfExportService.
+        // RDF service graph.
         services.AddScoped<ExternalApiService>();
         services.AddSingleton<OntologyViewBuilder>();
         // Refreshes the cached class/property/axiom count columns on
@@ -50,9 +49,9 @@ public static class OntologyServiceCollectionExtensions
         services.AddScoped<IKnowledgeStatsService>(sp => sp.GetRequiredService<KnowledgeStatsService>());
         // The release-typed ontology view reads the curated TBox shard
         // directly from disk, so it needs the artifact store. The store
-        // lives under the same Storage:RdfRoot as the Oxigraph handle but
-        // in a "releases" sibling directory so published shards and live
-        // workspace data never collide.
+        // lives under the same Storage:RdfRoot in a "releases" sibling
+        // directory so published shards and live workspace data never
+        // collide.
         services.AddSingleton<ReleaseArtifactStore>(sp => new ReleaseArtifactStore(
             System.IO.Path.Combine(
                 sp.GetRequiredService<IConfiguration>()["ISEStudio:Storage:RdfRoot"]
@@ -60,29 +59,28 @@ public static class OntologyServiceCollectionExtensions
                 "releases")));
         // ReleaseManager owns the immutable lifecycle: capture freezes the
         // workspace layers into the artifact store, publish materialises a
-        // per-release read-only RocksDB serving store, ReadPublished
-        // queries it. Singleton — holds an in-memory _published registry
-        // of open serving stores (IDisposable), matching OntologyEditor /
-        // StoreWrapper. servingRoot sits under the same Storage:RdfRoot in
+        // per-release read-only serving store, ReadPublished queries it.
+        // Scoped — shares the request DbContext and the statement
+        // repository. servingRoot sits under the same Storage:RdfRoot in
         // a "serving" sibling so published read-only stores never collide
-        // with the workspace handle.
+        // with the workspace layers.
         services.AddScoped<ReleaseManager>(sp => new ReleaseManager(
             sp.GetRequiredService<ISEStudio.Infrastructure.Persistence.ISEStudioDbContext>(),
             sp.GetRequiredService<IRdfStatementRepository>(),
             sp.GetRequiredService<ReleaseArtifactStore>()));
         // Stateless parser — same instance handles every concurrent
         // request (RdfImportParser holds no state). Scoped service
-        // because it shares the request DbContext and the Oxigraph
-        // singleton through the workflow collaborators.
+        // because it shares the request DbContext and the statement
+        // repository through the workflow collaborators.
         services.AddSingleton<RdfImportParser>();
         services.AddScoped<RdfImportService>();
         // Application service facade for the rdf.import dispatcher arm
         // (13/13 slice). Scoped — shares the request DbContext with
         // RdfImportService through the constructor.
         services.AddScoped<IRdfImportApplicationService, RdfImportApplicationService>();
-        // Singleton RDF exporter — depends only on the singleton
-        // StoreWrapper and holds no state. Resolved by the dispatcher
-        // for ontology.export (and re-used by future export arms).
+        // RDF exporter — depends only on the statement repository and
+        // holds no state. Resolved by the dispatcher for ontology.export
+        // (and re-used by future export arms).
         services.AddScoped<RdfExportService>();
         // ReleaseService writes OntologyReleaseEntity rows (B9 create
         // draft); the dispatcher arm previously returned a Stage-1

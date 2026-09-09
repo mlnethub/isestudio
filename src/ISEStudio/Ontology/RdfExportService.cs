@@ -55,12 +55,12 @@ public sealed class RdfExportService
         DumpNQuads(statements);
 
     // ------------------------------------------------------------------
-    // dotNetRDF-backed formats (RDF/XML, JSON-LD). Oxigraph's 0.5.8 bindings
-    // round-trip N-Quads / Turtle / N-Triples / TriG via the hand-rolled
-    // dumpers above (which preserve blank-node labels, language tags, and
-    // explicit datatypes). RDF/XML and JSON-LD have no in-house serializer,
-    // so we project the Oxigraph quads onto a dotNetRDF graph and hand it
-    // to dotNetRDF's writers — they handle the full grammars and preserve
+    // dotNetRDF-backed formats (RDF/XML, JSON-LD). N-Quads / Turtle /
+    // N-Triples / TriG round-trip via the hand-rolled dumpers above
+    // (which preserve blank-node labels, language tags, and explicit
+    // datatypes). RDF/XML and JSON-LD have no in-house serializer, so we
+    // project the statements onto a dotNetRDF graph and hand it to
+    // dotNetRDF's writers — they handle the full grammars and preserve
     // typed literals. RDF/XML is graph-based (IRdfWriter); JSON-LD is a
     // dataset format (IStoreWriter), so the graph is wrapped in a
     // TripleStore for the JSON-LD writer.
@@ -118,24 +118,23 @@ public sealed class RdfExportService
     // ------------------------------------------------------------------
     // Strategy
     //
-    //  - NQuads: served by StoreWrapper.DumpNQuads (in-process byte-exact,
-    //    preserves blank-node labels, language tags, datatypes, AND the
-    //    graph context).
+    //  - NQuads: served by the statement-layer dump (in-process
+    //    byte-exact, preserves blank-node labels, language tags,
+    //    datatypes, AND the graph context).
     //
-    //  - TriG: Oxigraph's Store.Dump(TriG) works fine for our use case
-    //    (load the layer into a fresh in-memory store with the named graph,
-    //    then Dump). TriG preserves named graphs natively.
+    //  - TriG: hand-rolled dataset dumper — preserves named graphs
+    //    natively.
     //
-    //  - Turtle / NTriples: triple-only formats. Oxigraph 0.5.8's Dump for
-    //    these formats throws "A RDF format supporting datasets was
-    //    expected" on *any* store that has quads, including stores whose
-    //    only graph is the default graph. We hand-roll a minimal serializer
-    //    that emits N-Triples (no graph context, one statement per line)
-    //    or Turtle (subject grouping, dot-terminated) with full blank
-    //    node / language tag / datatype support. The output is enough for
-    //    our round-trip tests; it is not a complete implementation of the
-    //    Turtle grammar (no prefix compaction, no collection syntax, no
-    //    abbreviated IRX blank-node `[]`).
+    //  - Turtle / NTriples: triple-only formats. A dataset-level dump is
+    //    rejected for these formats ("A RDF format supporting datasets
+    //    was expected") on any store that carries graph context. We
+    //    hand-roll a minimal serializer that emits N-Triples (no graph
+    //    context, one statement per line) or Turtle (subject grouping,
+    //    dot-terminated) with full blank node / language tag / datatype
+    //    support. The output is enough for our round-trip tests; it is
+    //    not a complete implementation of the Turtle grammar (no prefix
+    //    compaction, no collection syntax, no abbreviated blank-node
+    //    `[]`).
     // ------------------------------------------------------------------
 
     private static byte[] DumpTriG(IReadOnlyList<RdfStatement> statements, string graphIri)

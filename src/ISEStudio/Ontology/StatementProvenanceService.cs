@@ -49,15 +49,15 @@ public static class StatementProvenanceService
 
 /// <summary>
 /// A neutral triple DTO used by <see cref="StatementProvenanceService"/> so
-/// the service is decoupled from the Oxigraph-specific term types.
+/// the service is decoupled from any store-specific term types.
 /// </summary>
 public sealed record StatementTriple(string Subject, string Predicate, string Object);
 
 /// <summary>
 /// Dump one <see cref="StatementTriple"/> as a single-line N-Triples string.
 /// Blank-node and language/datatype escape rules mirror
-/// <see cref="StoreWrapper.AppendNQuadsTerm"/>; the difference is that this
-/// version takes plain strings (caller does the IRI-vs-literal decision).
+/// <see cref="NQuadsTermWriter"/>; the difference is that this version
+/// takes plain strings (caller does the IRI-vs-literal decision).
 /// </summary>
 internal static class StatementSerializer
 {
@@ -82,9 +82,8 @@ internal static class StatementSerializer
         }
         // Literal: assume the caller passed an already-quoted literal
         // (including language tag / datatype when present). We pass through
-        // verbatim — production code constructs the literal string from an
-        // Oxigraph Literal and the round-trip is verified by the
-        // StoreWrapper tests.
+        // verbatim — production code constructs the literal string and the
+        // round-trip is verified by the provenance tests.
         sb.Append(term);
     }
 }

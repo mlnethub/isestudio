@@ -13,10 +13,10 @@ namespace ISEStudio.Exports;
 ///   <item><see cref="ExportJobStore.MarkRunningAsync"/> flips
 ///   status <c>pending</c> → <c>running</c>.</item>
 ///   <item>For each layer in <see cref="ExportLayer.Expand"/>: take a
-///   <see cref="StoreWrapper.CaptureAsync"/> lease, dump the graph via
-///   <see cref="StoreWrapper.DumpNQuads(string)"/>, write a shard with
-///   <see cref="ExportArtifactStore.WriteShard"/>, and update the
-///   processed-statements counter.</item>
+///   <see cref="PostgresRdfGraphStore.CaptureAsync"/> lease, dump the
+///   graph via <see cref="PostgresRdfGraphStore.DumpNQuads"/>, write a
+///   shard with <see cref="ExportArtifactStore.WriteShard"/>, and update
+///   the processed-statements counter.</item>
 ///   <item>Write the bundle manifest (one descriptor per shard + a
 ///   manifest entry).</item>
 ///   <item><see cref="ExportJobStore.RecordFilesAsync"/> + <see cref="ExportJobStore.MarkCompletedAsync"/>

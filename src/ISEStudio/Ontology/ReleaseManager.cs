@@ -1,5 +1,3 @@
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoQuad = Oxigraph.Quad;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
@@ -138,7 +136,7 @@ public sealed class ReleaseManager : IDisposable
     /// Read quads from the published serving store. Throws if the release
     /// has not been published.
     /// </summary>
-    public IReadOnlyList<OntoQuad> ReadPublished(string releaseId, RdfLayer layer)
+    public IReadOnlyList<RdfStatement> ReadPublished(string releaseId, RdfLayer layer)
     {
         ArgumentException.ThrowIfNullOrEmpty(releaseId);
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -154,7 +152,7 @@ public sealed class ReleaseManager : IDisposable
         var rows = _db.ReleaseStatements.AsNoTracking()
             .Where(item => item.ReleaseId == releaseGuid && item.Layer == layer.ToString())
             .ToList();
-        return rows.Select(ToQuad).ToList();
+        return rows.Select(ToStatement).ToList();
     }
 
     /// <summary>True once a release has been published and its serving store is open.</summary>
@@ -232,14 +230,14 @@ public sealed class ReleaseManager : IDisposable
         Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
             System.Text.Encoding.UTF8.GetBytes($"{statement.Subject}|{statement.PredicateIri}|{statement.Object}|{statement.GraphIri}")));
 
-    private static OntoQuad ToQuad(ReleaseStatementEntity row)
+    private static RdfStatement ToStatement(ReleaseStatementEntity row)
     {
-        var subject = new OntoNamedNode(row.SubjectIri);
-        var predicate = new OntoNamedNode(row.PredicateIri);
+        var subject = new RdfIri(row.SubjectIri);
+        var predicateIri = row.PredicateIri;
         var obj = row.ObjectIri is not null
-            ? (Oxigraph.ITerm)new OntoNamedNode(row.ObjectIri)
-            : new Oxigraph.Literal(row.ObjectValue ?? string.Empty);
-        return new OntoQuad(subject, predicate, obj, new OntoNamedNode(row.GraphIri ?? string.Empty));
+            ? (RdfTerm)new RdfIri(row.ObjectIri)
+            : new RdfLiteral(row.ObjectValue ?? string.Empty);
+        return new RdfStatement(subject, predicateIri, obj, row.GraphIri);
     }
 
     // ------------------------------------------------------------------

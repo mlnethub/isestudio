@@ -2,7 +2,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using ISEStudio.Application.Ontology;
-using Oxigraph;
 
 namespace ISEStudio.Ontology;
 
@@ -88,9 +87,9 @@ public sealed class ABoxValidator
     };
 
     // The store is optional so the contract-test factory (which registers
-    // a null StoreWrapper when no RocksDB root is provisioned) can still
-    // resolve this service. Validate returns an empty report when the
-    // store is null; the HTTP envelope still parses cleanly.
+    // a null statement repository when no RDF backend is provisioned) can
+    // still resolve this service. Validate returns an empty report when
+    // the store is null; the HTTP envelope still parses cleanly.
     public ABoxValidator(IRdfStatementRepository? statements)
     {
         _statements = statements;
@@ -165,9 +164,9 @@ public sealed class ABoxValidator
         {
             if (q.Subject is not RdfIri s) continue;
             var sIri = s.Value;
-            if (q.PredicateIri == Vocabulary.RdfType.Value && q.Object is RdfIri t)
+            if (q.PredicateIri == Vocabulary.RdfType && q.Object is RdfIri t)
             {
-                if (t.Value != Vocabulary.OwlNamedIndividual.Value)
+                if (t.Value != Vocabulary.OwlNamedIndividual)
                 {
                     if (!types.TryGetValue(sIri, out var set))
                     {
@@ -177,7 +176,7 @@ public sealed class ABoxValidator
                     set.Add(t.Value);
                 }
             }
-            else if (q.PredicateIri == Vocabulary.RdfsLabel.Value && q.Object is RdfLiteral lbl)
+            else if (q.PredicateIri == Vocabulary.RdfsLabel && q.Object is RdfLiteral lbl)
             {
                 indLabels[sIri] = lbl.Value;
             }

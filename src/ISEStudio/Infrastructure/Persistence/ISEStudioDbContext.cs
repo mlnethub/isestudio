@@ -64,7 +64,7 @@ public sealed class ISEStudioDbContext : DbContext
     // Workspace
     // ---------------------------------------------------------------------
 
-    /// <summary>Named ontology graphs (1 KS = 1 Oxigraph graph).</summary>
+    /// <summary>Named ontology graphs (1 KS = 1 named RDF graph).</summary>
     public DbSet<KnowledgeSystemEntity> KnowledgeSystems => Set<KnowledgeSystemEntity>();
 
     /// <summary>Uploaded source files, per-KS dedup on (KS, Sha256).</summary>

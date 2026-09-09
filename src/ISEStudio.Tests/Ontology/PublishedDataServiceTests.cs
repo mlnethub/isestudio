@@ -6,8 +6,6 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Extraction;
 using ISEStudio.Tests.Infrastructure;
-using OntoLiteral = Oxigraph.Literal;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -52,7 +50,7 @@ public sealed class PublishedDataServiceFixture : PostgresRdfFixture
     /// + <see cref="ReleaseDeploymentEntity"/> rows, and return the
     /// test handle so each test can target its own release id.
     /// </summary>
-    public PublishedSeed SeedPublished(string version, IEnumerable<Oxigraph.Quad> aboxQuads)
+    public PublishedSeed SeedPublished(string version, IEnumerable<RdfStatement> aboxQuads)
     {
         // Clear prior release / deployment rows for this KS so the
         // partial unique index (KnowledgeSystemId, Version) where
@@ -78,26 +76,26 @@ public sealed class PublishedDataServiceFixture : PostgresRdfFixture
             KnowledgeSystemId: KnowledgeSystemId);
         var deploymentId = Guid.NewGuid();
 
-        // Persist KS update BEFORE the TBox/ABox AddQuads calls below.
+        // Persist KS update BEFORE the TBox/ABox AddStatements calls below.
         // Each PostgresRdfGraphStore.ReplaceLayerAsync implementation calls
         // ChangeTracker.Clear(), which would silently drop the KS
         // modification if we left it dangling in the tracker.
         Db.SaveChanges();
 
-        TBox.AddQuads(new OntoNamedNode(ksContext.TBoxGraph),
-            [new Oxigraph.Quad(
-                new OntoNamedNode(BaseIri + "Person"),
-                new OntoNamedNode(ISEStudio.Ontology.Vocabulary.RdfType.Value),
-                new OntoNamedNode(ISEStudio.Ontology.Vocabulary.OwlClass.Value),
-                new OntoNamedNode(ksContext.TBoxGraph))]);
-        ABox.AddQuads(new OntoNamedNode(ksContext.ABoxGraph), aboxQuads.ToList());
+        TBox.AddStatements(ksContext.TBoxGraph,
+            [new RdfStatement(
+                new RdfIri(BaseIri + "Person"),
+                ISEStudio.Ontology.Vocabulary.RdfType,
+                new RdfIri(ISEStudio.Ontology.Vocabulary.OwlClass),
+                ksContext.TBoxGraph)]);
+        ABox.AddStatements(ksContext.ABoxGraph, aboxQuads.ToList());
 
         // 1) tbox.nq — one class declaration so GetClassesAsync has
         //    something to enumerate. Hand-roll the n-quads line (NQuadsTermWriter
         //    is internal to ISEStudio) — same shape the writer emits.
         var tboxNq =
-            $"<{BaseIri}Person> <{ISEStudio.Ontology.Vocabulary.RdfType.Value}> " +
-            $"<{ISEStudio.Ontology.Vocabulary.OwlClass.Value}> <{ksContext.TBoxGraph}> .\n";
+            $"<{BaseIri}Person> <{ISEStudio.Ontology.Vocabulary.RdfType}> " +
+            $"<{ISEStudio.Ontology.Vocabulary.OwlClass}> <{ksContext.TBoxGraph}> .\n";
         var tboxBytes = Encoding.UTF8.GetBytes(tboxNq);
         Artifacts.Write(releaseKey, RdfLayer.TBox, tboxBytes);
         Artifacts.SaveManifest(releaseKey, new ReleaseManifest(
@@ -154,7 +152,7 @@ public sealed class PublishedDataServiceFixture : PostgresRdfFixture
         Releases?.Dispose();
         await base.DisposeAsync();
         try { Directory.Delete(Root, recursive: true); }
-        catch (IOException) { /* Oxigraph handle can linger briefly. */ }
+        catch (IOException) { /* Directory handles can linger briefly. */ }
     }
 }
 
@@ -176,12 +174,12 @@ public sealed class PublishedDataServiceTests : IClassFixture<PublishedDataServi
 
     public PublishedDataServiceTests(PublishedDataServiceFixture fx) { _fx = fx; }
 
-    private static Oxigraph.Quad MakeInstanceQuad(string iri, string classLocalName)
+    private static RdfStatement MakeInstanceQuad(string iri, string classLocalName)
         => new(
-            new OntoNamedNode(BaseIriForInstance(iri)),
-            new OntoNamedNode(Vocabulary.RdfType.Value),
-            new OntoNamedNode(BaseIriForInstance(classLocalName)),
-            new OntoNamedNode(PublishedDataServiceFixture.GraphIri + "/abox"));
+            new RdfIri(BaseIriForInstance(iri)),
+            Vocabulary.RdfType,
+            new RdfIri(BaseIriForInstance(classLocalName)),
+            PublishedDataServiceFixture.GraphIri + "/abox");
 
     private static string BaseIriForInstance(string local) =>
         PublishedDataServiceFixture.BaseIri + local;
@@ -204,7 +202,7 @@ public sealed class PublishedDataServiceTests : IClassFixture<PublishedDataServi
     [Trait("Category", "Published")]
     public async Task ResolveAsync_returns_null_for_unknown_pinned_version()
     {
-        var seed = _fx.SeedPublished("v1", Array.Empty<Oxigraph.Quad>());
+        var seed = _fx.SeedPublished("v1", Array.Empty<RdfStatement>());
         using var svc = _fx.CreateService();
         var result = await svc.ResolveAsync(
             seed.Ks.PublicId, version: "v9", CancellationToken.None);
@@ -215,7 +213,7 @@ public sealed class PublishedDataServiceTests : IClassFixture<PublishedDataServi
     [Trait("Category", "Published")]
     public async Task ResolveAsync_returns_current_release_when_version_null()
     {
-        var seed = _fx.SeedPublished("v1", Array.Empty<Oxigraph.Quad>());
+        var seed = _fx.SeedPublished("v1", Array.Empty<RdfStatement>());
         using var svc = _fx.CreateService();
         var ctx = await svc.ResolveAsync(
             seed.Ks.PublicId, version: null, CancellationToken.None);
@@ -227,7 +225,7 @@ public sealed class PublishedDataServiceTests : IClassFixture<PublishedDataServi
     [Trait("Category", "Published")]
     public async Task ResolveAsync_returns_pinned_release_when_version_provided()
     {
-        var seed = _fx.SeedPublished("v3", Array.Empty<Oxigraph.Quad>());
+        var seed = _fx.SeedPublished("v3", Array.Empty<RdfStatement>());
         using var svc = _fx.CreateService();
         var ctx = await svc.ResolveAsync(
             seed.Ks.PublicId, version: "v3", CancellationToken.None);
@@ -243,7 +241,7 @@ public sealed class PublishedDataServiceTests : IClassFixture<PublishedDataServi
     [Trait("Category", "Published")]
     public async Task GetMetadataAsync_returns_python_wire_shape()
     {
-        var seed = _fx.SeedPublished("v1", Array.Empty<Oxigraph.Quad>());
+        var seed = _fx.SeedPublished("v1", Array.Empty<RdfStatement>());
         using var svc = _fx.CreateService();
         var ctx = await svc.ResolveAsync(seed.Ks.PublicId, "v1", CancellationToken.None);
         Assert.NotNull(ctx);
@@ -281,7 +279,7 @@ public sealed class PublishedDataServiceTests : IClassFixture<PublishedDataServi
     [Trait("Category", "Published")]
     public async Task GetManifestAsync_returns_raw_manifest_json()
     {
-        var seed = _fx.SeedPublished("v1", Array.Empty<Oxigraph.Quad>());
+        var seed = _fx.SeedPublished("v1", Array.Empty<RdfStatement>());
         using var svc = _fx.CreateService();
         var ctx = await svc.ResolveAsync(seed.Ks.PublicId, "v1", CancellationToken.None);
         Assert.NotNull(ctx);
@@ -332,7 +330,7 @@ public sealed class PublishedDataServiceTests : IClassFixture<PublishedDataServi
     [Trait("Category", "Published")]
     public async Task GetExportAsync_returns_tbox_nquads_bytes()
     {
-        var seed = _fx.SeedPublished("v1", Array.Empty<Oxigraph.Quad>());
+        var seed = _fx.SeedPublished("v1", Array.Empty<RdfStatement>());
         using var svc = _fx.CreateService();
         var ctx = await svc.ResolveAsync(seed.Ks.PublicId, "v1", CancellationToken.None);
         Assert.NotNull(ctx);
@@ -372,7 +370,7 @@ public sealed class PublishedDataServiceTests : IClassFixture<PublishedDataServi
     [Trait("Category", "Published")]
     public async Task GetIndividualAsync_returns_null_for_unknown_subject()
     {
-        var seed = _fx.SeedPublished("v1", Array.Empty<Oxigraph.Quad>());
+        var seed = _fx.SeedPublished("v1", Array.Empty<RdfStatement>());
         using var svc = _fx.CreateService();
         var ctx = await svc.ResolveAsync(seed.Ks.PublicId, "v1", CancellationToken.None);
         Assert.NotNull(ctx);

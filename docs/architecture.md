@@ -8,8 +8,7 @@ flowchart TB
     CLIENT["Downstream application"] --> EXT["Scoped external API"]
     UI --> API["ASP.NET Core governance API"]
     EXT --> API
-    API --> PG["PostgreSQL"]
-    API --> OXI["Oxigraph"]
+    API --> PG["PostgreSQL (ledger + RDF statements)"]
     API --> ART["Document and artifact storage"]
     API --> LLM["OpenAI-compatible LLM"]
     API --> EMB["Embedding endpoint"]
@@ -19,12 +18,27 @@ flowchart TB
 
 | Store | Responsibility |
 | --- | --- |
-| PostgreSQL | Users, roles, documents, chunks, jobs, prompt snapshots, review queues, provenance, audit events, releases, and export jobs |
-| Oxigraph | Mutable RDF named graphs for TBox, SKOS terminology, and ABox |
-| Serving Oxigraph | Read-only release projections in dedicated version-scoped named graphs |
+| PostgreSQL | Users, roles, documents, chunks, jobs, prompt snapshots, review queues, provenance, audit events, releases, export jobs, and the RDF statement workspace (`WorkspaceStatementEntity`) |
+| PostgreSQL (release) | Read-only release projections in `ReleaseStatementEntity`, version-scoped per release |
 | Artifact storage | Source blobs, immutable release snapshots, manifests, provenance JSONL, and export shards |
+| Legacy graph reader (offline) | `ISEStudio.Migration` and `ISEStudio.OxigraphProbe` — the only projects that may reference Oxigraph; see *Runtime RDF dependency boundary* below |
 
 SQLite remains a local-development fallback. It is not the recommended shared-deployment database.
+
+## Runtime RDF Dependency Boundary
+
+The runtime is PostgreSQL-authoritative for all RDF state: workspace layers
+(TBox / ABox / vocabulary) live in `WorkspaceStatementEntity` rows accessed
+through `IRdfStatementRepository`, and releases serve from
+`ReleaseStatementEntity`. The runtime opens no on-disk embedded graph store —
+startup under any database provider does not create `data/rdf` (enforced by
+the host smoke test and by `scripts/verify-postgresql-authoritative-storage.ps1`).
+
+The explicit migration exception: `ISEStudio.Migration` and
+`ISEStudio.OxigraphProbe` may reference Oxigraph because neither is hosted by
+the runtime. Migration retains direct RocksDB validation of legacy data and an
+N-Quads fallback path; it is a one-time reader, never part of the serving
+pipeline.
 
 ## Graph Ledger
 
@@ -38,9 +52,11 @@ parameterized recursive CTE with a maximum depth of five, effective-time filteri
 guards, and knowledge-system isolation. The active subject/object indexes support these
 bounded traversals.
 
-Oxigraph is not involved in runtime fact storage or graph traversal. It remains an import
-and RDF/OWL boundary for later ontology work; PostgreSQL remains authoritative for the
-operational graph and its governance history.
+RDF statement storage shares the same PostgreSQL authority: `RdfStatement` rows are the
+TBox / ABox / vocabulary layers, written through the statement repository with
+revert-on-error layer replacement. PostgreSQL remains authoritative for the operational
+graph and its governance history; the legacy embedded graph reader exists only in the
+offline migration tooling.
 
 ## Knowledge-System Graphs
 
@@ -73,7 +89,6 @@ sequenceDiagram
     participant API as ASP.NET Core
     participant J as Extraction job
     participant M as Model endpoint
-    participant G as Oxigraph
     participant P as PostgreSQL
 
     U->>API: Select chunks and start extraction
@@ -82,7 +97,7 @@ sequenceDiagram
     J->>M: Grounded chunk + ontology context
     M-->>J: Candidate TBox/ABox delta
     J->>M: Independent role verification
-    J->>G: Merge accepted statements
+    J->>P: Merge accepted RdfStatements
     J->>P: Statement → chunk/job provenance
     J->>P: Review queues and audit event
 ```
@@ -105,11 +120,11 @@ The quality gate blocks review while unresolved error conflicts, entity-resoluti
 
 ## Export Design
 
-ABox export never materializes the complete graph in memory. Oxigraph quads are streamed into fixed-statement-count `.nq` shards. Each shard is uncompressed and independently checksummed.
+ABox export never materializes the complete graph in memory. `RdfStatement` rows from the statement repository are streamed into fixed-statement-count `.nq` shards. Each shard is uncompressed and independently checksummed.
 
 ```mermaid
 flowchart LR
-    OXI["Oxigraph quad iterator"] --> WRITER["Constant-memory shard writer"]
+    OXI["RdfStatement iterator"] --> WRITER["Constant-memory shard writer"]
     WRITER --> NQ1["abox-00001.nq"]
     WRITER --> NQ2["abox-00002.nq"]
     WRITER --> NQN["abox-xxxxx.nq"]
@@ -122,7 +137,7 @@ Uncompressed shards support line-oriented processing, HTTP range requests, CDN/o
 
 ## Published Service Boundary
 
-Publishing verifies the immutable artifacts, streams them into a separate serving Oxigraph database, and indexes the captured provenance by release and statement key in PostgreSQL. Public fixed-version REST and SPARQL routes only use those projections. Deployment state is independent from release state, so a service may be stopped and rebuilt without changing the release. Terminal release deletion clears the projection and artifacts but retains a tombstone and audit evidence.
+Publishing verifies the immutable artifacts, loads them into the PostgreSQL `ReleaseStatementEntity` table, and indexes the captured provenance by release and statement key. Public fixed-version REST and SPARQL routes only use those projections. Deployment state is independent from release state, so a service may be stopped and rebuilt without changing the release. Terminal release deletion clears the projection and artifacts but retains a tombstone and audit evidence.
 
 ## Trust Boundaries
 

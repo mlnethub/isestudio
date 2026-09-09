@@ -1,9 +1,10 @@
-using ISEStudio.Ontology;
 using Oxigraph;
 using OntoQuad = Oxigraph.Quad;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
-using OntoBlankNode = Oxigraph.BlankNode;
+using ISEStudio.Ontology;
+using ISEStudio.Migration.Ontology;
+using ISEStudio.Tests.Infrastructure;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -46,9 +47,8 @@ public class ConflictDetectorTests : IClassFixture<ConflictDetectorFixture>
 
     public ConflictDetectorTests(ConflictDetectorFixture fx) { _fx = fx; }
 
-    private static OntoQuad MakeQuad(string s, string p, string o, string graph) =>
-        new(new OntoNamedNode(s), new OntoNamedNode(p),
-            new OntoLiteral(o), new OntoNamedNode(graph));
+    private static RdfStatement MakeQuad(string s, string p, string o, string graph) =>
+        new(new RdfIri(s), p, new RdfLiteral(o), graph);
 
     [Fact]
     [Trait("Category", "RdfCore")]
@@ -96,15 +96,14 @@ public class ConflictDetectorTests : IClassFixture<ConflictDetectorFixture>
         // Two captures: each writes the same triple set with the same
         // blank-node label, language tag, and explicit datatype. The
         // signature must match byte-for-byte.
-        var g = new OntoNamedNode("urn:g");
-        var bnode = new OntoBlankNode("shape");
-        var langLit = new OntoLiteral("hello", Language: "en");
-        var dtLit = new OntoLiteral("42", Datatype: OntoLiteral.XsdInteger);
+        var bnode = new RdfBlankNode("shape");
+        var langLit = new RdfLiteral("hello", Language: "en");
+        var dtLit = new RdfLiteral("42", Datatype: OntoLiteral.XsdInteger.Value);
 
         var quads = new[]
         {
-            new OntoQuad(bnode, new OntoNamedNode("urn:p1"), langLit, g),
-            new OntoQuad(bnode, new OntoNamedNode("urn:p2"), dtLit, g),
+            new RdfStatement(bnode, "urn:p1", langLit, "urn:g"),
+            new RdfStatement(bnode, "urn:p2", dtLit, "urn:g"),
         };
 
         var s1 = ConflictDetector.Signature(quads);
@@ -131,7 +130,7 @@ public class ConflictDetectorTests : IClassFixture<ConflictDetectorFixture>
     {
         // SHA-256 of the empty string is well-known:
         // e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-        var s = ConflictDetector.Signature(Array.Empty<OntoQuad>());
+        var s = ConflictDetector.Signature(Array.Empty<RdfStatement>());
         Assert.Equal(
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             s);
@@ -159,7 +158,7 @@ public class ConflictDetectorTests : IClassFixture<ConflictDetectorFixture>
                 new OntoLiteral("42", Datatype: OntoLiteral.XsdInteger), g),
         });
 
-        var quads = _fx.Store.Match(graph: g);
+        var quads = _fx.Store.Match(graph: g).Select(q => q.ToStatement()).ToList();
         var nQuads = _fx.Store.DumpNQuads(g);
 
         var sigFromQuads = ConflictDetector.Signature(quads);
@@ -196,13 +195,13 @@ public class ConflictDetectorTests : IClassFixture<ConflictDetectorFixture>
                 new OntoNamedNode("urn:class"), abox),
         });
 
-        var tboxQuads = _fx.Store.Match(graph: tbox);
+        var tboxQuads = _fx.Store.Match(graph: tbox).Select(q => q.ToStatement()).ToList();
         var tboxNQuads = _fx.Store.DumpNQuads(tbox);
         Assert.Equal(
             ConflictDetector.Signature(tboxQuads),
             ConflictDetector.Signature(tboxNQuads));
 
-        var aboxQuads = _fx.Store.Match(graph: abox);
+        var aboxQuads = _fx.Store.Match(graph: abox).Select(q => q.ToStatement()).ToList();
         var aboxNQuads = _fx.Store.DumpNQuads(abox);
         Assert.Equal(
             ConflictDetector.Signature(aboxQuads),

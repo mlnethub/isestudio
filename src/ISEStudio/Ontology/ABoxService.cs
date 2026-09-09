@@ -10,9 +10,6 @@ using ISEStudio.Integration;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Knowledge;
-using Oxigraph;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoQuad = Oxigraph.Quad;
 
 namespace ISEStudio.Ontology;
 
@@ -31,9 +28,10 @@ namespace ISEStudio.Ontology;
 /// running extraction is rejected with HTTP 409 + job id envelope.</para>
 ///
 /// <para>The audit pipeline mirrors <see cref="OntologyService"/>:
-/// pre/post <see cref="StoreWrapper.DumpNQuads"/> +
-/// <see cref="StoreWrapper.DiffNQuads"/> populates the audit row's
-/// Added/Removed byte[] so the history replay can roll back the change.
+/// pre/post <see cref="PostgresRdfGraphStore.DumpNQuads"/> +
+/// <see cref="PostgresRdfGraphStore.DiffNQuads"/> populates the audit
+/// row's Added/Removed byte[] so the history replay can roll back the
+/// change.
 /// Provenance write-back (<c>AboxProvenanceEntity</c> rows) lands in a
 /// later slice when <c>ABoxProvenanceService</c> is wired &mdash; for
 /// B7a we write the audit row but leave the <c>ind_key</c> provenance
@@ -157,12 +155,12 @@ public sealed class ABoxService
     // ----------------------------------------------------------------------
 
     /// <summary>
-    /// Create a new individual in the ABox graph. Writes 3 quads
+    /// Create a new individual in the ABox graph. Writes 3 statements
     /// (rdf:type OwlNamedIndividual, rdf:type <paramref name="req.ClassIri"/>,
-    /// rdfs:label) inside a <see cref="StoreWrapper.CaptureAsync"/>
-    /// block so a failure mid-flight reverts cleanly. The audit row
-    /// carries the N-Quads diff; the <c>AboxProvenanceEntity</c> write
-    /// is deferred to the B7b slice (provenance service wire-up).
+    /// rdfs:label) as one atomic layer replacement so a failure
+    /// mid-flight reverts cleanly. The audit row carries the N-Quads
+    /// diff; the <c>AboxProvenanceEntity</c> write is deferred to the
+    /// B7b slice (provenance service wire-up).
     /// </summary>
     public async Task<IndividualOut?> CreateIndividualAsync(
         Guid ksId,
@@ -391,8 +389,8 @@ public sealed class ABoxService
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
         var ksc = ToKsContext(ks);
-        var owlClass = Vocabulary.OwlClass.Value;
-        var rdfsLabel = Vocabulary.RdfsLabel.Value;
+        var owlClass = Vocabulary.OwlClass;
+        var rdfsLabel = Vocabulary.RdfsLabel;
         // Pull every triple in the TBox once; small graph, single scan is
         // simpler than two match queries.
         var tboxQuads = (await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false))
@@ -402,7 +400,7 @@ public sealed class ABoxService
         foreach (var q in tboxQuads)
         {
             if (q.Subject is not RdfIri subj) continue;
-            if (q.PredicateIri == Vocabulary.RdfType.Value
+            if (q.PredicateIri == Vocabulary.RdfType
                 && q.Object is RdfIri obj
                 && obj.Value == owlClass)
             {
@@ -431,9 +429,9 @@ public sealed class ABoxService
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
         var ksc = ToKsContext(ks);
-        var owlObjectProperty = Vocabulary.OwlObjectProperty.Value;
-        var owlDatatypeProperty = Vocabulary.OwlDatatypeProperty.Value;
-        var rdfsLabel = Vocabulary.RdfsLabel.Value;
+        var owlObjectProperty = Vocabulary.OwlObjectProperty;
+        var owlDatatypeProperty = Vocabulary.OwlDatatypeProperty;
+        var rdfsLabel = Vocabulary.RdfsLabel;
         var tboxQuads = (await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false))
             .Where(statement => statement.GraphIri == ksc.TBoxGraph);
         var props = new HashSet<string>(StringComparer.Ordinal);
@@ -441,7 +439,7 @@ public sealed class ABoxService
         foreach (var q in tboxQuads)
         {
             if (q.Subject is not RdfIri subj) continue;
-            if (q.PredicateIri == Vocabulary.RdfType.Value
+            if (q.PredicateIri == Vocabulary.RdfType
                 && q.Object is RdfIri obj
                 && (obj.Value == owlObjectProperty || obj.Value == owlDatatypeProperty))
             {
@@ -548,10 +546,8 @@ public sealed class ABoxService
     }
 
     /// <summary>
-    /// Cheap "does this IRI have any ABox quads?" check — wraps
-    /// <see cref="StoreWrapper.Match(string, string, string, string, string?)"/>
-    /// with just the subject + graph predicate. Avoids the cost of pulling
-    /// the full <see cref="IndividualOut"/> envelope on the validation path.
+    /// Snapshot the ABox layer for one KS — the pre/post diff base the
+    /// audit row computes its Added/Removed N-Quads blobs from.
     /// </summary>
     private async Task<IReadOnlyList<RdfStatement>> SnapshotAsync(
         Guid ksId, CancellationToken ct, string layer = "ABox") =>

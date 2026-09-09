@@ -15,7 +15,7 @@ namespace ISEStudio.Observability;
 /// existing services that wrap the call:</para>
 /// <list type="bullet">
 ///   <item><see cref="LlmSourceName"/> — chat / embedding calls.</item>
-///   <item><see cref="RdfSourceName"/> — <c>StoreWrapper</c> + SHACL.</item>
+///   <item><see cref="RdfSourceName"/> — the RDF layer + SHACL.</item>
 ///   <item><see cref="ParsingSourceName"/> — <c>DocumentParser</c>.</item>
 ///   <item><see cref="StorageSourceName"/> — MinIO blob reads / writes.</item>
 ///   <item><see cref="McpSourceName"/> — MCP tool invocations.</item>

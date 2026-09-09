@@ -10,10 +10,8 @@ using ISEStudio.Tests.Authentication;
 using ISEStudio.Tests.Extraction;
 using ISEStudio.Tests.Infrastructure;
 using ISEStudio.Tests.Persistence;
-using Oxigraph;
 using Xunit;
 using OntoNamedNode = Oxigraph.NamedNode;
-using OntoQuad = Oxigraph.Quad;
 
 namespace ISEStudio.Tests.Releases;
 
@@ -338,18 +336,18 @@ public sealed class ReleaseServiceTests
         // (capture / rollback / diff) see the rows.
         var db = app.CreateDbContext();
         var ctx = KsContext.FromEntity(ks);
-        var graph = new OntoNamedNode(toABox ? ctx.ABoxGraph : ctx.TBoxGraph);
-        using var parsed = new Store();
-        parsed.Load(turtle, RdfFormat.Turtle);
+        var graph = toABox ? ctx.ABoxGraph : ctx.TBoxGraph;
         // Turtle triples land in the default graph — re-point each one at
         // the layer graph before persisting.
-        var quads = parsed.Match()
-            .Select(q => new OntoQuad(q.Subject, q.Predicate, q.Object, graph))
+        var statements = new RdfImportParser()
+            .Parse(Encoding.UTF8.GetBytes(turtle), "seed.ttl", "turtle", null, null, "seed")
+            .Statements
+            .Select(s => s with { GraphIri = graph })
             .ToList();
         var store = new PostgresRdfGraphStore(
             new PostgresRdfStatementRepository(db), ks.Id,
             (toABox ? RdfLayer.ABox : RdfLayer.TBox).ToString());
-        store.AddQuads(graph, quads);
+        store.AddStatements(graph, statements);
         await Task.CompletedTask;
     }
 

@@ -1,18 +1,14 @@
 using ISEStudio.Application.Vocabulary;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Infrastructure;
-using Oxigraph;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
 using KsContext = ISEStudio.Ontology.KsContext;
 
 namespace ISEStudio.Tests.Ontology;
 
 /// <summary>
-/// Each test instance owns a fresh on-disk Oxigraph store in its own temp
-/// directory; both are torn down on dispose. The store is reset (cleared) at
-/// the start of every test so cases do not leak quads.
+/// Each test instance owns fresh ABox state in the shared PostgreSQL test
+/// fixture; the layer is reset at the start of every test so cases do not
+/// leak statements.
 /// </summary>
 public sealed class ABoxManagerFixture : PostgresRdfFixture
 {
@@ -96,7 +92,7 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
             subjectIri: iri,
             predicateIri: "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
             graphIri: _ks.ABoxGraph);
-        Assert.Contains(types, q => q.Object is OntoNamedNode n && n.Value == "urn:Class");
+        Assert.Contains(types, q => q.Object is RdfIri n && n.Value == "urn:Class");
     }
 
     [Fact]
@@ -130,7 +126,7 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
 
         var triples = _fx.ABox.Match(
             subjectIri: a, predicateIri: "urn:knows", graphIri: _ks.ABoxGraph);
-        Assert.Contains(triples, q => q.Object is OntoNamedNode n && n.Value == b);
+        Assert.Contains(triples, q => q.Object is RdfIri n && n.Value == b);
     }
 
     [Fact]
@@ -170,12 +166,12 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
         var subj = abox.CreateIndividual(_ks, "urn:ind-1", "urn:Class");
         // The validator reads the TBox schema; for this test we only need
         // the individual + label so the placeholder rule fires.
-        _fx.ABox.AddQuads(new OntoNamedNode(_ks.ABoxGraph), new[]
+        _fx.ABox.AddStatements(_ks.ABoxGraph, new[]
         {
-            new OntoQuad(new OntoNamedNode(subj),
-                new OntoNamedNode("http://www.w3.org/2000/01/rdf-schema#label"),
-                new OntoLiteral("Untitled"),
-                new OntoNamedNode(_ks.ABoxGraph)),
+            new RdfStatement(new RdfIri(subj),
+                "http://www.w3.org/2000/01/rdf-schema#label",
+                new RdfLiteral("Untitled"),
+                _ks.ABoxGraph),
         });
 
         var report = validator.Validate(_ks);

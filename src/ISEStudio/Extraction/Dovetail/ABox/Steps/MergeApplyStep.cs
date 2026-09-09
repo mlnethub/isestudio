@@ -12,12 +12,12 @@ namespace ISEStudio.Extraction.Dovetail.ABox.Steps;
 /// Threshold comes from ABoxJobInput.MinConfidence, which the orchestrator
 /// wires from ISEStudioOptions.DuplicateAutoApplyFloor.
 ///
-/// Per-merge QuadChangeCapture with revertOnError:false per spec §4 D5
+/// Per-merge layer capture with revertOnError:false per spec §4 D5
 /// (LOCKED): one failed merge does not roll back successful ones.
 ///
 /// <para>
-/// <b>Signature adaptation</b>: the plan sketch assumed
-/// <c>OntologyEditor.ApplyClassMergeAsync(StoreWrapper, string, string, string, CancellationToken)</c>
+/// <b>Signature adaptation</b>: the plan sketch assumed an editor-level
+/// <c>ApplyClassMergeAsync(store, string, string, string, CancellationToken)</c>
 /// but the actual editor exposes a single <see cref="OntologyEditor.ApplyEditAsync"/>
 /// dispatch with an <c>op</c> dictionary. The <c>merge_classes</c> op
 /// internally performs both the TBox merge AND the ABox cascade-retype

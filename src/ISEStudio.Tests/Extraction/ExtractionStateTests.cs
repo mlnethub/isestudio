@@ -10,7 +10,6 @@ using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Persistence;
 using ISEStudio.Tests.Infrastructure;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Extraction;
 
@@ -19,8 +18,8 @@ namespace ISEStudio.Tests.Extraction;
 /// lifecycle, live progress, phase sequencing, prompt snapshots, terminology
 /// metrics, and — the load-bearing one — RDF/SQL atomicity on merge failure.
 ///
-/// <para>Everything runs against real collaborators (Oxigraph store,
-/// <see cref="LocalCasBlobStore"/>, <see cref="DocumentParser"/>,
+/// <para>Everything runs against real collaborators (PostgreSQL RDF
+/// fixture, <see cref="LocalCasBlobStore"/>, <see cref="DocumentParser"/>,
 /// <see cref="Chunker"/>, SQLite-backed <see cref="ExtractionJobStore"/>);
 /// only the LLM call is faked, so no external service is contacted.</para>
 /// </summary>
@@ -35,7 +34,7 @@ public sealed class ExtractionStateTests : IDisposable
     private readonly PostgresRdfFixture _rdf = new();
     private readonly Guid _ksId;
 
-    /// <summary>Oxigraph store under test.</summary>
+    /// <summary>RDF store under test.</summary>
     private PostgresRdfGraphStore Store => _rdf.TBox;
 
     /// <summary>Graph coordinates for the seeded knowledge system.</summary>
@@ -336,14 +335,14 @@ public sealed class ExtractionStateTests : IDisposable
 
     private int ClassCount() =>
         Store.Match(
-            predicateIri: Vocabulary.RdfType.Value,
-            objectIri: Vocabulary.OwlClass.Value,
+            predicateIri: Vocabulary.RdfType,
+            objectIri: Vocabulary.OwlClass,
             graphIri: Ks.TBoxGraph).Count;
 
     /// <summary>Seed a single <c>Person</c> class so the ABox mentions resolve.</summary>
     private void SeedTBox()
     {
-        var quads = SchemaBuilder.BuildMutation(
+        var statements = SchemaBuilder.BuildMutationStatements(
             BaseIri,
             new OntologyMutation(
                 Classes: new[] { new ClassMutation("Person", "Seeded fixture class") },
@@ -351,7 +350,7 @@ public sealed class ExtractionStateTests : IDisposable
                 DataProperties: new[] { new PropertyMutation("age", "data", Domain: "Person", Range: "integer") },
                 Axioms: Array.Empty<AxiomMutation>()),
             Ks.TBoxGraph);
-        Store.AddQuads(new OntoNamedNode(Ks.TBoxGraph), quads);
+        Store.AddStatements(Ks.TBoxGraph, statements);
     }
 
     private void SeedKnowledgeSystem()
@@ -398,7 +397,7 @@ public sealed class ExtractionStateTests : IDisposable
         }
         catch (IOException)
         {
-            // The Oxigraph handle can linger briefly on Windows; a stale
+            // Directory handles can linger briefly on Windows; a stale
             // temp directory must never fail a test run.
         }
     }

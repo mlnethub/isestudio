@@ -1,20 +1,18 @@
 using ISEStudio.Ontology;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Extraction;
 
 /// <summary>
 /// Production <see cref="IExtractionMerger"/>. Writes through
-/// <see cref="StoreWrapper"/> primitives only — see the locking contract on
-/// <see cref="IExtractionMerger"/> for why it must not open its own capture.
+/// <see cref="IRdfStatementRepository"/> primitives only — see the
+/// locking contract on <see cref="IExtractionMerger"/> for why it must
+/// not open its own capture.
 /// </summary>
 /// <remarks>
 /// <para>Counters are computed by probing the store before each write, so a
 /// re-run over the same chunk reports zero additions instead of double
-/// counting (Oxigraph collapses identical quads, making the write itself
-/// idempotent).</para>
+/// counting (the statement layer collapses identical statements, making
+/// the write itself idempotent).</para>
 /// <para>Unresolvable references never fail the merge: an unknown class label
 /// increments the <c>unknown_classes</c> histogram, an unknown property label
 /// drops the assertion, and a relation whose target was not seen in the same
@@ -39,7 +37,7 @@ public sealed class ExtractionMerger : IExtractionMerger
         ArgumentNullException.ThrowIfNull(delta);
         if (delta.IsEmpty) return ExtractionMergeResult.Empty;
 
-        var quads = SchemaBuilder.BuildMutation(ks.BaseIri, delta.ToMutation(), ks.TBoxGraph);
+        var statements = SchemaBuilder.BuildMutationStatements(ks.BaseIri, delta.ToMutation(), ks.TBoxGraph);
 
         var classesAdded = 0;
         var propertiesAdded = 0;
@@ -48,33 +46,32 @@ public sealed class ExtractionMerger : IExtractionMerger
 
         var existing = _statements.ListAsync(ks.KnowledgeSystemId, "TBox")
             .GetAwaiter().GetResult()
-            .Select(FromStatement)
             .ToHashSet();
-        foreach (var quad in quads)
+        foreach (var s in statements)
         {
-            if (existing.Contains(quad)) continue;
+            if (existing.Contains(s)) continue;
 
-            var predicate = quad.Predicate.Value;
-            if (predicate == Vocabulary.RdfType.Value && quad.Object is OntoNamedNode type)
+            var predicate = s.PredicateIri;
+            if (predicate == Vocabulary.RdfType && s.Object is RdfIri type)
             {
-                if (type.Value == Vocabulary.OwlClass.Value) classesAdded++;
-                else if (type.Value == Vocabulary.OwlObjectProperty.Value ||
-                         type.Value == Vocabulary.OwlDatatypeProperty.Value)
+                if (type.Value == Vocabulary.OwlClass) classesAdded++;
+                else if (type.Value == Vocabulary.OwlObjectProperty ||
+                         type.Value == Vocabulary.OwlDatatypeProperty)
                 {
                     propertiesAdded++;
                 }
             }
-            else if (predicate == Vocabulary.RdfsSubClassOf.Value ||
-                     predicate == Vocabulary.OwlDisjointWith.Value ||
-                     predicate == Vocabulary.OwlEquivalentClass.Value)
+            else if (predicate == Vocabulary.RdfsSubClassOf ||
+                     predicate == Vocabulary.OwlDisjointWith ||
+                     predicate == Vocabulary.OwlEquivalentClass)
             {
                 axiomsAdded++;
                 provenance.Add(StatementProvenanceService.TripleKey(
-                    new StatementTriple(TermText(quad.Subject), predicate, TermText(quad.Object))));
+                    new StatementTriple(TermText(s.Subject), predicate, TermText(s.Object))));
             }
         }
 
-        var merged = existing.Concat(quads).Distinct().Select(ToStatement).ToList();
+        var merged = existing.Concat(statements).Distinct().ToList();
         _statements.ReplaceLayerAsync(ks.KnowledgeSystemId, "TBox", merged)
             .GetAwaiter().GetResult();
 
@@ -106,7 +103,6 @@ public sealed class ExtractionMerger : IExtractionMerger
         var dataProperties = BuildIndex(view.DataProperties.Select(p => (p.Label, p.Iri)));
 
         var abox = new ABoxManager(_statements);
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
 
         // Individuals already in the graph, plus the ones this chunk mints —
         // relation targets resolve against both.
@@ -209,44 +205,10 @@ public sealed class ExtractionMerger : IExtractionMerger
         return index;
     }
 
-    private static string TermText(object term) => term switch
+    private static string TermText(RdfTerm term) => term switch
     {
-        OntoNamedNode n => n.Value,
-        OntoLiteral l => l.Value,
+        RdfIri n => n.Value,
+        RdfLiteral l => l.Value,
         _ => term.ToString() ?? string.Empty,
-    };
-
-    private static RdfStatement ToStatement(OntoQuad quad) =>
-        new(FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object),
-            quad.Graph is OntoNamedNode graph ? graph.Value : quad.Graph?.ToString());
-
-    private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
-    {
-        OntoNamedNode iri => new RdfIri(iri.Value),
-        Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
-        OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
-        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-    };
-
-    private static OntoQuad FromStatement(RdfStatement statement)
-    {
-        var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("RDF graph is required"));
-        return new OntoQuad(ToSubject(statement.Subject), new OntoNamedNode(statement.PredicateIri), ToObject(statement.Object), graph);
-    }
-
-    private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
-    {
-        RdfIri iri => new OntoNamedNode(iri.Value),
-        RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-        _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
-    };
-
-    private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
-    {
-        RdfIri iri => new OntoNamedNode(iri.Value),
-        RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-        RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
-            literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
-        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
     };
 }

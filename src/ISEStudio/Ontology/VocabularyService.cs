@@ -25,7 +25,7 @@ namespace ISEStudio.Ontology;
 /// <see cref="GraphWriteConflictException"/> &rarr; HTTP 409 via
 /// <c>FastApiErrorMiddleware</c>.</para>
 ///
-/// <para>Audit rows carry the byte-exact N-Quads diff <see cref="StoreWrapper.DiffNQuads"/>
+/// <para>Audit rows carry the byte-exact N-Quads diff <see cref="PostgresRdfGraphStore.DiffNQuads"/>
 /// computes between pre- and post-mutation snapshots of the vocabulary graph,
 /// so future rollback paths can replay the negation.</para>
 /// </summary>
@@ -147,9 +147,9 @@ public sealed class VocabularyService
     /// Serialize the vocabulary graph as RDF bytes. Mirrors
     /// <c>vocabulary.export</c>. The <paramref name="fmt"/> parameter
     /// (<c>"turtle"</c> / <c>"n-quads"</c> / <c>"json-ld"</c>) is honoured
-    /// as far as the underlying <see cref="StoreWrapper"/> permits &mdash;
+    /// as far as the underlying <see cref="PostgresRdfGraphStore"/> permits &mdash;
     /// today it always returns N-Quads bytes via
-    /// <see cref="StoreWrapper.DumpNQuads"/>, which is a lossless
+    /// <see cref="PostgresRdfGraphStore.DumpNQuads"/>, which is a lossless
     /// round-trippable RDF serialisation. Future slices can add a
     /// <c>SerializeGraph</c> helper to translate to Turtle / JSON-LD on
     /// demand.
@@ -221,7 +221,7 @@ public sealed class VocabularyService
             }
         }
         var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var (added, removed) = PostgresRdfGraphStore.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.create_scheme",
             $"Created vocabulary scheme \"{data.Title}\"",
@@ -275,7 +275,7 @@ public sealed class VocabularyService
             }
         }
         var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var (added, removed) = PostgresRdfGraphStore.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.update_scheme",
             $"Updated vocabulary scheme \"{data.Title}\"",
@@ -326,7 +326,7 @@ public sealed class VocabularyService
             }
         }
         var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var (added, removed) = PostgresRdfGraphStore.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.delete_scheme",
             $"Deleted vocabulary scheme {iri}",
@@ -383,7 +383,7 @@ public sealed class VocabularyService
             }
         }
         var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var (added, removed) = PostgresRdfGraphStore.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.create_concept",
             $"Created concept \"{data.PrefLabel}\"",
@@ -439,7 +439,7 @@ public sealed class VocabularyService
             }
         }
         var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var (added, removed) = PostgresRdfGraphStore.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.update_concept",
             $"Updated concept \"{data.PrefLabel}\"",
@@ -490,7 +490,7 @@ public sealed class VocabularyService
             }
         }
         var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var (added, removed) = PostgresRdfGraphStore.DiffNQuads(pre, post);
 
         await WriteAuditAsync(ks.Id, user, "vocabulary.delete_concept",
             $"Deleted concept {iri}",
@@ -527,8 +527,8 @@ public sealed class VocabularyService
         var pre = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
         TerminologyResult result;
         // Wrap the terminology pass in a CaptureAsync so a mid-loop failure
-        // in TerminologyService.SyncCore (which writes quads directly via
-        // StoreWrapper.AddQuads) rolls the vocabulary graph back to the
+        // in TerminologyService.SyncCore (which writes statements directly via
+        // PostgresRdfGraphStore.AddStatements) rolls the vocabulary graph back to the
         // pre-state snapshot rather than leaving a partial commit. The
         // sibling writers (CreateScheme / UpdateScheme / CreateConcept / ...)
         // already open their own CaptureAsync; SyncAsync was the lone
@@ -559,7 +559,7 @@ public sealed class VocabularyService
             }
         }
         var post = StoreFor(ksc).DumpNQuads(ksc.VocabularyGraph);
-        var (added, removed) = StoreWrapper.DiffNQuads(pre, post);
+        var (added, removed) = PostgresRdfGraphStore.DiffNQuads(pre, post);
 
         var summary = result.Error is null
             ? $"Synced vocabulary (added={result.TermsAdded}, mapped={result.TermsMapped})"
@@ -674,8 +674,8 @@ public sealed class VocabularyService
     /// <summary>
     /// Append the audit row that records the change. Mirrors
     /// <see cref="ABoxService.WriteAuditAsync"/>: pre/post N-Quads byte
-    /// blobs round-trip through <see cref="StoreWrapper.DumpNQuads"/> and
-    /// <see cref="StoreWrapper.DiffNQuads"/>. Rollback ordering rides on
+    /// blobs round-trip through <see cref="PostgresRdfGraphStore.DumpNQuads"/> and
+    /// <see cref="PostgresRdfGraphStore.DiffNQuads"/>. Rollback ordering rides on
     /// <see cref="AuditEventEntity.CreatedAt"/> (newest-first).
     /// </summary>
     private async Task WriteAuditAsync(
@@ -709,11 +709,11 @@ public static class VocabularyServiceCollectionExtensions
     /// Register the vocabulary slice. <see cref="VocabularyService"/> and
     /// <see cref="VocabularyProposalService"/> are Scoped (share the request
     /// DbContext); the underlying <see cref="SkosManager"/>,
-    /// <see cref="StoreWrapper"/>, <see cref="TimeProvider"/>,
+    /// <see cref="IRdfStatementRepository"/>, <see cref="TimeProvider"/>,
     /// <see cref="KnowledgeSystemAccessService"/>,
     /// <see cref="ExtractionJobStore"/>, and <see cref="TerminologyService"/>
     /// are all registered earlier in the DI pipeline (<c>Program.cs</c>
-    /// + <c>AddExtractionServices</c>) so the Oxigraph handle and the
+    /// + <c>AddExtractionServices</c>) so the statement repository and the
     /// cross-request job-state survive HTTP-request boundaries. This helper
     /// deliberately stays minimal — only the Scoped vocabulary services are
     /// added here.

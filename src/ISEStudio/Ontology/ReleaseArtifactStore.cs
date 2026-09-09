@@ -16,11 +16,12 @@ namespace ISEStudio.Ontology;
 /// flushed release is detectable by clients.</item>
 /// </list>
 ///
-/// The store is intentionally file-system-only (no RocksDB). The
-/// <see cref="ReleaseManager"/> opens a separate RocksDB directory at
-/// publication time and loads the shards into it for read-only serving —
-/// keeping the shards independent of the serving engine means a future
-/// engine swap only changes the loader, not the artifact format.
+/// The store is intentionally file-system-only — the N-Quads shards are
+/// the durable artifact format. At publication time the shards are
+/// loaded into the PostgreSQL <c>ReleaseStatements</c> table for
+/// read-only serving — keeping the shards independent of the serving
+/// engine means a future engine swap only changes the loader, not the
+/// artifact format.
 /// </summary>
 public sealed class ReleaseArtifactStore
 {

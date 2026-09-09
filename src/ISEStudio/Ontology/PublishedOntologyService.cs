@@ -6,8 +6,8 @@ namespace ISEStudio.Ontology;
 
 /// <summary>
 /// Reads the curated TBox view from a published release's tbox.nq
-/// shard (RDF 1.1 N-Quads on disk, no Oxigraph dependency). The
-/// controller layer (PublishedController) handles scope check +
+/// shard (RDF 1.1 N-Quads on disk, parsed via the dotNetRDF codec).
+/// The controller layer (PublishedController) handles scope check +
 /// cache headers + release resolution; this service assumes those
 /// have already happened.
 /// </summary>

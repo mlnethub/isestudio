@@ -118,9 +118,7 @@ public sealed class ConflictService
             ?? throw new InvalidOperationException($"Knowledge system {ksId} not found.");
 
         var tbox = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
-        var quads = tbox.Where(s => s.GraphIri == ks.GraphIri)
-            .Select(PostgresRdfGraphStore.ToQuadForConflictDetection)
-            .ToList();
+        var quads = tbox.Where(s => s.GraphIri == ks.GraphIri).ToList();
         var detected = ConflictDetection.Detect(quads, ks.GraphIri, semantic: true);
         // The semantic duplicate-class pass (P1-1:83 + Slice 2): runs after
         // the structural detectors and merges its candidates into the queue
@@ -135,7 +133,7 @@ public sealed class ConflictService
             var outcome = await _extraction.RunABoxLayerAsync(
                 knowledgeSystemId: ks.Id,
                 graphIri: ks.GraphIri,
-                quads: new PostgresRdfGraphStore(_statements, ks.Id, "ABox").Match(graphIri: ks.GraphIri),
+                statements: new PostgresRdfGraphStore(_statements, ks.Id, "ABox").Match(graphIri: ks.GraphIri),
                 chat: null,
                 embedder: null,
                 cancellationToken: ct).ConfigureAwait(false);
@@ -576,9 +574,7 @@ public sealed class ConflictService
         CancellationToken ct)
     {
         var tbox = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
-        var quads = tbox.Where(s => s.GraphIri == ks.GraphIri)
-            .Select(PostgresRdfGraphStore.ToQuadForConflictDetection)
-            .ToList();
+        var quads = tbox.Where(s => s.GraphIri == ks.GraphIri).ToList();
         var detected = ConflictDetection.Detect(quads, ks.GraphIri, semantic: false);
         var bySig = detected.ToDictionary(d => d.Signature, StringComparer.Ordinal);
         var existing = await _db.Conflicts

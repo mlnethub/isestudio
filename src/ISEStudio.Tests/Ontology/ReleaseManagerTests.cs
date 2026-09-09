@@ -1,10 +1,6 @@
 using ISEStudio.Ontology;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Tests.Infrastructure;
-using Oxigraph;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -61,9 +57,8 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    private static OntoQuad MakeQuad(string s, string p, string o, string g) =>
-        new(new OntoNamedNode(s), new OntoNamedNode(p),
-            new OntoLiteral(o), new OntoNamedNode(g));
+    private static RdfStatement MakeStatement(string s, string p, string o, string g) =>
+        new(new RdfIri(s), p, new RdfLiteral(o), g);
 
     // ------------------------------------------------------------------
     // Required test (verbatim from the brief).
@@ -73,18 +68,18 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     public async Task Published_release_isolated_from_later_workspace_changes()
     {
         // Set up an initial workspace TBox.
-        var initialQuad = MakeQuad("urn:s1", "urn:p", "v1", _ks.TBoxGraph);
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), [initialQuad]);
+        var initialStatement = MakeStatement("urn:s1", "urn:p", "v1", _ks.TBoxGraph);
+        _fx.TBox.AddStatements(_ks.TBoxGraph, [initialStatement]);
 
         // Use a per-fixture manager so the lifecycle is explicit.
         using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
 
-        var laterQuad = MakeQuad("urn:s2", "urn:p", "v2", _ks.TBoxGraph);
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), [laterQuad]);
+        var laterStatement = MakeStatement("urn:s2", "urn:p", "v2", _ks.TBoxGraph);
+        _fx.TBox.AddStatements(_ks.TBoxGraph, [laterStatement]);
 
-        Assert.DoesNotContain(laterQuad, releases.ReadPublished(release.Id, RdfLayer.TBox));
+        Assert.DoesNotContain(laterStatement, releases.ReadPublished(release.Id, RdfLayer.TBox));
     }
 
     // ------------------------------------------------------------------
@@ -116,23 +111,23 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task ReadPublished_returns_quads_from_all_three_layers()
     {
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
-            [MakeQuad("urn:t-s", "urn:p", "t-v", _ks.TBoxGraph)]);
-        _fx.ABox.AddQuads(new OntoNamedNode(_ks.ABoxGraph),
-            [MakeQuad("urn:a-s", "urn:p", "a-v", _ks.ABoxGraph)]);
-        _fx.Vocabulary.AddQuads(new OntoNamedNode(_ks.VocabularyGraph),
-            [MakeQuad("urn:v-s", "urn:p", "v-v", _ks.VocabularyGraph)]);
+        _fx.TBox.AddStatements(_ks.TBoxGraph,
+            [MakeStatement("urn:t-s", "urn:p", "t-v", _ks.TBoxGraph)]);
+        _fx.ABox.AddStatements(_ks.ABoxGraph,
+            [MakeStatement("urn:a-s", "urn:p", "a-v", _ks.ABoxGraph)]);
+        _fx.Vocabulary.AddStatements(_ks.VocabularyGraph,
+            [MakeStatement("urn:v-s", "urn:p", "v-v", _ks.VocabularyGraph)]);
 
         using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
 
         Assert.Contains(releases.ReadPublished(release.Id, RdfLayer.TBox),
-            q => q.Subject is OntoNamedNode n && n.Value == "urn:t-s");
+            s => s.Subject is RdfIri n && n.Value == "urn:t-s");
         Assert.Contains(releases.ReadPublished(release.Id, RdfLayer.ABox),
-            q => q.Subject is OntoNamedNode n && n.Value == "urn:a-s");
+            s => s.Subject is RdfIri n && n.Value == "urn:a-s");
         Assert.Contains(releases.ReadPublished(release.Id, RdfLayer.Vocabulary),
-            q => q.Subject is OntoNamedNode n && n.Value == "urn:v-s");
+            s => s.Subject is RdfIri n && n.Value == "urn:v-s");
     }
 
     // ------------------------------------------------------------------
@@ -142,8 +137,8 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task Concurrent_workspace_writes_do_not_leak_into_published_view()
     {
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
-            [MakeQuad("urn:s1", "urn:p", "v1", _ks.TBoxGraph)]);
+        _fx.TBox.AddStatements(_ks.TBoxGraph,
+            [MakeStatement("urn:s1", "urn:p", "v1", _ks.TBoxGraph)]);
 
         using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
@@ -152,15 +147,15 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
         // Race: many concurrent workspace writes — none should leak.
         var tasks = Enumerable.Range(0, 16).Select(i => Task.Run(() =>
         {
-            _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
-                [MakeQuad($"urn:race-{i}", "urn:p", $"v{i}", _ks.TBoxGraph)]);
+            _fx.TBox.AddStatements(_ks.TBoxGraph,
+                [MakeStatement($"urn:race-{i}", "urn:p", $"v{i}", _ks.TBoxGraph)]);
         })).ToArray();
         await Task.WhenAll(tasks);
 
-        // Serving view should only contain the original quad.
+        // Serving view should only contain the original statement.
         var serving = releases.ReadPublished(release.Id, RdfLayer.TBox);
         Assert.Single(serving);
-        Assert.Equal("urn:s1", ((OntoNamedNode)serving[0].Subject).Value);
+        Assert.Equal("urn:s1", ((RdfIri)serving[0].Subject).Value);
     }
 
     // ------------------------------------------------------------------
@@ -200,8 +195,8 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task PublishAsync_is_idempotent()
     {
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
-            [MakeQuad("urn:s1", "urn:p", "v1", _ks.TBoxGraph)]);
+        _fx.TBox.AddStatements(_ks.TBoxGraph,
+            [MakeStatement("urn:s1", "urn:p", "v1", _ks.TBoxGraph)]);
 
         using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
@@ -209,7 +204,7 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
         await releases.PublishAsync(release.Id, ActorInstance, CancellationToken.None);
 
-        // Still only one quad in the published view.
+        // Still only one statement in the published view.
         Assert.Single(releases.ReadPublished(release.Id, RdfLayer.TBox));
     }
 
@@ -220,8 +215,8 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task Capture_writes_shards_for_all_three_layers_even_when_empty()
     {
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
-            [MakeQuad("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
+        _fx.TBox.AddStatements(_ks.TBoxGraph,
+            [MakeStatement("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
 
         using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
         var release = await releases.CaptureAsync(_ks, Guid.NewGuid().ToString("N"), "v1", ActorInstance, CancellationToken.None);
@@ -241,20 +236,20 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     [Trait("Category", "RdfCore")]
     public async Task Two_captures_of_same_workspace_yield_same_signature()
     {
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
-            [MakeQuad("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
+        _fx.TBox.AddStatements(_ks.TBoxGraph,
+            [MakeStatement("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
 
-        var quads = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
-        var sig1 = ConflictDetector.Signature(quads);
+        var statements = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
+        var sig1 = ConflictDetector.Signature(statements);
 
         // Mutate the workspace and back — same logical content → same sig.
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
-            [MakeQuad("urn:tmp", "urn:p", "tmp", _ks.TBoxGraph)]);
-        _fx.TBox.RemoveQuads(new OntoNamedNode(_ks.TBoxGraph),
-            [MakeQuad("urn:tmp", "urn:p", "tmp", _ks.TBoxGraph)]);
+        _fx.TBox.AddStatements(_ks.TBoxGraph,
+            [MakeStatement("urn:tmp", "urn:p", "tmp", _ks.TBoxGraph)]);
+        _fx.TBox.RemoveStatements(_ks.TBoxGraph,
+            [MakeStatement("urn:tmp", "urn:p", "tmp", _ks.TBoxGraph)]);
 
-        var quadsAfter = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
-        var sig2 = ConflictDetector.Signature(quadsAfter);
+        var statementsAfter = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
+        var sig2 = ConflictDetector.Signature(statementsAfter);
 
         Assert.Equal(sig1, sig2);
     }
@@ -276,8 +271,8 @@ public class ReleaseManagerTests : IClassFixture<ReleaseManagerFixture>, IAsyncL
     public async Task Concurrent_captures_write_distinct_release_artifacts()
     {
         const int n = 8;
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph),
-            [MakeQuad("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
+        _fx.TBox.AddStatements(_ks.TBoxGraph,
+            [MakeStatement("urn:s", "urn:p", "v", _ks.TBoxGraph)]);
 
         using var releases = new ReleaseManager(_fx.Db, _fx.Statements, _fx.Artifacts);
 

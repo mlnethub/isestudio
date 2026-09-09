@@ -141,12 +141,12 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             // because StoreWrapper is registered in ISEStudio.Ontology and
             // we don't want to widen the test host's namespace imports.
             var rdfDescriptors = services
-                .Where(d => d.ServiceType.FullName == "ISEStudio.Ontology.StoreWrapper")
+                .Where(d => d.ServiceType.FullName == "ISEStudio.Migration.Ontology.StoreWrapper")
                 .ToList();
             foreach (var desc in rdfDescriptors) services.Remove(desc);
             var rdfPath = _rdfRoot;
-            services.AddSingleton(typeof(ISEStudio.Ontology.StoreWrapper),
-                _ => new ISEStudio.Ontology.StoreWrapper(rdfPath));
+            services.AddSingleton(typeof(ISEStudio.Migration.Ontology.StoreWrapper),
+                _ => new ISEStudio.Migration.Ontology.StoreWrapper(rdfPath));
 
             // B6b: override production IChatClientFactory with the shared test fake
             // so all extraction tests drive the orchestrator through FakeChat.

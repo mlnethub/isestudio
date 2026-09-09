@@ -27,3 +27,23 @@ This template is completed by `Invoke-ProductionCutover.ps1`. It is an observati
 ## Notes
 
 Do not include passwords, bearer tokens, connection strings, object-store access keys, or secret values in this document.
+
+## Runtime RDF dependency boundary (Oxigraph removal, 2026-09-09)
+
+The cutover is PostgreSQL-authoritative for all runtime RDF state:
+
+- Workspace layers (TBox / ABox / vocabulary) live in `WorkspaceStatementEntity`
+  rows accessed through `IRdfStatementRepository`; the runtime never opens an
+  on-disk embedded graph store, and startup does not create `data/rdf`
+  (guarded by the host smoke test).
+- Releases serve from `ReleaseStatementEntity`; capture still writes immutable
+  N-Quads shards to the artifact store.
+- `scripts/verify-postgresql-authoritative-storage.ps1` enforces that
+  `src/ISEStudio` contains no Oxigraph / RocksDB / StoreWrapper reference —
+  not even in comments.
+
+Explicit migration exception: `ISEStudio.Migration` and
+`ISEStudio.OxigraphProbe` may reference Oxigraph because neither is hosted by
+the runtime. Migration retains direct RocksDB validation of legacy data and an
+N-Quads fallback path; it is a one-time reader, never part of the serving
+pipeline.

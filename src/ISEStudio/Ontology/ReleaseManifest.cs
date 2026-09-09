@@ -31,10 +31,9 @@ public sealed record ReleaseManifest(
 /// <summary>
 /// One captured / published release. <see cref="Id"/> is the internal draft
 /// id (a Guid) used by the artifact directory; <see cref="Version"/> is the
-/// human-visible version string. <see cref="Path"/> is the absolute filesystem
-/// path of the physically separate RocksDB that serves the published view —
-/// it is also where the serving <see cref="StoreWrapper"/> is rooted at
-/// publication time.
+/// human-visible version string. <see cref="Path"/> is the absolute
+/// filesystem path of the artifact directory holding the published N-Quads
+/// shards.
 /// </summary>
 public sealed record Release(
     string Id,

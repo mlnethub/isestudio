@@ -100,12 +100,12 @@ public sealed class ExportServiceFixture : PostgresRdfFixture
             new OntoNamedNode(GraphIri));
         var statements = new[]
         {
-            new RdfStatement(new RdfIri(BaseIri + "Person"), ISEStudio.Ontology.Vocabulary.RdfType.Value,
-                new RdfIri(ISEStudio.Ontology.Vocabulary.OwlClass.Value), GraphIri),
+            new RdfStatement(new RdfIri(BaseIri + "Person"), ISEStudio.Ontology.Vocabulary.RdfType,
+                new RdfIri(ISEStudio.Ontology.Vocabulary.OwlClass), GraphIri),
             new RdfStatement(new RdfIri(BaseIri + "vocab/Person"),
                 "http://www.w3.org/2004/02/skos/core#prefLabel", new RdfLiteral("Person"),
                 GraphIri + "/vocabulary"),
-            new RdfStatement(new RdfIri(BaseIri + "alice"), ISEStudio.Ontology.Vocabulary.RdfType.Value,
+            new RdfStatement(new RdfIri(BaseIri + "alice"), ISEStudio.Ontology.Vocabulary.RdfType,
                 new RdfIri(BaseIri + "Person"), GraphIri + "/abox"),
         };
         Statements.ReplaceLayerAsync(knowledgeSystemId, RdfLayer.TBox.ToString(),

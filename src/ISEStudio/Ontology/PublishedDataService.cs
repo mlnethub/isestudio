@@ -9,7 +9,7 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 namespace ISEStudio.Ontology;
 
 /// <summary>
-/// Resolved bundle of the rows + serving-store handle backing a single
+/// Resolved bundle of the rows + statements backing a single
 /// <c>published.*</c> request. Built once per request by
 /// <see cref="PublishedDataService.ResolveAsync"/> so each method can stay
 /// pure projection work instead of re-querying the KS/release/deployment.
@@ -18,25 +18,10 @@ namespace ISEStudio.Ontology;
 /// <see cref="ReleaseKey"/> is the <c>OntologyReleaseEntity.Id</c> in the
 /// 32-char no-dash form <see cref="ReleaseManager"/> keys its
 /// <c>_published</c> registry on (and what <see cref="ReleaseArtifactStore"/>
-/// writes shards under). <see cref="Store"/> is a per-release read-only
-/// Oxigraph instance the manager opened at publish time — different from
-/// the live workspace <see cref="StoreWrapper"/> so workspace writes after
-/// publication never leak into the served view.
-/// </remarks>
-/// <summary>
-/// Resolved bundle of the rows + serving-store handle backing a single
-/// <c>published.*</c> request. Built once per request by
-/// <see cref="PublishedDataService.ResolveAsync"/> so each method can stay
-/// pure projection work instead of re-querying the KS/release/deployment.
-/// </summary>
-/// <remarks>
-/// <see cref="ReleaseKey"/> is the <c>OntologyReleaseEntity.Id</c> in the
-/// 32-char no-dash form <see cref="ReleaseManager"/> keys its
-/// <c>_published</c> registry on (and what <see cref="ReleaseArtifactStore"/>
-/// writes shards under). <see cref="Store"/> is a per-release read-only
-/// Oxigraph instance the manager opened at publish time — different from
-/// the live workspace <see cref="StoreWrapper"/> so workspace writes after
-/// publication never leak into the served view.
+/// writes shards under). <see cref="Statements"/> is the per-release
+/// read-only statement snapshot materialised at publish time — different
+/// from the live workspace layers so workspace writes after publication
+/// never leak into the served view.
 /// </remarks>
 public sealed record ServingContext(
     KnowledgeSystemEntity Ks,
@@ -193,13 +178,12 @@ public sealed class PublishedDataService : IDisposable
     }
 
     /// <summary>
-    /// Open a fresh read-only <see cref="StoreWrapper"/> on the serving
-    /// directory. Used so the <c>classes</c> / <c>individual</c> /
-    /// <c>individuals</c> methods can call <c>StoreWrapper.Match</c>
-    /// directly with subject / graph IRI filters. We re-open rather than
-    /// reach into the manager's in-memory registry so this service stays
-    /// side-effect-free (a concurrent publish / delete in another request
-    /// doesn't tear down our handle mid-read).
+    /// Filter the sealed release's statement snapshot to one named graph.
+    /// Used so the <c>classes</c> / <c>individual</c> / <c>individuals</c>
+    /// methods can filter directly by graph IRI. The snapshot is
+    /// materialised per request in <see cref="ServingContext"/>, so this
+    /// service stays side-effect-free (a concurrent publish / delete in
+    /// another request doesn't tear down our snapshot mid-read).
     /// </summary>
     private static IEnumerable<RdfStatement> GraphStatements(ServingContext ctx, string graphIri) =>
         ctx.Statements.Where(s => s.GraphIri == graphIri);
@@ -316,8 +300,8 @@ public sealed class PublishedDataService : IDisposable
         var aboxStatements = GraphStatements(ctx, ctx.Deployment.AboxGraphIri);
         foreach (var q in aboxStatements)
         {
-            if (q.Subject is not RdfIri || q.PredicateIri != Vocabulary.RdfType.Value) continue;
-            if (q.Object is not RdfIri cls || cls.Value == Vocabulary.OwlNamedIndividual.Value) continue;
+            if (q.Subject is not RdfIri || q.PredicateIri != Vocabulary.RdfType) continue;
+            if (q.Object is not RdfIri cls || cls.Value == Vocabulary.OwlNamedIndividual) continue;
             counts.TryGetValue(cls.Value, out var n);
             counts[cls.Value] = n + 1;
         }
@@ -363,8 +347,8 @@ public sealed class PublishedDataService : IDisposable
     /// </summary>
     /// <remarks>
     /// MVP emits <c>application/n-quads</c> only — the Python backend
-    /// accepts <c>?fmt=turtle|nquads|json-ld|...</c> and switches on the
-    /// Oxigraph serializer; the .NET port defers that switch until
+    /// accepts <c>?fmt=turtle|nquads|json-ld|...</c> and switches
+    /// serializers; the .NET port defers that switch until
     /// RdfExportService gains a serving-store overload.
     /// </remarks>
     public byte[] GetExport(ServingContext ctx)
@@ -403,15 +387,15 @@ public sealed class PublishedDataService : IDisposable
 
         foreach (var quad in outgoing)
         {
-            if (quad.PredicateIri == Vocabulary.RdfType.Value
+            if (quad.PredicateIri == Vocabulary.RdfType
                 && quad.Object is RdfIri cls)
             {
                 var clsIri = cls.Value;
-                if (clsIri == Vocabulary.OwlNamedIndividual.Value) continue;
+                if (clsIri == Vocabulary.OwlNamedIndividual) continue;
                 types.Add(new LabeledIri(clsIri,
                     classLabels.TryGetValue(clsIri, out var l) ? l : LocalIri(clsIri)));
             }
-            else if (quad.PredicateIri == Vocabulary.RdfsLabel.Value
+            else if (quad.PredicateIri == Vocabulary.RdfsLabel
                 && quad.Object is RdfLiteral labelLit)
             {
                 label = labelLit.Value;
@@ -471,7 +455,7 @@ public sealed class PublishedDataService : IDisposable
         {
             if (quad.Subject is not RdfIri subj) continue;
             var siri = subj.Value;
-            if (quad.PredicateIri == Vocabulary.RdfType.Value
+            if (quad.PredicateIri == Vocabulary.RdfType
                 && quad.Object is RdfIri cls)
             {
                 if (!classBySubject.TryGetValue(siri, out var set))
@@ -481,7 +465,7 @@ public sealed class PublishedDataService : IDisposable
                 }
                 set.Add(cls.Value);
             }
-            else if (quad.PredicateIri == Vocabulary.RdfsLabel.Value
+            else if (quad.PredicateIri == Vocabulary.RdfsLabel
                 && quad.Object is RdfLiteral lit)
             {
                 labelBySubject[siri] = lit.Value;
@@ -512,7 +496,7 @@ public sealed class PublishedDataService : IDisposable
         {
             var label = labelBySubject.TryGetValue(iri, out var l) ? l : LocalIri(iri);
             var types = classBySubject[iri]
-                .Where(t => t != Vocabulary.OwlNamedIndividual.Value)
+                .Where(t => t != Vocabulary.OwlNamedIndividual)
                 .OrderBy(t => t, StringComparer.Ordinal)
                 .Select(t => new LabeledIri(t,
                     classLabels.TryGetValue(t, out var tl) ? tl : LocalIri(t)))

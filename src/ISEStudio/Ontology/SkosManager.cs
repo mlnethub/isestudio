@@ -2,10 +2,6 @@ using System.Text;
 using System.Text.RegularExpressions;
 using ISEStudio.Application.Vocabulary;
 using ISEStudio.Infrastructure.Persistence.Entities;
-using Oxigraph;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Ontology;
 
@@ -31,8 +27,8 @@ public static class SkosVocab
     /// <summary>
     /// Set the ISEStudio vocabulary prefix from configuration. Call once
     /// during host startup (<c>Program.cs</c>). Triggers a rebuild of the
-    /// cached <c>Op*</c> NamedNodes on next access so any test or hot
-    /// reload that changes the prefix at runtime sees the new values.
+    /// cached <c>op:*</c> predicate IRIs on next access so any test or
+    /// hot reload that changes the prefix at runtime sees the new values.
     /// </summary>
     public static void Configure(string vocabNamespace)
     {
@@ -48,38 +44,39 @@ public static class SkosVocab
         _opOrigin = null;
     }
 
-    public static readonly OntoNamedNode ConceptScheme = new(Skos + "ConceptScheme");
-    public static readonly OntoNamedNode Concept = new(Skos + "Concept");
-    public static readonly OntoNamedNode InScheme = new(Skos + "inScheme");
-    public static readonly OntoNamedNode PrefLabel = new(Skos + "prefLabel");
-    public static readonly OntoNamedNode AltLabel = new(Skos + "altLabel");
-    public static readonly OntoNamedNode HiddenLabel = new(Skos + "hiddenLabel");
-    public static readonly OntoNamedNode Broader = new(Skos + "broader");
-    public static readonly OntoNamedNode Related = new(Skos + "related");
-    public static readonly OntoNamedNode Notation = new(Skos + "notation");
-    public static readonly OntoNamedNode Definition = new(Skos + "definition");
+    public const string ConceptScheme = Skos + "ConceptScheme";
+    public const string Concept = Skos + "Concept";
+    public const string InScheme = Skos + "inScheme";
+    public const string PrefLabel = Skos + "prefLabel";
+    public const string AltLabel = Skos + "altLabel";
+    public const string HiddenLabel = Skos + "hiddenLabel";
+    public const string Broader = Skos + "broader";
+    public const string Related = Skos + "related";
+    public const string Notation = Skos + "notation";
+    public const string Definition = Skos + "definition";
 
-    public static readonly OntoNamedNode DcTitle = new(Dcterms + "title");
-    public static readonly OntoNamedNode DcDescription = new(Dcterms + "description");
-    public static readonly OntoNamedNode DcCreated = new(Dcterms + "created");
-    public static readonly OntoNamedNode DcModified = new(Dcterms + "modified");
+    public const string DcTitle = Dcterms + "title";
+    public const string DcDescription = Dcterms + "description";
+    public const string DcCreated = Dcterms + "created";
+    public const string DcModified = Dcterms + "modified";
 
-    // Op* NamedNodes depend on the configurable IseStudio prefix, so they
-    // are lazy + invalidated by Configure(). Read via the property accessors
-    // below so any code path that needs them always sees the current prefix.
-    private static OntoNamedNode? _opDefaultLanguage;
-    private static OntoNamedNode? _opStatus;
-    private static OntoNamedNode? _opMapsTo;
-    private static OntoNamedNode? _opOrigin;
+    // op:* predicate IRIs depend on the configurable IseStudio prefix, so
+    // they are lazy + invalidated by Configure(). Read via the property
+    // accessors below so any code path that needs them always sees the
+    // current prefix.
+    private static string? _opDefaultLanguage;
+    private static string? _opStatus;
+    private static string? _opMapsTo;
+    private static string? _opOrigin;
 
-    public static OntoNamedNode OpDefaultLanguage =>
-        _opDefaultLanguage ??= new OntoNamedNode(IseStudio + "defaultLanguage");
-    public static OntoNamedNode OpStatus =>
-        _opStatus ??= new OntoNamedNode(IseStudio + "status");
-    public static OntoNamedNode OpMapsTo =>
-        _opMapsTo ??= new OntoNamedNode(IseStudio + "mapsTo");
-    public static OntoNamedNode OpOrigin =>
-        _opOrigin ??= new OntoNamedNode(IseStudio + "origin");
+    public static string OpDefaultLanguage =>
+        _opDefaultLanguage ??= IseStudio + "defaultLanguage";
+    public static string OpStatus =>
+        _opStatus ??= IseStudio + "status";
+    public static string OpMapsTo =>
+        _opMapsTo ??= IseStudio + "mapsTo";
+    public static string OpOrigin =>
+        _opOrigin ??= IseStudio + "origin";
 }
 
 // ----------------------------------------------------------------------
@@ -124,13 +121,13 @@ public sealed class SkosManager
     private static string Local(string iri) =>
         iri.Contains('#') ? iri[(iri.LastIndexOf('#') + 1)..] : iri.TrimEnd('/').Split('/')[^1];
 
-    private static OntoLiteral MakeLiteral(string value, string language)
+    private static RdfLiteral MakeLiteral(string value, string language)
     {
         var cleaned = (value ?? "").Trim();
         if (cleaned.Length == 0)
             throw new SkosValidationException("Label values cannot be empty");
         var lang = (language ?? "").Trim();
-        return lang.Length == 0 ? new OntoLiteral(cleaned) : new OntoLiteral(cleaned, Language: lang);
+        return lang.Length == 0 ? new RdfLiteral(cleaned) : new RdfLiteral(cleaned, Language: lang);
     }
 
     private static SkosLabel MakeLabel(string value, string language)
@@ -141,20 +138,19 @@ public sealed class SkosManager
         return new SkosLabel(cleaned, (language ?? "").Trim());
     }
 
-    private IReadOnlyDictionary<string, List<(OntoNamedNode Predicate, object Object)>> SubjectIndex(KsContext ks)
+    private IReadOnlyDictionary<string, List<(string Predicate, RdfTerm Object)>> SubjectIndex(KsContext ks)
     {
-        var out_ = new Dictionary<string, List<(OntoNamedNode, object)>>(StringComparer.Ordinal);
-        var g = new OntoNamedNode(ks.VocabularyGraph);
-        foreach (var q in _store.Match(ks, graph: g))
+        var out_ = new Dictionary<string, List<(string, RdfTerm)>>(StringComparer.Ordinal);
+        foreach (var s in _store.Match(ks, graphIri: ks.VocabularyGraph))
         {
-            if (q.Subject is OntoNamedNode n)
+            if (s.Subject is RdfIri n)
             {
                 if (!out_.TryGetValue(n.Value, out var list))
                 {
-                    list = new List<(OntoNamedNode, object)>();
+                    list = new List<(string, RdfTerm)>();
                     out_[n.Value] = list;
                 }
-                list.Add((q.Predicate, q.Object));
+                list.Add((s.PredicateIri, s.Object));
             }
         }
         return out_;
@@ -176,10 +172,10 @@ public sealed class SkosManager
         {
             foreach (var (pred, obj) in pairs)
             {
-                if (pred.Value == Vocabulary.RdfType.Value)
+                if (pred == Vocabulary.RdfType)
                 {
-                    if (obj is OntoNamedNode t && t.Value == SkosVocab.ConceptScheme.Value) schemeIris.Add(iri);
-                    else if (obj is OntoNamedNode t2 && t2.Value == SkosVocab.Concept.Value) conceptIris.Add(iri);
+                    if (obj is RdfIri t && t.Value == SkosVocab.ConceptScheme) schemeIris.Add(iri);
+                    else if (obj is RdfIri t2 && t2.Value == SkosVocab.Concept) conceptIris.Add(iri);
                 }
             }
         }
@@ -188,22 +184,22 @@ public sealed class SkosManager
         foreach (var iri in schemeIris)
         {
             var pairs = subjects[iri];
-            var titles = pairs.Where(p => p.Predicate.Value == SkosVocab.DcTitle.Value
-                && p.Object is OntoLiteral)
-                .Select(p => ToLabel((OntoLiteral)p.Object)).ToList();
-            var descriptions = pairs.Where(p => p.Predicate.Value == SkosVocab.DcDescription.Value
-                && p.Object is OntoLiteral)
-                .Select(p => ToLabel((OntoLiteral)p.Object)).ToList();
+            var titles = pairs.Where(p => p.Predicate == SkosVocab.DcTitle
+                && p.Object is RdfLiteral)
+                .Select(p => ToLabel((RdfLiteral)p.Object)).ToList();
+            var descriptions = pairs.Where(p => p.Predicate == SkosVocab.DcDescription
+                && p.Object is RdfLiteral)
+                .Select(p => ToLabel((RdfLiteral)p.Object)).ToList();
             schemes.Add(new SkosSchemeView(
                 Iri: iri,
                 Title: titles.Count > 0 ? titles[0].Value : Local(iri),
                 Titles: titles,
                 Description: descriptions.Count > 0 ? descriptions[0].Value : "",
                 Descriptions: descriptions,
-                DefaultLanguage: FirstLiteral(pairs, SkosVocab.OpDefaultLanguage.Value, "zh-CN"),
-                Origin: FirstLiteral(pairs, SkosVocab.OpOrigin.Value, "manual"),
-                CreatedAt: FirstLiteral(pairs, SkosVocab.DcCreated.Value),
-                ModifiedAt: FirstLiteral(pairs, SkosVocab.DcModified.Value),
+                DefaultLanguage: FirstLiteral(pairs, SkosVocab.OpDefaultLanguage, "zh-CN"),
+                Origin: FirstLiteral(pairs, SkosVocab.OpOrigin, "manual"),
+                CreatedAt: FirstLiteral(pairs, SkosVocab.DcCreated),
+                ModifiedAt: FirstLiteral(pairs, SkosVocab.DcModified),
                 ConceptCount: 0));
         }
 
@@ -211,27 +207,27 @@ public sealed class SkosManager
         foreach (var iri in conceptIris)
         {
             var pairs = subjects[iri];
-            var pref = pairs.Where(p => p.Predicate.Value == SkosVocab.PrefLabel.Value
-                && p.Object is OntoLiteral)
-                .Select(p => ToLabel((OntoLiteral)p.Object)).ToList();
-            var alt = pairs.Where(p => p.Predicate.Value == SkosVocab.AltLabel.Value
-                && p.Object is OntoLiteral)
-                .Select(p => ToLabel((OntoLiteral)p.Object)).ToList();
-            var hidden = pairs.Where(p => p.Predicate.Value == SkosVocab.HiddenLabel.Value
-                && p.Object is OntoLiteral)
-                .Select(p => ToLabel((OntoLiteral)p.Object)).ToList();
-            var schemesFor = pairs.Where(p => p.Predicate.Value == SkosVocab.InScheme.Value
-                && p.Object is OntoNamedNode)
-                .Select(p => ((OntoNamedNode)p.Object).Value).ToList();
-            var broader = pairs.Where(p => p.Predicate.Value == SkosVocab.Broader.Value
-                && p.Object is OntoNamedNode)
-                .Select(p => ((OntoNamedNode)p.Object).Value).ToList();
-            var related = pairs.Where(p => p.Predicate.Value == SkosVocab.Related.Value
-                && p.Object is OntoNamedNode)
-                .Select(p => ((OntoNamedNode)p.Object).Value).ToList();
-            var mapped = pairs.Where(p => p.Predicate.Value == SkosVocab.OpMapsTo.Value
-                && p.Object is OntoNamedNode)
-                .Select(p => ((OntoNamedNode)p.Object).Value).ToList();
+            var pref = pairs.Where(p => p.Predicate == SkosVocab.PrefLabel
+                && p.Object is RdfLiteral)
+                .Select(p => ToLabel((RdfLiteral)p.Object)).ToList();
+            var alt = pairs.Where(p => p.Predicate == SkosVocab.AltLabel
+                && p.Object is RdfLiteral)
+                .Select(p => ToLabel((RdfLiteral)p.Object)).ToList();
+            var hidden = pairs.Where(p => p.Predicate == SkosVocab.HiddenLabel
+                && p.Object is RdfLiteral)
+                .Select(p => ToLabel((RdfLiteral)p.Object)).ToList();
+            var schemesFor = pairs.Where(p => p.Predicate == SkosVocab.InScheme
+                && p.Object is RdfIri)
+                .Select(p => ((RdfIri)p.Object).Value).ToList();
+            var broader = pairs.Where(p => p.Predicate == SkosVocab.Broader
+                && p.Object is RdfIri)
+                .Select(p => ((RdfIri)p.Object).Value).ToList();
+            var related = pairs.Where(p => p.Predicate == SkosVocab.Related
+                && p.Object is RdfIri)
+                .Select(p => ((RdfIri)p.Object).Value).ToList();
+            var mapped = pairs.Where(p => p.Predicate == SkosVocab.OpMapsTo
+                && p.Object is RdfIri)
+                .Select(p => ((RdfIri)p.Object).Value).ToList();
             concepts.Add(new SkosConceptView(
                 Iri: iri,
                 SchemeIri: schemesFor.Count > 0 ? schemesFor[0] : "",
@@ -239,17 +235,17 @@ public sealed class SkosManager
                 AltLabels: alt,
                 HiddenLabels: hidden,
                 DisplayLabel: pref.Count > 0 ? pref[0].Value : Local(iri),
-                Description: FirstLiteral(pairs, SkosVocab.Definition.Value),
-                Notation: FirstLiteral(pairs, SkosVocab.Notation.Value),
+                Description: FirstLiteral(pairs, SkosVocab.Definition),
+                Notation: FirstLiteral(pairs, SkosVocab.Notation),
                 Broader: broader,
                 Related: related,
                 BroaderLabels: new List<string>(),
                 RelatedLabels: new List<string>(),
                 MappedEntityIri: mapped.Count > 0 ? mapped[0] : null,
-                Status: FirstLiteral(pairs, SkosVocab.OpStatus.Value, "active"),
-                Origin: FirstLiteral(pairs, SkosVocab.OpOrigin.Value, "manual"),
-                CreatedAt: FirstLiteral(pairs, SkosVocab.DcCreated.Value),
-                ModifiedAt: FirstLiteral(pairs, SkosVocab.DcModified.Value)));
+                Status: FirstLiteral(pairs, SkosVocab.OpStatus, "active"),
+                Origin: FirstLiteral(pairs, SkosVocab.OpOrigin, "manual"),
+                CreatedAt: FirstLiteral(pairs, SkosVocab.DcCreated),
+                ModifiedAt: FirstLiteral(pairs, SkosVocab.DcModified)));
         }
 
         var byIri = concepts.ToDictionary(c => c.Iri, c => c, StringComparer.Ordinal);
@@ -285,15 +281,15 @@ public sealed class SkosManager
         return new SkosView(finalSchemes, withLabels, stats);
     }
 
-    private static SkosLabel ToLabel(OntoLiteral lit) =>
+    private static SkosLabel ToLabel(RdfLiteral lit) =>
         new(lit.Value, lit.Language ?? "");
 
-    private static string FirstLiteral(IEnumerable<(OntoNamedNode Predicate, object Object)> pairs,
+    private static string FirstLiteral(IEnumerable<(string Predicate, RdfTerm Object)> pairs,
         string predicateIri, string fallback = "")
     {
         foreach (var (p, o) in pairs)
         {
-            if (p.Value == predicateIri && o is OntoLiteral lit)
+            if (p == predicateIri && o is RdfLiteral lit)
                 return lit.Value;
         }
         return fallback;
@@ -324,23 +320,30 @@ public sealed class SkosManager
         if (GetScheme(ks, iri) is not null)
             throw new SkosValidationException("A vocabulary with this IRI already exists");
 
-        var graph = new OntoNamedNode(ks.VocabularyGraph);
-        var node = new OntoNamedNode(iri);
+        var graph = ks.VocabularyGraph;
         var now = NowIso();
-        var quads = new List<OntoQuad>
+        var statements = new List<RdfStatement>
         {
-            new(node, Vocabulary.RdfType, SkosVocab.ConceptScheme, graph),
-            new(node, SkosVocab.DcTitle, MakeLiteral(title, language), graph),
-            new(node, SkosVocab.OpDefaultLanguage, new OntoLiteral(language), graph),
-            new(node, SkosVocab.OpOrigin, new OntoLiteral(origin), graph),
-            new(node, SkosVocab.DcCreated, new OntoLiteral(now), graph),
-            new(node, SkosVocab.DcModified, new OntoLiteral(now), graph),
+            new(new RdfIri(iri), Vocabulary.RdfType,
+                new RdfIri(SkosVocab.ConceptScheme), graph),
+            new(new RdfIri(iri), SkosVocab.DcTitle,
+                MakeLiteral(title, language), graph),
+            new(new RdfIri(iri), SkosVocab.OpDefaultLanguage,
+                new RdfLiteral(language), graph),
+            new(new RdfIri(iri), SkosVocab.OpOrigin,
+                new RdfLiteral(origin), graph),
+            new(new RdfIri(iri), SkosVocab.DcCreated,
+                new RdfLiteral(now), graph),
+            new(new RdfIri(iri), SkosVocab.DcModified,
+                new RdfLiteral(now), graph),
         };
         if (description.Length > 0)
         {
-            quads.Add(new(node, SkosVocab.DcDescription, MakeLiteral(description, language), graph));
+            statements.Add(new RdfStatement(
+                new RdfIri(iri), SkosVocab.DcDescription,
+                MakeLiteral(description, language), graph));
         }
-        _store.AddQuads(ks, graph, quads);
+        _store.AddStatements(ks, graph, statements);
         return iri;
     }
 
@@ -363,19 +366,24 @@ public sealed class SkosManager
         var origin = (data.Origin ?? existing.Origin).Trim();
         if (origin.Length == 0) origin = "manual";
 
-        var graph = new OntoNamedNode(ks.VocabularyGraph);
-        var node = new OntoNamedNode(iri);
-        RemovePredicates(ks, node, SchemePredicates);
-        var quads = new List<OntoQuad>
+        var graph = ks.VocabularyGraph;
+        RemovePredicates(ks, iri, SchemePredicates);
+        var statements = new List<RdfStatement>
         {
-            new(node, SkosVocab.DcTitle, MakeLiteral(title, language), graph),
-            new(node, SkosVocab.OpDefaultLanguage, new OntoLiteral(language), graph),
-            new(node, SkosVocab.OpOrigin, new OntoLiteral(origin), graph),
-            new(node, SkosVocab.DcModified, new OntoLiteral(NowIso()), graph),
+            new(new RdfIri(iri), SkosVocab.DcTitle,
+                MakeLiteral(title, language), graph),
+            new(new RdfIri(iri), SkosVocab.OpDefaultLanguage,
+                new RdfLiteral(language), graph),
+            new(new RdfIri(iri), SkosVocab.OpOrigin,
+                new RdfLiteral(origin), graph),
+            new(new RdfIri(iri), SkosVocab.DcModified,
+                new RdfLiteral(NowIso()), graph),
         };
         if (description.Length > 0)
-            quads.Add(new(node, SkosVocab.DcDescription, MakeLiteral(description, language), graph));
-        _store.AddQuads(ks, graph, quads);
+            statements.Add(new RdfStatement(
+                new RdfIri(iri), SkosVocab.DcDescription,
+                MakeLiteral(description, language), graph));
+        _store.AddStatements(ks, graph, statements);
         return iri;
     }
 
@@ -401,13 +409,12 @@ public sealed class SkosManager
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(iri);
         var view = BuildView(ks);
-        var graph = new OntoNamedNode(ks.VocabularyGraph);
         var removed = 0;
         foreach (var c in view.Concepts.Where(c => c.SchemeIri == iri))
         {
-            removed += RemoveEntity(ks, graph, c.Iri);
+            removed += RemoveEntity(ks, ks.VocabularyGraph, c.Iri);
         }
-        removed += RemoveEntity(ks, graph, iri);
+        removed += RemoveEntity(ks, ks.VocabularyGraph, iri);
         return removed;
     }
 
@@ -415,13 +422,13 @@ public sealed class SkosManager
     // Concept CRUD
     // ------------------------------------------------------------------
 
-    private static readonly HashSet<OntoNamedNode> SchemePredicates = new()
+    private static readonly HashSet<string> SchemePredicates = new()
     {
         SkosVocab.DcTitle, SkosVocab.DcDescription, SkosVocab.DcModified,
         SkosVocab.OpDefaultLanguage, SkosVocab.OpOrigin,
     };
 
-    private static readonly HashSet<OntoNamedNode> ConceptPredicates = new()
+    private static readonly HashSet<string> ConceptPredicates = new()
     {
         SkosVocab.InScheme, SkosVocab.PrefLabel, SkosVocab.AltLabel, SkosVocab.HiddenLabel,
         SkosVocab.Broader, SkosVocab.Related, SkosVocab.Notation, SkosVocab.Definition,
@@ -444,8 +451,8 @@ public sealed class SkosManager
         if (GetConcept(ks, iri) is not null)
             throw new SkosValidationException("A concept with this IRI already exists");
 
-        var quads = ConceptTriples(iri, cleaned, createdAt: NowIso(), graph: new OntoNamedNode(ks.VocabularyGraph));
-        _store.AddQuads(ks, new OntoNamedNode(ks.VocabularyGraph), quads);
+        var statements = ConceptTriples(iri, cleaned, createdAt: NowIso(), graph: ks.VocabularyGraph);
+        _store.AddStatements(ks, ks.VocabularyGraph, statements);
         return iri;
     }
 
@@ -465,15 +472,15 @@ public sealed class SkosManager
             Origin = data.Origin.Length > 0 ? data.Origin : existing.Origin,
         };
         var cleaned = ValidateConcept(ks, source, excludeIri: iri);
-        var graph = new OntoNamedNode(ks.VocabularyGraph);
-        var node = new OntoNamedNode(iri);
-        RemovePredicates(ks, node, ConceptPredicates);
+        var graph = ks.VocabularyGraph;
+        RemovePredicates(ks, iri, ConceptPredicates);
         // Also drop any inbound `skos:related -> iri` triples.
-        var inbound = _store.Match(ks, predicateIri: SkosVocab.Related.Value,
-            objectIri: iri, graphIri: ks.VocabularyGraph);
-        if (inbound.Count > 0) _store.RemoveQuads(ks, graph, inbound);
-        var quads = ConceptTriples(iri, cleaned, createdAt: existing.CreatedAt.Length > 0 ? existing.CreatedAt : null, graph: graph);
-        _store.AddQuads(ks, graph, quads);
+        var inbound = _store.Match(ks, predicateIri: SkosVocab.Related,
+            objectIri: iri, graphIri: graph);
+        if (inbound.Count > 0) _store.RemoveStatements(ks, graph, inbound);
+        var statements = ConceptTriples(iri, cleaned,
+            createdAt: existing.CreatedAt.Length > 0 ? existing.CreatedAt : null, graph: graph);
+        _store.AddStatements(ks, graph, statements);
         return iri;
     }
 
@@ -482,40 +489,40 @@ public sealed class SkosManager
     {
         ArgumentNullException.ThrowIfNull(ks);
         ArgumentException.ThrowIfNullOrEmpty(iri);
-        var graph = new OntoNamedNode(ks.VocabularyGraph);
-        var inbound = _store.Match(ks, predicateIri: SkosVocab.Related.Value,
-            objectIri: iri, graphIri: ks.VocabularyGraph);
-        if (inbound.Count > 0) _store.RemoveQuads(ks, graph, inbound);
+        var graph = ks.VocabularyGraph;
+        var inbound = _store.Match(ks, predicateIri: SkosVocab.Related,
+            objectIri: iri, graphIri: graph);
+        if (inbound.Count > 0) _store.RemoveStatements(ks, graph, inbound);
         return RemoveEntity(ks, graph, iri);
     }
 
-    private void RemovePredicates(KsContext ks, OntoNamedNode subject, HashSet<OntoNamedNode> predicates)
+    private void RemovePredicates(KsContext ks, string subject, HashSet<string> predicates)
     {
-        var graph = new OntoNamedNode(ks.VocabularyGraph);
+        var graph = ks.VocabularyGraph;
         foreach (var pred in predicates)
         {
-            var existing = _store.Match(ks, subjectIri: subject.Value, predicateIri: pred.Value,
-                graphIri: ks.VocabularyGraph);
-            if (existing.Count > 0) _store.RemoveQuads(ks, graph, existing);
+            var existing = _store.Match(ks, subjectIri: subject, predicateIri: pred,
+                graphIri: graph);
+            if (existing.Count > 0) _store.RemoveStatements(ks, graph, existing);
         }
     }
 
-    private int RemoveEntity(KsContext ks, OntoNamedNode graph, string iri)
+    private int RemoveEntity(KsContext ks, string graph, string iri)
     {
-        var outgoing = _store.Match(ks, subjectIri: iri, graphIri: graph.Value);
+        var outgoing = _store.Match(ks, subjectIri: iri, graphIri: graph);
         if (outgoing.Count > 0)
         {
-            _store.RemoveQuads(ks, graph, outgoing);
+            _store.RemoveStatements(ks, graph, outgoing);
         }
         return outgoing.Count;
     }
 
     private interface IVocabularyGraphStore
     {
-        List<OntoQuad> Match(KsContext ks, string? subjectIri = null, string? predicateIri = null,
-            string? objectIri = null, string? graphIri = null, OntoNamedNode? graph = null);
-        void AddQuads(KsContext ks, OntoNamedNode graph, IEnumerable<OntoQuad> quads);
-        void RemoveQuads(KsContext ks, OntoNamedNode graph, IEnumerable<OntoQuad> quads);
+        List<RdfStatement> Match(KsContext ks, string? subjectIri = null, string? predicateIri = null,
+            string? objectIri = null, string? graphIri = null);
+        void AddStatements(KsContext ks, string graphIri, IEnumerable<RdfStatement> statements);
+        void RemoveStatements(KsContext ks, string graphIri, IEnumerable<RdfStatement> statements);
     }
 
     private sealed class PostgresVocabularyGraphStore : IVocabularyGraphStore
@@ -524,114 +531,85 @@ public sealed class SkosManager
 
         public PostgresVocabularyGraphStore(IRdfStatementRepository statements) => _statements = statements;
 
-        public List<OntoQuad> Match(KsContext ks, string? subjectIri = null, string? predicateIri = null,
-            string? objectIri = null, string? graphIri = null, OntoNamedNode? graph = null)
+        public List<RdfStatement> Match(KsContext ks, string? subjectIri = null,
+            string? predicateIri = null, string? objectIri = null, string? graphIri = null)
         {
-            var selectedGraph = graphIri ?? graph?.Value ?? ks.VocabularyGraph;
+            var selectedGraph = graphIri ?? ks.VocabularyGraph;
             return _statements.ListAsync(ks.KnowledgeSystemId, "Vocabulary").GetAwaiter().GetResult()
-                .Where(statement => statement.GraphIri == selectedGraph)
-                .Where(statement => subjectIri is null || statement.Subject is RdfIri iri && iri.Value == subjectIri)
-                .Where(statement => predicateIri is null || statement.PredicateIri == predicateIri)
-                .Where(statement => objectIri is null || statement.Object is RdfIri iri && iri.Value == objectIri)
-                .Select(ToQuad)
+                .Where(s => s.GraphIri == selectedGraph)
+                .Where(s => subjectIri is null || s.Subject is RdfIri iri && iri.Value == subjectIri)
+                .Where(s => predicateIri is null || s.PredicateIri == predicateIri)
+                .Where(s => objectIri is null || s.Object is RdfIri iri && iri.Value == objectIri)
                 .ToList();
         }
 
-        public void AddQuads(KsContext ks, OntoNamedNode graph, IEnumerable<OntoQuad> quads) =>
-            Replace(ks, graph.Value, Match(ks, graph: graph).Concat(quads).Distinct().ToList());
-
-        public void RemoveQuads(KsContext ks, OntoNamedNode graph, IEnumerable<OntoQuad> quads)
+        public void AddStatements(KsContext ks, string graphIri, IEnumerable<RdfStatement> statements)
         {
-            var remove = quads.ToHashSet();
-            Replace(ks, graph.Value, Match(ks, graph: graph).Where(quad => !remove.Contains(quad)).ToList());
+            var existing = Match(ks, graphIri: graphIri);
+            var merged = existing.Concat(statements).Distinct().ToList();
+            _statements.ReplaceLayerAsync(ks.KnowledgeSystemId, "Vocabulary", merged)
+                .GetAwaiter().GetResult();
         }
 
-        private void Replace(KsContext ks, string graphIri, IReadOnlyList<OntoQuad> quads) =>
-            _statements.ReplaceLayerAsync(ks.KnowledgeSystemId, "Vocabulary",
-                quads.Select(FromQuad).ToList()).GetAwaiter().GetResult();
-
-        private static RdfStatement FromQuad(OntoQuad quad) =>
-            new(FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object), quad.Graph is OntoNamedNode g ? g.Value : quad.Graph?.ToString());
-
-        private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
+        public void RemoveStatements(KsContext ks, string graphIri, IEnumerable<RdfStatement> statements)
         {
-            OntoNamedNode iri => new RdfIri(iri.Value),
-            Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
-            OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
-            _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-        };
-
-        private static OntoQuad ToQuad(RdfStatement statement)
-        {
-            var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("Vocabulary graph is required"));
-            return new OntoQuad(ToSubject(statement.Subject), new OntoNamedNode(statement.PredicateIri), ToObject(statement.Object), graph);
+            var remove = statements.ToHashSet();
+            var remaining = Match(ks, graphIri: graphIri)
+                .Where(s => !remove.Contains(s))
+                .ToList();
+            _statements.ReplaceLayerAsync(ks.KnowledgeSystemId, "Vocabulary", remaining)
+                .GetAwaiter().GetResult();
         }
-
-        private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
-        {
-            RdfIri iri => new OntoNamedNode(iri.Value),
-            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-            _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
-        };
-
-        private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
-        {
-            RdfIri iri => new OntoNamedNode(iri.Value),
-            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-            RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
-                literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
-            _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-        };
     }
 
-    private static List<OntoQuad> ConceptTriples(string iri, SkosConceptData data, string? createdAt, OntoNamedNode graph)
+    private static List<RdfStatement> ConceptTriples(string iri, SkosConceptData data, string? createdAt, string graph)
     {
-        var node = new OntoNamedNode(iri);
+        var node = new RdfIri(iri);
         var now = NowIso();
-        var triples = new List<OntoQuad>
+        var statements = new List<RdfStatement>
         {
-            new(node, Vocabulary.RdfType, SkosVocab.Concept, graph),
-            new(node, SkosVocab.InScheme, new OntoNamedNode(data.SchemeIri), graph),
-            new(node, SkosVocab.OpStatus, new OntoLiteral(data.Status), graph),
-            new(node, SkosVocab.OpOrigin, new OntoLiteral(data.Origin), graph),
-            new(node, SkosVocab.DcModified, new OntoLiteral(now), graph),
+            new(node, Vocabulary.RdfType, new RdfIri(SkosVocab.Concept), graph),
+            new(node, SkosVocab.InScheme, new RdfIri(data.SchemeIri), graph),
+            new(node, SkosVocab.OpStatus, new RdfLiteral(data.Status), graph),
+            new(node, SkosVocab.OpOrigin, new RdfLiteral(data.Origin), graph),
+            new(node, SkosVocab.DcModified, new RdfLiteral(now), graph),
         };
         if (createdAt is { Length: > 0 })
-            triples.Add(new(node, SkosVocab.DcCreated, new OntoLiteral(createdAt), graph));
+            statements.Add(new RdfStatement(node, SkosVocab.DcCreated, new RdfLiteral(createdAt), graph));
         foreach (var l in new[] { data.PrefLabel })
         {
-            triples.Add(new(node, SkosVocab.PrefLabel, MakeLiteral(l, data.Language), graph));
+            statements.Add(new RdfStatement(node, SkosVocab.PrefLabel, MakeLiteral(l, data.Language), graph));
         }
         foreach (var l in data.EffectiveAltLabels)
         {
-            triples.Add(new(node, SkosVocab.AltLabel, MakeLiteral(l.Value, l.Language), graph));
+            statements.Add(new RdfStatement(node, SkosVocab.AltLabel, MakeLiteral(l.Value, l.Language), graph));
         }
         foreach (var l in data.EffectiveHiddenLabels)
         {
-            triples.Add(new(node, SkosVocab.HiddenLabel, MakeLiteral(l.Value, l.Language), graph));
+            statements.Add(new RdfStatement(node, SkosVocab.HiddenLabel, MakeLiteral(l.Value, l.Language), graph));
         }
         if (data.Description.Length > 0)
         {
-            triples.Add(new(node, SkosVocab.Definition, MakeLiteral(data.Description, data.Language), graph));
+            statements.Add(new RdfStatement(node, SkosVocab.Definition, MakeLiteral(data.Description, data.Language), graph));
         }
         if (data.Notation.Length > 0)
         {
-            triples.Add(new(node, SkosVocab.Notation, new OntoLiteral(data.Notation), graph));
+            statements.Add(new RdfStatement(node, SkosVocab.Notation, new RdfLiteral(data.Notation), graph));
         }
         foreach (var parent in data.EffectiveBroader)
         {
-            triples.Add(new(node, SkosVocab.Broader, new OntoNamedNode(parent), graph));
+            statements.Add(new RdfStatement(node, SkosVocab.Broader, new RdfIri(parent), graph));
         }
         foreach (var related in data.EffectiveRelated)
         {
-            triples.Add(new(node, SkosVocab.Related, new OntoNamedNode(related), graph));
-            triples.Add(new(new OntoNamedNode(related), SkosVocab.Related, node, graph));
+            statements.Add(new RdfStatement(node, SkosVocab.Related, new RdfIri(related), graph));
+            statements.Add(new RdfStatement(new RdfIri(related), SkosVocab.Related, node, graph));
         }
         if (!string.IsNullOrEmpty(data.MappedEntityIri))
         {
-            triples.Add(new(node, SkosVocab.OpMapsTo, new OntoNamedNode(data.MappedEntityIri), graph));
+            statements.Add(new RdfStatement(node, SkosVocab.OpMapsTo, new RdfIri(data.MappedEntityIri), graph));
         }
-        return triples;
+        return statements;
     }
 
     // ------------------------------------------------------------------

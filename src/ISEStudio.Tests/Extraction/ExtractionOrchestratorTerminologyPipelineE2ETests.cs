@@ -15,7 +15,6 @@ using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Persistence;
 using ISEStudio.Tests.Infrastructure;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Extraction;
 
@@ -168,7 +167,7 @@ public sealed class ExtractionOrchestratorTerminologyPipelineE2ETests : IDisposa
 
     private void SeedTBox()
     {
-        var quads = SchemaBuilder.BuildMutation(
+        var statements = SchemaBuilder.BuildMutationStatements(
             BaseIri,
             new OntologyMutation(
                 Classes: new[] { new ClassMutation("Pump", "Seeded fixture class") },
@@ -176,7 +175,7 @@ public sealed class ExtractionOrchestratorTerminologyPipelineE2ETests : IDisposa
                 DataProperties: Array.Empty<PropertyMutation>(),
                 Axioms: Array.Empty<AxiomMutation>()),
             Ks.TBoxGraph);
-        Store.AddQuads(new OntoNamedNode(Ks.TBoxGraph), quads);
+        Store.AddStatements(Ks.TBoxGraph, statements);
     }
 
     private Guid SeedKnowledgeSystem()
@@ -328,7 +327,7 @@ public sealed class ExtractionOrchestratorTerminologyPipelineE2ETests : IDisposa
         }
         catch (IOException)
         {
-            // The Oxigraph handle can linger briefly on Windows; a stale
+            // Directory handles can linger briefly on Windows; a stale
             // temp directory must never fail a test run.
         }
     }

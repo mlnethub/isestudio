@@ -423,24 +423,24 @@ public sealed class DocumentParser : IDocumentParser
             baseIri: null,
             maxTriples: null,
             blankNodeScope: "document-parser");
-        var lines = parsed.Triples
+        var lines = parsed.Statements
             .Select(FormatTriple)
             .OrderBy(line => line, StringComparer.Ordinal);
         return string.Join('\n', lines);
     }
 
-    private static string FormatTriple(Oxigraph.Triple triple) =>
-        string.Join("\t", FormatTerm(triple.Subject), FormatTerm(triple.Predicate), FormatTerm(triple.Object));
+    private static string FormatTriple(RdfStatement statement) =>
+        string.Join("\t", FormatTerm(statement.Subject), $"<{statement.PredicateIri}>", FormatTerm(statement.Object));
 
-    private static string FormatTerm(Oxigraph.ITerm term) => term switch
+    private static string FormatTerm(RdfTerm term) => term switch
     {
-        Oxigraph.NamedNode named => $"<{named.Value}>",
-        Oxigraph.BlankNode blank => $"_:{blank.Value}",
-        Oxigraph.Literal literal => FormatLiteral(literal),
+        RdfIri iri => $"<{iri.Value}>",
+        RdfBlankNode blank => $"_:{blank.Id}",
+        RdfLiteral literal => FormatLiteral(literal),
         _ => term.ToString() ?? string.Empty,
     };
 
-    private static string FormatLiteral(Oxigraph.Literal literal)
+    private static string FormatLiteral(RdfLiteral literal)
     {
         var escaped = literal.Value
             .Replace("\\", "\\\\", StringComparison.Ordinal)
@@ -454,7 +454,7 @@ public sealed class DocumentParser : IDocumentParser
 
         return literal.Datatype is null
             ? $"\"{escaped}\""
-            : $"\"{escaped}\"^^<{literal.Datatype.Value}>";
+            : $"\"{escaped}\"^^<{literal.Datatype}>";
     }
 
     private static string FallbackPdf(byte[] bytes)

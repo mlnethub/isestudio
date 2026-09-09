@@ -11,7 +11,7 @@ namespace ISEStudio.Exports;
 ///   <see cref="IDbContextFactory{TContext}"/>.</item>
 ///   <item><see cref="ExportRunner"/>: singleton — pure background
 ///   worker; depends on the singleton <see cref="ExportJobStore"/> and
-///   the optional singleton <see cref="Ontology.StoreWrapper"/>.</item>
+///   the optional singleton RDF statement repository.</item>
 ///   <item><see cref="ExportService"/>: scoped — shares the request
 ///   <c>ISEStudioDbContext</c> with the dispatcher arm.</item>
 /// </list>

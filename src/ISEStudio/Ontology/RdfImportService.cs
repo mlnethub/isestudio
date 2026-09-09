@@ -10,8 +10,6 @@ using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Knowledge;
 using ISEStudioOptionsConfig = ISEStudio.Configuration.ISEStudioOptions;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Ontology;
 
@@ -153,18 +151,11 @@ public sealed class RdfImportService
     /// <summary>
     /// N-Quads-only importer kept for the round-trip tests
     /// (<c>RdfRoundTripTests</c>, <c>NQuadsTermWriterTests</c>) and any
-    /// future in-process caller. Each layer's import runs inside a
-    /// <see cref="StoreWrapper.CaptureAsync"/> window so the work commits
-    /// on success and reverts on failure.
-    ///
-    /// <para><see cref="StoreWrapper.CaptureAsync"/>'s <c>revertOnError</c>
-    /// semantics are inverted from typical "rollback on throw" — <c>true</c>
-    /// means "always revert", <c>false</c> means "commit unless MarkError
-    /// fires". We pass <c>false</c> so success commits, then call
-    /// <see cref="QuadChangeCapture.MarkError"/> from a <c>catch</c> block to
-    /// force the revert on any exception. The clear step of
-    /// <see cref="ImportMode.Replace"/> runs inside the capture so a merge
-    /// failure reverts the clear too.</para>
+    /// future in-process caller. The whole layer transition is one atomic
+    /// <see cref="IRdfStatementRepository.ReplaceLayerAsync"/> call: the
+    /// next state is computed from the incoming statements (merge or
+    /// replace) and swapped in as a single write, so a failed parse or
+    /// merge never leaves a half-written layer behind.
     /// </summary>
     public async Task ImportAsync(
         KsContext ks,
@@ -177,20 +168,11 @@ public sealed class RdfImportService
         ArgumentNullException.ThrowIfNull(nQuads);
 
         var graphIri = LayerGraph(ks, layer);
-        using var parserStore = new Oxigraph.Store();
-        parserStore.Load(System.Text.Encoding.UTF8.GetString(nQuads), Oxigraph.RdfFormat.NQuads);
-        var incoming = parserStore.Match().Select(quad => new RdfStatement(
-            ToRdfTerm(quad.Subject), quad.Predicate.Value,
-            quad.Object switch
-            {
-                OntoNamedNode iri => new RdfIri(iri.Value),
-                Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
-                OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
-                _ => throw new InvalidOperationException("Unsupported RDF term."),
-            }, graphIri)).ToList();
+        var incoming = RdfDotNetRdfCodec.ParseNQuads(nQuads).Statements
+            .Select(s => s with { GraphIri = graphIri }).ToList();
         var layerName = layer.ToString();
         var existing = await _statements.ListAsync(ks.KnowledgeSystemId, layerName, cancellationToken).ConfigureAwait(false);
-        var next = mode == ImportMode.Replace ? incoming : existing.Concat(incoming).Distinct().ToList();
+        var next = mode == ImportMode.Replace ? incoming : RdfStatementSet.Merge(existing, incoming);
         await _statements.ReplaceLayerAsync(ks.KnowledgeSystemId, layerName, next, cancellationToken).ConfigureAwait(false);
     }
 
@@ -267,7 +249,7 @@ public sealed class RdfImportService
             _options.RdfImportMaxTriples,
             blankNodeScope);
 
-        var partition = _parser.Partition(parsed.Triples, target);
+        var partition = _parser.Partition(parsed.Statements, target);
 
         // Shared GroupId so the two audit rows (TBox + ABox) collapse
         // into one logical "rdf.import" event in the audit trail.
@@ -400,7 +382,7 @@ public sealed class RdfImportService
             Target: target,
             Strategy: strategy,
             BaseIri: request.BaseIri,
-            ParsedTriples: parsed.Triples.Count,
+            ParsedTriples: parsed.Statements.Count,
             TBoxTriples: partition.TBox.Count,
             ABoxTriples: partition.ABox.Count,
             TBoxAdded: tboxAdded,
@@ -415,24 +397,23 @@ public sealed class RdfImportService
     }
 
     /// <summary>
-    /// Capture the named graph, apply the supplied triples as quads
-    /// scoped to the graph (replacing first when
-    /// <paramref name="strategy"/> is <c>replace</c>), and return the
-    /// (added, removed) line counts plus the byte-exact N-Quads diff
-    /// blobs (the same byte-exact blobs <see cref="AuditLogService"/>
-    /// stores). The capture commits on success; the caller wraps in
-    /// try/catch and calls <c>MarkError()</c> to roll back on failure.
+    /// Apply the supplied statements scoped to the graph (replacing
+    /// first when <paramref name="strategy"/> is <c>replace</c>), and
+    /// return the (added, removed) line counts plus the byte-exact
+    /// N-Quads diff blobs (the same byte-exact blobs
+    /// <see cref="AuditLogService"/> stores). The layer transition is a
+    /// single atomic <see cref="IRdfStatementRepository.ReplaceLayerAsync"/>
+    /// write, so a failure never leaves a half-applied import.
     /// </summary>
     private async Task<(int Added, int Removed, byte[] AddedBytes, byte[] RemovedBytes)>
         ImportLayerAsync(
             Guid knowledgeSystemId,
             string graphIri,
-            IReadOnlyList<Oxigraph.Triple> triples,
+            IReadOnlyList<RdfStatement> statements,
             string strategy,
             CancellationToken cancellationToken)
     {
-        var incoming = triples.Select(triple => new RdfStatement(
-            ToRdfTerm(triple.Subject), triple.Predicate.Value, ToRdfTerm(triple.Object), graphIri)).ToList();
+        var incoming = statements.Select(statement => statement with { GraphIri = graphIri }).ToList();
         var layer = LayerForGraph(graphIri);
         var existing = await _statements.ListAsync(knowledgeSystemId, layer, cancellationToken).ConfigureAwait(false);
         var next = strategy == "replace" ? incoming : existing.Concat(incoming).Distinct().ToList();
@@ -465,14 +446,6 @@ public sealed class RdfImportService
 
     private static string LayerForGraph(string graphIri) =>
         graphIri.EndsWith("/abox", StringComparison.Ordinal) ? "ABox" : "TBox";
-
-    private static RdfTerm ToRdfTerm(Oxigraph.ITerm term) => term switch
-    {
-        OntoNamedNode iri => new RdfIri(iri.Value),
-        Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
-        OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
-        _ => throw new RdfImportException($"Unsupported RDF term: {term.GetType().Name}"),
-    };
 
     private async Task<UserEntity?> ResolveActorAsync(
         Actor actor,

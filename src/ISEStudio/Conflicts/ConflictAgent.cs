@@ -15,7 +15,6 @@ using ISEStudio.Llm;
 using ISEStudio.Observability;
 using ISEStudio.Ontology;
 using ISEStudio.Prompts;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Conflicts;
 

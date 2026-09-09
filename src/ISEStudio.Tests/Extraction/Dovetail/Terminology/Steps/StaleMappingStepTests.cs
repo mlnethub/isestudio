@@ -6,7 +6,6 @@ using ISEStudio.Ontology;
 using ISEStudio.Tests.Ontology;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Extraction.Dovetail.Terminology.Steps;
 
@@ -95,8 +94,8 @@ public class StaleMappingStepTests : IClassFixture<TerminologyServiceFixture>, I
             ObjectProperties: objectProperties.Select(l => new PropertyMutation(l, "object")).ToArray(),
             DataProperties: dataProperties.Select(l => new PropertyMutation(l, "data")).ToArray(),
             Axioms: axioms);
-        var quads = SchemaBuilder.BuildMutation(_ks.BaseIri, mutation, _ks.TBoxGraph);
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
+        var statements = SchemaBuilder.BuildMutationStatements(_ks.BaseIri, mutation, _ks.TBoxGraph);
+        _fx.TBox.AddStatements(_ks.TBoxGraph, statements);
     }
 
     private void ReplaceTBox(params string[] labels)
@@ -104,7 +103,7 @@ public class StaleMappingStepTests : IClassFixture<TerminologyServiceFixture>, I
         var existing = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
         if (existing.Count > 0)
         {
-            _fx.TBox.RemoveQuads(new OntoNamedNode(_ks.TBoxGraph), existing);
+            _fx.TBox.RemoveStatements(_ks.TBoxGraph, existing);
         }
         SeedClasses(labels);
     }

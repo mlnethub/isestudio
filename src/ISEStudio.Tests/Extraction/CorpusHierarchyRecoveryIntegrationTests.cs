@@ -63,14 +63,15 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
 
             // Seed Person so the delta's property domains resolve against
             // an existing class.
-            rdf.TBox.AddQuads(new Oxigraph.NamedNode(graphIri), SchemaBuilder.BuildMutation(
+            var seed = SchemaBuilder.BuildMutationStatements(
                 baseIri,
                 new OntologyMutation(
                     Classes: new[] { new ClassMutation("Person", "Seeded fixture class") },
                     ObjectProperties: Array.Empty<PropertyMutation>(),
                     DataProperties: Array.Empty<PropertyMutation>(),
                     Axioms: Array.Empty<AxiomMutation>()),
-                graphIri));
+                graphIri);
+            rdf.TBox.AddStatements(graphIri, seed);
 
             var blobs = new LocalCasBlobStore(Path.Combine(root, "blobs"));
             await using (var stream = new MemoryStream(Encoding.UTF8.GetBytes(Text)))
@@ -150,7 +151,7 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
             }
             catch (IOException)
             {
-                // Stale Oxigraph handles on Windows must never fail the run.
+                // Stale directory handles on Windows must never fail the run.
             }
             rdf.DisposeAsync().GetAwaiter().GetResult();
         }

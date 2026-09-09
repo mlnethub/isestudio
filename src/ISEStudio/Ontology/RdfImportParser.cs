@@ -1,10 +1,6 @@
 using System.Text;
 using VDS.RDF;
 using VDS.RDF.Parsing;
-using OntoBlankNode = Oxigraph.BlankNode;
-using OntoLiteral = Oxigraph.Literal;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoTriple = Oxigraph.Triple;
 
 namespace ISEStudio.Ontology;
 
@@ -13,11 +9,9 @@ public sealed class RdfImportException : Exception
     public RdfImportException(string message) : base(message) { }
 }
 
-public sealed record ParsedRdfImport(string Format, IReadOnlyList<OntoTriple> Triples);
-
 public sealed record ParsedRdfDocument(string Format, IReadOnlyList<RdfStatement> Statements);
 
-public sealed record RdfImportPartition(IReadOnlyList<OntoTriple> TBox, IReadOnlyList<OntoTriple> ABox);
+public sealed record RdfImportPartition(IReadOnlyList<RdfStatement> TBox, IReadOnlyList<RdfStatement> ABox);
 
 /// <summary>
 /// Format-aware RDF parser + TBox/ABox partitioner used by
@@ -25,7 +19,7 @@ public sealed record RdfImportPartition(IReadOnlyList<OntoTriple> TBox, IReadOnl
 /// Python <c>backend/app/api/rdf_import.py</c>: <c>auto</c>, <c>turtle</c>,
 /// <c>rdfxml</c>, <c>ntriples</c>, and <c>jsonld</c>. Blank nodes are
 /// scoped per-import so two imports against the same graph never collide
-/// on a reused label. The parsed triple list is enforced against
+/// on a reused label. The parsed statement list is enforced against
 /// <c>ISEStudio:RdfImportMaxTriples</c> at parse time, not at write time.
 /// </summary>
 public sealed class RdfImportParser
@@ -56,7 +50,7 @@ public sealed class RdfImportParser
         [".json"] = "jsonld",
     };
 
-    public ParsedRdfImport Parse(byte[] data, string filename, string requestedFormat, string? baseIri, int? maxTriples, string blankNodeScope)
+    public ParsedRdfDocument Parse(byte[] data, string filename, string requestedFormat, string? baseIri, int? maxTriples, string blankNodeScope)
     {
         ArgumentNullException.ThrowIfNull(data);
         if (data.Length == 0 || string.IsNullOrWhiteSpace(Encoding.UTF8.GetString(data)))
@@ -69,8 +63,8 @@ public sealed class RdfImportParser
         {
             try
             {
-                var triples = ParseWithDotNetRdf(data, format, baseIri, maxTriples, blankNodeScope);
-                return new ParsedRdfImport(format, triples);
+                var statements = ParseWithDotNetRdf(data, format, baseIri, maxTriples, blankNodeScope);
+                return new ParsedRdfDocument(format, statements);
             }
             catch (RdfImportException)
             {
@@ -85,36 +79,13 @@ public sealed class RdfImportParser
         throw new RdfImportException($"Could not parse RDF ({(errors.Count == 0 ? "unknown parser error" : errors[0])})");
     }
 
-    /// <summary>Parse RDF into Oxigraph-free boundary terms.</summary>
-    public ParsedRdfDocument ParseStatements(byte[] data, string filename, string requestedFormat, string? baseIri, int? maxTriples, string blankNodeScope)
-    {
-        var parsed = Parse(data, filename, requestedFormat, baseIri, maxTriples, blankNodeScope);
-        return new ParsedRdfDocument(parsed.Format, parsed.Triples.Select(ToStatement).ToList());
-    }
-
-    private static RdfStatement ToStatement(OntoTriple triple)
-    {
-        return new RdfStatement(
-            ToTerm(triple.Subject),
-            triple.Predicate.Value,
-            ToTerm(triple.Object));
-    }
-
-    private static RdfTerm ToTerm(Oxigraph.ITerm term) => term switch
-    {
-        OntoNamedNode named => new RdfIri(named.Value),
-        OntoBlankNode blank => new RdfBlankNode(blank.Value),
-        OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
-        _ => throw new RdfImportException($"Unsupported RDF term: {term.GetType().Name}"),
-    };
-
-    public RdfImportPartition Partition(IReadOnlyList<OntoTriple> triples, string target)
+    public RdfImportPartition Partition(IReadOnlyList<RdfStatement> statements, string target)
     {
         var normalized = target.Trim().ToLowerInvariant();
-        if (normalized == "tbox") return new RdfImportPartition(triples, Array.Empty<OntoTriple>());
-        if (normalized == "abox") return new RdfImportPartition(Array.Empty<OntoTriple>(), triples);
+        if (normalized == "tbox") return new RdfImportPartition(statements, Array.Empty<RdfStatement>());
+        if (normalized == "abox") return new RdfImportPartition(Array.Empty<RdfStatement>(), statements);
         if (normalized != "auto") throw new RdfImportException($"Unsupported RDF import target: {target}");
-        return SplitTBoxABox(triples);
+        return SplitTBoxABox(statements);
     }
 
     public static string NormalizeFormat(string value)
@@ -143,7 +114,7 @@ public sealed class RdfImportParser
         return head.StartsWith("<", StringComparison.Ordinal) ? "ntriples" : "turtle";
     }
 
-    private static IReadOnlyList<OntoTriple> ParseWithDotNetRdf(byte[] data, string format, string? baseIri, int? maxTriples, string blankNodeScope)
+    private static IReadOnlyList<RdfStatement> ParseWithDotNetRdf(byte[] data, string format, string? baseIri, int? maxTriples, string blankNodeScope)
     {
         var graph = new VDS.RDF.Graph();
         if (!string.IsNullOrWhiteSpace(baseIri))
@@ -162,87 +133,86 @@ public sealed class RdfImportParser
         };
         parser.Load(graph, new StringReader(text));
 
-        var blankNodes = new Dictionary<string, OntoBlankNode>(StringComparer.Ordinal);
-        var triples = new List<OntoTriple>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var blankNodes = new Dictionary<string, RdfBlankNode>(StringComparer.Ordinal);
+        var statements = new List<RdfStatement>();
+        var seen = new HashSet<RdfStatement>();
         foreach (var triple in graph.Triples)
         {
-            if (maxTriples is not null && triples.Count + 1 > maxTriples.Value)
+            if (maxTriples is not null && statements.Count + 1 > maxTriples.Value)
             {
                 throw new RdfImportException($"RDF file exceeds the {maxTriples.Value:N0}-triple import limit");
             }
-            var converted = new OntoTriple(
+            var converted = new RdfStatement(
                 ToSubject(triple.Subject, blankNodes, blankNodeScope),
                 ToPredicate(triple.Predicate),
                 ToObject(triple.Object, blankNodes, blankNodeScope));
-            var key = $"{converted.Subject}|{converted.Predicate}|{converted.Object}";
-            if (seen.Add(key)) triples.Add(converted);
+            if (seen.Add(converted)) statements.Add(converted);
         }
-        return triples;
+        return statements;
     }
 
-    private static Oxigraph.INamedOrBlankNode ToSubject(INode node, Dictionary<string, OntoBlankNode> blanks, string scope) => node.NodeType switch
+    private static RdfTerm ToSubject(INode node, Dictionary<string, RdfBlankNode> blanks, string scope) => node.NodeType switch
     {
-        NodeType.Uri => new OntoNamedNode(((IUriNode)node).Uri.AbsoluteUri),
+        NodeType.Uri => new RdfIri(((IUriNode)node).Uri.AbsoluteUri),
         NodeType.Blank => GetOrAddBlank(blanks, ((IBlankNode)node).InternalID, scope),
         _ => throw new RdfImportException($"Unsupported RDF subject node: {node.NodeType}"),
     };
 
-    private static OntoNamedNode ToPredicate(INode node)
+    private static string ToPredicate(INode node)
     {
-        if (node is IUriNode uri) return new OntoNamedNode(uri.Uri.AbsoluteUri);
+        if (node is IUriNode uri) return uri.Uri.AbsoluteUri;
         throw new RdfImportException($"Unsupported RDF predicate node: {node.NodeType}");
     }
 
-    private static Oxigraph.ITerm ToObject(INode node, Dictionary<string, OntoBlankNode> blanks, string scope) => node.NodeType switch
+    private static RdfTerm ToObject(INode node, Dictionary<string, RdfBlankNode> blanks, string scope) => node.NodeType switch
     {
-        NodeType.Uri => new OntoNamedNode(((IUriNode)node).Uri.AbsoluteUri),
+        NodeType.Uri => new RdfIri(((IUriNode)node).Uri.AbsoluteUri),
         NodeType.Blank => GetOrAddBlank(blanks, ((IBlankNode)node).InternalID, scope),
         NodeType.Literal => ToLiteral((ILiteralNode)node),
         _ => throw new RdfImportException($"Unsupported RDF object node: {node.NodeType}"),
     };
 
-    private static OntoBlankNode GetOrAddBlank(Dictionary<string, OntoBlankNode> blanks, string internalId, string scope)
+    private static RdfBlankNode GetOrAddBlank(Dictionary<string, RdfBlankNode> blanks, string internalId, string scope)
     {
         if (blanks.TryGetValue(internalId, out var existing)) return existing;
-        var node = new OntoBlankNode($"rdfimport_{scope}_{blanks.Count}");
+        var node = new RdfBlankNode($"rdfimport_{scope}_{blanks.Count}");
         blanks[internalId] = node;
         return node;
     }
 
-    private static OntoLiteral ToLiteral(ILiteralNode literal)
+    private static RdfLiteral ToLiteral(ILiteralNode literal)
     {
-        if (!string.IsNullOrEmpty(literal.Language)) return new OntoLiteral(literal.Value, Language: literal.Language);
-        if (literal.DataType is not null) return new OntoLiteral(literal.Value, Datatype: new OntoNamedNode(literal.DataType.AbsoluteUri));
-        return new OntoLiteral(literal.Value);
+        if (!string.IsNullOrEmpty(literal.Language)) return new RdfLiteral(literal.Value, Language: literal.Language);
+        if (literal.DataType is not null) return new RdfLiteral(literal.Value, Datatype: literal.DataType.AbsoluteUri);
+        return new RdfLiteral(literal.Value);
     }
 
-    private static RdfImportPartition SplitTBoxABox(IReadOnlyList<OntoTriple> triples)
+    private static RdfImportPartition SplitTBoxABox(IReadOnlyList<RdfStatement> statements)
     {
-        var schemaNodes = new HashSet<object>();
-        foreach (var triple in triples)
+        var schemaNodes = new HashSet<RdfTerm>();
+        foreach (var statement in statements)
         {
-            var predicate = triple.Predicate.Value;
-            var objectIri = triple.Object is OntoNamedNode node ? node.Value : null;
-            if (predicate == Vocabulary.RdfType.Value && objectIri is not null && SchemaTypes.Contains(objectIri))
+            var predicate = statement.PredicateIri;
+            var objectIri = statement.Object is RdfIri iri ? iri.Value : null;
+            if (predicate == Vocabulary.RdfType && objectIri is not null && SchemaTypes.Contains(objectIri))
             {
-                schemaNodes.Add(triple.Subject);
+                schemaNodes.Add(statement.Subject);
             }
             if (SchemaSubjectPredicates.Contains(predicate))
             {
-                schemaNodes.Add(triple.Subject);
+                schemaNodes.Add(statement.Subject);
             }
             if ((ClassLinkPredicates.Contains(predicate) || PropertyLinkPredicates.Contains(predicate))
-                && triple.Object is Oxigraph.INamedOrBlankNode linked)
+                && statement.Object is RdfIri or RdfBlankNode)
             {
-                schemaNodes.Add(linked);
+                schemaNodes.Add(statement.Object);
             }
         }
-        var tbox = new List<OntoTriple>();
-        var abox = new List<OntoTriple>();
-        foreach (var triple in triples)
+        var tbox = new List<RdfStatement>();
+        var abox = new List<RdfStatement>();
+        foreach (var statement in statements)
         {
-            (schemaNodes.Contains(triple.Subject) ? tbox : abox).Add(triple);
+            (schemaNodes.Contains(statement.Subject) ? tbox : abox).Add(statement);
         }
         return new RdfImportPartition(tbox, abox);
     }
@@ -251,9 +221,9 @@ public sealed class RdfImportParser
 
     private static readonly HashSet<string> SchemaTypes = new(StringComparer.Ordinal)
     {
-        Vocabulary.RdfType.Value,
-        Vocabulary.RdfsClass.Value,
-        Vocabulary.RdfsDatatype.Value,
+        Vocabulary.RdfType,
+        Vocabulary.RdfsClass,
+        Vocabulary.RdfsDatatype,
         Owl("Class"), Owl("Restriction"), Owl("Ontology"), Owl("ObjectProperty"),
         Owl("DatatypeProperty"), Owl("AnnotationProperty"), Owl("OntologyProperty"),
         Owl("FunctionalProperty"), Owl("InverseFunctionalProperty"), Owl("TransitiveProperty"),
@@ -265,7 +235,7 @@ public sealed class RdfImportParser
 
     private static readonly HashSet<string> ClassLinkPredicates = new(StringComparer.Ordinal)
     {
-        Vocabulary.RdfsSubClassOf.Value, Vocabulary.RdfsDomain.Value, Vocabulary.RdfsRange.Value,
+        Vocabulary.RdfsSubClassOf, Vocabulary.RdfsDomain, Vocabulary.RdfsRange,
         Owl("equivalentClass"), Owl("disjointWith"), Owl("complementOf"),
         Owl("onClass"), Owl("onDataRange"), Owl("someValuesFrom"), Owl("allValuesFrom"),
         "http://www.w3.org/ns/shacl#class", "http://www.w3.org/ns/shacl#targetClass",
@@ -274,7 +244,7 @@ public sealed class RdfImportParser
 
     private static readonly HashSet<string> PropertyLinkPredicates = new(StringComparer.Ordinal)
     {
-        Vocabulary.RdfsSubPropertyOf.Value, Owl("equivalentProperty"),
+        Vocabulary.RdfsSubPropertyOf, Owl("equivalentProperty"),
         Owl("propertyDisjointWith"), Owl("inverseOf"), Owl("onProperty"),
         "http://www.w3.org/ns/shacl#path",
     };

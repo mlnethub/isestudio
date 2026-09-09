@@ -18,7 +18,6 @@ using ISEStudio.Parsing;
 using ISEStudio.Prompts;
 using ISEStudio.Providers;
 using ISEStudio.Settings;
-using Oxigraph;
 
 namespace ISEStudio.Integration;
 
@@ -108,7 +107,7 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // N-Quads diff the change produced. The extraction-active
             // guard has already short-circuited any mutation when the
             // KS has a live extraction job, so by the time the service
-            // runs the Oxigraph lock is free to take.
+            // runs the RDF layer is free to take.
             "ontology.get" => InvokeOntologyGetAsync(request, cancellationToken),
             "ontology.edit" => RunWithExtractionGuardAsync(
                 request, cancellationToken,
@@ -142,9 +141,9 @@ public sealed class InternalOperationDispatcher : IInternalOperationDispatcher
             // Real CRUD via ConflictService (scoped). The helpers below
             // resolve the service from IServiceProvider, deserialize the
             // body, and project the typed result back to the caller. The
-            // service degrades gracefully when StoreWrapper isn't wired
-            // (SQLite contract-test factory) — the SQL paths still work
-            // and detect returns the stored open list.
+            // service degrades gracefully when the statement repository
+            // isn't wired (SQLite contract-test factory) — the SQL paths
+            // still work and detect returns the stored open list.
             "conflicts.list" => InvokeConflictListAsync(request, cancellationToken),
             "conflicts.detect" => InvokeConflictDetectAsync(request, cancellationToken),
             "conflicts.get_context" => InvokeConflictGetContextAsync(request, cancellationToken),

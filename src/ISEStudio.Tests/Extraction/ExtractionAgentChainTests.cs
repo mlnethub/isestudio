@@ -15,7 +15,6 @@ using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using ISEStudio.Tests.Persistence;
 using ISEStudio.Tests.Infrastructure;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Extraction;
 
@@ -376,8 +375,8 @@ public sealed class ExtractionAgentChainTests : IDisposable
 
     private int ClassCount() =>
         Store.Match(
-            predicateIri: Vocabulary.RdfType.Value,
-            objectIri: Vocabulary.OwlClass.Value,
+            predicateIri: Vocabulary.RdfType,
+            objectIri: Vocabulary.OwlClass,
             graphIri: Ks.TBoxGraph).Count;
 
     /// <summary>
@@ -388,7 +387,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
     /// </summary>
     private void SeedTBox()
     {
-        var quads = SchemaBuilder.BuildMutation(
+        var statements = SchemaBuilder.BuildMutationStatements(
             BaseIri,
             new OntologyMutation(
                 Classes: new[]
@@ -406,7 +405,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
                 DataProperties: Array.Empty<PropertyMutation>(),
                 Axioms: Array.Empty<AxiomMutation>()),
             Ks.TBoxGraph);
-        Store.AddQuads(new OntoNamedNode(Ks.TBoxGraph), quads);
+        Store.AddStatements(Ks.TBoxGraph, statements);
     }
 
     private void SeedKnowledgeSystem()
@@ -486,7 +485,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
         }
         catch (IOException)
         {
-            // The Oxigraph handle can linger briefly on Windows; a stale
+            // Directory handles can linger briefly on Windows; a stale
             // temp directory must never fail a test run.
         }
     }

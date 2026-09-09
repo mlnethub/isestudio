@@ -709,7 +709,7 @@ public sealed class VocabularyApiTests
     /// the vocabulary graph (so the rollback has something to roll back)
     /// and then throws. Mirrors the partial-mutation-then-fail failure
     /// mode the production TerminologyService.SyncCore could exhibit if
-    /// <c>AddQuads</c> or one of its collaborators threw mid-loop.
+    /// <c>AddStatements</c> or one of its collaborators threw mid-loop.
     /// </summary>
     /// <remarks>
     /// Workspace storage migrated off Oxigraph — the stub must write the
@@ -730,18 +730,17 @@ public sealed class VocabularyApiTests
 
         public TerminologyResult SyncAsync(KsContext ks, CancellationToken cancellationToken)
         {
-            var graph = new Oxigraph.NamedNode(ks.VocabularyGraph);
-            var marker = new Oxigraph.NamedNode(
-                $"{ks.VocabularyGraph.TrimEnd('/')}/partial-mutation-marker");
+            var graph = ks.VocabularyGraph;
+            var marker = $"{ks.VocabularyGraph.TrimEnd('/')}/partial-mutation-marker";
             var store = new PostgresRdfGraphStore(
                 new PostgresRdfStatementRepository(_db),
                 ks.KnowledgeSystemId, "Vocabulary");
-            store.AddQuads(graph, new[]
+            store.AddStatements(graph, new[]
             {
-                new Oxigraph.Quad(
-                    marker,
-                    new Oxigraph.NamedNode("http://www.w3.org/1999/02/22-rdf-syntax-ns#type"),
-                    new Oxigraph.NamedNode("http://example.org/test-marker"),
+                new RdfStatement(
+                    new RdfIri(marker),
+                    "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
+                    new RdfIri("http://example.org/test-marker"),
                     graph),
             });
             throw new InvalidOperationException(

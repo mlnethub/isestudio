@@ -9,7 +9,6 @@ using ISEStudio.Conflicts;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Knowledge;
-using Oxigraph;
 
 namespace ISEStudio.Ontology;
 
@@ -135,19 +134,9 @@ public sealed class HistoryService
     private static IReadOnlyList<RdfStatement> ParseStatements(byte[]? bytes, string graphIri)
     {
         if (bytes is null || bytes.Length == 0) return Array.Empty<RdfStatement>();
-        using var store = new Store();
-        store.Load(Encoding.UTF8.GetString(bytes), RdfFormat.NQuads);
-        return store.Match().Select(quad => new RdfStatement(
-            FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object), graphIri)).ToList();
+        return RdfDotNetRdfCodec.ParseNQuads(bytes).Statements
+            .Select(s => s with { GraphIri = graphIri }).ToList();
     }
-
-    private static RdfTerm FromTerm(ITerm term) => term switch
-    {
-        NamedNode iri => new RdfIri(iri.Value),
-        BlankNode blank => new RdfBlankNode(blank.Value),
-        Literal literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
-        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-    };
 
     private static (byte[] Added, byte[] Removed) Diff(
         IReadOnlySet<RdfStatement> before, IReadOnlySet<RdfStatement> after) =>

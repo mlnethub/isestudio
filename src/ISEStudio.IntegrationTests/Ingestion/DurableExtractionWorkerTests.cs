@@ -9,6 +9,7 @@ using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
 namespace ISEStudio.IntegrationTests.Ingestion;
@@ -547,7 +548,7 @@ public sealed class DurableExtractionWorkerTests : IClassFixture<PostgresGraphFi
             ExtractionJobStore store,
             TimeProvider clock,
             IOptions<DurableExtractionWorkerOptions>? options = null)
-            : base(scopeFactory, store, clock, options)
+            : base(scopeFactory, store, clock, NullLogger<DurableExtractionWorker>.Instance, options)
         {
             _store = store;
         }

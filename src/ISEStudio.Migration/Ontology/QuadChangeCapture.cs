@@ -1,6 +1,6 @@
 using Oxigraph;
 
-namespace ISEStudio.Ontology;
+namespace ISEStudio.Migration.Ontology;
 
 /// <summary>
 /// Captures the pre-operation state of a single named graph so a unit of work

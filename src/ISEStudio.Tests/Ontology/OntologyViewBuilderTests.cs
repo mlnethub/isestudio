@@ -1,6 +1,7 @@
 using ISEStudio.Application.Foundation;
-using ISEStudio.Ontology;
 using Xunit;
+using ISEStudio.Ontology;
+using ISEStudio.Migration.Ontology;
 
 namespace ISEStudio.Tests.Ontology;
 

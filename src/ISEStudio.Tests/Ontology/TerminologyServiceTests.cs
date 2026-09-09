@@ -2,8 +2,6 @@ using ISEStudio.Application.Vocabulary;
 using ISEStudio.Extraction;
 using ISEStudio.Ontology;
 using ISEStudio.Tests.Infrastructure;
-using Oxigraph;
-using OntoNamedNode = Oxigraph.NamedNode;
 using KsContext = ISEStudio.Ontology.KsContext;
 
 namespace ISEStudio.Tests.Ontology;
@@ -360,8 +358,8 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
             ObjectProperties: objectProperties.Select(l => new PropertyMutation(l, "object")).ToArray(),
             DataProperties: dataProperties.Select(l => new PropertyMutation(l, "data")).ToArray(),
             Axioms: axioms);
-        var quads = SchemaBuilder.BuildMutation(_ks.BaseIri, mutation, _ks.TBoxGraph);
-        _fx.TBox.AddQuads(new OntoNamedNode(_ks.TBoxGraph), quads);
+        var quads = SchemaBuilder.BuildMutationStatements(_ks.BaseIri, mutation, _ks.TBoxGraph);
+        _fx.TBox.AddStatements(_ks.TBoxGraph, quads);
     }
 
     /// <summary>
@@ -385,7 +383,7 @@ public class TerminologyServiceTests : IClassFixture<TerminologyServiceFixture>,
         var existing = _fx.TBox.Match(graphIri: _ks.TBoxGraph);
         if (existing.Count > 0)
         {
-            _fx.TBox.RemoveQuads(new OntoNamedNode(_ks.TBoxGraph), existing);
+            _fx.TBox.RemoveStatements(_ks.TBoxGraph, existing);
         }
         SeedClasses(labels);
     }

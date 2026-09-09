@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace ISEStudio.Ontology;
+namespace ISEStudio.Migration.Ontology;
 
 /// <summary>
 /// Raised when a caller cannot acquire a per-graph write or read lease within

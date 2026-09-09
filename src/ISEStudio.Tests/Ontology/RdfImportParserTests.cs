@@ -1,8 +1,5 @@
 using System.Text;
 using ISEStudio.Ontology;
-using Oxigraph;
-using OntoBlankNode = Oxigraph.BlankNode;
-using OntoNamedNode = Oxigraph.NamedNode;
 
 namespace ISEStudio.Tests.Ontology;
 
@@ -29,7 +26,7 @@ public sealed class RdfImportParserTests
         var parsed = _parser.Parse(bytes, "pump.ttl", "auto", "urn:base:", 10, "scope");
 
         Assert.Equal("turtle", parsed.Format);
-        Assert.Single(parsed.Triples);
+        Assert.Single(parsed.Statements);
     }
 
     [Fact]
@@ -59,8 +56,8 @@ public sealed class RdfImportParserTests
 
         var parsed = _parser.Parse(bytes, "data.nt", "ntriples", null, 10, "abc123");
 
-        var subject = Assert.IsType<OntoBlankNode>(parsed.Triples.Single().Subject);
-        Assert.Contains("rdfimport_abc123_0", subject.Value, StringComparison.Ordinal);
+        var subject = Assert.IsType<RdfBlankNode>(parsed.Statements.Single().Subject);
+        Assert.Contains("rdfimport_abc123_0", subject.Id, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -74,11 +71,11 @@ public sealed class RdfImportParserTests
             """);
         var parsed = _parser.Parse(bytes, "mixed.ttl", "turtle", null, 10, "scope");
 
-        var partition = _parser.Partition(parsed.Triples, "auto");
+        var partition = _parser.Partition(parsed.Statements, "auto");
 
         Assert.Single(partition.TBox);
         Assert.Single(partition.ABox);
-        Assert.Contains(partition.TBox, t => ((OntoNamedNode)t.Subject).Value == "urn:Pump");
-        Assert.Contains(partition.ABox, t => ((OntoNamedNode)t.Subject).Value == "urn:p101");
+        Assert.Contains(partition.TBox, t => ((RdfIri)t.Subject).Value == "urn:Pump");
+        Assert.Contains(partition.ABox, t => ((RdfIri)t.Subject).Value == "urn:p101");
     }
 }

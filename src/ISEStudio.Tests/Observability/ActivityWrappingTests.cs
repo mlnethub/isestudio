@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using ISEStudio.Observability;
-using ISEStudio.Ontology;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
 using OntoNamedNode = Oxigraph.NamedNode;
 using OntoLiteral = Oxigraph.Literal;
 using OntoQuad = Oxigraph.Quad;
+using ISEStudio.Ontology;
+using ISEStudio.Migration.Ontology;
+using ISEStudio.Tests.Infrastructure;
 
 namespace ISEStudio.Tests.Observability;
 
@@ -93,8 +95,12 @@ public sealed class ActivityWrappingTests
             """), shapeGraph);
 
         var validator = new ShaclValidator(
-            shapeStore.Match(subjectIri: (string?)null, predicateIri: null, objectIri: null, graphIri: null).ToList(),
-            dataStore.Match(subjectIri: (string?)null, predicateIri: null, objectIri: null, graphIri: null).ToList());
+            shapeStore.Match(subjectIri: (string?)null, predicateIri: null, objectIri: null, graphIri: null)
+                .Select(q => q.ToStatement())
+                .ToList(),
+            dataStore.Match(subjectIri: (string?)null, predicateIri: null, objectIri: null, graphIri: null)
+                .Select(q => q.ToStatement())
+                .ToList());
         var report = validator.Validate("urn:data");
 
         var activity = FindActivity(listener.Snapshot(), "rdf.shacl.validate");

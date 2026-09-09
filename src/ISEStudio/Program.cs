@@ -418,14 +418,14 @@ builder.Services.AddScoped<ISEStudio.Settings.SettingsService>();
 builder.Services.AddScoped<ISettingsApplicationService, SettingsApplicationService>();
 // Conflicts slice — detect / list / get_context / dismiss / reopen / resolve
 // / reconciliations CRUD. Service is Scoped (shares the request DbContext);
-// the optional StoreWrapper + ExtractionJobStore are resolved per-request
-// through IServiceProvider so the SQLite contract-test path runs without
-// an embedded Oxigraph.
+// the optional statement repository + ExtractionJobStore are resolved
+// per-request through IServiceProvider so the SQLite contract-test path
+// runs without PostgreSQL.
 builder.Services.AddConflictServices();
 // Entity-resolution slice — queue / decisions / resolve (match|new) / revoke /
-// edit_reason. Scoped; ABoxManager + StoreWrapper are resolved per-request via
-// the singleton registrations above so the SQLite contract-test path runs
-// without an embedded Oxigraph.
+// edit_reason. Scoped; ABoxManager + the statement repository are resolved
+// per-request via the singleton registrations above so the SQLite
+// contract-test path runs without PostgreSQL.
 builder.Services.AddResolutionServices();
 builder.Services.AddSparqlServices();
 // Knowledge slice — KS CRUD + membership + review stats. Scoped service
@@ -481,41 +481,15 @@ builder.Services.Configure<DurableExtractionWorkerOptions>(
 builder.Services.AddHostedService<DurableExtractionWorker>();
 
 // ---- Ontology slice ----
-// The Oxigraph store is a process-wide singleton (the underlying
-// handle is thread-safe + file-locked). Production and the contract
-// test factory both honour the same "ISEStudio:Storage:RdfRoot" key
-// so a per-test temp dir isolates parallel runs. The OntologyEditor
-// wraps the same singleton with the GraphWriteCoordinator lock and
-// the per-edit capture / revert helper.
-var rdfRoot = builder.Configuration["ISEStudio:Storage:RdfRoot"]
-    ?? Path.Combine(AppContext.BaseDirectory, "data", "rdf");
-// Oxigraph's Store ctor is sensitive to backslashes on Windows —
-// the connection-string parser used for SQLite above silently
-// tolerates them, but Oxigraph throws InvalidStoreHandleException
-// when the path is not a forward-slash URI. Normalise once here so
-// every test / production call site stays portable.
-var rdfRootForwardSlash = rdfRoot.Replace('\\', '/');
-// Oxigraph is disk-backed (RocksDB) and the workspace path is configured for
-// long-running production / dev hosts. The contract-test factory
-// (ApiContractWebApplicationFactory) sets the environment to "Testing" with
-// no provisioned RDF root, so opening the RocksDB handle there throws
-// "Invalid RocksDB error message" and turns every ontology/vocabulary
-// request into a 500. Only wire the singleton when we're actually running
-// somewhere that has a workspace to point at; in non-Dev/Prod (Testing +
-// any other transient env), register a null StoreWrapper so
-// ConflictService — whose ctor accepts `StoreWrapper?` and falls back to
-// "return what's already in DB" (ConflictService.cs:102-108) — can run the
-// SQL contract path without an embedded Oxigraph.
-if (builder.Environment.IsDevelopment() || builder.Environment.IsProduction())
-{
-    builder.Services.AddSingleton<StoreWrapper>(_ => new StoreWrapper(rdfRootForwardSlash));
-}
-else
-{
-#pragma warning disable CS8634
-    builder.Services.AddSingleton<StoreWrapper?>(_ => null);
-#pragma warning restore CS8634
-}
+// PostgreSQL is the runtime-authoritative RDF store (Task 2 cutover +
+// Tasks 3a-3e algorithm migration). Every ontology write reads / mutates
+// WorkspaceStatementEntity rows through the scoped IRdfStatementRepository
+// facade; releases snapshot into ReleaseStatementEntity on capture and
+// serve from there on read. The runtime opens no on-disk embedded-graph
+// store anywhere in ISEStudio — ISEStudio.Migration is the only project
+// that still owns a legacy graph reader, used solely as a one-time reader
+// for the old Python backend's disk data (see the 2026-09-08 runtime
+// store migration plan).
 builder.Services.AddScoped<ABoxManager>(sp =>
     new ABoxManager(sp.GetRequiredService<IRdfStatementRepository>()));
 builder.Services.AddScoped<ABoxValidator>(sp =>
@@ -536,7 +510,7 @@ builder.Services.AddExtractionServices();
 // Vocabulary slice — Scoped VocabularyService wraps SkosManager methods +
 // extraction guard + Reader/Writer role gate + audit pre/post diff (B7c
 // ABoxService pattern). SkosManager is registered here as a singleton
-// (depends on the singleton StoreWrapper); the underlying TerminologyService
+// (depends on the scoped IRdfStatementRepository); the underlying TerminologyService
 // + ExtractionJobStore come from AddExtractionServices above.
 builder.Services.AddSingleton<SkosManager>(sp =>
     new SkosManager(sp.GetRequiredService<IRdfStatementRepository>()));

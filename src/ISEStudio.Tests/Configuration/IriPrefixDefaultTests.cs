@@ -55,12 +55,12 @@ public sealed class IriPrefixDefaultTests : IDisposable
         SkosVocab.Configure(newPrefix);
 
         Assert.Equal(newPrefix, SkosVocab.IseStudio);
-        // The lazy Op* NamedNodes must rebuild on Configure so
+        // The lazy Op* IRIs must rebuild on Configure so
         // TerminologyService and SkosManager see the new prefix.
-        Assert.Equal(newPrefix + "defaultLanguage", SkosVocab.OpDefaultLanguage.Value);
-        Assert.Equal(newPrefix + "status", SkosVocab.OpStatus.Value);
-        Assert.Equal(newPrefix + "mapsTo", SkosVocab.OpMapsTo.Value);
-        Assert.Equal(newPrefix + "origin", SkosVocab.OpOrigin.Value);
+        Assert.Equal(newPrefix + "defaultLanguage", SkosVocab.OpDefaultLanguage);
+        Assert.Equal(newPrefix + "status", SkosVocab.OpStatus);
+        Assert.Equal(newPrefix + "mapsTo", SkosVocab.OpMapsTo);
+        Assert.Equal(newPrefix + "origin", SkosVocab.OpOrigin);
     }
 
     [Fact]
@@ -100,22 +100,21 @@ public sealed class IriPrefixDefaultTests : IDisposable
 
         SkosVocab.Configure(alternate);
         Assert.Equal(alternate, SkosVocab.IseStudio);
-        Assert.Equal(alternate + "status", SkosVocab.OpStatus.Value);
+        Assert.Equal(alternate + "status", SkosVocab.OpStatus);
 
         SkosVocab.Configure(modern);
         Assert.Equal(modern, SkosVocab.IseStudio);
-        Assert.Equal(modern + "status", SkosVocab.OpStatus.Value);
+        Assert.Equal(modern + "status", SkosVocab.OpStatus);
     }
 
     [Fact]
     [Trait("Category", "Iri")]
     public void SkosVocab_derived_Op_predicates_start_with_configured_prefix()
     {
-        // Independent of any Configure call: the Op* NamedNode values
-        // must always be IseStudio + localName so SHACL shape
-        // round-trips stay byte-identical across configuration
-        // transitions.
-        foreach (var (node, local) in new[]
+        // Independent of any Configure call: the Op* IRI strings must
+        // always be IseStudio + localName so SHACL shape round-trips
+        // stay byte-identical across configuration transitions.
+        foreach (var (iri, local) in new[]
         {
             (SkosVocab.OpDefaultLanguage, "defaultLanguage"),
             (SkosVocab.OpStatus, "status"),
@@ -123,7 +122,7 @@ public sealed class IriPrefixDefaultTests : IDisposable
             (SkosVocab.OpOrigin, "origin"),
         })
         {
-            Assert.Equal(SkosVocab.IseStudio + local, node.Value);
+            Assert.Equal(SkosVocab.IseStudio + local, iri);
         }
     }
 }

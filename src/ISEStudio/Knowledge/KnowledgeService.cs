@@ -265,8 +265,8 @@ public sealed class KnowledgeService
     /// Hard-delete a KS and every per-KS row that references it. Mirrors
     /// Python <c>delete_ks</c>'s SQL-side cascade. The RDF graph + blob
     /// cleanup steps in Python (clear_graph, blobstore.delete, shutil.rmtree)
-    /// are <em>not</em> performed here yet — those need a wired
-    /// <c>StoreWrapper</c> + <c>BlobStore</c> (Block 5 / 6). When those
+    /// are <em>not</em> performed here yet — those need a wired RDF
+    /// statement repository + <c>BlobStore</c> (Block 5 / 6). When those
     /// land, append the cleanup at the end of this method.
     /// </summary>
     public async Task<Guid?> DeleteAsync(Guid ksId, Actor actor, CancellationToken ct)

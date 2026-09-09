@@ -1,9 +1,3 @@
-using Oxigraph;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoBlankNode = Oxigraph.BlankNode;
-using OntoLiteral = Oxigraph.Literal;
-
 namespace ISEStudio.Ontology;
 
 /// <summary>
@@ -22,18 +16,13 @@ namespace ISEStudio.Ontology;
 /// </list></para>
 ///
 /// <para>The semantic duplicate-class pass (embedding cosine + LLM judge) is
-/// intentionally deferred &mdash; the project already routes the necessary
-/// <c>IEmbeddingGenerator&lt;string, Embedding&gt;</c> through
-/// <c>EmbeddingGeneratorFactory</c>, so this file is the only seam that
-/// needs to learn about a future <c>ILlmJudge</c> when the prompt-config
-/// service lands.</para>
+/// routed through <see cref="DuplicateJudge"/>, which in turn delegates
+/// to the <see cref="ReadClassLabels"/> + <see cref="ReadGraphRelations"/>
+/// helpers exposed here.</para>
 ///
-/// <para>Each detected conflict carries a stable <see cref="ConflictDetection.DetectedConflict.Signature"/>
-/// so the dispatcher can deduplicate re-detected issues, and a
-/// <see cref="ConflictDetection.DetectedConflict.Resolutions"/> list whose
-/// <c>op</c> dictionaries are exactly the shape
-/// <see cref="OntologyEditor.ApplyEditAsync(string, string, IReadOnlyDictionary{string, object?}, CancellationToken)"/>
-/// expects.</para>
+/// <para>The algorithm hot path is defined on
+/// <see cref="RdfStatement"/>; all callers (ConflictService, Dovetail
+/// steps) run against the PostgreSQL statement layer.</para>
 /// </summary>
 public static class ConflictDetection
 {
@@ -41,13 +30,6 @@ public static class ConflictDetection
     public const double DuplicateThreshold = 0.86;
 
     /// <summary>One detected conflict. Wire-shape mirrors the Python <c>DetectedConflict</c> dataclass.</summary>
-    /// <param name="Signature">Stable dedup key (see Python <c>sync_conflicts</c>).</param>
-    /// <param name="Ctype">Conflict type &mdash; one of <c>cycle</c>, <c>disjoint_subclass</c>, <c>disjoint_common</c>, <c>domain_multi</c>, <c>range_multi</c>, <c>equiv_disjoint</c>, <c>duplicate</c>, <c>predicate_specialization</c>.</param>
-    /// <param name="Severity"><c>error</c> or <c>warning</c>.</param>
-    /// <param name="Title">Short headline.</param>
-    /// <param name="Detail">Long-form description for the UI.</param>
-    /// <param name="Entities">Affected IRIs (each with its label) for evidence linking.</param>
-    /// <param name="Resolutions">Suggested editor ops; each <c>op</c> is consumable by <see cref="OntologyEditor.ApplyEditAsync"/>.</param>
     public sealed record DetectedConflict(
         string Signature,
         string Ctype,
@@ -69,16 +51,16 @@ public static class ConflictDetection
     /// upsert/auto-clear reconciliation in <c>sync_conflicts</c> (see
     /// <c>ConflictService.DetectAsync</c>).
     /// </summary>
-    /// <param name="graphIri">Named graph carrying the TBox quads.</param>
+    /// <param name="graphIri">Named graph carrying the TBox statements.</param>
     public static IReadOnlyList<DetectedConflict> Detect(
-        IReadOnlyList<OntoQuad> quads,
+        IReadOnlyList<RdfStatement> statements,
         string graphIri,
         bool semantic = true)
     {
-        ArgumentNullException.ThrowIfNull(quads);
+        ArgumentNullException.ThrowIfNull(statements);
         ArgumentException.ThrowIfNullOrEmpty(graphIri);
 
-        var model = ReadGraph(quads, graphIri);
+        var model = ReadGraph(statements, graphIri);
         var found = new List<DetectedConflict>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
@@ -108,14 +90,12 @@ public static class ConflictDetection
     /// Public read-only view of the TBox's classes (each with its union-expanded
     /// label) so <see cref="DuplicateJudge"/> can run its
     /// string-similarity + embedding-cosine + LLM-judge pipeline on the
-    /// same label source the structural detectors use. The returned IRI
-    /// order matches the order <see cref="Detect"/> saw; consumers that
-    /// need a stable cross-call order should sort themselves.
+    /// same label source the structural detectors use.
     /// </summary>
     public static IReadOnlyList<ClassLabel> ReadClassLabels(
-        IReadOnlyList<OntoQuad> quads, string graphIri)
+        IReadOnlyList<RdfStatement> statements, string graphIri)
     {
-        var m = ReadGraph(quads, graphIri);
+        var m = ReadGraph(statements, graphIri);
         var list = new List<ClassLabel>(m.Classes.Count);
         foreach (var iri in m.Classes)
         {
@@ -133,9 +113,9 @@ public static class ConflictDetection
     /// already declared subclass / disjoint / equivalent — those are
     /// deliberately distinct, not accidental duplicates).
     /// </summary>
-    public static GraphRelations ReadGraphRelations(IReadOnlyList<OntoQuad> quads, string graphIri)
+    public static GraphRelations ReadGraphRelations(IReadOnlyList<RdfStatement> statements, string graphIri)
     {
-        var m = ReadGraph(quads, graphIri);
+        var m = ReadGraph(statements, graphIri);
         return new GraphRelations(
             Subclass: m.Subclass.Select(p => (p.Item1, p.Item2)).ToList(),
             Disjoint: m.Disjoint.Select(p => (p.Item1, p.Item2)).ToList(),
@@ -178,7 +158,7 @@ public static class ConflictDetection
             HashCode.Combine(obj.Item1, obj.Item2);
     }
 
-    private static GraphModel ReadGraph(IReadOnlyList<OntoQuad> quads, string graphIri)
+    private static GraphModel ReadGraph(IReadOnlyList<RdfStatement> statements, string graphIri)
     {
         var model = new GraphModel(
             Classes: new HashSet<string>(StringComparer.Ordinal),
@@ -193,19 +173,20 @@ public static class ConflictDetection
         var listFirst = new Dictionary<string, string>(StringComparer.Ordinal);
         var listRest = new Dictionary<string, string>(StringComparer.Ordinal);
 
-        foreach (var q in quads)
+        foreach (var s in statements)
         {
-            var si = TermIri(q.Subject);
-            var pi = q.Predicate.Value;
-            var oi = TermIri(q.Object);
+            if (s.GraphIri != graphIri) continue;
+            var si = TermIri(s.Subject);
+            var pi = s.PredicateIri;
+            var oi = TermIri(s.Object);
 
-            if (pi == Vocabulary.RdfType.Value)
+            if (pi == Vocabulary.RdfType)
             {
-                if (oi == Vocabulary.OwlClass.Value && q.Subject is OntoNamedNode)
+                if (oi == Vocabulary.OwlClass && s.Subject is RdfIri)
                 {
                     model.Classes.Add(si);
                 }
-                else if (oi == Vocabulary.OwlObjectProperty.Value)
+                else if (oi == Vocabulary.OwlObjectProperty)
                 {
                     if (!model.Props.TryGetValue(si, out var pinfo))
                     {
@@ -213,7 +194,7 @@ public static class ConflictDetection
                         model.Props[si] = pinfo;
                     }
                 }
-                else if (oi == Vocabulary.OwlDatatypeProperty.Value)
+                else if (oi == Vocabulary.OwlDatatypeProperty)
                 {
                     if (!model.Props.TryGetValue(si, out var pinfo))
                     {
@@ -222,15 +203,15 @@ public static class ConflictDetection
                     }
                 }
             }
-            else if (pi == Vocabulary.RdfsLabel.Value && q.Object is OntoLiteral lbl)
+            else if (pi == Vocabulary.RdfsLabel && s.Object is RdfLiteral lbl)
             {
                 model.Labels[si] = lbl.Value;
             }
-            else if (pi == Vocabulary.RdfsSubClassOf.Value)
+            else if (pi == Vocabulary.RdfsSubClassOf)
             {
                 model.Subclass.Add((si, oi));
             }
-            else if (pi == Vocabulary.RdfsDomain.Value)
+            else if (pi == Vocabulary.RdfsDomain)
             {
                 if (!model.Props.TryGetValue(si, out var pinfo))
                 {
@@ -239,7 +220,7 @@ public static class ConflictDetection
                 }
                 pinfo.Domains.Add(oi);
             }
-            else if (pi == Vocabulary.RdfsRange.Value)
+            else if (pi == Vocabulary.RdfsRange)
             {
                 if (!model.Props.TryGetValue(si, out var pinfo))
                 {
@@ -248,23 +229,23 @@ public static class ConflictDetection
                 }
                 pinfo.Ranges.Add(oi);
             }
-            else if (pi == Vocabulary.OwlDisjointWith.Value)
+            else if (pi == Vocabulary.OwlDisjointWith)
             {
                 model.Disjoint.Add((si, oi));
             }
-            else if (pi == Vocabulary.OwlEquivalentClass.Value)
+            else if (pi == Vocabulary.OwlEquivalentClass)
             {
                 model.Equivalent.Add((si, oi));
             }
-            else if (pi == Vocabulary.OwlUnionOf.Value)
+            else if (pi == Vocabulary.OwlUnionOf)
             {
                 unionHead[si] = oi;
             }
-            else if (pi == Vocabulary.RdfFirst.Value)
+            else if (pi == Vocabulary.RdfFirst)
             {
                 listFirst[si] = oi;
             }
-            else if (pi == Vocabulary.RdfRest.Value)
+            else if (pi == Vocabulary.RdfRest)
             {
                 listRest[si] = oi;
             }
@@ -277,7 +258,7 @@ public static class ConflictDetection
             var cur = listHead;
             int guard = 0;
             while (!string.IsNullOrEmpty(cur)
-                && cur != Vocabulary.RdfNil.Value
+                && cur != Vocabulary.RdfNil
                 && guard < 1000)
             {
                 if (listFirst.TryGetValue(cur, out var first))
@@ -296,11 +277,11 @@ public static class ConflictDetection
         return model;
     }
 
-    private static string TermIri(object term) => term switch
+    private static string TermIri(RdfTerm term) => term switch
     {
-        OntoNamedNode n => n.Value,
-        OntoBlankNode b => b.Value,
-        OntoLiteral l => l.Value,
+        RdfIri n => n.Value,
+        RdfBlankNode b => b.Id,
+        RdfLiteral l => l.Value,
         _ => term.ToString() ?? "",
     };
 

@@ -1,8 +1,4 @@
 using ISEStudio.Application.Ontology;
-using Oxigraph;
-using OntoQuad = Oxigraph.Quad;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Ontology;
 
@@ -20,6 +16,11 @@ namespace ISEStudio.Ontology;
 /// suffix; the caller-supplied "individual IRI" argument is treated as a
 /// label / display hint and is never echoed back as the IRI, matching the
 /// Python <c>mint_iri</c> contract.</para>
+/// <para>This class is statement-shaped end to end. All statement
+/// construction goes through <see cref="RdfStatement"/> and
+/// <see cref="RdfTerm"/>; the persistence boundary
+/// (<c>PostgresABoxGraphStore</c>) consumes the same types.
+/// </para>
 /// </remarks>
 public sealed class ABoxManager
 {
@@ -50,7 +51,6 @@ public sealed class ABoxManager
         ArgumentException.ThrowIfNullOrEmpty(classIri);
         ArgumentNullException.ThrowIfNull(label);
 
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
         var iri = MintIri(ks.BaseIri);
 
         if (_store is null)
@@ -60,23 +60,20 @@ public sealed class ABoxManager
             return iri;
         }
 
-        var clsNode = new OntoNamedNode(classIri);
-        var indNode = new OntoNamedNode(iri);
-
-        var quads = new List<OntoQuad>(3)
+        var statements = new List<RdfStatement>(3)
         {
-            new(indNode, Vocabulary.RdfType, Vocabulary.OwlNamedIndividual, aboxGraph),
-            new(indNode, Vocabulary.RdfType, clsNode, aboxGraph),
+            new(new RdfIri(iri), Vocabulary.RdfType,
+                new RdfIri(Vocabulary.OwlNamedIndividual), ks.ABoxGraph),
+            new(new RdfIri(iri), Vocabulary.RdfType,
+                new RdfIri(classIri), ks.ABoxGraph),
         };
         if (label.Length > 0)
         {
-            quads.Add(new OntoQuad(
-                indNode,
-                Vocabulary.RdfsLabel,
-                new OntoLiteral(label),
-                aboxGraph));
+            statements.Add(new RdfStatement(
+                new RdfIri(iri), Vocabulary.RdfsLabel,
+                new RdfLiteral(label), ks.ABoxGraph));
         }
-        _store.AddQuads(aboxGraph, quads);
+        _store.AddStatements(ks.ABoxGraph, statements);
         return iri;
     }
 
@@ -94,25 +91,20 @@ public sealed class ABoxManager
         ArgumentException.ThrowIfNullOrEmpty(individualIri);
         ArgumentException.ThrowIfNullOrEmpty(classIri);
 
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
         var iri = MintIri(ks.BaseIri);
 
         if (_store is null)
         {
-            // No graph store wired (contract-test path) — mint the IRI
-            // without persisting so the HTTP envelope still parses.
             return iri;
         }
 
-        var clsNode = new OntoNamedNode(classIri);
-        var indNode = new OntoNamedNode(iri);
-
-        var quads = new[]
+        _store.AddStatements(ks.ABoxGraph, new[]
         {
-            new OntoQuad(indNode, Vocabulary.RdfType, Vocabulary.OwlNamedIndividual, aboxGraph),
-            new OntoQuad(indNode, Vocabulary.RdfType, clsNode, aboxGraph),
-        };
-        _store.AddQuads(aboxGraph, quads);
+            new RdfStatement(new RdfIri(iri), Vocabulary.RdfType,
+                new RdfIri(Vocabulary.OwlNamedIndividual), ks.ABoxGraph),
+            new RdfStatement(new RdfIri(iri), Vocabulary.RdfType,
+                new RdfIri(classIri), ks.ABoxGraph),
+        });
         return iri;
     }
 
@@ -125,14 +117,12 @@ public sealed class ABoxManager
 
         if (_store is null)
         {
-            // No graph store wired (contract-test path) — nothing to remove.
             return 0;
         }
 
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
         var outgoing = _store.Match(subjectIri: iri, graphIri: ks.ABoxGraph);
         if (outgoing.Count == 0) return 0;
-        _store.RemoveQuads(aboxGraph, outgoing);
+        _store.RemoveStatements(ks.ABoxGraph, outgoing);
         return outgoing.Count;
     }
 
@@ -144,20 +134,12 @@ public sealed class ABoxManager
         ArgumentException.ThrowIfNullOrEmpty(iri);
         ArgumentException.ThrowIfNullOrEmpty(classIri);
 
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — nothing to write.
-            return;
-        }
+        if (_store is null) return;
 
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
-        _store.AddQuads(aboxGraph, new[]
+        _store.AddStatements(ks.ABoxGraph, new[]
         {
-            new OntoQuad(
-                new OntoNamedNode(iri),
-                Vocabulary.RdfType,
-                new OntoNamedNode(classIri),
-                aboxGraph),
+            new RdfStatement(new RdfIri(iri), Vocabulary.RdfType,
+                new RdfIri(classIri), ks.ABoxGraph),
         });
     }
 
@@ -169,21 +151,16 @@ public sealed class ABoxManager
         ArgumentException.ThrowIfNullOrEmpty(iri);
         ArgumentException.ThrowIfNullOrEmpty(classIri);
 
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — nothing to remove.
-            return;
-        }
+        if (_store is null) return;
 
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
         var existing = _store.Match(
             subjectIri: iri,
-            predicateIri: Vocabulary.RdfType.Value,
+            predicateIri: Vocabulary.RdfType,
             objectIri: classIri,
             graphIri: ks.ABoxGraph);
         if (existing.Count > 0)
         {
-            _store.RemoveQuads(aboxGraph, existing);
+            _store.RemoveStatements(ks.ABoxGraph, existing);
         }
     }
 
@@ -206,19 +183,17 @@ public sealed class ABoxManager
 
         if (_store is null)
         {
-            // No graph store wired (contract-test path) — report the
-            // assertion as already-present so the caller doesn't count
-            // it as a fresh write.
             return false;
         }
 
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
-        var s = new OntoNamedNode(subject);
-        var p = new OntoNamedNode(property);
-        var o = new OntoNamedNode(target);
-        var existing = _store.Match(subjectIri: subject, predicateIri: property, objectIri: target, graphIri: ks.ABoxGraph);
+        var existing = _store.Match(
+            subjectIri: subject, predicateIri: property,
+            objectIri: target, graphIri: ks.ABoxGraph);
         if (existing.Count > 0) return false;
-        _store.AddQuads(aboxGraph, new[] { new OntoQuad(s, p, o, aboxGraph) });
+        _store.AddStatements(ks.ABoxGraph, new[]
+        {
+            new RdfStatement(new RdfIri(subject), property, new RdfIri(target), ks.ABoxGraph),
+        });
         return true;
     }
 
@@ -231,16 +206,12 @@ public sealed class ABoxManager
         ArgumentException.ThrowIfNullOrEmpty(property);
         ArgumentException.ThrowIfNullOrEmpty(target);
 
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — nothing to remove.
-            return;
-        }
+        if (_store is null) return;
 
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
         var existing = _store.Match(
-            subjectIri: subject, predicateIri: property, objectIri: target, graphIri: ks.ABoxGraph);
-        if (existing.Count > 0) _store.RemoveQuads(aboxGraph, existing);
+            subjectIri: subject, predicateIri: property,
+            objectIri: target, graphIri: ks.ABoxGraph);
+        if (existing.Count > 0) _store.RemoveStatements(ks.ABoxGraph, existing);
     }
 
     /// <summary>
@@ -256,33 +227,22 @@ public sealed class ABoxManager
         ArgumentException.ThrowIfNullOrEmpty(property);
         ArgumentNullException.ThrowIfNull(value);
 
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — report the
-            // assertion as already-present so the caller doesn't count
-            // it as a fresh write.
-            return false;
-        }
+        if (_store is null) return false;
 
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
         var literal = datatype is null
-            ? new OntoLiteral(value)
-            : new OntoLiteral(value, Datatype: new OntoNamedNode(datatype));
+            ? new RdfLiteral(value)
+            : new RdfLiteral(value, Datatype: datatype);
 
         var existing = _store.Match(
             subjectIri: subject, predicateIri: property, graphIri: ks.ABoxGraph);
-        foreach (var q in existing)
+        foreach (var s in existing)
         {
-            if (q.Object is OntoLiteral l
-                && l.Value == literal.Value
-                && ((l.Datatype?.Value) == (literal.Datatype?.Value)))
-            {
-                return false;
-            }
+            // RdfLiteral is a record — value equality checks Value/Language/Datatype.
+            if (s.Object is RdfLiteral l && l == literal) return false;
         }
-        _store.AddQuads(aboxGraph, new[]
+        _store.AddStatements(ks.ABoxGraph, new[]
         {
-            new OntoQuad(new OntoNamedNode(subject), new OntoNamedNode(property), literal, aboxGraph),
+            new RdfStatement(new RdfIri(subject), property, literal, ks.ABoxGraph),
         });
         return true;
     }
@@ -296,24 +256,19 @@ public sealed class ABoxManager
         ArgumentException.ThrowIfNullOrEmpty(property);
         ArgumentNullException.ThrowIfNull(value);
 
-        if (_store is null)
-        {
-            // No graph store wired (contract-test path) — nothing to remove.
-            return;
-        }
+        if (_store is null) return;
 
-        var aboxGraph = new OntoNamedNode(ks.ABoxGraph);
         var literal = datatype is null
-            ? new OntoLiteral(value)
-            : new OntoLiteral(value, Datatype: new OntoNamedNode(datatype));
+            ? new RdfLiteral(value)
+            : new RdfLiteral(value, Datatype: datatype);
 
         var existing = _store.Match(
             subjectIri: subject, predicateIri: property, graphIri: ks.ABoxGraph);
-        foreach (var q in existing)
+        foreach (var s in existing)
         {
-            if (q.Object is OntoLiteral l && l.Value == literal.Value)
+            if (s.Object is RdfLiteral l && l == literal)
             {
-                _store.RemoveQuads(aboxGraph, new[] { q });
+                _store.RemoveStatements(ks.ABoxGraph, new[] { s });
                 return;
             }
         }
@@ -324,9 +279,9 @@ public sealed class ABoxManager
     // ------------------------------------------------------------------
 
     /// <summary>Every triple in the ABox graph.</summary>
-    public IReadOnlyList<OntoQuad> All(KsContext ks) =>
+    public IReadOnlyList<RdfStatement> All(KsContext ks) =>
         _store is null
-            ? Array.Empty<OntoQuad>()
+            ? Array.Empty<RdfStatement>()
             : BindAndMatch(ks);
 
     /// <summary>
@@ -337,11 +292,11 @@ public sealed class ABoxManager
     {
         ArgumentNullException.ThrowIfNull(ks);
         var out_ = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var q in All(ks))
+        foreach (var s in All(ks))
         {
-            if (q.Subject is OntoNamedNode n
-                && q.Predicate.Value == Vocabulary.RdfsLabel.Value
-                && q.Object is OntoLiteral l)
+            if (s.Subject is RdfIri n
+                && s.PredicateIri == Vocabulary.RdfsLabel
+                && s.Object is RdfLiteral l)
             {
                 out_[n.Value] = l.Value;
             }
@@ -361,10 +316,10 @@ public sealed class ABoxManager
     {
         ArgumentNullException.ThrowIfNull(ks);
         var subjects = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var q in All(ks))
+        foreach (var s in All(ks))
         {
-            if (q.Subject is OntoNamedNode n
-                && q.Predicate.Value == Vocabulary.RdfType.Value)
+            if (s.Subject is RdfIri n
+                && s.PredicateIri == Vocabulary.RdfType)
             {
                 subjects.Add(n.Value);
             }
@@ -382,12 +337,12 @@ public sealed class ABoxManager
     {
         ArgumentNullException.ThrowIfNull(ks);
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
-        foreach (var q in All(ks))
+        foreach (var s in All(ks))
         {
-            if (q.Subject is OntoNamedNode
-                && q.Predicate.Value == Vocabulary.RdfType.Value
-                && q.Object is OntoNamedNode cls
-                && cls.Value != Vocabulary.OwlNamedIndividual.Value)
+            if (s.Subject is RdfIri
+                && s.PredicateIri == Vocabulary.RdfType
+                && s.Object is RdfIri cls
+                && cls.Value != Vocabulary.OwlNamedIndividual)
             {
                 counts[cls.Value] = counts.TryGetValue(cls.Value, out var n) ? n + 1 : 1;
             }
@@ -414,11 +369,11 @@ public sealed class ABoxManager
         // Build (subject → set of classIris, subject → label) from a single scan.
         var classBySubject = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         var labelBySubject = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var quad in All(ks))
+        foreach (var s in All(ks))
         {
-            if (quad.Subject is not OntoNamedNode subj) continue;
-            if (quad.Predicate.Value == Vocabulary.RdfType.Value
-                && quad.Object is OntoNamedNode cls)
+            if (s.Subject is not RdfIri subj) continue;
+            if (s.PredicateIri == Vocabulary.RdfType
+                && s.Object is RdfIri cls)
             {
                 if (!classBySubject.TryGetValue(subj.Value, out var set))
                 {
@@ -427,8 +382,8 @@ public sealed class ABoxManager
                 }
                 set.Add(cls.Value);
             }
-            else if (quad.Predicate.Value == Vocabulary.RdfsLabel.Value
-                && quad.Object is OntoLiteral lit)
+            else if (s.PredicateIri == Vocabulary.RdfsLabel
+                && s.Object is RdfLiteral lit)
             {
                 labelBySubject[subj.Value] = lit.Value;
             }
@@ -463,7 +418,7 @@ public sealed class ABoxManager
             // and the frontend InstancesPanel can render the type chips without
             // a second round-trip to /abox/classes.
             var types = classBySubject[iri]
-                .Where(t => t != Vocabulary.OwlNamedIndividual.Value)
+                .Where(t => t != Vocabulary.OwlNamedIndividual)
                 .OrderBy(t => t, StringComparer.Ordinal)
                 .Select(t => new LabeledIri(t,
                     classLabels.TryGetValue(t, out var tl) ? tl : LocalIri(t)))
@@ -485,11 +440,11 @@ public sealed class ABoxManager
         ArgumentNullException.ThrowIfNull(ks);
         var classBySubject = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
         var labelBySubject = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var quad in All(ks))
+        foreach (var s in All(ks))
         {
-            if (quad.Subject is not OntoNamedNode subj) continue;
-            if (quad.Predicate.Value == Vocabulary.RdfType.Value
-                && quad.Object is OntoNamedNode cls)
+            if (s.Subject is not RdfIri subj) continue;
+            if (s.PredicateIri == Vocabulary.RdfType
+                && s.Object is RdfIri cls)
             {
                 if (!classBySubject.TryGetValue(subj.Value, out var set))
                 {
@@ -498,8 +453,8 @@ public sealed class ABoxManager
                 }
                 set.Add(cls.Value);
             }
-            else if (quad.Predicate.Value == Vocabulary.RdfsLabel.Value
-                && quad.Object is OntoLiteral lit)
+            else if (s.PredicateIri == Vocabulary.RdfsLabel
+                && s.Object is RdfLiteral lit)
             {
                 labelBySubject[subj.Value] = lit.Value;
             }
@@ -549,24 +504,24 @@ public sealed class ABoxManager
         var dataAssertions = new List<DataAssertionOut>();
         string? label = null;
 
-        foreach (var quad in outgoing)
+        foreach (var s in outgoing)
         {
-            if (quad.Predicate.Value == Vocabulary.RdfType.Value
-                && quad.Object is OntoNamedNode cls)
+            if (s.PredicateIri == Vocabulary.RdfType
+                && s.Object is RdfIri cls)
             {
                 var clsIri = cls.Value;
-                if (clsIri == Vocabulary.OwlNamedIndividual.Value) continue;
+                if (clsIri == Vocabulary.OwlNamedIndividual) continue;
                 types.Add(new LabeledIri(clsIri,
                     classLabels.TryGetValue(clsIri, out var l) ? l : LocalIri(clsIri)));
             }
-            else if (quad.Predicate.Value == Vocabulary.RdfsLabel.Value
-                && quad.Object is OntoLiteral labelLit)
+            else if (s.PredicateIri == Vocabulary.RdfsLabel
+                && s.Object is RdfLiteral labelLit)
             {
                 label = labelLit.Value;
             }
-            else if (quad.Object is OntoNamedNode target)
+            else if (s.Object is RdfIri target)
             {
-                var propIri = quad.Predicate.Value;
+                var propIri = s.PredicateIri;
                 objectAssertions.Add(new ObjectAssertionOut(
                     Prop: propIri,
                     PropLabel: propLabels.TryGetValue(propIri, out var l) ? l : LocalIri(propIri),
@@ -574,14 +529,14 @@ public sealed class ABoxManager
                     TargetLabel: LocalIri(target.Value),
                     Sources: Array.Empty<string>()));
             }
-            else if (quad.Object is OntoLiteral literal)
+            else if (s.Object is RdfLiteral literal)
             {
-                var propIri = quad.Predicate.Value;
+                var propIri = s.PredicateIri;
                 dataAssertions.Add(new DataAssertionOut(
                     Prop: propIri,
                     PropLabel: propLabels.TryGetValue(propIri, out var l) ? l : LocalIri(propIri),
                     Value: literal.Value,
-                    Datatype: literal.Datatype?.Value,
+                    Datatype: literal.Datatype,
                     Sources: Array.Empty<string>()));
             }
         }
@@ -600,11 +555,11 @@ public sealed class ABoxManager
         _store?.Bind(ks.KnowledgeSystemId, ks.ABoxGraph);
     }
 
-    private List<OntoQuad> BindAndMatch(
+    private List<RdfStatement> BindAndMatch(
         KsContext ks,
         string? subjectIri = null,
         string? predicateIri = null,
-        string? objectIri = null) 
+        string? objectIri = null)
     {
         Bind(ks);
         return _store!.Match(subjectIri, predicateIri, objectIri, ks.ABoxGraph);
@@ -637,10 +592,10 @@ public sealed class ABoxManager
     private interface IABoxGraphStore
     {
         void Bind(Guid knowledgeSystemId, string graphIri);
-        List<OntoQuad> Match(string? subjectIri = null, string? predicateIri = null,
-            string? objectIri = null, string? graphIri = null, OntoNamedNode? graph = null);
-        void AddQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads);
-        void RemoveQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads);
+        List<RdfStatement> Match(string? subjectIri = null, string? predicateIri = null,
+            string? objectIri = null, string? graphIri = null);
+        void AddStatements(string graphIri, IEnumerable<RdfStatement> statements);
+        void RemoveStatements(string graphIri, IEnumerable<RdfStatement> statements);
     }
 
     private sealed class PostgresABoxGraphStore : IABoxGraphStore
@@ -648,61 +603,43 @@ public sealed class ABoxManager
         private readonly IRdfStatementRepository _statements;
         private Guid _knowledgeSystemId;
         private string _graphIri = string.Empty;
+
         public PostgresABoxGraphStore(IRdfStatementRepository statements) => _statements = statements;
+
         public void Bind(Guid knowledgeSystemId, string graphIri)
         {
             _knowledgeSystemId = knowledgeSystemId;
             _graphIri = graphIri;
         }
-        public List<OntoQuad> Match(string? subjectIri = null, string? predicateIri = null,
-            string? objectIri = null, string? graphIri = null, OntoNamedNode? graph = null)
-        {
-            var selectedGraph = graphIri ?? graph?.Value ?? _graphIri;
-            return _statements.ListAsync(_knowledgeSystemId, "ABox").GetAwaiter().GetResult()
-                .Where(statement => statement.GraphIri == selectedGraph)
-                .Where(statement => subjectIri is null || statement.Subject is RdfIri iri && iri.Value == subjectIri)
-                .Where(statement => predicateIri is null || statement.PredicateIri == predicateIri)
-                .Where(statement => objectIri is null || statement.Object is RdfIri iri && iri.Value == objectIri)
-                .Select(ToQuad).ToList();
-        }
-        public void AddQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads) =>
-            Replace(graph.Value, Match(graph: graph).Concat(quads).Distinct().ToList());
-        public void RemoveQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads)
-        {
-            var remove = quads.ToHashSet();
-            Replace(graph.Value, Match(graph: graph).Where(quad => !remove.Contains(quad)).ToList());
-        }
-        private void Replace(string graphIri, IReadOnlyList<OntoQuad> quads) =>
-            _statements.ReplaceLayerAsync(_knowledgeSystemId, "ABox", quads.Select(FromQuad).ToList())
-                .GetAwaiter().GetResult();
-        private static RdfStatement FromQuad(OntoQuad quad) =>
-            new(FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object), quad.Graph is OntoNamedNode g ? g.Value : quad.Graph?.ToString());
-        private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
-        {
-            OntoNamedNode iri => new RdfIri(iri.Value),
-            Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
-            OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
-            _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-        };
-        private static OntoQuad ToQuad(RdfStatement statement)
-        {
-            var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("ABox graph is required"));
-            return new OntoQuad(ToSubject(statement.Subject), new OntoNamedNode(statement.PredicateIri), ToObject(statement.Object), graph);
-        }
-        private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
-        {
-            RdfIri iri => new OntoNamedNode(iri.Value),
-            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-            _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
-        };
-        private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
-        {
-            RdfIri iri => new OntoNamedNode(iri.Value),
-            RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-            RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
-                literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
-            _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-        };
-    }
 
+        public List<RdfStatement> Match(string? subjectIri = null, string? predicateIri = null,
+            string? objectIri = null, string? graphIri = null)
+        {
+            var selectedGraph = graphIri ?? _graphIri;
+            return _statements.ListAsync(_knowledgeSystemId, "ABox").GetAwaiter().GetResult()
+                .Where(s => s.GraphIri == selectedGraph)
+                .Where(s => subjectIri is null || s.Subject is RdfIri iri && iri.Value == subjectIri)
+                .Where(s => predicateIri is null || s.PredicateIri == predicateIri)
+                .Where(s => objectIri is null || s.Object is RdfIri iri && iri.Value == objectIri)
+                .ToList();
+        }
+
+        public void AddStatements(string graphIri, IEnumerable<RdfStatement> statements)
+        {
+            var existing = Match(graphIri: graphIri);
+            var merged = existing.Concat(statements).Distinct().ToList();
+            _statements.ReplaceLayerAsync(_knowledgeSystemId, "ABox", merged)
+                .GetAwaiter().GetResult();
+        }
+
+        public void RemoveStatements(string graphIri, IEnumerable<RdfStatement> statements)
+        {
+            var remove = statements.ToHashSet();
+            var remaining = Match(graphIri: graphIri)
+                .Where(s => !remove.Contains(s))
+                .ToList();
+            _statements.ReplaceLayerAsync(_knowledgeSystemId, "ABox", remaining)
+                .GetAwaiter().GetResult();
+        }
+    }
 }

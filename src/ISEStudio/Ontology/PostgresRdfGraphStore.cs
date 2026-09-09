@@ -1,8 +1,4 @@
-using ISEStudio.Infrastructure.Persistence.Entities;
 using System.Text;
-using OntoNamedNode = Oxigraph.NamedNode;
-using OntoQuad = Oxigraph.Quad;
-using OntoLiteral = Oxigraph.Literal;
 
 namespace ISEStudio.Ontology;
 
@@ -16,8 +12,8 @@ public sealed class PostgresRdfGraphStore
     // on the same instance trip the ConcurrencyDetector and the change
     // tracker. The fixture exposes one shared context across the test
     // suite, so every write through this facade is serialised behind a
-    // semaphore to keep the read-modify-write cycle in AddQuads /
-    // RemoveQuads coherent when the test driver fires concurrent tasks.
+    // semaphore to keep the read-modify-write cycle in AddStatements /
+    // RemoveStatements coherent when the test driver fires concurrent tasks.
     private static readonly SemaphoreSlim _writeLock = new(1, 1);
 
     public PostgresRdfGraphStore(IRdfStatementRepository statements, Guid knowledgeSystemId, string layer)
@@ -29,42 +25,55 @@ public sealed class PostgresRdfGraphStore
         _layer = layer;
     }
 
-    public List<OntoQuad> Match(string? graphIri = null, string? subjectIri = null,
+    public List<RdfStatement> Match(string? graphIri = null, string? subjectIri = null,
         string? predicateIri = null, string? objectIri = null)
     {
         var statements = Statements();
-        var matches = statements.Where(s => graphIri is null || s.GraphIri == graphIri)
+        return statements
+            .Where(s => graphIri is null || s.GraphIri == graphIri)
             .Where(s => subjectIri is null || s.Subject is RdfIri iri && iri.Value == subjectIri)
             .Where(s => predicateIri is null || s.PredicateIri == predicateIri)
             .Where(s => objectIri is null || s.Object is RdfIri iri && iri.Value == objectIri)
-            .Select(ToQuad).ToList();
-        return matches;
+            .ToList();
     }
 
     public byte[] DumpNQuads(string graphIri) =>
         RdfExportService.SerializeNQuads(Statements().Where(s => s.GraphIri == graphIri).ToList());
 
-    public void AddQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads)
+    /// <summary>
+    /// Statement-shape upsert. The incoming statements are merged with the
+    /// layer's existing statements in <see cref="RdfStatement"/> form.
+    /// </summary>
+    public void AddStatements(string graphIri, IEnumerable<RdfStatement> statements)
     {
         _writeLock.Wait();
         try
         {
-            var incoming = quads.ToList();
-            var all = Statements().Select(ToQuad).ToList();
-            var selected = all.Where(q => q.Graph is OntoNamedNode node && node.Value == graph.Value).Concat(incoming).Distinct().ToList();
-            var other = all.Where(q => q.Graph is not OntoNamedNode node || node.Value != graph.Value);
-            Replace(other.Concat(selected));
+            var incoming = statements.ToList();
+            var existing = Statements();
+            var other = existing.Where(s => s.GraphIri != graphIri);
+            var inGraph = existing.Where(s => s.GraphIri == graphIri)
+                .Concat(incoming)
+                .Distinct()
+                .ToList();
+            Replace(other.Concat(inGraph));
         }
         finally { _writeLock.Release(); }
     }
 
-    public void RemoveQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads)
+    /// <summary>
+    /// Statement-shape removal.
+    /// </summary>
+    public void RemoveStatements(string graphIri, IEnumerable<RdfStatement> statements)
     {
         _writeLock.Wait();
         try
         {
-            var remove = quads.ToHashSet();
-            Replace(Statements().Select(ToQuad).Where(q => !(q.Graph is OntoNamedNode node && node.Value == graph.Value) || !remove.Contains(q)));
+            var remove = statements.ToHashSet();
+            var remaining = Statements()
+                .Where(s => !(s.GraphIri == graphIri && remove.Contains(s)))
+                .ToList();
+            Replace(remaining);
         }
         finally { _writeLock.Release(); }
     }
@@ -74,10 +83,6 @@ public sealed class PostgresRdfGraphStore
         cancellationToken.ThrowIfCancellationRequested();
         return ValueTask.FromResult(new PostgresRdfCapture(this, graphIri, DumpNQuads(graphIri)));
     }
-
-    public ValueTask<PostgresRdfCapture> CaptureAsync(OntoNamedNode graph,
-        bool revertOnError, TimeSpan? waitTimeout, CancellationToken cancellationToken) =>
-        CaptureAsync(graph.Value, cancellationToken);
 
     public ValueTask<PostgresRdfCapture> CaptureAsync(string graphIri,
         bool revertOnError, TimeSpan? waitTimeout, CancellationToken cancellationToken) =>
@@ -102,55 +107,16 @@ public sealed class PostgresRdfGraphStore
 
     internal void Restore(string graphIri, byte[] snapshot)
     {
-        var current = Statements().Select(ToQuad).ToList();
-        using var parsed = new Oxigraph.Store();
-        parsed.Load(Encoding.UTF8.GetString(snapshot), Oxigraph.RdfFormat.NQuads);
-        var restored = parsed.Match().ToList();
-        Replace(current.Where(q => !(q.Graph is OntoNamedNode node && node.Value == graphIri)).Concat(restored));
+        var restored = RdfDotNetRdfCodec.ParseNQuads(snapshot).Statements;
+        Replace(Statements().Where(s => s.GraphIri != graphIri).Concat(restored));
     }
 
     private IReadOnlyList<RdfStatement> Statements() =>
         _statements.ListAsync(_knowledgeSystemId, _layer).GetAwaiter().GetResult();
 
-    private void Replace(IEnumerable<OntoQuad> quads) =>
-        _statements.ReplaceLayerAsync(_knowledgeSystemId, _layer,
-            quads.Select(FromQuad).ToList()).GetAwaiter().GetResult();
-
-    private static RdfStatement FromQuad(OntoQuad quad) =>
-        new(FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object),
-            quad.Graph is OntoNamedNode graph ? graph.Value : quad.Graph?.ToString());
-
-    public static OntoQuad ToQuadForConflictDetection(RdfStatement statement) => ToQuad(statement);
-
-    private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
-    {
-        OntoNamedNode iri => new RdfIri(iri.Value),
-        Oxigraph.BlankNode blank => new RdfBlankNode(blank.Value),
-        OntoLiteral literal => new RdfLiteral(literal.Value, literal.Language, literal.Datatype?.Value),
-        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-    };
-
-    private static OntoQuad ToQuad(RdfStatement statement)
-    {
-        var graph = new OntoNamedNode(statement.GraphIri ?? throw new InvalidOperationException("RDF graph is required"));
-        return new OntoQuad(ToSubject(statement.Subject), new OntoNamedNode(statement.PredicateIri), ToObject(statement.Object), graph);
-    }
-
-    private static Oxigraph.INamedOrBlankNode ToSubject(RdfTerm term) => term switch
-    {
-        RdfIri iri => new OntoNamedNode(iri.Value),
-        RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-        _ => throw new InvalidOperationException("RDF subject must be an IRI or blank node"),
-    };
-
-    private static Oxigraph.ITerm ToObject(RdfTerm term) => term switch
-    {
-        RdfIri iri => new OntoNamedNode(iri.Value),
-        RdfBlankNode blank => new Oxigraph.BlankNode(blank.Id),
-        RdfLiteral literal => new OntoLiteral(literal.Value, literal.Language,
-            literal.Datatype is null ? null : new OntoNamedNode(literal.Datatype)),
-        _ => throw new InvalidOperationException($"Unsupported RDF term: {term.GetType().Name}"),
-    };
+    private void Replace(IEnumerable<RdfStatement> statements) =>
+        _statements.ReplaceLayerAsync(_knowledgeSystemId, _layer, statements.ToList())
+            .GetAwaiter().GetResult();
 }
 
 public sealed class PostgresRdfCapture : IAsyncDisposable
