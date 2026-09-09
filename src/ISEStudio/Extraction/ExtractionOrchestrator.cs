@@ -321,7 +321,13 @@ public sealed class ExtractionOrchestrator
         // re-entrant acquires within one job from acquires by another
         // worker — sharing state across requests would let two independent
         // extractions oversubscribe the same endpoint.
-        var ksContext = new KsContext(GraphIri: ksEntity.GraphIri, BaseIri: ksEntity.BaseIri, Name: ksEntity.Name);
+        // KnowledgeSystemId must ride along: the merger / graph-store
+        // write paths (ExtractionMerger, PostgresRdfGraphStore) bind the
+        // PostgreSQL layer by (KnowledgeSystemId, layer) — omitting it
+        // would land every extraction triple in the zero-Guid layer and
+        // the read APIs would never see it.
+        var ksContext = new KsContext(GraphIri: ksEntity.GraphIri, BaseIri: ksEntity.BaseIri,
+            Name: ksEntity.Name, KnowledgeSystemId: ksEntity.Id);
 
         // SLICE 5: JobInput carries the immutable job entry shape; JobState
         // (built inside RunJobSafelyAsync via JobState.From(input)) carries

@@ -587,8 +587,13 @@ public sealed class OntologyReleaseEntityConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.Version).HasMaxLength(128).IsRequired();
         builder.HasIndex(x => x.Version).HasDatabaseName("ix_release_version");
 
+        // Unique only when published — multiple in-flight drafts may share a
+        // version label until publish materialises a unique final version
+        // (Draft rows are filtered out of the unique constraint at the DB
+        // level via the PostgreSQL partial index below.)
         builder.HasIndex(x => new { x.KnowledgeSystemId, x.Version })
             .IsUnique()
+            .HasFilter("status <> 'draft'")
             .HasDatabaseName("ux_release_knowledge_system_id_version");
 
         builder.Property(x => x.Status).HasMaxLength(32).IsRequired().HasDefaultValue("draft");

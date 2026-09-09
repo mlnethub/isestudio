@@ -12,6 +12,13 @@ public sealed class PostgresRdfGraphStore
     private readonly IRdfStatementRepository _statements;
     private readonly Guid _knowledgeSystemId;
     private readonly string _layer;
+    // EF Core's DbContext is not thread-safe — concurrent reads / writes
+    // on the same instance trip the ConcurrencyDetector and the change
+    // tracker. The fixture exposes one shared context across the test
+    // suite, so every write through this facade is serialised behind a
+    // semaphore to keep the read-modify-write cycle in AddQuads /
+    // RemoveQuads coherent when the test driver fires concurrent tasks.
+    private static readonly SemaphoreSlim _writeLock = new(1, 1);
 
     public PostgresRdfGraphStore(IRdfStatementRepository statements, Guid knowledgeSystemId, string layer)
     {
@@ -39,17 +46,27 @@ public sealed class PostgresRdfGraphStore
 
     public void AddQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads)
     {
-        var incoming = quads.ToList();
-        var all = Statements().Select(ToQuad).ToList();
-        var selected = all.Where(q => q.Graph is OntoNamedNode node && node.Value == graph.Value).Concat(incoming).Distinct().ToList();
-        var other = all.Where(q => q.Graph is not OntoNamedNode node || node.Value != graph.Value);
-        Replace(other.Concat(selected));
+        _writeLock.Wait();
+        try
+        {
+            var incoming = quads.ToList();
+            var all = Statements().Select(ToQuad).ToList();
+            var selected = all.Where(q => q.Graph is OntoNamedNode node && node.Value == graph.Value).Concat(incoming).Distinct().ToList();
+            var other = all.Where(q => q.Graph is not OntoNamedNode node || node.Value != graph.Value);
+            Replace(other.Concat(selected));
+        }
+        finally { _writeLock.Release(); }
     }
 
     public void RemoveQuads(OntoNamedNode graph, IEnumerable<OntoQuad> quads)
     {
-        var remove = quads.ToHashSet();
-        Replace(Statements().Select(ToQuad).Where(q => !(q.Graph is OntoNamedNode node && node.Value == graph.Value) || !remove.Contains(q)));
+        _writeLock.Wait();
+        try
+        {
+            var remove = quads.ToHashSet();
+            Replace(Statements().Select(ToQuad).Where(q => !(q.Graph is OntoNamedNode node && node.Value == graph.Value) || !remove.Contains(q)));
+        }
+        finally { _writeLock.Release(); }
     }
 
     public ValueTask<PostgresRdfCapture> CaptureAsync(string graphIri, CancellationToken cancellationToken = default)

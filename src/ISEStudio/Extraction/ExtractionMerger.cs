@@ -217,7 +217,8 @@ public sealed class ExtractionMerger : IExtractionMerger
     };
 
     private static RdfStatement ToStatement(OntoQuad quad) =>
-        new(FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object), quad.Graph?.ToString());
+        new(FromTerm(quad.Subject), quad.Predicate.Value, FromTerm(quad.Object),
+            quad.Graph is OntoNamedNode graph ? graph.Value : quad.Graph?.ToString());
 
     private static RdfTerm FromTerm(Oxigraph.ITerm term) => term switch
     {

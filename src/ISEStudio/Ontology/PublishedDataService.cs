@@ -86,11 +86,13 @@ public sealed class PublishedDataService : IDisposable
     }
 
     /// <summary>
-    /// Dispose the owned <see cref="ISEStudioDbContext"/>. Mirrors the
-    /// other slice services that own a scoped <c>DbContext</c> so tests
-    /// can <c>using var svc = …</c> in the per-test fixture style.
+    /// No-op. The injected <see cref="ISEStudioDbContext"/> +
+    /// <see cref="ReleaseManager"/> are owned by the DI scope (in
+    /// production) or the test fixture (in tests). Disposing them here
+    /// would tear down shared state when tests use
+    /// <c>using var svc = …</c>.
     /// </summary>
-    public void Dispose() => _db.Dispose();
+    public void Dispose() { /* intentionally no-op */ }
 
     /// <summary>
     /// Resolve the knowledge system + release + deployment + serving-store

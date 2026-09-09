@@ -390,12 +390,13 @@ public sealed class ABoxService
         KnowledgeSystemEntity ks, CancellationToken ct)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        var ksc = ToKsContext(ks);
         var owlClass = Vocabulary.OwlClass.Value;
         var rdfsLabel = Vocabulary.RdfsLabel.Value;
         // Pull every triple in the TBox once; small graph, single scan is
         // simpler than two match queries.
         var tboxQuads = (await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false))
-            .Where(statement => statement.GraphIri == ks.GraphIri);
+            .Where(statement => statement.GraphIri == ksc.TBoxGraph);
         var classes = new HashSet<string>(StringComparer.Ordinal);
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var q in tboxQuads)
@@ -429,11 +430,12 @@ public sealed class ABoxService
         KnowledgeSystemEntity ks, CancellationToken ct)
     {
         var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        var ksc = ToKsContext(ks);
         var owlObjectProperty = Vocabulary.OwlObjectProperty.Value;
         var owlDatatypeProperty = Vocabulary.OwlDatatypeProperty.Value;
         var rdfsLabel = Vocabulary.RdfsLabel.Value;
         var tboxQuads = (await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false))
-            .Where(statement => statement.GraphIri == ks.GraphIri);
+            .Where(statement => statement.GraphIri == ksc.TBoxGraph);
         var props = new HashSet<string>(StringComparer.Ordinal);
         var labels = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var q in tboxQuads)
@@ -462,7 +464,8 @@ public sealed class ABoxService
     /// <summary>Project a KS row into the <see cref="KsContext"/> the manager consumes.</summary>
     private static KsContext ToKsContext(KnowledgeSystemEntity ks) => new(
         GraphIri: ks.GraphIri,
-        BaseIri: ks.BaseIri);
+        BaseIri: ks.BaseIri,
+        KnowledgeSystemId: ks.Id);
 
     private async Task<AuditEventEntity> WriteAuditAsync(
         Guid ksId, UserEntity actor, string action, string summary,

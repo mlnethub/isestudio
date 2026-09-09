@@ -26,7 +26,17 @@ public sealed class PostgresRdfStatementRepository : IRdfStatementRepository
             .Where(item => item.KnowledgeSystemId == knowledgeSystemId && item.Layer == layer)
             .ExecuteDeleteAsync(cancellationToken)
             .ConfigureAwait(false);
-        _db.ChangeTracker.Clear();
+        // ExecuteDeleteAsync bypasses the change tracker; detach any
+        // still-tracked workspace rows so the AddRange below never
+        // collides with stale tracked instances holding the same keys.
+        // Detach ONLY this entity type — a blanket ChangeTracker.Clear()
+        // would also detach the caller's live entities (the conflict row
+        // being resolved, the knowledge-system row, …) and silently
+        // discard their pending changes.
+        foreach (var entry in _db.ChangeTracker.Entries<WorkspaceStatementEntity>().ToList())
+        {
+            entry.State = EntityState.Detached;
+        }
 
         var now = DateTimeOffset.UtcNow;
         _db.WorkspaceStatements.AddRange(statements.Select(statement => ToEntity(knowledgeSystemId, layer, statement, now)));

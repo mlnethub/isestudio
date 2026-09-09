@@ -452,7 +452,7 @@ public sealed class ConflictService
         // editor and just marks the conflict resolved.
         if (!IsNoOpResolution(chosen.Op))
         {
-            var editor = new OntologyEditor(new PostgresOntologyRepository(_db));
+            var editor = new OntologyEditor(new PostgresOntologyRepository(_db, _statements));
             try
             {
                 await editor.ApplyEditAsync(ks.GraphIri, ks.BaseIri, chosen.Op, ct).ConfigureAwait(false);
