@@ -28,7 +28,7 @@ public sealed class DurableExtractionWorkerTests : IClassFixture<PostgresGraphFi
     {
         await using var services = await BuildServicesAsync(services =>
         {
-            services.AddScoped<IExtractionJobHandler, PlainTextExtractionJobHandler>();
+            services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
         });
         await using var scope = services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
@@ -297,7 +297,7 @@ public sealed class DurableExtractionWorkerTests : IClassFixture<PostgresGraphFi
     {
         await using var services = await BuildServicesAsync(services =>
         {
-            services.AddScoped<IExtractionJobHandler, PlainTextExtractionJobHandler>();
+            services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
         });
         await using var scope = services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
@@ -323,7 +323,7 @@ public sealed class DurableExtractionWorkerTests : IClassFixture<PostgresGraphFi
     {
         await using var services = await BuildServicesAsync(services =>
         {
-            services.AddScoped<IExtractionJobHandler, PlainTextExtractionJobHandler>();
+            services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
         });
         await using var scope = services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
@@ -401,7 +401,7 @@ public sealed class DurableExtractionWorkerTests : IClassFixture<PostgresGraphFi
     {
         await using var services = await BuildServicesAsync(services =>
         {
-            services.AddScoped<IExtractionJobHandler, PlainTextExtractionJobHandler>();
+            services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
         });
         await using var scope = services.CreateAsyncScope();
         var store = scope.ServiceProvider.GetRequiredService<ExtractionJobStore>();

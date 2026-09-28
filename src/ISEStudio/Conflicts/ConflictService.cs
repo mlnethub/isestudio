@@ -149,7 +149,10 @@ public sealed class ConflictService
         }
         foreach (var d in semantic)
         {
-            detected = detected.Append(d).ToList();
+            detected = detected.Append(d with
+            {
+                Signature = ConflictDetection.BoundSignature(d.Signature),
+            }).ToList();
         }
         var bySig = detected.ToDictionary(d => d.Signature, StringComparer.Ordinal);
         var existing = await _db.Conflicts

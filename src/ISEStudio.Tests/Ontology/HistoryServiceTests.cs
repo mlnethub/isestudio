@@ -23,9 +23,10 @@ public sealed class HistoryServiceTests
         var db = app.CreateDbContext();
         var admin = db.Users.Single(u => u.Username == AuthTestWebApplicationFactory.AdminUsername);
         var ks = await CreateKsAsync(db, "history-list");
-        AddAudit(db, ks.Id, admin.Id, "ontology.edit", "Added Pump class", graph: ks.GraphIri, added: System.Text.Encoding.UTF8.GetBytes("<urn:Pump> a <urn:C> <urn:g> .\n"), actorName: admin.DisplayName);
-        AddAudit(db, ks.Id, admin.Id, "abox.resolve", "Resolved valve individual", graph: ks.GraphIri + "/abox", actorName: admin.DisplayName);
-        AddAudit(db, ks.Id, admin.Id, "conflict.resolve", "Resolved a conflict", graph: ks.GraphIri, actorName: admin.DisplayName);
+        var actorName = admin.DisplayName ?? admin.Username;
+        AddAudit(db, ks.Id, admin.Id, "ontology.edit", "Added Pump class", graph: ks.GraphIri, added: System.Text.Encoding.UTF8.GetBytes("<urn:Pump> a <urn:C> <urn:g> .\n"), actorName: actorName);
+        AddAudit(db, ks.Id, admin.Id, "abox.resolve", "Resolved valve individual", graph: ks.GraphIri + "/abox", actorName: actorName);
+        AddAudit(db, ks.Id, admin.Id, "conflict.resolve", "Resolved a conflict", graph: ks.GraphIri, actorName: actorName);
         await db.SaveChangesAsync();
 
         var actor = new Actor(admin.Id.ToString());
@@ -64,7 +65,7 @@ public sealed class HistoryServiceTests
                 ks.GraphIri),
         });
         var addedBlob = graphStore.DumpNQuads(ks.GraphIri);  // raw N-Quads(含该三元)
-        AddAudit(db, ks.Id, admin.Id, "ontology.edit", "added Pump", graph: ks.GraphIri, added: addedBlob, actorName: admin.DisplayName);
+        AddAudit(db, ks.Id, admin.Id, "ontology.edit", "added Pump", graph: ks.GraphIri, added: addedBlob, actorName: admin.DisplayName ?? admin.Username);
         await db.SaveChangesAsync();
 
         var actor = new Actor(admin.Id.ToString());

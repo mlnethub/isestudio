@@ -19,6 +19,21 @@ namespace ISEStudio.Tests.Extraction;
 /// </summary>
 public sealed class DurableExtractionWorkerTests
 {
+    [Fact]
+    public void Production_durable_registration_supports_combined_jobs()
+    {
+        var services = new ServiceCollection();
+        services.AddOptions();
+        services.AddExtractionServices();
+
+        using var provider = services.BuildServiceProvider();
+        var options = provider.GetRequiredService<IOptions<DurableExtractionWorkerOptions>>().Value;
+        Assert.Contains(ExtractionWire.KindBoth, options.SupportedKinds);
+        Assert.Contains(services, descriptor =>
+            descriptor.ServiceType == typeof(IExtractionJobHandler)
+            && descriptor.ImplementationType == typeof(CombinedExtractionJobHandler));
+    }
+
     /// <summary>
     /// Exposes <see cref="BackgroundService.ExecuteAsync"/> so the test can
     /// observe the real loop task — <see cref="BackgroundService.StartAsync"/>

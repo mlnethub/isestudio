@@ -192,7 +192,7 @@ public sealed class ReleaseServiceTests
             Notes = "",
             Manifest = JsonDocument.Parse("""{"capture_status":"pending"}"""),
             CreatedById = Guid.Parse(actor.UserId),
-            CreatedByName = actor.DisplayName,
+            CreatedByName = actor.DisplayName ?? actor.UserId,
             CreatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();

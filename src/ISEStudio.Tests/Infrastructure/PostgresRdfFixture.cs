@@ -8,8 +8,7 @@ namespace ISEStudio.Tests.Infrastructure;
 
 public class PostgresRdfFixture : IAsyncLifetime
 {
-    private readonly PostgreSqlBuilder _builder = new PostgreSqlBuilder()
-        .WithImage("postgres:16-alpine")
+    private readonly PostgreSqlBuilder _builder = new PostgreSqlBuilder("postgres:16-alpine")
         .WithDatabase("isestudio")
         .WithUsername("postgres")
         .WithPassword("postgres")

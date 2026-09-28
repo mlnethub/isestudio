@@ -135,7 +135,7 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
     // ------------------------------------------------------------------
 
     [Fact]
-    public void BuildView_round_trips_class_with_superclass()
+    public async Task BuildView_round_trips_class_with_superclass()
     {
         var mut = new OntologyMutation(
             Classes:
@@ -152,7 +152,7 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
 
         var view = SchemaBuilder.BuildView(
             _graph,
-            _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
+            await _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()));
 
         var wineRegion = view.Classes.SingleOrDefault(c => c.Label == "Wine Region");
         Assert.NotNull(wineRegion);
@@ -160,7 +160,7 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
     }
 
     [Fact]
-    public void BuildView_round_trips_data_property_range_label()
+    public async Task BuildView_round_trips_data_property_range_label()
     {
         var mut = new OntologyMutation(
             Classes: [new ClassMutation(Label: "Measurement")],
@@ -180,7 +180,7 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
 
         var view = SchemaBuilder.BuildView(
             _graph,
-            _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
+            await _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()));
 
         var dataProp = view.DataProperties.Single();
         Assert.Equal("value", dataProp.Label);
@@ -189,11 +189,11 @@ public class SchemaBuilderTests : IClassFixture<SchemaBuilderFixture>, IAsyncLif
     }
 
     [Fact]
-    public void BuildView_returns_empty_when_graph_is_empty()
+    public async Task BuildView_returns_empty_when_graph_is_empty()
     {
         var view = SchemaBuilder.BuildView(
             _graph,
-            _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
+            await _fx.Statements.ListAsync(_fx.KnowledgeSystemId, RdfLayer.TBox.ToString()));
 
         Assert.Empty(view.Classes);
         Assert.Empty(view.ObjectProperties);

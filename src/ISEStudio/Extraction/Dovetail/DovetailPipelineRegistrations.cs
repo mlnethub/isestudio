@@ -85,17 +85,17 @@ public static class DovetailPipelineRegistrations
         // dependencies — DI registers them with whatever services are
         // available; missing services yield steps with null service refs
         // (fail-soft path; see spec §4 D4).
-        services.AddSingleton<CandidateGatherStep>(sp =>
+        services.AddScoped<CandidateGatherStep>(sp =>
             new CandidateGatherStep(sp.GetService<DuplicateJudge>()));
-        services.AddSingleton<EmbeddingMatchStep>(sp =>
+        services.AddScoped<EmbeddingMatchStep>(sp =>
             new EmbeddingMatchStep(sp.GetService<DuplicateJudge>()));
-        services.AddSingleton<LLMJudgeStep>(sp =>
+        services.AddScoped<LLMJudgeStep>(sp =>
             new LLMJudgeStep(sp.GetService<DuplicateJudge>()));
-        services.AddSingleton<MergeApplyStep>(sp =>
+        services.AddScoped<MergeApplyStep>(sp =>
             new MergeApplyStep(sp.GetService<OntologyEditor>(), sp.GetService<AuditLogService>()));
-        services.AddSingleton<CascadeRetypeStep>(sp =>
+        services.AddScoped<CascadeRetypeStep>(sp =>
             new CascadeRetypeStep(sp.GetService<OntologyEditor>(), sp.GetService<AuditLogService>()));
-        services.AddSingleton<FinalMergeStep>();
+        services.AddScoped<FinalMergeStep>();
 
         // 7. AgentChain slice 3 step classes (per spec §6.2 + §5 D6 —
         // interface-keyed concrete factory). SCOPED on purpose (final-review
@@ -181,6 +181,40 @@ public static class DovetailPipelineRegistrations
         services.AddScoped(typeof(NoOpSegment<,>));
         services.AddScoped(typeof(NoOpSegment<,,>));
         services.AddScoped(typeof(ChainAdapter<,,>));
+
+        // These adapters carry constructor delegates, so the open-generic
+        // registrations above cannot be activated by MS.DI on their own.
+        services.AddScoped<NoOpSegment<JobState, TBoxLayerCarry>>(_ =>
+            new NoOpSegment<JobState, TBoxLayerCarry>(static state => new TBoxLayerCarry(state)));
+        services.AddScoped<NoOpSegment<TBoxLayerCarry, AgentCarry>>(_ =>
+            new NoOpSegment<TBoxLayerCarry, AgentCarry>(static carry => new AgentCarry(carry.State)));
+        services.AddScoped<NoOpSegment<AgentCarry, CorpusCarry>>(_ =>
+            new NoOpSegment<AgentCarry, CorpusCarry>(static carry => new CorpusCarry(carry.State)));
+        services.AddScoped<NoOpSegment<CorpusCarry, HierarchyCarry>>(_ =>
+            new NoOpSegment<CorpusCarry, HierarchyCarry>(static carry => new HierarchyCarry(carry.State)));
+        services.AddScoped<NoOpSegment<HierarchyCarry, ABoxLayerCarry>>(_ =>
+            new NoOpSegment<HierarchyCarry, ABoxLayerCarry>(static carry => new ABoxLayerCarry(carry.State)));
+
+        services.AddScoped<ChainAdapter<JobState, AgentCarry, CorpusCarry>>(sp =>
+            new ChainAdapter<JobState, AgentCarry, CorpusCarry>(
+                sp.GetRequiredService<IPipelineSegment<JobState, CorpusCarry>>(),
+                static carry => carry.State));
+        services.AddScoped<ChainAdapter<JobState, CorpusCarry, HierarchyCarry>>(sp =>
+            new ChainAdapter<JobState, CorpusCarry, HierarchyCarry>(
+                sp.GetRequiredService<IPipelineSegment<JobState, HierarchyCarry>>(),
+                static carry => carry.State));
+        services.AddScoped<ChainAdapter<JobState, HierarchyCarry, ABoxLayerCarry>>(sp =>
+            new ChainAdapter<JobState, HierarchyCarry, ABoxLayerCarry>(
+                sp.GetRequiredService<IPipelineSegment<JobState, ABoxLayerCarry>>(),
+                static carry => carry.State));
+        services.AddScoped<ChainAdapter<JobState, TBoxLayerCarry, AgentCarry>>(sp =>
+            new ChainAdapter<JobState, TBoxLayerCarry, AgentCarry>(
+                sp.GetRequiredService<IPipelineSegment<JobState, AgentCarry>>(),
+                static carry => carry.State));
+        services.AddScoped<ChainAdapter<JobState, ABoxLayerCarry, TerminologyCarry>>(sp =>
+            new ChainAdapter<JobState, ABoxLayerCarry, TerminologyCarry>(
+                sp.GetRequiredService<IPipelineSegment<JobState, TerminologyCarry>>(),
+                static carry => carry.State));
 
         return services;
     }

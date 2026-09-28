@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -273,17 +274,6 @@ public sealed class ExtractionOrchestrator
         var (chunks, _) = await ReadDocumentAsync(request, cancellationToken).ConfigureAwait(false);
         var chunkIds = chunks.Select(c => c.Idx).ToList();
 
-        // Resolve the knowledge system row up-front so the graph IRI we
-        // write into matches the row the rest of the system has agreed on
-        // (the production backend stamps it as
-        // `http://goodcrew.local/ks/{publicId}`). Falling back to a
-        // derived IRI here would let a stale `GraphIri` column slip past
-        // every extraction, so the row is the source of truth.
-        var ksEntity = await _jobs.GetKnowledgeSystemAsync(request.KnowledgeSystemId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw new InvalidOperationException(
-                $"Knowledge system {request.KnowledgeSystemId} not found.");
-
         // Combined runs walk every chunk twice (once per layer), so the
         // total chunks progress counter must reflect that — otherwise the
         // progress bar never reaches 100% on a successful combined run.
@@ -296,81 +286,22 @@ public sealed class ExtractionOrchestrator
         };
         var totalChunks = kind == JobKind.Combined ? chunkIds.Count * 2 : chunkIds.Count;
 
-        // Validate provider configuration before inserting a pending job.
-        // Otherwise a synchronous client-construction failure leaves an
-        // orphan row that blocks every subsequent extraction as "active".
-        var chat = _chatFactory.Create(request.ToProviderConfig());
-        Infrastructure.Persistence.Entities.ExtractionJobEntity job;
-        try
+        var payload = JsonSerializer.SerializeToDocument(new
         {
-            job = await _jobs.CreateAsync(
-                request.KnowledgeSystemId, kindWire, request.Model, chunkIds, totalChunks, cancellationToken)
-                .ConfigureAwait(false);
-        }
-        catch
-        {
-            chat.Dispose();
-            throw;
-        }
+            knowledge_system_id = request.KnowledgeSystemId,
+            blob_sha = request.BlobSha,
+            file_name = request.FileName,
+            selected_chunks = request.SelectedChunks,
+        });
 
-        // Background work runs on a thread-pool worker with its own
-        // ExecutionContext so the orchestrator's caller (an HTTP request)
-        // does not flow AsyncLocal state into the extraction. The chat
-        // capacity coordinator relies on AsyncLocal to distinguish
-        // re-entrant acquires within one job from acquires by another
-        // worker — sharing state across requests would let two independent
-        // extractions oversubscribe the same endpoint.
-        // KnowledgeSystemId must ride along: the merger / graph-store
-        // write paths (ExtractionMerger, PostgresRdfGraphStore) bind the
-        // PostgreSQL layer by (KnowledgeSystemId, layer) — omitting it
-        // would land every extraction triple in the zero-Guid layer and
-        // the read APIs would never see it.
-        var ksContext = new KsContext(GraphIri: ksEntity.GraphIri, BaseIri: ksEntity.BaseIri,
-            Name: ksEntity.Name, KnowledgeSystemId: ksEntity.Id);
-
-        // SLICE 5: JobInput carries the immutable job entry shape; JobState
-        // (built inside RunJobSafelyAsync via JobState.From(input)) carries
-        // the per-phase tracked state. Task 4 R11 extended JobInput with
-        // the per-job closure arguments (KsContext / Request / Chunks /
-        // PerChunk) so the Dovetail Job pipeline's static-typed steps can
-        // forward them to the phase runners.
-        var input = new JobInput(
-            JobId: job.Id,
-            KnowledgeSystemId: request.KnowledgeSystemId,
-            ChunkIds: chunks.Select(c => c.Idx).ToArray(),
-            Chat: chat,
-            Kind: kind,
-            InitialVocabulary: null,
-            CancellationToken: CancellationToken.None,
-            KsContext: ksContext,
-            Request: request,
-            Chunks: chunks,
-            PerChunk: Array.Empty<ChunkVerifyOutcome>());
-
-        // SuppressFlow keeps the chat capacity coordinator's AsyncLocal
-        // re-entry tracking from leaking in from the caller's flow. Without
-        // this the first acquire inside the background task would see the
-        // caller's AsyncLocal state, classify itself as a re-entry, and
-        // immediately satisfy without consuming a permit — which then
-        // blocks a real concurrent caller behind an infinite "reentrant"
-        // claim. Every job runs on its own ExecutionContext.
-        using (ExecutionContext.SuppressFlow())
-        {
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    await RunJobSafelyAsync(input, request, ksContext, chunks, CancellationToken.None)
-                        .ConfigureAwait(false);
-                }
-                finally
-                {
-                    chat.Dispose();
-                }
-            });
-        }
-
-        return job;
+        return await _jobs.CreateAsync(
+            request.KnowledgeSystemId,
+            kindWire,
+            request.Model,
+            chunkIds,
+            totalChunks,
+            cancellationToken,
+            payload).ConfigureAwait(false);
     }
 
     /// <summary>

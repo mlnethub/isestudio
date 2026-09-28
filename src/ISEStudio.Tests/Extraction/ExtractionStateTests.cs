@@ -1,9 +1,16 @@
 using System.Text;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Configuration;
+using ISEStudio.Conflicts;
 using ISEStudio.Extraction;
+using ISEStudio.Extraction.Dovetail;
+using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Knowledge;
 using ISEStudio.Llm;
 using ISEStudio.Ontology;
 using ISEStudio.Parsing;
@@ -43,6 +50,10 @@ public sealed class ExtractionStateTests : IDisposable
     /// <summary>Job-row reader/writer the orchestrator and the tests share.</summary>
     private ExtractionJobStore Jobs { get; }
 
+    private ServiceProvider Services { get; }
+
+    private readonly IBlobStore _blobs;
+
     /// <summary>The subject under test.</summary>
     private ExtractionOrchestrator Orchestrator { get; }
 
@@ -67,8 +78,8 @@ public sealed class ExtractionStateTests : IDisposable
         _contexts = new SqliteContextFactory();
         SeedKnowledgeSystem();
 
-        var blobs = new LocalCasBlobStore(Path.Combine(_root, "blobs"));
-        var sha = PutDocument(blobs);
+        _blobs = new LocalCasBlobStore(Path.Combine(_root, "blobs"));
+        var sha = PutDocument(_blobs);
 
         Jobs = new ExtractionJobStore(_contexts, TimeProvider.System);
         Merger = new FakeMerger(new ExtractionMerger(_rdf.Statements));
@@ -76,9 +87,10 @@ public sealed class ExtractionStateTests : IDisposable
         FakeChatClientFactory.Default.Reset();
         FakeChatClientFactory.Default.UseClient(FakeChat);
 
+        Services = BuildServices(() => Orchestrator!);
         Orchestrator = new ExtractionOrchestrator(
             Jobs,
-            blobs,
+            _blobs,
             new DocumentParser(),
             new Chunker(size: 200, overlap: 20),
             FakeChatClientFactory.Default,
@@ -89,7 +101,10 @@ public sealed class ExtractionStateTests : IDisposable
             new PromptSnapshotService(),
             Merger,
             _rdf.Statements,
-            TimeProvider.System);
+            TimeProvider.System,
+            scopes: Services.GetRequiredService<IServiceScopeFactory>(),
+            duplicateJudge: new DuplicateJudge(
+                new EmbeddingGeneratorFactory(Options.Create(new ISEStudioOptions()))));
 
         Request = new ExtractionRequest(
             KnowledgeSystemId: _ksId,
@@ -114,7 +129,7 @@ public sealed class ExtractionStateTests : IDisposable
         Merger.FailWith(new InvalidOperationException("merge failed"));
         var before = Store.DumpNQuads(Ks.TBoxGraph);
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        await Jobs.WaitAsync(job.Id);
+        await RunDurableWorkerUntilTerminalAsync(job.Id);
         Assert.Equal("failed", (await Jobs.GetAsync(job.Id))!.Status);
         Assert.Equal(before, Store.DumpNQuads(Ks.TBoxGraph));
     }
@@ -127,7 +142,7 @@ public sealed class ExtractionStateTests : IDisposable
         Merger.FailWith(new InvalidOperationException("merge failed"));
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        await Jobs.WaitAsync(job.Id);
+        await RunDurableWorkerUntilTerminalAsync(job.Id);
 
         var finished = (await Jobs.GetAsync(job.Id))!;
         Assert.Equal("failed", finished.Status);
@@ -148,7 +163,7 @@ public sealed class ExtractionStateTests : IDisposable
         FakeChat.EnqueueValidDeltas(8);
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(job.Id);
 
         var diagnostic = (string?)null;
         if (finished.Status != "completed")
@@ -178,7 +193,7 @@ public sealed class ExtractionStateTests : IDisposable
         var parserDiag = $"parser: classes={parsed.Classes.Count} obj={parsed.ObjectProperties.Count} data={parsed.DataProperties.Count} ax={parsed.Axioms.Count}";
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(job.Id);
 
         var diag = $"{parserDiag} status={finished.Status} error={finished.Error} phase={finished.Phase} " +
                    $"log={finished.Log} chatCalls={FakeChat.CallCount} " +
@@ -200,15 +215,19 @@ public sealed class ExtractionStateTests : IDisposable
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
 
-        var midway = await PollAsync(job.Id, j => j.ProcessedChunks >= 1);
-        Assert.True(midway.TotalChunks > 1, "Fixture document must chunk into more than one span.");
-        Assert.True(midway.ProcessedChunks < midway.TotalChunks, "Progress should still be partial while parked.");
-        Assert.Equal("running", midway.Status);
+        var finished = await RunDurableWorkerUntilTerminalAsync(
+            job.Id,
+            async () =>
+            {
+                var midway = await PollAsync(job.Id, j => j.ProcessedChunks >= 1);
+                Assert.True(midway.TotalChunks > 1, "Fixture document must chunk into more than one span.");
+                Assert.True(midway.ProcessedChunks < midway.TotalChunks, "Progress should still be partial while parked.");
+                Assert.Equal("running", midway.Status);
+                FakeChat.Release();
+            });
 
-        FakeChat.Release();
-        var finished = await Jobs.WaitAsync(job.Id);
-
-        Assert.Equal("completed", finished.Status);
+        var diag = $"status={finished.Status} error={finished.Error} phase={finished.Phase} log={finished.Log}";
+        Assert.True(finished.Status == "completed", diag);
         Assert.Equal(finished.TotalChunks, finished.ProcessedChunks);
         Assert.Equal(finished.TotalChunks, finished.ChunkIds.Count);
     }
@@ -225,7 +244,7 @@ public sealed class ExtractionStateTests : IDisposable
         var tboxBefore = Store.DumpNQuads(Ks.TBoxGraph);
 
         var job = await Orchestrator.StartABoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(job.Id);
 
         Assert.Equal("completed", finished.Status);
         Assert.Equal("abox", finished.Kind);
@@ -247,7 +266,7 @@ public sealed class ExtractionStateTests : IDisposable
             """);
 
         var job = await Orchestrator.StartABoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(job.Id);
 
         Assert.Equal("completed", finished.Status);
         Assert.NotNull(finished.UnknownClasses);
@@ -266,16 +285,17 @@ public sealed class ExtractionStateTests : IDisposable
         for (var i = 0; i < 8; i++) FakeChat.EnqueueValidABoxDelta();
 
         var job = await Orchestrator.StartCombinedAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(job.Id);
 
-        Assert.Equal("completed", finished.Status);
+        var diag = $"status={finished.Status} error={finished.Error} phase={finished.Phase} log={finished.Log}";
+        Assert.True(finished.Status == "completed", diag);
         Assert.Equal("both", finished.Kind);
 
         // The job log is an append-only phase history, so the ordering can be
         // asserted deterministically rather than by racing the Phase column.
         var history = ExtractionJobLog.Phases(finished.Log);
         Assert.Equal(
-            new[] { "tbox", "abox", "terminology", "finalizing" },
+            new[] { "tbox", "conflicts", "structure", "abox", "terminology", "finalizing" },
             history);
         Assert.Equal("finalizing", finished.Phase);
 
@@ -295,7 +315,7 @@ public sealed class ExtractionStateTests : IDisposable
         FakeChat.EnqueueValidDeltas(8);
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(job.Id);
 
         Assert.Equal("completed", finished.Status);
         Assert.True(finished.TermsAdded > 0, "Terminology sync should mint concepts for new classes.");
@@ -339,6 +359,81 @@ public sealed class ExtractionStateTests : IDisposable
             objectIri: Vocabulary.OwlClass,
             graphIri: Ks.TBoxGraph).Count;
 
+    private ServiceProvider BuildServices(Func<ExtractionOrchestrator> orchestratorFactory)
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<IDbContextFactory<ISEStudioDbContext>>(_contexts);
+        services.AddScoped<ISEStudioDbContext>(sp =>
+            sp.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>().CreateDbContext());
+        services.AddSingleton<IRdfStatementRepository>(_rdf.Statements);
+        services.AddSingleton(Jobs);
+        services.AddSingleton<IChatClientFactory>(FakeChatClientFactory.Default);
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton(Options.Create(new ISEStudioOptions()));
+        services.AddScoped<EmbeddingGeneratorFactory>();
+        services.AddScoped<DuplicateJudge>();
+        services.AddScoped<ConflictService>();
+        services.AddScoped<IConflictAgent, ConflictAgent>();
+        services.AddScoped<IStructureAgent, StructureAgent>();
+        services.AddSingleton<OntologyViewBuilder>();
+        services.AddScoped<IKnowledgeStatsService, KnowledgeStatsService>();
+        services.AddScoped<TerminologyAgent>();
+        services.AddSingleton<IBlobStore>(_blobs);
+        services.AddSingleton<IDocumentParser, DocumentParser>();
+        services.AddSingleton(new Chunker(size: 200, overlap: 20));
+        services.AddSingleton(new EndpointCapacityCoordinator());
+        services.AddSingleton(new TBoxExtractionService(Options.Create(new ISEStudioOptions())));
+        services.AddSingleton(new ABoxExtractionService(Options.Create(new ISEStudioOptions())));
+        services.AddSingleton(new TerminologyService(_rdf.Statements));
+        services.AddSingleton(new PromptSnapshotService());
+        services.AddSingleton<IExtractionMerger>(Merger);
+        services.AddSingleton<ExtractionOrchestrator>(_ => orchestratorFactory());
+        services.AddDovetailPipelines();
+        services.AddScoped<IExtractionJobHandler, TBoxExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, ABoxExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, CombinedExtractionJobHandler>();
+        services.AddScoped<ExtractionJobDispatcher>();
+        return services.BuildServiceProvider();
+    }
+
+    private async Task<ExtractionJobEntity> RunDurableWorkerUntilTerminalAsync(
+        Guid jobId,
+        Func<Task>? beforeWait = null)
+    {
+        var worker = new DurableExtractionWorker(
+            Services.GetRequiredService<IServiceScopeFactory>(),
+            Jobs,
+            TimeProvider.System,
+            NullLogger<DurableExtractionWorker>.Instance,
+            Options.Create(new DurableExtractionWorkerOptions
+            {
+                PollInterval = TimeSpan.FromMilliseconds(10),
+                SupportedKinds = new[]
+                {
+                    ExtractionWire.KindTBox,
+                    ExtractionWire.KindABox,
+                    ExtractionWire.KindBoth,
+                },
+            }));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var workerTask = worker.StartAsync(cancellation.Token);
+        try
+        {
+            if (beforeWait is not null)
+            {
+                await beforeWait();
+            }
+            return await Jobs.WaitAsync(jobId, cancellation.Token);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await worker.StopAsync(CancellationToken.None);
+            await workerTask;
+        }
+    }
+
     /// <summary>Seed a single <c>Person</c> class so the ABox mentions resolve.</summary>
     private void SeedTBox()
     {
@@ -356,6 +451,18 @@ public sealed class ExtractionStateTests : IDisposable
     private void SeedKnowledgeSystem()
     {
         using var db = _contexts.CreateDbContext();
+        var provider = new ProviderEntity
+        {
+            Id = Guid.NewGuid(),
+            Name = "openai",
+            BaseUrl = "http://localhost/v1",
+            ApiKey = "test-key",
+            Model = "fake-model",
+            Kind = "llm",
+            ConcurrencyLimit = 1,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Providers.Add(provider);
         db.KnowledgeSystems.Add(new KnowledgeSystemEntity
         {
             Id = _ksId,
@@ -363,6 +470,7 @@ public sealed class ExtractionStateTests : IDisposable
             Name = "Extraction fixture",
             GraphIri = GraphIri,
             BaseIri = BaseIri,
+            LlmProviderId = provider.Id,
             CreatedAt = DateTimeOffset.UtcNow,
             UpdatedAt = DateTimeOffset.UtcNow,
         });
@@ -389,6 +497,7 @@ public sealed class ExtractionStateTests : IDisposable
     {
         FakeChatClientFactory.Default.Reset();
         FakeChat.Release();
+        Services.Dispose();
         _rdf.DisposeAsync().GetAwaiter().GetResult();
         _contexts.Dispose();
         try

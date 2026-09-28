@@ -1,3 +1,5 @@
+using System.Text;
+
 namespace ISEStudio.Ontology;
 
 /// <summary>
@@ -28,6 +30,21 @@ public static class ConflictDetection
 {
     /// <summary>Threshold above which a <c>SequenceMatcher</c> ratio flags two class labels as a candidate duplicate.</summary>
     public const double DuplicateThreshold = 0.86;
+    public const int MaxSignatureLength = 1024;
+
+    /// <summary>Keep persisted conflict signatures within the database column limit.</summary>
+    public static string BoundSignature(string signature)
+    {
+        ArgumentNullException.ThrowIfNull(signature);
+        if (signature.Length <= MaxSignatureLength) return signature;
+
+        var separator = signature.IndexOf('|');
+        var kind = separator > 0 ? signature[..separator] : "conflict";
+        var digest = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(signature)))
+            .ToLowerInvariant();
+        return $"{kind}|sha256|{digest}";
+    }
 
     /// <summary>One detected conflict. Wire-shape mirrors the Python <c>DetectedConflict</c> dataclass.</summary>
     public sealed record DetectedConflict(
@@ -66,7 +83,8 @@ public static class ConflictDetection
 
         void Push(DetectedConflict c)
         {
-            if (seen.Add(c.Signature)) found.Add(c);
+            var bounded = c with { Signature = BoundSignature(c.Signature) };
+            if (seen.Add(bounded.Signature)) found.Add(bounded);
         }
 
         DetectCycles(model, Push);

@@ -39,7 +39,7 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
         var root = Path.Combine(Path.GetTempPath(), "isestudio-recovery-" + Guid.NewGuid().ToString("N")[..12]);
         Directory.CreateDirectory(root);
         var rdf = new PostgresRdfFixture();
-        rdf.InitializeAsync().GetAwaiter().GetResult();
+        await rdf.InitializeAsync();
         try
         {
             using var contexts = new SqliteContextFactory();
@@ -153,7 +153,7 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
             {
                 // Stale directory handles on Windows must never fail the run.
             }
-            rdf.DisposeAsync().GetAwaiter().GetResult();
+            await rdf.DisposeAsync();
         }
     }
 

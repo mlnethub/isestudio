@@ -11,9 +11,9 @@ namespace ISEStudio.Extraction;
 
 /// <summary>
 /// DI registration for the extraction pipeline. All services are
-/// singletons: the orchestrator must be singleton to maintain
-/// <see cref="Task.Run"/> background-job state, and every collaborator is
-/// either stateless or thread-safe.
+/// singleton: the orchestrator is a durable job-submission facade, and every
+/// collaborator is either stateless or thread-safe. Job execution belongs to
+/// <see cref="DurableExtractionWorker"/>.
 /// </summary>
 public static class ExtractionServiceCollectionExtensions
 {
@@ -44,6 +44,7 @@ public static class ExtractionServiceCollectionExtensions
         services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
         services.AddScoped<IExtractionJobHandler, TBoxExtractionJobHandler>();
         services.AddScoped<IExtractionJobHandler, ABoxExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, CombinedExtractionJobHandler>();
         services.PostConfigure<DurableExtractionWorkerOptions>(options =>
         {
             options.SupportedKinds = new[]
@@ -51,6 +52,7 @@ public static class ExtractionServiceCollectionExtensions
                 PlainTextIngestionJobProcessor.Kind,
                 ExtractionWire.KindTBox,
                 ExtractionWire.KindABox,
+                ExtractionWire.KindBoth,
             };
         });
         services.AddScoped<ExtractionJobDispatcher>();

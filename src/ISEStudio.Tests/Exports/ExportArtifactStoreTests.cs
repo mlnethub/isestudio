@@ -179,7 +179,7 @@ public class ExportArtifactStoreTests : IClassFixture<ExportArtifactStoreFixture
     {
         // Public id with hostile chars must not escape the export root.
         var jobPath = _fx.Store.JobPath("../../etc");
-        Assert.True(jobPath.StartsWith(_fx.Store.RootPath, StringComparison.Ordinal));
+        Assert.StartsWith(_fx.Store.RootPath, jobPath, StringComparison.Ordinal);
         Assert.DoesNotContain("..", jobPath);
     }
 }

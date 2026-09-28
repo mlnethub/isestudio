@@ -39,7 +39,7 @@ public class RdfStatementSetTests
 
         Assert.Contains(kept, next);
         Assert.DoesNotContain(removed, next);
-        Assert.Single(next.Where(s => s.GraphIri == "urn:target"));
+        Assert.Single(next, s => s.GraphIri == "urn:target");
         Assert.Equal(new RdfIri("urn:new"), Assert.IsType<RdfIri>(next.Single(s => s.GraphIri == "urn:target").Subject));
     }
 

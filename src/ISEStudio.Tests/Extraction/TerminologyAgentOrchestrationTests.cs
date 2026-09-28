@@ -2,10 +2,12 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using ISEStudio.Conflicts;
 using ISEStudio.Configuration;
 using ISEStudio.Extraction;
+using ISEStudio.Extraction.Dovetail;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Knowledge;
@@ -176,7 +178,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         FakeChatClientFactory.Default.Reset();
         FakeChatClientFactory.Default.UseClient(FakeChat);
 
-        Services = BuildServices();
+        Services = BuildServices(() => Orchestrator!);
         Orchestrator = BuildOrchestrator(Services.GetRequiredService<IServiceScopeFactory>());
 
         Request = new ExtractionRequest(
@@ -205,12 +207,12 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         FakeChat.Enqueue(ProposeReply(ChunkId));
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(Services, job.Id);
 
         Assert.True(finished.Status == "completed",
             $"Expected completed but got {finished.Status}: {finished.Error} {finished.Log}");
         Assert.Equal(
-            new[] { "tbox", "conflicts", "structure", "terminology", "finalizing" },
+            new[] { "tbox", "terminology", "finalizing" },
             ExtractionJobLog.Phases(finished.Log));
 
         // The agent step folded one accepted proposal into the job row.
@@ -243,7 +245,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         FakeChat.Enqueue(ProposeReply(ChunkId));
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(Services, job.Id);
 
         Assert.True(finished.TerminologyProposals > 0,
             $"expected TerminologyProposals > 0, got {finished.TerminologyProposals}");
@@ -266,16 +268,18 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         // produces a SchemeIri, but the empty chunk list is the gate.
         var contextsNoChunk = new SqliteContextFactory();
         SeedKnowledgeSystemNoChunks(contextsNoChunk);
-        var servicesNoChunk = BuildServices();
-        var orchestrator = BuildOrchestrator(servicesNoChunk.GetRequiredService<IServiceScopeFactory>());
+        ExtractionOrchestrator? orchestrator = null;
+        var servicesNoChunk = BuildServices(() => orchestrator!);
+        orchestrator = BuildOrchestrator(servicesNoChunk.GetRequiredService<IServiceScopeFactory>());
 
         FakeChat.Enqueue(TBoxDelta);
         // No propose reply enqueued — agent step must not call the LLM.
 
         var job = await orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(servicesNoChunk, job.Id);
 
-        Assert.Equal("completed", finished.Status);
+        Assert.True(finished.Status == "completed",
+            $"Expected completed but got {finished.Status}: {finished.Error} {finished.Log}");
         Assert.Equal(0, finished.TerminologyProposals);
 
         await using var db = contextsNoChunk.CreateDbContext();
@@ -301,9 +305,10 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         FakeChat.Enqueue(HallucinatedReply(ChunkId));
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(Services, job.Id);
 
-        Assert.Equal("completed", finished.Status);
+        Assert.True(finished.Status == "completed",
+            $"Expected completed but got {finished.Status}: {finished.Error} {finished.Log}");
         Assert.Equal(0, finished.TerminologyProposals);
 
         await using var db = _contexts.CreateDbContext();
@@ -324,7 +329,7 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         FakeChat.Enqueue(CaseVariantReply(ChunkId));
 
         var job = await Orchestrator.StartTBoxAsync(Request, CancellationToken.None);
-        var finished = await Jobs.WaitAsync(job.Id);
+        var finished = await RunDurableWorkerUntilTerminalAsync(Services, job.Id);
 
         Assert.Equal("completed", finished.Status);
         Assert.Equal(1, finished.TerminologyProposals);
@@ -473,7 +478,9 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
     /// into an uncaught activation error and the whole job flips to
     /// <c>failed</c>. Mirror <see cref="ExtractionAgentChainTests.BuildServices"/>.</para>
     /// </summary>
-    private ServiceProvider BuildServices(Action<IServiceCollection>? configure = null)
+    private ServiceProvider BuildServices(
+        Func<ExtractionOrchestrator>? orchestratorFactory = null,
+        Action<IServiceCollection>? configure = null)
     {
         var services = new ServiceCollection();
         services.AddSingleton<IDbContextFactory<ISEStudioDbContext>>(_contexts);
@@ -499,8 +506,62 @@ public sealed class TerminologyAgentOrchestrationTests : IDisposable
         services.AddSingleton<OntologyViewBuilder>();
         services.AddScoped<KnowledgeStatsService>();
         services.AddScoped<TerminologyAgent>();
+        services.AddSingleton<IBlobStore>(_blobs);
+        services.AddSingleton<IDocumentParser, DocumentParser>();
+        services.AddSingleton(new Chunker(size: 200, overlap: 20));
+        services.AddSingleton(new EndpointCapacityCoordinator());
+        services.AddSingleton(new TBoxExtractionService(Options.Create(new ISEStudioOptions())));
+        services.AddSingleton(new ABoxExtractionService(Options.Create(new ISEStudioOptions())));
+        services.AddSingleton(new TerminologyService(_rdf.Statements));
+        services.AddSingleton(new PromptSnapshotService());
+        services.AddSingleton<IExtractionMerger>(new ExtractionMerger(_rdf.Statements));
+        services.AddScoped<IConflictAgent, ConflictAgent>();
+        services.AddScoped<IStructureAgent, StructureAgent>();
+        services.AddScoped<IKnowledgeStatsService, KnowledgeStatsService>();
+        services.AddDovetailPipelines();
+        services.AddScoped<IExtractionJobHandler, TBoxExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, ABoxExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, CombinedExtractionJobHandler>();
+        services.AddScoped<ExtractionJobDispatcher>();
+        if (orchestratorFactory is not null)
+        {
+            services.AddSingleton<ExtractionOrchestrator>(_ => orchestratorFactory());
+        }
         configure?.Invoke(services);
         return services.BuildServiceProvider();
+    }
+
+    private async Task<ExtractionJobEntity> RunDurableWorkerUntilTerminalAsync(
+        ServiceProvider services,
+        Guid jobId)
+    {
+        var worker = new DurableExtractionWorker(
+            services.GetRequiredService<IServiceScopeFactory>(),
+            Jobs,
+            TimeProvider.System,
+            NullLogger<DurableExtractionWorker>.Instance,
+            Options.Create(new DurableExtractionWorkerOptions
+            {
+                PollInterval = TimeSpan.FromMilliseconds(10),
+                SupportedKinds = new[]
+                {
+                    ExtractionWire.KindTBox,
+                    ExtractionWire.KindABox,
+                    ExtractionWire.KindBoth,
+                },
+            }));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var workerTask = worker.StartAsync(cancellation.Token);
+        try
+        {
+            return await Jobs.WaitAsync(jobId, cancellation.Token);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await worker.StopAsync(CancellationToken.None);
+            await workerTask;
+        }
     }
 
     private ExtractionOrchestrator BuildOrchestrator(IServiceScopeFactory? scopes) =>

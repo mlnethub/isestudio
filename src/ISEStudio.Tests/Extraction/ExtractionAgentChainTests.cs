@@ -208,7 +208,7 @@ public sealed class ExtractionAgentChainTests : IDisposable
 
         Assert.Equal("completed", finished.Status);
 
-        var view = SchemaBuilder.BuildView(GraphIri, _rdf.Statements.ListAsync(_rdf.KnowledgeSystemId, RdfLayer.TBox.ToString()).GetAwaiter().GetResult());
+        var view = SchemaBuilder.BuildView(GraphIri, await _rdf.Statements.ListAsync(_rdf.KnowledgeSystemId, RdfLayer.TBox.ToString()));
         var pump = view.Classes.Single(c => c.Label == "Pump");
         var centrifugal = view.Classes.Single(c => c.Label == "Centrifugal Pump");
         Assert.Contains(pump.Iri, centrifugal.Superclasses);

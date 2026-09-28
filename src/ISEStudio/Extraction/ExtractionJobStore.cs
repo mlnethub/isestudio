@@ -75,7 +75,8 @@ public sealed class ExtractionJobStore
         string model,
         IReadOnlyList<int> chunkIds,
         int totalChunks,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        JsonDocument? payload = null)
     {
         await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
 
@@ -90,6 +91,7 @@ public sealed class ExtractionJobStore
             ProcessedChunks = 0,
             CreatedAt = _clock.GetUtcNow(),
             Log = string.Empty,
+            Payload = payload,
         };
         db.ExtractionJobs.Add(job);
         await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

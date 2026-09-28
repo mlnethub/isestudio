@@ -1,4 +1,6 @@
 using ISEStudio.Extraction.Dovetail.Job;
+using ISEStudio.Parsing;
+using ISEStudio.Storage;
 
 namespace ISEStudio.Extraction;
 
@@ -12,8 +14,11 @@ public sealed class ABoxExtractionJobHandler : DurableLayerExtractionJobHandlerB
         ExtractionJobStore jobs,
         JobPipelineRouter router,
         PromptSnapshotService promptSnapshot,
-        ABoxExtractionService abox)
-        : base(db, chatFactory, jobs, router, promptSnapshot)
+        ABoxExtractionService abox,
+        IBlobStore blobs,
+        IDocumentParser parser,
+        Chunker chunker)
+        : base(db, chatFactory, jobs, router, promptSnapshot, blobs, parser, chunker)
     {
         _abox = abox;
     }

@@ -133,7 +133,7 @@ public sealed class ExtractionMerger : IExtractionMerger
             var key = Vocabulary.NormLabel(mention.Label);
             if (!individuals.TryGetValue(key, out var iri))
             {
-                iri = abox.CreateIndividual(ks, mention.Label, classIri);
+                iri = abox.CreateIndividual(ks, mention.Label, classIri, mention.Label);
                 individuals[key] = iri;
                 individualsAdded++;
                 provenance.Add(FactKey.IndividualKey(iri));

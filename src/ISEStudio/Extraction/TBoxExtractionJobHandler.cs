@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using ISEStudio.Extraction.Dovetail.Job;
@@ -6,6 +7,7 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Llm;
 using ISEStudio.Ontology;
 using ISEStudio.Parsing;
+using ISEStudio.Storage;
 
 namespace ISEStudio.Extraction;
 
@@ -23,10 +25,13 @@ public sealed class TBoxExtractionJobHandler : DurableLayerExtractionJobHandlerB
         JobPipelineRouter router,
         PromptSnapshotService promptSnapshot,
         TBoxExtractionService tbox,
+        IBlobStore blobs,
+        IDocumentParser parser,
+        Chunker chunker,
         TBoxVerifyService? verify = null,
         CorpusRecoveryService? corpus = null,
         HierarchyRecoveryService? hierarchy = null)
-        : base(db, chatFactory, jobs, router, promptSnapshot)
+        : base(db, chatFactory, jobs, router, promptSnapshot, blobs, parser, chunker)
     {
         _tbox = tbox;
         _verify = verify;
@@ -82,19 +87,28 @@ public abstract class DurableLayerExtractionJobHandlerBase : IExtractionJobHandl
     private readonly ExtractionJobStore _jobs;
     private readonly JobPipelineRouter _router;
     private readonly PromptSnapshotService _promptSnapshot;
+    private readonly IBlobStore _blobs;
+    private readonly IDocumentParser _parser;
+    private readonly Chunker _chunker;
 
     protected DurableLayerExtractionJobHandlerBase(
         ISEStudioDbContext db,
         IChatClientFactory chatFactory,
         ExtractionJobStore jobs,
         JobPipelineRouter router,
-        PromptSnapshotService promptSnapshot)
+        PromptSnapshotService promptSnapshot,
+        IBlobStore blobs,
+        IDocumentParser parser,
+        Chunker chunker)
     {
         _db = db;
         _chatFactory = chatFactory;
         _jobs = jobs;
         _router = router;
         _promptSnapshot = promptSnapshot;
+        _blobs = blobs;
+        _parser = parser;
+        _chunker = chunker;
     }
 
     public abstract string Kind { get; }
@@ -118,15 +132,14 @@ public abstract class DurableLayerExtractionJobHandlerBase : IExtractionJobHandl
                 $"Extraction job '{job.Id}' payload knowledge system '{knowledgeSystemId}' does not match the claimed row.");
         }
 
-        var payloadJobId = ExtractionJobPayloadReader.ReadRequiredGuid(payload, "job_id", "jobId");
-        if (payloadJobId != job.Id)
+        var payloadJobId = ExtractionJobPayloadReader.ReadOptionalString(payload, "job_id", "jobId");
+        if (payloadJobId is not null && (!Guid.TryParse(payloadJobId, out var parsedJobId) || parsedJobId != job.Id))
         {
             throw new InvalidOperationException(
                 $"Extraction job '{job.Id}' payload job id '{payloadJobId}' does not match the claimed row.");
         }
 
-        var sourceVersionId = ExtractionJobPayloadReader.ReadRequiredGuid(payload, "source_version", "sourceVersion");
-        var replay = await BuildReplayAsync(knowledgeSystemId, sourceVersionId, job, cancellationToken).ConfigureAwait(false);
+        var replay = await BuildReplayAsync(knowledgeSystemId, payload, job, cancellationToken).ConfigureAwait(false);
         var promptSnapshot = _promptSnapshot.SnapshotAsync(BuildPromptMap());
         var chat = _chatFactory.Create(replay.Request.ToProviderConfig());
 
@@ -177,7 +190,7 @@ public abstract class DurableLayerExtractionJobHandlerBase : IExtractionJobHandl
 
     private async Task<DurableExtractionReplay> BuildReplayAsync(
         Guid knowledgeSystemId,
-        Guid sourceVersionId,
+        JsonElement payload,
         ExtractionJobEntity job,
         CancellationToken cancellationToken)
     {
@@ -186,38 +199,21 @@ public abstract class DurableLayerExtractionJobHandlerBase : IExtractionJobHandl
             .ConfigureAwait(false)
             ?? throw new InvalidOperationException($"Knowledge system '{knowledgeSystemId}' was not found.");
 
-        var version = await _db.DocumentVersions.AsNoTracking()
-            .FirstOrDefaultAsync(item => item.Id == sourceVersionId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw new InvalidOperationException($"Document version '{sourceVersionId}' was not found.");
-        if (version.KnowledgeSystemId != knowledgeSystemId)
-        {
-            throw new InvalidOperationException(
-                $"Document version '{sourceVersionId}' does not belong to knowledge system '{knowledgeSystemId}'.");
-        }
-
-        var chunks = await _db.DocumentVersionChunks.AsNoTracking()
-            .Where(item => item.DocumentVersionId == sourceVersionId)
-            .OrderBy(item => item.Idx)
-            .Select(item => new ChunkSpan(
-                item.Idx,
-                item.Text,
-                item.CharStart,
-                item.CharEnd,
-                item.TokenEstimate))
-            .ToListAsync(cancellationToken)
-            .ConfigureAwait(false);
+        var sourceVersion = ExtractionJobPayloadReader.ReadOptionalString(payload, "source_version", "sourceVersion");
+        var chunks = sourceVersion is not null
+            ? await ReadVersionChunksAsync(Guid.Parse(sourceVersion), knowledgeSystemId, cancellationToken)
+                .ConfigureAwait(false)
+            : await ReadPayloadChunksAsync(payload, job, cancellationToken).ConfigureAwait(false);
         if (chunks.Count == 0)
         {
-            throw new InvalidOperationException(
-                $"Document version '{sourceVersionId}' does not contain any chunks to replay.");
+            throw new InvalidOperationException($"Extraction job '{job.Id}' does not contain any chunks to replay.");
         }
 
         var expectedChunkIds = job.ChunkIds ?? new List<int>();
         if (!expectedChunkIds.SequenceEqual(chunks.Select(chunk => chunk.Idx)))
         {
             throw new InvalidOperationException(
-                $"Document version '{sourceVersionId}' chunks do not match extraction job '{job.Id}'.");
+                $"Replay chunks do not match extraction job '{job.Id}'.");
         }
 
         var systemConfig = await _db.SystemConfigs.AsNoTracking()
@@ -246,6 +242,54 @@ public abstract class DurableLayerExtractionJobHandlerBase : IExtractionJobHandl
             SelectedChunks: chunks);
 
         return new DurableExtractionReplay(request, KsContext.FromEntity(knowledgeSystem), chunks);
+    }
+
+    private async Task<IReadOnlyList<ChunkSpan>> ReadVersionChunksAsync(
+        Guid sourceVersionId,
+        Guid knowledgeSystemId,
+        CancellationToken cancellationToken)
+    {
+        var version = await _db.DocumentVersions.AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == sourceVersionId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Document version '{sourceVersionId}' was not found.");
+        if (version.KnowledgeSystemId != knowledgeSystemId)
+        {
+            throw new InvalidOperationException(
+                $"Document version '{sourceVersionId}' does not belong to knowledge system '{knowledgeSystemId}'.");
+        }
+
+        return await _db.DocumentVersionChunks.AsNoTracking()
+            .Where(item => item.DocumentVersionId == sourceVersionId)
+            .OrderBy(item => item.Idx)
+            .Select(item => new ChunkSpan(item.Idx, item.Text, item.CharStart, item.CharEnd, item.TokenEstimate))
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task<IReadOnlyList<ChunkSpan>> ReadPayloadChunksAsync(
+        JsonElement payload,
+        ExtractionJobEntity job,
+        CancellationToken cancellationToken)
+    {
+        if (payload.TryGetProperty("selected_chunks", out var selected)
+            && selected.ValueKind == JsonValueKind.Array)
+        {
+            return JsonSerializer.Deserialize<List<ChunkSpan>>(
+                selected.GetRawText(),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
+                ?? new List<ChunkSpan>();
+        }
+
+        var blobSha = ExtractionJobPayloadReader.ReadRequiredString(payload, "blob_sha", "blobSha");
+        var fileName = ExtractionJobPayloadReader.ReadOptionalString(payload, "file_name", "fileName") ?? string.Empty;
+        await using var stream = await _blobs.GetAsync(blobSha, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException($"Blob '{blobSha}' was not found.");
+        var parsed = _parser.Parse(stream, fileName);
+        var expectedChunkIds = job.ChunkIds ?? new List<int>();
+        return _chunker.ChunkDocument(parsed)
+            .Where(chunk => expectedChunkIds.Contains(chunk.Idx))
+            .ToList();
     }
 
     private sealed record DurableExtractionReplay(
