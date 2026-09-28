@@ -302,6 +302,14 @@ public sealed class KnowledgeService
         await DeletePerKsRowsAsync<AuditEventEntity>(p => p.KnowledgeSystemId == ksIdGuid, ct);
         await DeletePerKsRowsAsync<TboxReconciliationEntity>(p => p.KnowledgeSystemId == ksIdGuid, ct);
         await DeletePerKsRowsAsync<ValidationDecisionEntity>(p => p.KnowledgeSystemId == ksIdGuid, ct);
+
+        var documentIds = await _db.Documents
+            .Where(d => d.KnowledgeSystemId == ksIdGuid)
+            .Select(d => d.Id)
+            .ToListAsync(ct)
+            .ConfigureAwait(false);
+        await DeletePerKsRowsAsync<ChunkEntity>(
+            c => documentIds.Contains(c.DocumentId), ct);
         await DeletePerKsRowsAsync<DocumentEntity>(p => p.KnowledgeSystemId == ksIdGuid, ct);
 
         _db.KnowledgeSystems.Remove(ks);

@@ -144,6 +144,41 @@ public sealed class KnowledgeApiTests
     }
 
     [Fact]
+    public async Task Delete_removes_documents_with_chunks_before_the_documents()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "documents-with-chunks");
+        var documentId = Guid.NewGuid();
+
+        using (var db = app.CreateDbContext())
+        {
+            db.Documents.Add(new DocumentEntity
+            {
+                Id = documentId,
+                KnowledgeSystemId = ksId,
+                Sha256 = new string('a', 64),
+                OriginalFilename = "source.txt",
+                StoragePath = "aa/source.txt",
+                UploadedAt = DateTimeOffset.UtcNow,
+            });
+            db.Chunks.Add(new ChunkEntity
+            {
+                Id = Guid.NewGuid(),
+                DocumentId = documentId,
+                Idx = 0,
+                Text = "chunk",
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            db.SaveChanges();
+        }
+
+        var delete = await client.DeleteAsync($"/api/knowledge/{ksId}");
+
+        Assert.Equal(HttpStatusCode.OK, delete.StatusCode);
+    }
+
+    [Fact]
     public async Task ListMembers_includes_owner_and_grants()
     {
         await using var app = new AuthTestWebApplicationFactory();
