@@ -73,6 +73,7 @@ export interface HistoryResponse {
 export interface DocumentMeta {
   id: string
   knowledge_system_id: string | null
+  source_id: string | null
   sha256: string
   original_filename: string
   folder: string
@@ -88,6 +89,66 @@ export interface DocumentMeta {
   chunk_count: number
   tbox_extracted_at: string | null
   abox_extracted_at: string | null
+}
+
+export type IngestionSourceSyncStatus = "never" | "queued" | "running" | "ok" | "failed"
+export type IngestionSourceJobStatus = Exclude<IngestionSourceSyncStatus, "never">
+
+export interface IngestionSource {
+  id: string
+  kind: string
+  name: string
+  icon: string | null
+  sync_interval_minutes: number | null
+  sync_cron: string | null
+  last_synced_at: string | null
+  last_sync_status: IngestionSourceSyncStatus
+  last_sync_error: string | null
+  last_sync_added: number
+  created_at: string
+  document_count: number
+  missing_document_count: number
+}
+
+export interface IngestionSourceDetail extends IngestionSource {
+  config: Record<string, unknown>
+}
+
+export interface IngestionSourceKind {
+  kind: string
+  active_sync: boolean
+  config_fields: {
+    name: string
+    type: string
+    required: boolean
+    secret: boolean
+  }[]
+}
+
+export interface IngestionSourceRun {
+  id: string
+  status: "running" | "ok" | "failed"
+  started_at: string
+  finished_at: string | null
+  added_count: number
+  updated_count: number
+  error: string | null
+}
+
+export interface IngestionSourceJob {
+  id: string
+  status: IngestionSourceJobStatus
+  active_run_id: string | null
+  lease_until: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+}
+
+export interface IngestionSourceSyncAccepted {
+  job_id: string
+  status: IngestionSourceJobStatus
 }
 
 export interface DocumentListResponse {

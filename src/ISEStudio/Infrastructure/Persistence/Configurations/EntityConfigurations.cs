@@ -270,6 +270,7 @@ public sealed class SourceEntityConfiguration : IEntityTypeConfiguration<SourceE
         builder.Property(x => x.Icon).HasColumnName("icon").HasMaxLength(255);
         builder.Property(x => x.SyncIntervalMinutes).HasColumnName("sync_interval_minutes");
         builder.Property(x => x.SyncCron).HasColumnName("sync_cron");
+        builder.Property(x => x.LastScheduledAt).HasColumnName("last_scheduled_at");
         builder.Property(x => x.LastSyncedAt).HasColumnName("last_synced_at");
         builder.Property(x => x.LastSyncStatus).HasColumnName("last_sync_status").HasMaxLength(32).IsRequired();
         builder.Property(x => x.LastSyncError).HasColumnName("last_sync_error");
@@ -280,6 +281,81 @@ public sealed class SourceEntityConfiguration : IEntityTypeConfiguration<SourceE
         builder.HasIndex(x => new { x.KnowledgeSystemId, x.Name }).IsUnique()
             .HasDatabaseName("ux_source_knowledge_system_name");
         builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+public sealed class SourceSyncJobEntityConfiguration : IEntityTypeConfiguration<SourceSyncJobEntity>
+{
+    public void Configure(EntityTypeBuilder<SourceSyncJobEntity> builder)
+    {
+        builder.ToTable("source_sync_job", table =>
+            table.HasCheckConstraint("ck_source_sync_job_status",
+                "status IN ('queued','running','ok','failed')"));
+        builder.HasKey(job => job.Id);
+        builder.Property(job => job.Id).HasColumnName("id");
+        builder.Property(job => job.SourceId).HasColumnName("source_id").IsRequired();
+        builder.Property(job => job.Status).HasColumnName("status").HasMaxLength(16).IsRequired();
+        builder.Property(job => job.ActiveRunId).HasColumnName("active_run_id");
+        builder.Property(job => job.LeaseUntil).HasColumnName("lease_until");
+        builder.Property(job => job.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.Property(job => job.StartedAt).HasColumnName("started_at");
+        builder.Property(job => job.FinishedAt).HasColumnName("finished_at");
+        builder.Property(job => job.Error).HasColumnName("error");
+        builder.HasIndex(job => job.SourceId).IsUnique()
+            .HasFilter("status IN ('queued','running')")
+            .HasDatabaseName("ux_source_sync_job_active_source");
+        builder.HasIndex(job => new { job.Status, job.CreatedAt })
+            .HasDatabaseName("ix_source_sync_job_status_created");
+        builder.HasOne<SourceEntity>().WithMany().HasForeignKey(job => job.SourceId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+public sealed class SourceSyncRunEntityConfiguration : IEntityTypeConfiguration<SourceSyncRunEntity>
+{
+    public void Configure(EntityTypeBuilder<SourceSyncRunEntity> builder)
+    {
+        builder.ToTable("source_sync_run", table =>
+            table.HasCheckConstraint("ck_source_sync_run_status",
+                "status IN ('running','ok','failed')"));
+        builder.HasKey(run => run.Id);
+        builder.Property(run => run.Id).HasColumnName("id");
+        builder.Property(run => run.SourceId).HasColumnName("source_id").IsRequired();
+        builder.Property(run => run.Status).HasColumnName("status").HasMaxLength(16).IsRequired();
+        builder.Property(run => run.StartedAt).HasColumnName("started_at").IsRequired();
+        builder.Property(run => run.FinishedAt).HasColumnName("finished_at");
+        builder.Property(run => run.AddedCount).HasColumnName("added_count").IsRequired();
+        builder.Property(run => run.UpdatedCount).HasColumnName("updated_count").IsRequired();
+        builder.Property(run => run.Error).HasColumnName("error");
+        builder.HasIndex(run => new { run.SourceId, run.StartedAt, run.Id })
+            .IsDescending(false, true, true)
+            .HasDatabaseName("ix_source_sync_run_source_started_id");
+        builder.HasOne<SourceEntity>().WithMany().HasForeignKey(run => run.SourceId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+public sealed class SourceDocumentBindingEntityConfiguration
+    : IEntityTypeConfiguration<SourceDocumentBindingEntity>
+{
+    public void Configure(EntityTypeBuilder<SourceDocumentBindingEntity> builder)
+    {
+        builder.ToTable("source_document_binding");
+        builder.HasKey(binding => binding.Id);
+        builder.Property(binding => binding.Id).HasColumnName("id");
+        builder.Property(binding => binding.SourceId).HasColumnName("source_id").IsRequired();
+        builder.Property(binding => binding.ExternalKey).HasColumnName("external_key")
+            .HasMaxLength(1024).IsRequired();
+        builder.Property(binding => binding.DocumentId).HasColumnName("document_id").IsRequired();
+        builder.Property(binding => binding.MissingSince).HasColumnName("missing_since");
+        builder.HasIndex(binding => new { binding.SourceId, binding.ExternalKey }).IsUnique()
+            .HasDatabaseName("ux_source_document_binding_source_external_key");
+        builder.HasIndex(binding => binding.DocumentId)
+            .HasDatabaseName("ix_source_document_binding_document_id");
+        builder.HasOne<SourceEntity>().WithMany().HasForeignKey(binding => binding.SourceId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<DocumentEntity>().WithMany().HasForeignKey(binding => binding.DocumentId)
             .OnDelete(DeleteBehavior.Restrict);
     }
 }

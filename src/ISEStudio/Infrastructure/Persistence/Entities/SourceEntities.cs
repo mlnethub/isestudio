@@ -9,6 +9,7 @@ public sealed class SourceEntity : EntityBase
     public string? Icon { get; set; }
     public int? SyncIntervalMinutes { get; set; }
     public string? SyncCron { get; set; }
+    public DateTimeOffset? LastScheduledAt { get; set; }
     public DateTimeOffset? LastSyncedAt { get; set; }
     public string LastSyncStatus { get; set; } = "never";
     public string? LastSyncError { get; set; }

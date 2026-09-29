@@ -1,5 +1,7 @@
 import { expect, type Page } from "@playwright/test"
 
+declare const process: { env: Record<string, string | undefined> }
+
 /**
  * Auth helpers for E2E specs targeting the .NET backend.
  *
@@ -13,9 +15,8 @@ const DEFAULT_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin"
 const DEFAULT_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "admin"
 
 /**
- * Logs in as the seeded admin against whatever backend the Playwright
- * `baseURL` is pointing at (the .NET port when the spec is invoked via
- * `pnpm --dir frontend exec playwright test e2e/dotnet --grep dotnet`).
+ * Logs into the Vite-served SPA using the admin seeded in the .NET
+ * backend; the browser's `/api` requests are proxied to that backend.
  *
  * The login form lives at `/login` and exposes `Username` / `Password`
  * fields plus a `Sign in` submit button.
@@ -29,8 +30,7 @@ export async function loginAsAdmin(
 
   await page.goto("/login", { waitUntil: "domcontentloaded" })
 
-  // Pre-flight: confirm the page rendered. If the .NET backend is offline,
-  // Vite's proxy will return an error page and the form will not exist.
+  // Confirm the SPA route rendered before filling the login form.
   await expect(
     page.getByRole("heading", { name: /sign in|log in/i }),
     `Login page did not render — is the .NET backend reachable at ${page.url()}?`,

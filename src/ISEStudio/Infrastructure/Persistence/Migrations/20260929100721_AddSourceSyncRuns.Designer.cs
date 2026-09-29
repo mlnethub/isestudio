@@ -3,6 +3,7 @@ using System;
 using ISEStudio.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ISEStudio.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ISEStudioDbContext))]
-    partial class ISEStudioDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260929100721_AddSourceSyncRuns")]
+    partial class AddSourceSyncRuns
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2158,43 +2161,6 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                     b.UseTpcMappingStrategy();
                 });
 
-            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.SourceDocumentBindingEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<Guid>("DocumentId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("document_id");
-
-                    b.Property<string>("ExternalKey")
-                        .IsRequired()
-                        .HasMaxLength(1024)
-                        .HasColumnType("character varying(1024)")
-                        .HasColumnName("external_key");
-
-                    b.Property<DateTimeOffset?>("MissingSince")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("missing_since");
-
-                    b.Property<Guid>("SourceId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("source_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DocumentId")
-                        .HasDatabaseName("ix_source_document_binding_document_id");
-
-                    b.HasIndex("SourceId", "ExternalKey")
-                        .IsUnique()
-                        .HasDatabaseName("ux_source_document_binding_source_external_key");
-
-                    b.ToTable("source_document_binding", (string)null);
-                });
-
             modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.SourceEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2229,10 +2195,6 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("KnowledgeSystemId")
                         .HasColumnType("uuid")
                         .HasColumnName("knowledge_system_id");
-
-                    b.Property<DateTimeOffset?>("LastScheduledAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("last_scheduled_at");
 
                     b.Property<int>("LastSyncAdded")
                         .HasColumnType("integer")
@@ -3304,21 +3266,6 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("ReleaseId")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.SourceDocumentBindingEntity", b =>
-                {
-                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.DocumentEntity", null)
-                        .WithMany()
-                        .HasForeignKey("DocumentId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.SourceEntity", null)
-                        .WithMany()
-                        .HasForeignKey("SourceId")
-                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 

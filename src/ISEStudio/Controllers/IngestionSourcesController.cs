@@ -30,6 +30,21 @@ public sealed class IngestionSourcesController : ControllerBase
     public async Task<IActionResult> GetAsync(Guid id, Guid sourceId, CancellationToken ct)
         => ToActionResult(await _sources.GetAsync(id, sourceId, Actor(), ct).ConfigureAwait(false));
 
+    [HttpPost("{sourceId:guid}/sync")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
+    public async Task<IActionResult> SyncAsync(Guid id, Guid sourceId, CancellationToken ct)
+        => ToActionResult(await _sources.SyncAsync(id, sourceId, Actor(), ct).ConfigureAwait(false));
+
+    [HttpGet("{sourceId:guid}/runs")]
+    [KSRoleAuthorize(Minimum = KSRole.Viewer)]
+    public async Task<IActionResult> ListRunsAsync(Guid id, Guid sourceId, CancellationToken ct)
+        => ToActionResult(await _sources.ListRunsAsync(id, sourceId, Actor(), ct).ConfigureAwait(false));
+
+    [HttpGet("{sourceId:guid}/jobs/{jobId:guid}")]
+    [KSRoleAuthorize(Minimum = KSRole.Viewer)]
+    public async Task<IActionResult> GetJobAsync(Guid id, Guid sourceId, Guid jobId, CancellationToken ct)
+        => ToActionResult(await _sources.GetJobAsync(id, sourceId, jobId, Actor(), ct).ConfigureAwait(false));
+
     [HttpPost]
     [KSRoleAuthorize(Minimum = KSRole.Editor)]
     public async Task<IActionResult> CreateAsync(Guid id, [FromBody] SourceUpsertRequest request, CancellationToken ct)
@@ -66,6 +81,7 @@ public sealed class IngestionSourcesController : ControllerBase
         if (result.StatusCode == StatusCodes.Status204NoContent) return NoContent();
         if (result.Error is not null) return StatusCode(result.StatusCode, new { detail = result.Error });
         if (result.StatusCode == StatusCodes.Status201Created) return StatusCode(result.StatusCode, result.Value);
+        if (result.StatusCode == StatusCodes.Status202Accepted) return Accepted(result.Value);
         return Ok(result.Value);
     }
 

@@ -9,23 +9,40 @@ import { defineConfig, devices } from "@playwright/test"
  * them. The suite is intentionally Chromium-only — the Stage 5 brief
  * scopes the smoke matrix to one browser to keep the gate cheap.
  *
- * Backend bring-up is delegated to the `webServer` block below: if
- * `DOTNET_BASE_URL` is already in the environment (CI pre-started the
- * backend, or a developer is pointing at a remote instance), the
- * config leaves the server alone. Otherwise Playwright boots
- * `dotnet run` against `src/ISEStudio` on the pinned port and waits
- * for `/api/health` to respond before letting specs run.
+ * Browser pages are served by Vite; its `/api` and `/mcp` proxy target
+ * is `DOTNET_BASE_URL`. If that variable is absent, Playwright boots
+ * the .NET API on the pinned port. `DOTNET_BASE_URL` can point to an
+ * already-running isolated test backend when needed.
  *
- * `e2e/dotnet/helpers/config.ts` already reads `DOTNET_BASE_URL` (or
- * falls back to `http://localhost:18080`), so the same env-var knob
- * controls both the runner and the in-spec health probe — the spec
- * authors do not need to know whether Playwright booted the server
- * or whether it was already up.
+ * `e2e/dotnet/helpers/config.ts` uses the same backend URL for its
+ * health probe, while Playwright's `baseURL` remains the Vite origin.
  */
 
 const DOTNET_PORT = Number(process.env.DOTNET_E2E_PORT ?? 18080)
 const DOTNET_BASE_URL =
   process.env.DOTNET_BASE_URL ?? `http://localhost:${DOTNET_PORT}`
+const FRONTEND_PORT = Number(process.env.FRONTEND_E2E_PORT ?? 5173)
+const FRONTEND_BASE_URL = `http://127.0.0.1:${FRONTEND_PORT}`
+
+const webServers = [
+  ...(process.env.DOTNET_BASE_URL ? [] : [{
+    command: "dotnet run --no-launch-profile --project ../src/ISEStudio --urls=http://+:" + DOTNET_PORT,
+    url: `${DOTNET_BASE_URL}/api/health`,
+    reuseExistingServer: true,
+    timeout: 120_000,
+    stdout: "pipe" as const,
+    stderr: "pipe" as const,
+  }]),
+  {
+    command: `pnpm dev --host 127.0.0.1 --port ${FRONTEND_PORT} --strictPort`,
+    url: FRONTEND_BASE_URL,
+    reuseExistingServer: false,
+    timeout: 120_000,
+    stdout: "pipe" as const,
+    stderr: "pipe" as const,
+    env: { VITE_BACKEND_PROXY_TARGET: DOTNET_BASE_URL },
+  },
+]
 
 export default defineConfig({
   testDir: "e2e",
@@ -38,21 +55,10 @@ export default defineConfig({
     ? [["github"], ["list"]]
     : [["list"], ["html", { open: "never" }]],
   use: {
-    baseURL: DOTNET_BASE_URL,
+    baseURL: FRONTEND_BASE_URL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
   projects: [{ name: "dot-net", use: { ...devices["Desktop Chrome"] } }],
-  webServer: process.env.DOTNET_BASE_URL
-    ? undefined
-    : {
-        command:
-          "dotnet run --project ../src/ISEStudio --urls=http://+:" +
-          DOTNET_PORT,
-        url: `${DOTNET_BASE_URL}/api/health`,
-        reuseExistingServer: true,
-        timeout: 120_000,
-        stdout: "pipe",
-        stderr: "pipe",
-      },
+  webServer: webServers,
 })

@@ -43,6 +43,27 @@ public sealed record SourceDetailOut(
 
 public sealed record SourceTokenOut(string Token);
 
+public sealed record SourceSyncJobOut(Guid JobId, string Status);
+
+public sealed record SourceSyncJobDetailOut(
+    Guid Id,
+    string Status,
+    Guid? ActiveRunId,
+    DateTimeOffset? LeaseUntil,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset? StartedAt,
+    DateTimeOffset? FinishedAt,
+    string? Error);
+
+public sealed record SourceSyncRunOut(
+    Guid Id,
+    string Status,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? FinishedAt,
+    int AddedCount,
+    int UpdatedCount,
+    string? Error);
+
 public sealed record SourceMutationResult<T>(int StatusCode, T? Value, string? Error = null)
 {
     public static SourceMutationResult<T> Success(T value, int statusCode = 200)

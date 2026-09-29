@@ -15,6 +15,7 @@ import { Checkbox } from "@/components/ui/checkbox"
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import DeleteImpactDialog from "@/components/DeleteImpactDialog"
 import ExtractDialog from "@/components/ExtractDialog"
@@ -140,11 +141,12 @@ function FolderCombobox({
 /** KS-scoped document manager. Read-only for viewers; write controls appear only when
  *  `canWrite` (editor/owner/admin). `onChanged` lets the parent refresh KS stats/sources. */
 export default function KsDocuments({
-  ksId, canWrite, onChanged,
+  ksId, canWrite, onChanged, sourcesRevision = 0,
 }: {
   ksId: string
   canWrite: boolean
   onChanged?: () => void
+  sourcesRevision?: number
 }) {
   const { locale, t } = useI18n()
   const confirmAction = useConfirm()
@@ -155,6 +157,8 @@ export default function KsDocuments({
   const [serverFolders, setServerFolders] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
+  const [folderSources, setFolderSources] = useState<{ id: string; name: string }[]>([])
+  const [selectedSourceId, setSelectedSourceId] = useState("")
   const [parsing, setParsing] = useState<string | null>(null)
   const [batchParsing, setBatchParsing] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -194,6 +198,27 @@ export default function KsDocuments({
   }, [cwd, debouncedSearch, ksId, page, t])
 
   useEffect(() => { refresh() }, [refresh])
+  useEffect(() => {
+    if (!canWrite) {
+      setFolderSources([])
+      setSelectedSourceId("")
+      return
+    }
+    let active = true
+    void api.listIngestionSources(ksId).then((sources) => {
+      if (!active) return
+      const folders = sources
+        .filter((source) => source.kind === "folder")
+        .map(({ id, name }) => ({ id, name }))
+      setFolderSources(folders)
+      setSelectedSourceId((current) =>
+        folders.some((source) => source.id === current) ? current : folders[0]?.id ?? "",
+      )
+    }).catch(() => {
+      if (active) toast.error(t("ingestionSources.loadFailed"))
+    })
+    return () => { active = false }
+  }, [canWrite, ksId, sourcesRevision, t])
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300)
     return () => clearTimeout(timer)
@@ -314,14 +339,17 @@ export default function KsDocuments({
       setUploading(true)
       let ok = 0
       for (const file of Array.from(files)) {
-        try { await api.uploadDocument(ksId, file, folder); ok++ }
+        try {
+          await api.uploadDocument(ksId, file, folder, selectedSourceId || undefined)
+          ok++
+        }
         catch (e) { toast.error(t("documents.uploadFailed", { name: file.name, error: (e as Error).message })) }
       }
       setUploading(false)
       if (ok) toast.success(t("documents.uploaded", { count: ok, folder }))
       afterChange()
     },
-    [ksId, afterChange, t],
+    [ksId, afterChange, selectedSourceId, t],
   )
 
   useEffect(() => {
@@ -466,6 +494,24 @@ export default function KsDocuments({
           </>
         )}
       </div>
+
+      {canWrite && folderSources.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-b pb-3">
+          <Label htmlFor="document-upload-source" className="text-xs text-muted-foreground">
+            {t("ingestionSources.uploadSource")}
+          </Label>
+          <Select value={selectedSourceId} onValueChange={setSelectedSourceId}>
+            <SelectTrigger id="document-upload-source" className="h-8 min-w-48 max-w-full text-sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {folderSources.map((source) => (
+                <SelectItem key={source.id} value={source.id}>{source.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       <input
         ref={inputRef} type="file" multiple className="hidden"

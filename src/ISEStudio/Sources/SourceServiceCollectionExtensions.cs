@@ -12,7 +12,11 @@ public static class SourceServiceCollectionExtensions
         services.AddSingleton<SourceSecretProtector>();
         services.AddSingleton<ISourceSecretProtector>(provider =>
             provider.GetRequiredService<SourceSecretProtector>());
+        services.AddSingleton<SourceSyncJobStore>();
+        services.AddScoped<SourceSyncCoordinator>();
         services.AddScoped<SourceService>();
+        services.AddSingleton<SourceSyncWorker>();
+        services.AddSingleton<SourceSyncScheduler>();
         return services;
     }
 }

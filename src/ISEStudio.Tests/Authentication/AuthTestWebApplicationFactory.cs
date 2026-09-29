@@ -42,6 +42,9 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
     private readonly string _exportRoot;
     private readonly IPasswordService? _passwordOverride;
     private readonly string? _sourceEncryptionKey;
+    private readonly IReadOnlyCollection<SourceKindDescriptor>? _sourceKindOverrides;
+    private readonly ISourceSyncQueueWakeup? _sourceSyncQueueWakeupOverride;
+    private readonly bool _sourceTickerEnabled;
 
     public AuthTestWebApplicationFactory() : this(passwordOverride: null, sourceEncryptionKey: null)
     {
@@ -58,7 +61,12 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
     {
     }
 
-    public AuthTestWebApplicationFactory(IPasswordService? passwordOverride, string? sourceEncryptionKey)
+    public AuthTestWebApplicationFactory(
+        IPasswordService? passwordOverride,
+        string? sourceEncryptionKey,
+        IReadOnlyCollection<SourceKindDescriptor>? sourceKindOverrides = null,
+        ISourceSyncQueueWakeup? sourceSyncQueueWakeupOverride = null,
+        bool sourceTickerEnabled = false)
     {
         var testId = Guid.NewGuid().ToString("N");
         var rawPath = Path.Combine(
@@ -85,6 +93,9 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             $"isestudio-exports-{testId}");
         _passwordOverride = passwordOverride;
         _sourceEncryptionKey = sourceEncryptionKey;
+        _sourceKindOverrides = sourceKindOverrides;
+        _sourceSyncQueueWakeupOverride = sourceSyncQueueWakeupOverride;
+        _sourceTickerEnabled = sourceTickerEnabled;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -101,6 +112,7 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
                 // Use the explicit "Data Source=" form so the SQLite
                 // connection-string parser doesn't choke on the raw path.
                 ["ISEStudio:Persistence:SqliteConnection"] = $"Data Source={_sqlitePath}",
+                ["ISEStudio:Sources:TickerQ:Enabled"] = _sourceTickerEnabled ? "true" : "false",
                 // ReleaseArtifactStore + ReleaseManager read this key to
                 // root the artifact shards ({RdfRoot}/releases) + serving
                 // read-only stores ({RdfRoot}/serving). StoreWrapper is
@@ -117,6 +129,21 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 
         builder.ConfigureServices(services =>
         {
+            if (_sourceSyncQueueWakeupOverride is not null)
+            {
+                services.RemoveAll<ISourceSyncQueueWakeup>();
+                services.AddSingleton(_sourceSyncQueueWakeupOverride);
+            }
+
+            if (_sourceKindOverrides is not null)
+            {
+                services.RemoveAll<SourceKindDescriptor>();
+                services.RemoveAll<SourceAdapterRegistry>();
+                foreach (var descriptor in _sourceKindOverrides)
+                    services.AddSingleton(descriptor);
+                services.AddSingleton<SourceAdapterRegistry>();
+            }
+
             var sourceSecretConfiguration = new ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
@@ -191,6 +218,7 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
                     && d.ImplementationType == typeof(DocumentParseWorker))
                 .ToList();
             foreach (var desc in parseWorkerDescriptors) services.Remove(desc);
+
         });
     }
 

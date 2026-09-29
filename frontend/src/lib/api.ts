@@ -35,6 +35,12 @@ import type {
   ExportList,
   Individual,
   IndividualList,
+  IngestionSource,
+  IngestionSourceDetail,
+  IngestionSourceJob,
+  IngestionSourceKind,
+  IngestionSourceRun,
+  IngestionSourceSyncAccepted,
   KnowledgePrompt,
   KnowledgePromptList,
   KnowledgeSystem,
@@ -257,10 +263,11 @@ export const api = {
     qs.set("offset", String(params.offset ?? 0))
     return request<DocumentListResponse>(`/api/knowledge/${ksId}/documents/page?${qs.toString()}`)
   },
-  uploadDocument: (ksId: string, file: File, folder = "/") => {
+  uploadDocument: (ksId: string, file: File, folder = "/", sourceId?: string) => {
     const fd = new FormData()
     fd.append("file", file)
     fd.append("folder", folder)
+    if (sourceId) fd.append("source_id", sourceId)
     return request<DocumentMeta>(`/api/knowledge/${ksId}/documents/upload`, { method: "POST", body: fd })
   },
   parseDocument: (ksId: string, id: string) =>
@@ -471,6 +478,35 @@ export const api = {
   getJob: (ksId: string, jobId: string) =>
     request<ExtractionJob>(`/api/knowledge/${ksId}/jobs/${jobId}`),
   getSources: (ksId: string) => request<SourceDoc[]>(`/api/knowledge/${ksId}/sources`),
+
+  // Ingestion sources are distinct from ontology provenance sources above.
+  listIngestionSources: (ksId: string) =>
+    request<IngestionSource[]>(`/api/knowledge/${ksId}/ingestion-sources`),
+  getIngestionSource: (ksId: string, sourceId: string) =>
+    request<IngestionSourceDetail>(`/api/knowledge/${ksId}/ingestion-sources/${sourceId}`),
+  getIngestionSourceKinds: (ksId: string) =>
+    request<IngestionSourceKind[]>(`/api/knowledge/${ksId}/ingestion-sources/kinds`),
+  createIngestionSource: (
+    ksId: string,
+    body: { kind: string; name: string; icon?: string | null; config?: Record<string, unknown> },
+  ) => request<IngestionSource>(`/api/knowledge/${ksId}/ingestion-sources`, json(body)),
+  updateIngestionSource: (
+    ksId: string,
+    sourceId: string,
+    body: { kind: string; name: string; icon?: string | null; config?: Record<string, unknown> },
+  ) => request<IngestionSource>(`/api/knowledge/${ksId}/ingestion-sources/${sourceId}`, patch(body)),
+  deleteIngestionSource: (ksId: string, sourceId: string) =>
+    request<void>(`/api/knowledge/${ksId}/ingestion-sources/${sourceId}`, { method: "DELETE" }),
+  syncIngestionSource: (ksId: string, sourceId: string) =>
+    request<IngestionSourceSyncAccepted>(
+      `/api/knowledge/${ksId}/ingestion-sources/${sourceId}/sync`, { method: "POST" },
+    ),
+  listIngestionSourceRuns: (ksId: string, sourceId: string) =>
+    request<IngestionSourceRun[]>(`/api/knowledge/${ksId}/ingestion-sources/${sourceId}/runs`),
+  getIngestionSourceJob: (ksId: string, sourceId: string, jobId: string) =>
+    request<IngestionSourceJob>(
+      `/api/knowledge/${ksId}/ingestion-sources/${sourceId}/jobs/${jobId}`,
+    ),
 
   // Change history / audit log
   getHistory: (

@@ -684,6 +684,8 @@ public sealed class DocumentService
         fileShas.Add(oldSha);
 
         await using var blobLocks = await DocumentBlobReferenceLock.AcquireAsync(_db, fileShas, ct).ConfigureAwait(false);
+        await _db.SourceDocumentBindings.Where(binding => binding.DocumentId == docId)
+            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
         await _db.DocumentFileVersionSnapshots
             .Where(link => _db.DocumentFileVersions.Where(version => version.DocumentId == docId)
                 .Select(version => version.Id).Contains(link.DocumentFileVersionId))

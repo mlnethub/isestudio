@@ -41,3 +41,19 @@ The deterministic demo path was executed with an isolated SQLite database and Ox
 - manifest and checksum presence: passed.
 
 Container image execution still requires a running Docker engine on the verification host.
+
+## Ingestion Source UI Acceptance
+
+The Source UI browser contracts were run against a per-run SQLite database in the `Testing` environment. The API created its test schema with `EnsureCreated`; a random admin password and source-encryption key were process-only values and were not recorded. Playwright served the SPA from Vite on `127.0.0.1:5173` and sent API traffic through Vite to the isolated .NET API on `localhost:18080`. The temporary database, process variables, API process, and failed-run trace artifacts were removed after verification.
+
+| Check | Result |
+| --- | --- |
+| `pnpm test:e2e:dotnet --grep "ingestion sources"` | Passed, 2/2: default folder Source status and virtual Folder view; `azure_blob` is absent from the create menu and rejected by the API (400); create a second folder Source, select it for upload, verify the API-returned `folder` and `source_id`, then move the document and verify its `source_id` is unchanged. |
+| `pnpm test` | Passed, 11 tests. |
+| `pnpm build` | Passed. Vite reports a large-chunk warning (>500 kB); production chunk splitting was not part of this acceptance. |
+| `pnpm lint` | Passed with existing Fast Refresh warnings. |
+| Source API/security unit-test filter (`SourceApiTests`, `SourceSecretProtectorTests`, `SourceNetworkPolicyTests`, `SourceAdapterTests`, `SourcePushTests`, `DocumentApiTests`) | Passed, 58/58. |
+| Source/schema/sync integration-test filter (`KnowledgeSourceSchemaTests`, document version/blob tests, `SourceSyncTests`, `SourceSyncWorkerTests`, `SourceConnectorTests`) | Passed, 47/47; Testcontainers started PostgreSQL successfully. |
+| `dotnet build src/ISEStudio.sln --no-restore` | Passed. |
+
+The current server registers only the passive `folder` kind. Accordingly, the UI has no manual/scheduled sync or job-polling action. Backend push, adapter, and authorization contracts passed their selected tests, but token controls, token-specific browser behavior, live push, and credentialed connector E2E were not run. Real Viewer-session UI restrictions remain unverified. `azure_blob` is unavailable. The browser test used the application's SQLite `EnsureCreated` path; a direct SQLite `--migrate` attempt failed on PostgreSQL-specific `CREATE FUNCTION` SQL, so that SQLite migration path is not verified. The broader `pnpm test:e2e:dotnet` workflow (upload through extract/review/publish) was not run in this isolated pass; only the Source UI contracts above were executed.

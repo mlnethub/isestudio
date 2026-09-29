@@ -35,6 +35,29 @@ public sealed class DocumentParseQueueService
         if (!string.Equals(fileVersion.Sha256, document.Sha256, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Current file version does not match document SHA-256.");
 
+        return await EnqueueAsync(knowledgeSystemId, documentId, fileVersion.Id, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task<DocumentParseQueueOut?> EnqueueAsync(
+        Guid knowledgeSystemId,
+        Guid documentId,
+        Guid documentFileVersionId,
+        CancellationToken cancellationToken)
+    {
+        var document = await _db.Documents.AsNoTracking().SingleOrDefaultAsync(
+            item => item.Id == documentId && item.KnowledgeSystemId == knowledgeSystemId,
+            cancellationToken).ConfigureAwait(false);
+        if (document is null) return null;
+
+        var fileVersion = await _db.DocumentFileVersions.AsNoTracking().SingleOrDefaultAsync(
+            version => version.Id == documentFileVersionId && version.DocumentId == documentId,
+            cancellationToken).ConfigureAwait(false);
+        if (fileVersion is null)
+            throw new InvalidOperationException("Queued file version does not belong to the document.");
+        if (!string.Equals(fileVersion.Sha256, document.Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Queued file version does not match the document SHA-256.");
+
         var job = new DocumentParseJobEntity
         {
             KnowledgeSystemId = knowledgeSystemId,

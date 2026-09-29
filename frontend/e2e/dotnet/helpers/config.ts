@@ -1,10 +1,9 @@
 /**
  * Backend URL helpers for the .NET E2E suite.
  *
- * Playwright's `baseURL` is shared with the existing frontend specs;
- * the .NET specs need to know whether the .NET backend (port 18080 by
- * default for Stage 5) is reachable, because the upstream Vite dev
- * server proxies unknown paths to whatever backend the spec sets.
+ * Browser pages use Playwright's Vite `baseURL`; this URL is only for
+ * probing the .NET backend, which Vite proxies `/api` and `/mcp` to.
+ * The default backend port is 18080 for the .NET E2E suite.
  */
 
 export const DOTNET_HEALTH_URL =

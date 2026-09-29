@@ -38,6 +38,7 @@ using ISEStudio.Storage;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
+using TickerQ.DependencyInjection;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -434,6 +435,19 @@ builder.Services.AddSparqlServices();
 // (singleton, registered above) for the Viewer / Editor / Owner gates.
 builder.Services.AddKnowledgeServices();
 builder.Services.AddSourceServices();
+var sourceTickerEnabled = builder.Configuration.GetValue<bool?>("ISEStudio:Sources:TickerQ:Enabled") ?? true;
+if (sourceTickerEnabled)
+{
+    builder.Services.AddTickerQ();
+    builder.Services.AddSingleton<SourceSyncTickerFunctions>();
+    builder.Services.AddSingleton<ISourceSyncQueueWakeup, TickerQSourceSyncQueueWakeup>();
+}
+builder.Services.AddOptions<SourceSyncWorkerOptions>()
+    .Bind(builder.Configuration.GetSection("ISEStudio:Sources:SyncWorker"))
+    .Validate(options => options.MaxConcurrency > 0
+        && options.LeaseRenewInterval > TimeSpan.Zero,
+        "Source sync worker concurrency and lease interval must be positive.")
+    .ValidateOnStart();
 // Documents slice — upload / parse / chunks / move / contribution / delete
 // with cross-KS blob ref-count. Scoped DocumentService depends on the
 // scoped DbContext; the underlying IBlobStore, IDocumentParser, and
@@ -755,6 +769,8 @@ SkosVocab.Configure(builder.Configuration["ISEStudio:VocabNamespace"]
     ?? new ISEStudioOptions().VocabNamespace);
 
 var app = builder.Build();
+if (sourceTickerEnabled)
+    app.UseTickerQ();
 
 // Global error envelope runs FIRST so every response shape (auth challenges,
 // model validation, unhandled exceptions, 404 routes) ultimately carries

@@ -3,6 +3,7 @@ using System;
 using ISEStudio.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ISEStudio.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ISEStudioDbContext))]
-    partial class ISEStudioDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260929101852_AddSourceDocumentBindings")]
+    partial class AddSourceDocumentBindings
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -2229,10 +2232,6 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("KnowledgeSystemId")
                         .HasColumnType("uuid")
                         .HasColumnName("knowledge_system_id");
-
-                    b.Property<DateTimeOffset?>("LastScheduledAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("last_scheduled_at");
 
                     b.Property<int>("LastSyncAdded")
                         .HasColumnType("integer")

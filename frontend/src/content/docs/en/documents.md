@@ -31,3 +31,11 @@ Candidate generators propose structure; independent critics classify reusable co
 Jobs update progress counters asynchronously. Capacity is scoped per model endpoint, keeping LLM, embedding, and provider limits independent.
 
 Each job records model identity, effective prompt contents and SHA-256, source chunks, evidence spans, graph statements, and later review decisions.
+
+## Ingestion Sources and Folders
+
+An ingestion Source records where a document belongs; a virtual Folder organizes documents inside the knowledge system. They are independent: choosing a Source during upload does not change the current Folder, and moving a document between Folders does not change its Source.
+
+The current UI exposes the passive `folder` Source kind. Each knowledge system starts with a default folder Source. Use the **Upload source** selector to choose another folder Source; when no Source is supplied by an API client, the server applies its default. The Documents view continues to use the virtual Folder path for browsing and moving files.
+
+The Sources view shows the Source kind, sync status, last sync time, document counts, and recent runs. **Never synced** means no sync timestamp has been recorded; the Source creation time is not a sync time. Folder Sources are passive and do not run manual or scheduled sync jobs. Only kinds registered by the server are offered for creation. Connectors, token viewing or rotation, and Viewer-specific UI verification are not included in the current release. For connector kinds that support full scans, missing-document reconciliation is based on a completed scan, not on a partial run.

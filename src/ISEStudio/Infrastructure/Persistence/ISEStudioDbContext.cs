@@ -69,6 +69,12 @@ public sealed class ISEStudioDbContext : DbContext
 
     public DbSet<SourceEntity> Sources => Set<SourceEntity>();
 
+    public DbSet<SourceSyncJobEntity> SourceSyncJobs => Set<SourceSyncJobEntity>();
+
+    public DbSet<SourceSyncRunEntity> SourceSyncRuns => Set<SourceSyncRunEntity>();
+
+    public DbSet<SourceDocumentBindingEntity> SourceDocumentBindings => Set<SourceDocumentBindingEntity>();
+
     /// <summary>Uploaded source files, per-KS dedup on (KS, Sha256).</summary>
     public DbSet<DocumentEntity> Documents => Set<DocumentEntity>();
 

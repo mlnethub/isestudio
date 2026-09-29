@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
+using Cronos;
 using Microsoft.EntityFrameworkCore;
 using ISEStudio.Authorization;
 using ISEStudio.Infrastructure.Persistence;
@@ -17,19 +18,25 @@ public sealed class SourceService
     private readonly SourceAdapterRegistry _registry;
     private readonly ISourceSecretProtector _secrets;
     private readonly TimeProvider _clock;
+    private readonly SourceSyncJobStore? _syncJobs;
+    private readonly ISourceSyncQueueWakeup? _syncQueueWakeup;
 
     public SourceService(
         ISEStudioDbContext db,
         KnowledgeSystemAccessService access,
         SourceAdapterRegistry registry,
         ISourceSecretProtector secrets,
-        TimeProvider clock)
+        TimeProvider clock,
+        SourceSyncJobStore? syncJobs = null,
+        ISourceSyncQueueWakeup? syncQueueWakeup = null)
     {
         _db = db;
         _access = access;
         _registry = registry;
         _secrets = secrets;
         _clock = clock;
+        _syncJobs = syncJobs;
+        _syncQueueWakeup = syncQueueWakeup;
     }
 
     public async Task<SourceMutationResult<IReadOnlyList<SourceOut>>> ListAsync(
@@ -66,6 +73,97 @@ public sealed class SourceService
             ProjectConfig(source)));
     }
 
+    public async Task<SourceMutationResult<SourceSyncJobOut>> SyncAsync(
+        Guid ksId, Guid sourceId, UserEntity actor, CancellationToken ct)
+    {
+        var access = await CheckAccessAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
+        if (access is not null)
+            return SourceMutationResult<SourceSyncJobOut>.Failure(access.Value.Status, access.Value.Error);
+
+        var source = await _db.Sources.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == sourceId && item.KnowledgeSystemId == ksId, ct)
+            .ConfigureAwait(false);
+        if (source is null)
+            return SourceMutationResult<SourceSyncJobOut>.Failure(404, "Source not found");
+        if (!_registry.TryGet(source.Kind, out var descriptor) || !descriptor.ActiveSync)
+            return SourceMutationResult<SourceSyncJobOut>.Failure(400, "Source kind does not support sync");
+        if (_syncJobs is null)
+            return SourceMutationResult<SourceSyncJobOut>.Failure(503, "Source sync is not configured");
+
+        Guid jobId;
+        try
+        {
+            jobId = await _syncJobs.EnqueueAsync(sourceId, ct).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException)
+        {
+            return SourceMutationResult<SourceSyncJobOut>.Failure(404, "Source not found");
+        }
+        if (_syncQueueWakeup is not null)
+            await _syncQueueWakeup.WakeAsync(ct).ConfigureAwait(false);
+
+        var job = await _db.SourceSyncJobs.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == jobId && item.SourceId == sourceId, ct)
+            .ConfigureAwait(false);
+        return job is null
+            ? SourceMutationResult<SourceSyncJobOut>.Failure(404, "Source sync job not found")
+            : SourceMutationResult<SourceSyncJobOut>.Success(new SourceSyncJobOut(job.Id, job.Status), 202);
+    }
+
+    public async Task<SourceMutationResult<IReadOnlyList<SourceSyncRunOut>>> ListRunsAsync(
+        Guid ksId, Guid sourceId, UserEntity actor, CancellationToken ct)
+    {
+        var access = await CheckAccessAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
+        if (access is not null)
+            return SourceMutationResult<IReadOnlyList<SourceSyncRunOut>>.Failure(
+                access.Value.Status, access.Value.Error);
+        if (!await _db.Sources.AsNoTracking().AnyAsync(
+                item => item.Id == sourceId && item.KnowledgeSystemId == ksId, ct).ConfigureAwait(false))
+            return SourceMutationResult<IReadOnlyList<SourceSyncRunOut>>.Failure(404, "Source not found");
+
+        var runQuery = _db.SourceSyncRuns.AsNoTracking().Where(run => run.SourceId == sourceId);
+        List<SourceSyncRunEntity> runs;
+        if (_db.Database.IsNpgsql())
+        {
+            runs = await runQuery.OrderByDescending(run => run.StartedAt)
+                .ThenByDescending(run => run.Id)
+                .Take(50)
+                .ToListAsync(ct).ConfigureAwait(false);
+        }
+        else
+        {
+            runs = (await runQuery.ToListAsync(ct).ConfigureAwait(false))
+                .OrderByDescending(run => run.StartedAt)
+                .ThenByDescending(run => run.Id)
+                .Take(50)
+                .ToList();
+        }
+
+        return SourceMutationResult<IReadOnlyList<SourceSyncRunOut>>.Success(runs.Select(run =>
+            new SourceSyncRunOut(run.Id, run.Status, run.StartedAt, run.FinishedAt,
+                run.AddedCount, run.UpdatedCount, run.Error)).ToArray());
+    }
+
+    public async Task<SourceMutationResult<SourceSyncJobDetailOut>> GetJobAsync(
+        Guid ksId, Guid sourceId, Guid jobId, UserEntity actor, CancellationToken ct)
+    {
+        var access = await CheckAccessAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
+        if (access is not null)
+            return SourceMutationResult<SourceSyncJobDetailOut>.Failure(access.Value.Status, access.Value.Error);
+        if (!await _db.Sources.AsNoTracking().AnyAsync(
+                item => item.Id == sourceId && item.KnowledgeSystemId == ksId, ct).ConfigureAwait(false))
+            return SourceMutationResult<SourceSyncJobDetailOut>.Failure(404, "Source not found");
+
+        var job = await _db.SourceSyncJobs.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == jobId && item.SourceId == sourceId, ct)
+            .ConfigureAwait(false);
+        return job is null
+            ? SourceMutationResult<SourceSyncJobDetailOut>.Failure(404, "Source sync job not found")
+            : SourceMutationResult<SourceSyncJobDetailOut>.Success(new SourceSyncJobDetailOut(
+                job.Id, job.Status, job.ActiveRunId, job.LeaseUntil, job.CreatedAt,
+                job.StartedAt, job.FinishedAt, job.Error));
+    }
+
     public async Task<SourceMutationResult<SourceOut>> CreateAsync(
         Guid ksId, SourceUpsertRequest request, UserEntity actor, CancellationToken ct)
     {
@@ -87,6 +185,8 @@ public sealed class SourceService
             Kind = kind,
             Name = name,
             Icon = NullIfBlank(request.Icon),
+            SyncIntervalMinutes = request.SyncIntervalMinutes,
+            SyncCron = string.IsNullOrWhiteSpace(request.SyncCron) ? null : request.SyncCron.Trim(),
             LastSyncStatus = "never",
             CreatedAt = _clock.GetUtcNow(),
         };
@@ -166,6 +266,17 @@ public sealed class SourceService
             source.Config = configResult.Value.Config!;
             changedFields.AddRange(configResult.Value.ChangedFields.Select(field => $"config.{field}"));
         }
+        var syncCron = string.IsNullOrWhiteSpace(request.SyncCron) ? null : request.SyncCron.Trim();
+        if (source.SyncIntervalMinutes != request.SyncIntervalMinutes)
+        {
+            source.SyncIntervalMinutes = request.SyncIntervalMinutes;
+            changedFields.Add("sync_interval_minutes");
+        }
+        if (!string.Equals(source.SyncCron, syncCron, StringComparison.Ordinal))
+        {
+            source.SyncCron = syncCron;
+            changedFields.Add("sync_cron");
+        }
         try
         {
             await WriteAuditAsync(ksId, actor, "source.update", source, changedFields, ct).ConfigureAwait(false);
@@ -199,33 +310,70 @@ public sealed class SourceService
         }
         else
         {
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE source SET id = id WHERE id = {sourceId} AND knowledge_system_id = {ksId}", ct)
+                .ConfigureAwait(false);
             source = await _db.Sources.SingleOrDefaultAsync(
                 item => item.Id == sourceId && item.KnowledgeSystemId == ksId, ct).ConfigureAwait(false);
         }
 
         if (source is null) return SourceMutationResult<bool>.Failure(404, "Source not found");
+        if (await _db.SourceSyncJobs.AnyAsync(
+                job => job.SourceId == sourceId && (job.Status == "queued" || job.Status == "running"), ct)
+            .ConfigureAwait(false))
+            return SourceMutationResult<bool>.Failure(409, "Source has an active sync job");
+
+        var documentIds = await _db.Documents.AsNoTracking()
+            .Where(document => document.SourceId == sourceId)
+            .Select(document => document.Id)
+            .Concat(_db.SourceDocumentBindings.AsNoTracking()
+                .Where(binding => binding.SourceId == sourceId)
+                .Select(binding => binding.DocumentId))
+            .Distinct()
+            .OrderBy(id => id)
+            .ToArrayAsync(ct)
+            .ConfigureAwait(false);
         List<DocumentEntity> documents;
         if (_db.Database.IsNpgsql())
         {
             documents = await _db.Documents.FromSqlInterpolated(
-                    $"SELECT * FROM document WHERE source_id = {sourceId} ORDER BY id FOR UPDATE")
+                    $"SELECT * FROM document WHERE id = ANY({documentIds}) ORDER BY id FOR UPDATE")
                 .ToListAsync(ct).ConfigureAwait(false);
         }
         else
         {
-            documents = await _db.Documents.Where(document => document.SourceId == sourceId)
+            foreach (var documentId in documentIds)
+            {
+                await _db.Database.ExecuteSqlInterpolatedAsync(
+                    $"UPDATE document SET id = id WHERE id = {documentId}", ct).ConfigureAwait(false);
+            }
+            documents = await _db.Documents.Where(document => documentIds.Contains(document.Id))
                 .OrderBy(document => document.Id).ToListAsync(ct).ConfigureAwait(false);
         }
 
         foreach (var document in documents)
         {
-            document.SourceId = null;
-            document.ExternalKey = null;
-            document.MissingSince = null;
+            if (document.SourceId == sourceId)
+            {
+                document.SourceId = null;
+                document.ExternalKey = null;
+            }
         }
         _db.Sources.Remove(source);
         await WriteAuditAsync(ksId, actor, "source.delete", source, ["sourceId", "kind"], ct)
             .ConfigureAwait(false);
+        var now = _clock.GetUtcNow();
+        foreach (var document in documents)
+        {
+            var bindingStates = await _db.SourceDocumentBindings.AsNoTracking()
+                .Where(binding => binding.DocumentId == document.Id)
+                .Select(binding => binding.MissingSince)
+                .ToListAsync(ct).ConfigureAwait(false);
+            if (document.IsManualUpload || bindingStates.Count == 0 || bindingStates.Any(state => state is null))
+                document.MissingSince = null;
+            else
+                document.MissingSince ??= now;
+        }
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
         await transaction.CommitAsync(ct).ConfigureAwait(false);
         return SourceMutationResult<bool>.Success(true, 204);
@@ -355,11 +503,24 @@ public sealed class SourceService
             return "Source kind is not available";
         if (string.IsNullOrWhiteSpace(request.Name)) return "Source name is required";
         if (request.Name.Trim().Length > 255) return "Source name must be 255 characters or fewer";
+        var syncCron = string.IsNullOrWhiteSpace(request.SyncCron) ? null : request.SyncCron.Trim();
         if (request.SyncIntervalMinutes is <= 0) return "sync_interval_minutes must be greater than zero";
-        if (request.SyncIntervalMinutes.HasValue && !string.IsNullOrWhiteSpace(request.SyncCron))
+        if (request.SyncIntervalMinutes.HasValue && syncCron is not null)
             return "sync interval and cron cannot both be set";
-        if (request.SyncIntervalMinutes.HasValue || !string.IsNullOrWhiteSpace(request.SyncCron))
-            return "Folder sources do not support scheduled sync";
+        if ((request.SyncIntervalMinutes.HasValue || syncCron is not null)
+            && !kind.ActiveSync)
+            return "This source kind does not support scheduled sync";
+        if (syncCron is not null)
+        {
+            try
+            {
+                _ = CronExpression.Parse(syncCron, CronFormat.Standard);
+            }
+            catch (CronFormatException)
+            {
+                return "sync_cron must be a valid standard five-field cron expression";
+            }
+        }
         if (request.Config is { ValueKind: not JsonValueKind.Object }) return "config must be an object";
         return null;
     }
@@ -466,12 +627,28 @@ public sealed class SourceService
 
     private async Task<SourceOut> ProjectAsync(SourceEntity source, CancellationToken ct)
     {
-        var documents = _db.Documents.Where(document => document.SourceId == source.Id);
+        int documentCount;
+        int missingDocumentCount;
+        if (string.Equals(source.Kind, "folder", StringComparison.OrdinalIgnoreCase))
+        {
+            var documents = _db.Documents.Where(document => document.SourceId == source.Id);
+            documentCount = await documents.CountAsync(ct).ConfigureAwait(false);
+            missingDocumentCount = await documents.CountAsync(
+                document => document.MissingSince != null, ct).ConfigureAwait(false);
+        }
+        else
+        {
+            var bindings = _db.SourceDocumentBindings.Where(binding => binding.SourceId == source.Id);
+            documentCount = await bindings.Select(binding => binding.DocumentId)
+                .Distinct().CountAsync(ct).ConfigureAwait(false);
+            missingDocumentCount = await bindings.CountAsync(
+                binding => binding.MissingSince != null, ct).ConfigureAwait(false);
+        }
+
         return new SourceOut(
             source.Id, source.Kind, source.Name, source.Icon, source.SyncIntervalMinutes, source.SyncCron,
             source.LastSyncedAt, source.LastSyncStatus, source.LastSyncError, source.LastSyncAdded,
-            source.CreatedAt, await documents.CountAsync(ct).ConfigureAwait(false),
-            await documents.CountAsync(document => document.MissingSince != null, ct).ConfigureAwait(false));
+            source.CreatedAt, documentCount, missingDocumentCount);
     }
 
     private JsonElement ProjectConfig(SourceEntity source)
