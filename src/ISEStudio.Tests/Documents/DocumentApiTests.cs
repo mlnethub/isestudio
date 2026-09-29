@@ -52,6 +52,50 @@ public sealed class DocumentApiTests
     }
 
     [Fact]
+    public async Task Upload_uses_remaining_folder_after_default_source_is_deleted_and_recreates_when_none_remain()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "remaining-folder-source");
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var defaultSource = await db.Sources.SingleAsync(source => source.KnowledgeSystemId == ksId);
+        var remainingSource = new SourceEntity
+        {
+            KnowledgeSystemId = ksId,
+            Kind = "folder",
+            Name = "Remaining folder",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Sources.Add(remainingSource);
+        await db.SaveChangesAsync();
+
+        var deleteDefault = await client.DeleteAsync(
+            $"/api/knowledge/{ksId}/ingestion-sources/{defaultSource.Id}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteDefault.StatusCode);
+
+        var uploadToRemaining = await UploadBytesAsync(
+            client, ksId, "remaining.txt", "remaining"u8.ToArray(), folder: "/");
+        Assert.Equal(HttpStatusCode.OK, uploadToRemaining.StatusCode);
+        var firstDocument = await db.Documents.AsNoTracking()
+            .SingleAsync(document => document.KnowledgeSystemId == ksId);
+        Assert.Equal(remainingSource.Id, firstDocument.SourceId);
+
+        var deleteRemaining = await client.DeleteAsync(
+            $"/api/knowledge/{ksId}/ingestion-sources/{remainingSource.Id}");
+        Assert.Equal(HttpStatusCode.NoContent, deleteRemaining.StatusCode);
+
+        var uploadAfterAllSourcesDeleted = await UploadBytesAsync(
+            client, ksId, "recreated.txt", "recreated"u8.ToArray(), folder: "/");
+        Assert.Equal(HttpStatusCode.OK, uploadAfterAllSourcesDeleted.StatusCode);
+        var newFolder = await db.Sources.SingleAsync(source => source.KnowledgeSystemId == ksId);
+        var secondDocument = await db.Documents.AsNoTracking()
+            .SingleAsync(document => document.OriginalFilename == "recreated.txt");
+        Assert.Equal("folder", newFolder.Kind);
+        Assert.Equal(newFolder.Id, secondDocument.SourceId);
+    }
+
+    [Fact]
     public async Task Explicit_source_is_returned_on_upload_list_detail_move_and_dedup()
     {
         await using var app = new AuthTestWebApplicationFactory();
@@ -868,6 +912,17 @@ public sealed class DocumentApiTests
         var doc1 = (await up1.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetGuid();
         var doc2 = (await up2.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetGuid();
 
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.PostAsync($"/api/knowledge/{ks1}/documents/{doc1}/parse", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.PostAsync($"/api/knowledge/{ks2}/documents/{doc2}/parse", null)).StatusCode);
+
+        var beforeDelete = app.CreateDbContext();
+        var doc1FileVersion = beforeDelete.DocumentFileVersions.Single(version => version.DocumentId == doc1);
+        var doc2FileVersion = beforeDelete.DocumentFileVersions.Single(version => version.DocumentId == doc2);
+        var doc2Snapshot = beforeDelete.DocumentVersions.Single(version => version.DocumentId == doc2);
+        Assert.Single(beforeDelete.DocumentFileVersionSnapshots.Where(link => link.DocumentFileVersionId == doc2FileVersion.Id));
+
         // Delete doc1; doc2 still references the same sha so the blob
         // store should NOT have orphaned it.
         var delete = await client.PostAsync(
@@ -881,6 +936,18 @@ public sealed class DocumentApiTests
         Assert.Equal(HttpStatusCode.OK, get2.StatusCode);
         var body2 = await get2.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(doc2, body2.GetProperty("id").GetGuid());
+
+        var afterDelete = app.CreateDbContext();
+        Assert.Empty(afterDelete.DocumentFileVersions.Where(version => version.DocumentId == doc1));
+        Assert.Empty(afterDelete.DocumentVersions.Where(version => version.DocumentId == doc1));
+        Assert.Empty(afterDelete.DocumentFileVersionSnapshots.Where(link => link.DocumentFileVersionId == doc1FileVersion.Id));
+        Assert.Single(afterDelete.DocumentFileVersions.Where(version => version.DocumentId == doc2));
+        Assert.Single(afterDelete.DocumentVersions.Where(version => version.Id == doc2Snapshot.Id));
+        Assert.Single(afterDelete.DocumentFileVersionSnapshots.Where(link => link.DocumentFileVersionId == doc2FileVersion.Id));
+
+        Assert.Equal(HttpStatusCode.OK,
+            (await client.PostAsync($"/api/knowledge/{ks2}/documents/{doc2}/parse", null)).StatusCode);
+        Assert.Single(afterDelete.DocumentVersions.Where(version => version.Id == doc2Snapshot.Id));
     }
 
     [Fact]

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using ISEStudio.Application.Documents;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Authorization;
@@ -192,6 +193,9 @@ public sealed class DocumentService
             throw new InvalidOperationException(
                 $"Unsupported file type: .{ext}");
 
+        await using var staged = await StagedBlobUpload.CreateAsync(content, ct).ConfigureAwait(false);
+        sizeBytes = staged.SizeBytes;
+
         var sources = await _db.Sources
             .Where(s => s.KnowledgeSystemId == ks.Id && s.Kind == "folder"
                 && (!sourceId.HasValue || s.Id == sourceId.Value))
@@ -224,59 +228,119 @@ public sealed class DocumentService
             await transaction.CommitAsync(ct).ConfigureAwait(false);
         }
 
-        var blob = await _blobs.PutAsync(content, ct).ConfigureAwait(false);
-
-        // Per-KS content-addressed dedup: identical bytes already in
-        // *this* KS → same row, just move it to the target folder.
-        var existing = await _db.Documents
-            .FirstOrDefaultAsync(d => d.KnowledgeSystemId == ks.Id && d.Sha256 == blob.Sha256, ct)
-            .ConfigureAwait(false);
-        if (existing is not null)
+        for (var attempt = 0; attempt < 3; attempt++)
         {
-            existing.Folder = NormalizeFolder(folder);
-            existing.IsManualUpload = true;
-            existing.MissingSince = null;
-            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-            await WriteAuditAsync(ks.Id, user, "document.upload",
-                $"Re-uploaded \"{existing.OriginalFilename}\" (deduped)",
-                BuildDocumentDetail(existing.Id, existing.Sha256, dedup: true),
-                ct).ConfigureAwait(false);
-            return Project(existing);
+            await using var uploadTransaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+            if (_db.Database.IsNpgsql())
+                await _db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT id FROM source WHERE id = {chosenSource.Id} FOR UPDATE", ct).ConfigureAwait(false);
+
+            var lockedSource = await _db.Sources.AsNoTracking()
+                .SingleOrDefaultAsync(source => source.Id == chosenSource.Id
+                    && source.KnowledgeSystemId == ks.Id && source.Kind == "folder", ct)
+                .ConfigureAwait(false);
+            if (lockedSource is null)
+                throw new InvalidOperationException("source_id must be a folder source in this knowledge system.");
+
+            var candidateId = await _db.Documents.AsNoTracking()
+                .Where(document => document.KnowledgeSystemId == ks.Id && document.Sha256 == staged.Sha256)
+                .Select(document => (Guid?)document.Id)
+                .SingleOrDefaultAsync(ct).ConfigureAwait(false);
+            if (candidateId.HasValue && _db.Database.IsNpgsql())
+                await _db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT id FROM document WHERE id = {candidateId.Value} FOR UPDATE", ct).ConfigureAwait(false);
+
+            var retry = false;
+            await using (var shaLock = await DocumentBlobReferenceLock.AcquireAsync(
+                _db, [staged.Sha256], ct).ConfigureAwait(false))
+            {
+                var currentId = await _db.Documents.AsNoTracking()
+                    .Where(document => document.KnowledgeSystemId == ks.Id && document.Sha256 == staged.Sha256)
+                    .Select(document => (Guid?)document.Id)
+                    .SingleOrDefaultAsync(ct).ConfigureAwait(false);
+                if (currentId != candidateId)
+                {
+                    await uploadTransaction.RollbackAsync(ct).ConfigureAwait(false);
+                    retry = true;
+                }
+                else
+                {
+                    try
+                    {
+                        await using var blobContent = staged.OpenRead();
+                        var blob = await _blobs.PutAsync(blobContent, ct).ConfigureAwait(false);
+                        if (!string.Equals(blob.Sha256, staged.Sha256, StringComparison.Ordinal))
+                            throw new InvalidOperationException("Blob store returned a SHA-256 different from staged upload content.");
+
+                        if (candidateId.HasValue)
+                        {
+                            var existing = await _db.Documents.SingleAsync(
+                                document => document.Id == candidateId.Value, ct).ConfigureAwait(false);
+                            existing.Folder = NormalizeFolder(folder);
+                            existing.IsManualUpload = true;
+                            existing.MissingSince = null;
+                            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+                            await WriteAuditAsync(ks.Id, user, "document.upload",
+                                $"Re-uploaded \"{existing.OriginalFilename}\" (deduped)",
+                                BuildDocumentDetail(existing.Id, existing.Sha256, dedup: true), ct).ConfigureAwait(false);
+                            await uploadTransaction.CommitAsync(ct).ConfigureAwait(false);
+                            return Project(existing);
+                        }
+
+                        var doc = new DocumentEntity
+                        {
+                            KnowledgeSystemId = ks.Id,
+                            SourceId = lockedSource.Id,
+                            Sha256 = blob.Sha256,
+                            OriginalFilename = fileName,
+                            Folder = NormalizeFolder(folder),
+                            Ext = ext,
+                            Mime = mime,
+                            SizeBytes = sizeBytes,
+                            StoragePath = blob.LegacyStoragePath,
+                            UploadedAt = _clock.GetUtcNow(),
+                            ParseStatus = "pending",
+                            ChunkCount = 0,
+                        };
+                        _db.Documents.Add(doc);
+                        _db.DocumentFileVersions.Add(new DocumentFileVersionEntity
+                        {
+                            DocumentId = doc.Id,
+                            Version = 1,
+                            Sha256 = doc.Sha256,
+                            SizeBytes = doc.SizeBytes,
+                            CreatedAt = _clock.GetUtcNow(),
+                        });
+                        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+                        await WriteAuditAsync(ks.Id, user, "document.upload",
+                            $"Uploaded \"{doc.OriginalFilename}\"",
+                            BuildDocumentDetail(doc.Id, doc.Sha256, dedup: false), ct).ConfigureAwait(false);
+                        await uploadTransaction.CommitAsync(ct).ConfigureAwait(false);
+                        return Project(doc);
+                    }
+                    catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+                    {
+                        await uploadTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                        DetachPendingChanges();
+                        await RemoveBlobIfUnreferencedAsync(staged.Sha256, ct).ConfigureAwait(false);
+                        retry = true;
+                    }
+                    catch
+                    {
+                        await uploadTransaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
+                        DetachPendingChanges();
+                        await RemoveBlobIfUnreferencedAsync(staged.Sha256, ct).ConfigureAwait(false);
+                        throw;
+                    }
+                }
+            }
+
+            if (!retry)
+                break;
         }
 
-        var doc = new DocumentEntity
-        {
-            KnowledgeSystemId = ks.Id,
-            SourceId = chosenSource.Id,
-            Sha256 = blob.Sha256,
-            OriginalFilename = fileName,
-            Folder = NormalizeFolder(folder),
-            Ext = ext,
-            Mime = mime,
-            SizeBytes = sizeBytes,
-            StoragePath = blob.LegacyStoragePath,
-            UploadedAt = _clock.GetUtcNow(),
-            ParseStatus = "pending",
-            ChunkCount = 0,
-        };
-        await using var uploadTransaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
-        _db.Documents.Add(doc);
-        _db.DocumentFileVersions.Add(new DocumentFileVersionEntity
-        {
-            DocumentId = doc.Id,
-            Version = 1,
-            Sha256 = doc.Sha256,
-            SizeBytes = doc.SizeBytes,
-            CreatedAt = _clock.GetUtcNow(),
-        });
-        await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-
-        await WriteAuditAsync(ks.Id, user, "document.upload",
-            $"Uploaded \"{doc.OriginalFilename}\"",
-            BuildDocumentDetail(doc.Id, doc.Sha256, dedup: false),
-            ct).ConfigureAwait(false);
-        await uploadTransaction.CommitAsync(ct).ConfigureAwait(false);
-        return Project(doc);
+        throw new InvalidOperationException("Upload could not be serialized after repeated content conflicts.");
     }
 
     /// <summary>Fetch a single document by wire Id (Guid PK). Null on miss.</summary>
@@ -597,10 +661,17 @@ public sealed class DocumentService
         if (user is null || ks is null) return false;
         await EnsureNoActiveExtractionAsync(ks.Id, ct).ConfigureAwait(false);
 
-        var doc = await _db.Documents
-            .FirstOrDefaultAsync(d => d.Id == documentId, ct)
-            .ConfigureAwait(false);
-        if (doc is null || doc.KnowledgeSystemId != ks.Id) return false;
+        await using var transaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        if (_db.Database.IsNpgsql())
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT id FROM document WHERE id = {documentId} FOR UPDATE", ct).ConfigureAwait(false);
+        var doc = await _db.Documents.FirstOrDefaultAsync(
+            document => document.Id == documentId && document.KnowledgeSystemId == ks.Id, ct).ConfigureAwait(false);
+        if (doc is null)
+        {
+            await transaction.RollbackAsync(ct).ConfigureAwait(false);
+            return false;
+        }
 
         var filename = doc.OriginalFilename;
         var docId = doc.Id;
@@ -612,7 +683,7 @@ public sealed class DocumentService
             .ToListAsync(ct).ConfigureAwait(false);
         fileShas.Add(oldSha);
 
-        await using var transaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        await using var blobLocks = await DocumentBlobReferenceLock.AcquireAsync(_db, fileShas, ct).ConfigureAwait(false);
         await _db.DocumentFileVersionSnapshots
             .Where(link => _db.DocumentFileVersions.Where(version => version.DocumentId == docId)
                 .Select(version => version.Id).Contains(link.DocumentFileVersionId))
@@ -672,26 +743,9 @@ public sealed class DocumentService
             BuildDocumentDetail(documentId, oldSha), ct).ConfigureAwait(false);
         await transaction.CommitAsync(ct).ConfigureAwait(false);
 
-        foreach (var sha in fileShas.Distinct())
+        foreach (var sha in fileShas.Distinct(StringComparer.Ordinal))
         {
-            var referenced = await _db.Documents.AsNoTracking()
-                .AnyAsync(other => other.Sha256 == sha, ct).ConfigureAwait(false)
-                || await _db.DocumentFileVersions.AsNoTracking()
-                    .AnyAsync(version => version.Sha256 == sha, ct).ConfigureAwait(false);
-            if (referenced) continue;
-            try
-            {
-                await _blobs.RemoveAsync(sha, ct).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                // Best-effort: blob already gone (concurrent delete) is
-                // not a failure — log and continue. A genuine I/O error
-                // also shouldn't block the audit log.
-                _logger?.LogWarning(ex,
-                    "Failed to remove orphaned blob {Sha} after deleting document {DocId}",
-                    sha, documentId);
-            }
+            await RemoveBlobIfUnreferencedAsync(sha, ct, documentId).ConfigureAwait(false);
         }
 
         return true;
@@ -747,6 +801,38 @@ public sealed class DocumentService
             throw new GraphWriteConflictException(
                 "An extraction is in progress; try again after it finishes.",
                 jobId);
+        }
+    }
+
+    private static bool IsUniqueViolation(DbUpdateException exception)
+        => exception.InnerException is PostgresException { SqlState: PostgresErrorCodes.UniqueViolation };
+
+    private void DetachPendingChanges()
+    {
+        foreach (var entry in _db.ChangeTracker.Entries().ToList())
+        {
+            if (entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
+                entry.State = EntityState.Detached;
+        }
+    }
+
+    private async Task RemoveBlobIfUnreferencedAsync(
+        string sha256, CancellationToken ct, Guid? documentId = null)
+    {
+        var referenced = await _db.Documents.AsNoTracking()
+            .AnyAsync(document => document.Sha256 == sha256, ct).ConfigureAwait(false)
+            || await _db.DocumentFileVersions.AsNoTracking()
+                .AnyAsync(version => version.Sha256 == sha256, ct).ConfigureAwait(false);
+        if (referenced) return;
+
+        try
+        {
+            await _blobs.RemoveAsync(sha256, ct).ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            _logger?.LogWarning(exception,
+                "Failed to remove orphaned blob {Sha} after document operation {DocId}", sha256, documentId);
         }
     }
 

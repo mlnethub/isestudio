@@ -14,6 +14,7 @@ using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.Llm;
 using ISEStudio.Parsing;
 using ISEStudio.Storage;
+using ISEStudio.Sources;
 using ISEStudio.Tests.Documents;
 using ISEStudio.Tests.Extraction;
 using ISEStudio.Tests.Persistence;
@@ -40,8 +41,9 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
     private readonly string _rdfRoot;
     private readonly string _exportRoot;
     private readonly IPasswordService? _passwordOverride;
+    private readonly string? _sourceEncryptionKey;
 
-    public AuthTestWebApplicationFactory() : this(passwordOverride: null)
+    public AuthTestWebApplicationFactory() : this(passwordOverride: null, sourceEncryptionKey: null)
     {
     }
 
@@ -52,6 +54,11 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
     /// take the same time).
     /// </summary>
     public AuthTestWebApplicationFactory(IPasswordService? passwordOverride)
+        : this(passwordOverride, sourceEncryptionKey: null)
+    {
+    }
+
+    public AuthTestWebApplicationFactory(IPasswordService? passwordOverride, string? sourceEncryptionKey)
     {
         var testId = Guid.NewGuid().ToString("N");
         var rawPath = Path.Combine(
@@ -77,6 +84,7 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             Path.GetTempPath(),
             $"isestudio-exports-{testId}");
         _passwordOverride = passwordOverride;
+        _sourceEncryptionKey = sourceEncryptionKey;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -109,6 +117,19 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
 
         builder.ConfigureServices(services =>
         {
+            var sourceSecretConfiguration = new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    [SourceSecretProtector.ConfigurationKey] = _sourceEncryptionKey ?? string.Empty,
+                })
+                .Build();
+            services.RemoveAll<SourceSecretProtector>();
+            services.RemoveAll<ISourceSecretProtector>();
+            services.AddSingleton<SourceSecretProtector>(
+                new SourceSecretProtector(sourceSecretConfiguration));
+            services.AddSingleton<ISourceSecretProtector>(provider =>
+                provider.GetRequiredService<SourceSecretProtector>());
+
             if (_passwordOverride is not null)
             {
                 // Replace the production IPasswordService registration with

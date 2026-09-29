@@ -277,6 +277,8 @@ public sealed class SourceEntityConfiguration : IEntityTypeConfiguration<SourceE
         builder.Property(x => x.IngestTokenCiphertext).HasColumnName("ingest_token_ciphertext");
         builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_source_knowledge_system_id");
+        builder.HasIndex(x => new { x.KnowledgeSystemId, x.Name }).IsUnique()
+            .HasDatabaseName("ux_source_knowledge_system_name");
         builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId)
             .OnDelete(DeleteBehavior.Restrict);
     }

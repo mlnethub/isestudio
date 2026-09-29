@@ -30,6 +30,7 @@ using ISEStudio.Ontology;
 using ISEStudio.Exports;
 using ISEStudio.Parsing;
 using ISEStudio.Prompts;
+using ISEStudio.Sources;
 using ISEStudio.Sparql;
 using ISEStudio.Providers;
 using ISEStudio.Serialization;
@@ -432,6 +433,7 @@ builder.Services.AddSparqlServices();
 // shares the request DbContext and depends on KnowledgeSystemAccessService
 // (singleton, registered above) for the Viewer / Editor / Owner gates.
 builder.Services.AddKnowledgeServices();
+builder.Services.AddSourceServices();
 // Documents slice — upload / parse / chunks / move / contribution / delete
 // with cross-KS blob ref-count. Scoped DocumentService depends on the
 // scoped DbContext; the underlying IBlobStore, IDocumentParser, and
@@ -748,6 +750,7 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
 // the host so any service that captures SkosVocab.IseStudio (e.g.
 // ShaclValidator, SkosManager) at construction time sees the configured
 // value rather than the default.
+SourceSecretProtector.ValidateConfiguration(builder.Configuration);
 SkosVocab.Configure(builder.Configuration["ISEStudio:VocabNamespace"]
     ?? new ISEStudioOptions().VocabNamespace);
 
