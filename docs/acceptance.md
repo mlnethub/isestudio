@@ -44,15 +44,16 @@ Container image execution still requires a running Docker engine on the verifica
 
 ## Ingestion Source UI Acceptance
 
-The Source UI browser contracts were run against a per-run SQLite database in the `Testing` environment. The API created its test schema with `EnsureCreated`; a random admin password and source-encryption key were process-only values and were not recorded. Playwright served the SPA from Vite on `127.0.0.1:5173` and sent API traffic through Vite to the isolated .NET API on `localhost:18080`. The temporary database, process variables, API process, and failed-run trace artifacts were removed after verification.
+The Source UI browser contracts were run against a per-run SQLite database in the `Testing` environment. The API created its test schema with `EnsureCreated`; a random admin password and source-encryption key were process-only values and were not recorded. Playwright served the SPA from Vite and sent API traffic through Vite to a dedicated isolated .NET API port. The temporary database, process variables, API process, and failed-run trace artifacts were removed after verification; the Compose services and their data volumes were not used.
 
 | Check | Result |
 | --- | --- |
-| `pnpm test:e2e:dotnet --grep "ingestion sources"` | Passed, 2/2 in the earlier isolated browser run: default folder Source status and virtual Folder view; `azure_blob` is absent from the create menu and rejected by the API (400); create a second folder Source, select it for upload, verify the API-returned `folder` and `source_id`, then move the document and verify its `source_id` is unchanged. The latest token-control assertion was compile/list checked only, not browser-executed. |
+| `pnpm test:e2e:dotnet --grep "ingestion sources"` | Passed, 2/2 in the latest isolated browser run: default folder Source has `supports_push_token=false` and no sync/token controls; virtual Folder view remains available; `azure_blob` is absent from the create menu and rejected by the API (400); a second folder Source can be selected for upload, and moving the document preserves its `source_id`. |
 | `pnpm test` | Passed, 16 tests across 3 files. |
 | `pnpm build` | Passed. Vite reports a large-chunk warning (>500 kB); production chunk splitting was not part of this acceptance. |
 | `pnpm lint` | Passed with existing Fast Refresh warnings. |
 | Source API/security unit-test filter (`SourceApiTests`, `SourceSecretProtectorTests`, `SourceNetworkPolicyTests`, `SourceAdapterTests`, `SourcePushTests`, `DocumentApiTests`) | Passed, 58/58. |
+| Focused Source token API contract after capability DTO change | Passed: Editor-only access, sealed persistence, no-store reveal/rotate, normal-projection exclusion, and `supports_push_token` list/detail metadata. |
 | Source/schema/sync integration-test filter (`KnowledgeSourceSchemaTests`, document version/blob tests, `SourceSyncTests`, `SourceSyncWorkerTests`, `SourceConnectorTests`) | Passed, 47/47; Testcontainers started PostgreSQL successfully. |
 | `dotnet build src/ISEStudio.sln --no-restore` | Passed. |
 
