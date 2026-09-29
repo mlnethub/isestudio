@@ -67,7 +67,7 @@ public sealed class SourceService
         if (source is null) return SourceMutationResult<SourceDetailOut>.Failure(404, "Source not found");
         var summary = await ProjectAsync(source, ct).ConfigureAwait(false);
         return SourceMutationResult<SourceDetailOut>.Success(new SourceDetailOut(
-            summary.Id, summary.Kind, summary.Name, summary.Icon, summary.SyncIntervalMinutes,
+            summary.Id, summary.Kind, summary.SupportsPushToken, summary.Name, summary.Icon, summary.SyncIntervalMinutes,
             summary.SyncCron, summary.LastSyncedAt, summary.LastSyncStatus, summary.LastSyncError,
             summary.LastSyncAdded, summary.CreatedAt, summary.DocumentCount, summary.MissingDocumentCount,
             ProjectConfig(source)));
@@ -646,7 +646,7 @@ public sealed class SourceService
         }
 
         return new SourceOut(
-            source.Id, source.Kind, source.Name, source.Icon, source.SyncIntervalMinutes, source.SyncCron,
+            source.Id, source.Kind, SupportsPushToken(source.Kind), source.Name, source.Icon, source.SyncIntervalMinutes, source.SyncCron,
             source.LastSyncedAt, source.LastSyncStatus, source.LastSyncError, source.LastSyncAdded,
             source.CreatedAt, documentCount, missingDocumentCount);
     }

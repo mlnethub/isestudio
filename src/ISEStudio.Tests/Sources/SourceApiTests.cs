@@ -552,12 +552,20 @@ public sealed class SourceApiTests
 
         var list = await editor.GetAsync($"/api/knowledge/{knowledgeSystemId}/ingestion-sources");
         var listJson = (await list.Content.ReadFromJsonAsync<JsonElement>()).GetRawText();
+        using var listDocument = JsonDocument.Parse(listJson);
+        var listedPushSource = listDocument.RootElement.EnumerateArray()
+            .Single(item => item.GetProperty("id").GetGuid() == source.Id);
+        Assert.True(listedPushSource.GetProperty("supports_push_token").GetBoolean());
+        var listedFolderSource = listDocument.RootElement.EnumerateArray()
+            .Single(item => item.GetProperty("kind").GetString() == "folder");
+        Assert.False(listedFolderSource.GetProperty("supports_push_token").GetBoolean());
         Assert.DoesNotContain("ingest_token", listJson, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("IngestTokenCiphertext", listJson, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(rotatedToken!, listJson, StringComparison.Ordinal);
 
         var detail = await editor.GetAsync($"/api/knowledge/{knowledgeSystemId}/ingestion-sources/{source.Id}");
         var detailJson = (await detail.Content.ReadFromJsonAsync<JsonElement>()).GetRawText();
+        Assert.True(JsonDocument.Parse(detailJson).RootElement.GetProperty("supports_push_token").GetBoolean());
         Assert.DoesNotContain("ingest_token", detailJson, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(rotatedToken!, detailJson, StringComparison.Ordinal);
 

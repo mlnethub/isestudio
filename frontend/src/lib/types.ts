@@ -97,6 +97,7 @@ export type IngestionSourceJobStatus = Exclude<IngestionSourceSyncStatus, "never
 export interface IngestionSource {
   id: string
   kind: string
+  supports_push_token: boolean
   name: string
   icon: string | null
   sync_interval_minutes: number | null
@@ -149,6 +150,10 @@ export interface IngestionSourceJob {
 export interface IngestionSourceSyncAccepted {
   job_id: string
   status: IngestionSourceJobStatus
+}
+
+export interface IngestionSourceToken {
+  token: string
 }
 
 export interface DocumentListResponse {

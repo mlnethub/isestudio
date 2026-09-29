@@ -47,6 +47,7 @@ test.describe("dotnet / ingestion sources", () => {
     expect(response.ok()).toBeTruthy()
     const sources = await response.json() as {
       kind: string
+      supports_push_token: boolean
       name: string
       last_synced_at: string | null
       last_sync_status: string
@@ -56,9 +57,11 @@ test.describe("dotnet / ingestion sources", () => {
     expect(folderSource).toBeTruthy()
     expect(folderSource?.last_synced_at).toBeNull()
     expect(folderSource?.last_sync_status).toBe("never")
+    expect(folderSource?.supports_push_token).toBe(false)
     expect(folderSource?.created_at).toBeTruthy()
     await expect(page.getByText(/never synced|尚未同步/i).first()).toBeVisible()
     await expect(page.getByRole("button", { name: /sync now|立即同步/i })).toHaveCount(0)
+    await expect(page.getByRole("button", { name: /manage push token|管理推送令牌/i })).toHaveCount(0)
 
     await page.getByRole("tab", { name: /documents|文档/i }).click()
     await expect(page.getByText(/root|根目录/i)).toBeVisible()

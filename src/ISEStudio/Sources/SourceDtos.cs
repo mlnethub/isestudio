@@ -13,6 +13,7 @@ public sealed record SourceUpsertRequest(
 public sealed record SourceOut(
     Guid Id,
     string Kind,
+    bool SupportsPushToken,
     string Name,
     string? Icon,
     int? SyncIntervalMinutes,
@@ -28,6 +29,7 @@ public sealed record SourceOut(
 public sealed record SourceDetailOut(
     Guid Id,
     string Kind,
+    bool SupportsPushToken,
     string Name,
     string? Icon,
     int? SyncIntervalMinutes,

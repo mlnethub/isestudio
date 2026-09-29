@@ -41,6 +41,7 @@ import type {
   IngestionSourceKind,
   IngestionSourceRun,
   IngestionSourceSyncAccepted,
+  IngestionSourceToken,
   KnowledgePrompt,
   KnowledgePromptList,
   KnowledgeSystem,
@@ -506,6 +507,14 @@ export const api = {
   getIngestionSourceJob: (ksId: string, sourceId: string, jobId: string) =>
     request<IngestionSourceJob>(
       `/api/knowledge/${ksId}/ingestion-sources/${sourceId}/jobs/${jobId}`,
+    ),
+  revealIngestionSourceToken: (ksId: string, sourceId: string) =>
+    request<IngestionSourceToken>(
+      `/api/knowledge/${ksId}/ingestion-sources/${sourceId}/token/reveal`, { method: "POST" },
+    ),
+  rotateIngestionSourceToken: (ksId: string, sourceId: string) =>
+    request<IngestionSourceToken>(
+      `/api/knowledge/${ksId}/ingestion-sources/${sourceId}/token/rotate`, { method: "POST" },
     ),
 
   // Change history / audit log

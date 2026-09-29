@@ -1,4 +1,4 @@
-import { Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react"
+import { Copy, KeyRound, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react"
 import { useEffect, useRef, useState, type FormEvent } from "react"
 import { toast } from "sonner"
 
@@ -90,7 +90,12 @@ export default function IngestionSourcesPanel({
   const [saving, setSaving] = useState(false)
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [syncingId, setSyncingId] = useState<string | null>(null)
+  const [tokenSource, setTokenSource] = useState<IngestionSource | null>(null)
+  const [tokenValue, setTokenValue] = useState("")
+  const [tokenBusy, setTokenBusy] = useState(false)
+  const [tokenError, setTokenError] = useState("")
   const syncAbortRef = useRef<AbortController | null>(null)
+  const tokenRequestRef = useRef(0)
 
   useEffect(() => {
     if (syncAbortRef.current) {
@@ -98,8 +103,14 @@ export default function IngestionSourcesPanel({
       syncAbortRef.current = null
       setSyncingId(null)
     }
+    tokenRequestRef.current += 1
+    setTokenSource(null)
+    setTokenValue("")
+    setTokenBusy(false)
+    setTokenError("")
     return () => {
       syncAbortRef.current?.abort()
+      tokenRequestRef.current += 1
     }
   }, [ksId])
 
@@ -202,6 +213,55 @@ export default function IngestionSourcesPanel({
     }
   }
 
+  const closeTokenDialog = () => {
+    if (tokenBusy) return
+    tokenRequestRef.current += 1
+    setTokenSource(null)
+    setTokenValue("")
+    setTokenError("")
+  }
+
+  const openTokenDialog = (source: IngestionSource) => {
+    tokenRequestRef.current += 1
+    setTokenSource(source)
+    setTokenValue("")
+    setTokenError("")
+  }
+
+  const requestToken = async (operation: "reveal" | "rotate") => {
+    if (!tokenSource || tokenBusy) return
+    const dialogGeneration = tokenRequestRef.current
+    if (operation === "rotate" && !await confirmAction(t("ingestionSources.token.rotateConfirm"), {
+      destructive: true,
+    })) return
+    if (tokenRequestRef.current !== dialogGeneration) return
+
+    const requestId = ++tokenRequestRef.current
+    setTokenBusy(true)
+    setTokenError("")
+    setTokenValue("")
+    try {
+      const result = operation === "reveal"
+        ? await api.revealIngestionSourceToken(ksId, tokenSource.id)
+        : await api.rotateIngestionSourceToken(ksId, tokenSource.id)
+      if (tokenRequestRef.current === requestId) setTokenValue(result.token)
+    } catch {
+      if (tokenRequestRef.current === requestId) setTokenError(t("ingestionSources.token.operationFailed"))
+    } finally {
+      if (tokenRequestRef.current === requestId) setTokenBusy(false)
+    }
+  }
+
+  const copyToken = async () => {
+    if (!tokenValue) return
+    try {
+      await navigator.clipboard.writeText(tokenValue)
+      toast.success(t("ingestionSources.token.copied"))
+    } catch {
+      toast.error(t("ingestionSources.token.copyFailed"))
+    }
+  }
+
   return (
     <section className="min-w-0 space-y-3" aria-labelledby="ingestion-sources-title">
       <div className="flex items-center justify-between gap-3">
@@ -263,6 +323,8 @@ export default function IngestionSourcesPanel({
                 syncing={syncingId === source.id}
                 syncDisabled={syncingId !== null}
                 onSync={() => { void syncSource(source) }}
+                tokenSupported={source.supports_push_token}
+                onManageToken={() => openTokenDialog(source)}
                 runsRevision={reload}
                 deleting={deletingId === source.id}
                 onEdit={() => { void openEdit(source) }}
@@ -337,6 +399,38 @@ export default function IngestionSourcesPanel({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={tokenSource !== null} onOpenChange={(open) => { if (!open) closeTokenDialog() }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("ingestionSources.token.title", { name: tokenSource?.name ?? "" })}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">{t("ingestionSources.token.help")}</p>
+            {tokenValue && (
+              <div className="flex gap-2">
+                <Input aria-label={t("ingestionSources.token.value")} readOnly value={tokenValue} />
+                <Button type="button" variant="outline" onClick={() => { void copyToken() }}>
+                  <Copy className="h-4 w-4" />{t("ingestionSources.token.copy")}
+                </Button>
+              </div>
+            )}
+            {tokenError && <p role="alert" className="text-sm text-destructive">{tokenError}</p>}
+          </div>
+          <DialogFooter className="flex-col-reverse gap-2 sm:flex-row">
+            <Button type="button" variant="outline" onClick={closeTokenDialog} disabled={tokenBusy}>
+              {t("common.close")}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => { void requestToken("reveal") }} disabled={tokenBusy}>
+              {tokenBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              {t("ingestionSources.token.reveal")}
+            </Button>
+            <Button type="button" variant="destructive" onClick={() => { void requestToken("rotate") }} disabled={tokenBusy}>
+              {t("ingestionSources.token.rotate")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </section>
   )
 }
@@ -351,6 +445,8 @@ function SourceRows({
   syncing,
   syncDisabled,
   onSync,
+  tokenSupported,
+  onManageToken,
   runsRevision,
   deleting,
   onEdit,
@@ -365,6 +461,8 @@ function SourceRows({
   syncing: boolean
   syncDisabled: boolean
   onSync: () => void
+  tokenSupported: boolean
+  onManageToken: () => void
   runsRevision: number
   deleting: boolean
   onEdit: () => void
@@ -405,6 +503,17 @@ function SourceRows({
                   onClick={onSync}
                 >
                   {syncing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                </Button>
+              )}
+              {canWrite && tokenSupported && (
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  title={t("ingestionSources.token.manage")}
+                  aria-label={t("ingestionSources.token.manage")}
+                  onClick={onManageToken}
+                >
+                  <KeyRound className="h-4 w-4" />
                 </Button>
               )}
               <Button size="icon-sm" variant="ghost" title={t("common.edit")} aria-label={t("common.edit")} onClick={onEdit}>
