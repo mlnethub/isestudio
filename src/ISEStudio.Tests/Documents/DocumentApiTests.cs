@@ -1,6 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using ISEStudio.Documents;
+using ISEStudio.Infrastructure.Persistence;
+using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Storage;
 using ISEStudio.Tests.Authentication;
 using ISEStudio.Tests.Persistence;
 
@@ -24,6 +30,180 @@ namespace ISEStudio.Tests.Documents;
 public sealed class DocumentApiTests
 {
     private const string CookieHeader = "isestudio_session";
+
+    [Fact]
+    public async Task New_knowledge_system_gets_one_folder_source_and_upload_uses_it()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "default-source");
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var source = await db.Sources.SingleAsync(s => s.KnowledgeSystemId == ksId);
+        Assert.Equal("folder", source.Kind);
+
+        var result = await UploadBytesAsync(client, ksId, "note.txt", "hello"u8.ToArray(), folder: "/manual");
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+        var document = await db.Documents.AsNoTracking().SingleAsync(d => d.KnowledgeSystemId == ksId);
+        Assert.Equal(source.Id, document.SourceId);
+        Assert.Null(document.ExternalKey);
+        Assert.True(document.IsManualUpload);
+        Assert.Equal("/manual", document.Folder);
+    }
+
+    [Fact]
+    public async Task Explicit_source_is_returned_on_upload_list_detail_move_and_dedup()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "source-projection");
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var first = await db.Sources.SingleAsync(s => s.KnowledgeSystemId == ksId);
+        var second = new SourceEntity
+        {
+            KnowledgeSystemId = ksId, Kind = "folder", Name = "Another", CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Sources.Add(second);
+        await db.SaveChangesAsync();
+
+        using var upload = new MultipartFormDataContent
+        {
+            { new ByteArrayContent("same"u8.ToArray()), "file", "same.txt" },
+            { new StringContent(second.Id.ToString()), "source_id" },
+            { new StringContent("/manual"), "folder" },
+        };
+        var response = await client.PostAsync($"/api/knowledge/{ksId}/documents/upload", upload);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        var documentId = created.GetProperty("id").GetGuid();
+        Assert.Equal(second.Id, created.GetProperty("source_id").GetGuid());
+
+        var moved = await client.PatchAsJsonAsync($"/api/knowledge/{ksId}/documents/{documentId}",
+            new { folder = "/archive" });
+        Assert.Equal(HttpStatusCode.OK, moved.StatusCode);
+        var moveBody = await moved.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        Assert.Equal(second.Id, moveBody.GetProperty("source_id").GetGuid());
+        Assert.Equal("/archive", moveBody.GetProperty("folder").GetString());
+
+        var duplicate = await UploadBytesAsync(client, ksId, "copy.txt", "same"u8.ToArray(), "/dedup");
+        Assert.Equal(HttpStatusCode.OK, duplicate.StatusCode);
+        var duplicateBody = await duplicate.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        Assert.Equal(documentId, duplicateBody.GetProperty("id").GetGuid());
+        Assert.Equal(second.Id, duplicateBody.GetProperty("source_id").GetGuid());
+        Assert.NotEqual(first.Id, duplicateBody.GetProperty("source_id").GetGuid());
+
+        var list = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+            $"/api/knowledge/{ksId}/documents");
+        Assert.Equal(second.Id, list[0].GetProperty("source_id").GetGuid());
+        var detail = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+            $"/api/knowledge/{ksId}/documents/{documentId}");
+        Assert.Equal(second.Id, detail.GetProperty("source_id").GetGuid());
+        var persisted = await db.Documents.AsNoTracking().SingleAsync(d => d.Id == documentId);
+        Assert.Equal("/dedup", persisted.Folder);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("foreign")]
+    [InlineData("url")]
+    public async Task Upload_rejects_source_outside_current_folder_scope(string kind)
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "invalid-source");
+        var otherKs = await CreateKsAsync(client, "other-source");
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var sourceId = Guid.NewGuid();
+        if (kind != "missing")
+        {
+            db.Sources.Add(new SourceEntity
+            {
+                Id = sourceId, KnowledgeSystemId = kind == "foreign" ? otherKs : ksId,
+                Kind = kind == "url" ? "url" : "folder", Name = "Other",
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using var upload = new MultipartFormDataContent
+        {
+            { new ByteArrayContent("reject"u8.ToArray()), "file", "reject.txt" },
+            { new StringContent(sourceId.ToString()), "source_id" },
+        };
+        var response = await client.PostAsync($"/api/knowledge/{ksId}/documents/upload", upload);
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.False(await db.Documents.AnyAsync(d => d.KnowledgeSystemId == ksId));
+        var sha = Convert.ToHexStringLower(SHA256.HashData("reject"u8));
+        Assert.False(await app.Services.GetRequiredService<IBlobStore>().ExistsAsync(sha, default));
+    }
+
+    [Fact]
+    public async Task Viewer_cannot_upload_with_or_without_source_id()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (admin, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(admin, "viewer-source");
+        var (viewer, viewerId) = await LoginAliceAsync(app);
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var source = await db.Sources.SingleAsync(s => s.KnowledgeSystemId == ksId);
+        db.KSGrants.Add(new KSGrantEntity
+        {
+            KnowledgeSystemId = ksId, UserId = viewerId, Role = "viewer", CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        foreach (var requestedSource in new Guid?[] { null, source.Id })
+        {
+            using var upload = new MultipartFormDataContent
+            {
+                { new ByteArrayContent("viewer-data"u8.ToArray()), "file", "viewer.txt" },
+            };
+            if (requestedSource.HasValue)
+                upload.Add(new StringContent(requestedSource.Value.ToString()), "source_id");
+            var response = await viewer.PostAsync($"/api/knowledge/{ksId}/documents/upload", upload);
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        }
+        Assert.False(await db.Documents.AnyAsync(d => d.KnowledgeSystemId == ksId));
+        Assert.False(await db.DocumentVersions.AnyAsync());
+        var sha = Convert.ToHexStringLower(SHA256.HashData("viewer-data"u8));
+        Assert.False(await app.Services.GetRequiredService<IBlobStore>().ExistsAsync(sha, default));
+
+        using var editorUpload = new MultipartFormDataContent
+        {
+            { new ByteArrayContent("editor-data"u8.ToArray()), "file", "editor.txt" },
+            { new StringContent(source.Id.ToString()), "source_id" },
+        };
+        var editorResponse = await admin.PostAsync($"/api/knowledge/{ksId}/documents/upload", editorUpload);
+        Assert.Equal(HttpStatusCode.OK, editorResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Legacy_document_without_source_returns_null_source_id()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "legacy-source");
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var legacy = new DocumentEntity
+        {
+            KnowledgeSystemId = ksId, SourceId = null, Sha256 = new string('a', 64),
+            OriginalFilename = "legacy.txt", Ext = "txt", SizeBytes = 1,
+            StoragePath = "legacy", UploadedAt = DateTimeOffset.UtcNow,
+        };
+        db.Documents.Add(legacy);
+        await db.SaveChangesAsync();
+
+        var list = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+            $"/api/knowledge/{ksId}/documents");
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, list[0].GetProperty("source_id").ValueKind);
+        var detail = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+            $"/api/knowledge/{ksId}/documents/{legacy.Id}");
+        Assert.Equal(System.Text.Json.JsonValueKind.Null, detail.GetProperty("source_id").ValueKind);
+    }
 
     // -----------------------------------------------------------------
     // List / get
@@ -61,6 +241,182 @@ public sealed class DocumentApiTests
         var list = await client.GetAsync($"/api/knowledge/{ksId}/documents");
         var body = await list.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
         Assert.Equal(1, body.GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Upload_writes_one_raw_version_without_creating_parsed_snapshot()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "file-version");
+        Assert.Equal(HttpStatusCode.OK,
+            (await UploadBytesAsync(client, ksId, "a.txt", "abc"u8.ToArray(), folder: "/")).StatusCode);
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var doc = await db.Documents.SingleAsync(d => d.KnowledgeSystemId == ksId);
+        var version = await db.DocumentFileVersions.SingleAsync(v => v.DocumentId == doc.Id);
+        Assert.Equal(1, version.Version);
+        Assert.Equal(doc.Sha256, version.Sha256);
+        Assert.Equal(3, version.SizeBytes);
+        Assert.Null(version.DocTime);
+        Assert.Empty(await db.DocumentVersions.Where(v => v.DocumentId == doc.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Manual_parse_links_current_raw_version_to_one_parsed_snapshot()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "manual-version");
+        var upload = await UploadBytesAsync(client, ksId, "note.txt", "some text to parse"u8.ToArray(), "/");
+        var created = await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        var documentId = created.GetProperty("id").GetGuid();
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var parse = await client.PostAsync($"/api/knowledge/{ksId}/documents/{documentId}/parse", null);
+            Assert.Equal(HttpStatusCode.OK, parse.StatusCode);
+            var body = await parse.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+            Assert.Equal("parsed", body.GetProperty("parse_status").GetString());
+        }
+
+        var fileVersion = await db.DocumentFileVersions.SingleAsync(v => v.DocumentId == documentId);
+        var snapshot = await db.DocumentVersions.SingleAsync(v => v.DocumentId == documentId);
+        var link = await db.DocumentFileVersionSnapshots.SingleAsync(v => v.DocumentFileVersionId == fileVersion.Id);
+        Assert.Equal(snapshot.Id, link.DocumentVersionId);
+        Assert.NotEmpty(await db.DocumentVersionChunks.Where(c => c.DocumentVersionId == snapshot.Id).ToListAsync());
+    }
+
+    [Fact]
+    public async Task Queue_parse_persists_the_current_raw_file_version_and_sha()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "queued-parse");
+        var upload = await UploadBytesAsync(client, ksId, "queued.txt", "pinned bytes"u8.ToArray(), "/");
+        Assert.Equal(HttpStatusCode.OK, upload.StatusCode);
+        var documentId = (await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>())
+            .GetProperty("id").GetGuid();
+
+        var response = await client.PostAsync(
+            $"/api/knowledge/{ksId}/documents/{documentId}/parse/queue", null);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>();
+        var jobId = body.GetProperty("job_id").GetGuid();
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var document = await db.Documents.SingleAsync(d => d.Id == documentId);
+        var fileVersion = await db.DocumentFileVersions.SingleAsync(v => v.DocumentId == documentId);
+        var job = await db.DocumentParseJobs.SingleAsync(j => j.Id == jobId);
+        Assert.Equal("pending", job.Status);
+        Assert.Equal(ksId, job.KnowledgeSystemId);
+        Assert.Equal(documentId, job.DocumentId);
+        Assert.Equal(fileVersion.Id, job.DocumentFileVersionId);
+        Assert.Equal(document.Sha256, job.Sha256);
+        Assert.Equal(document.SourceId, job.SourceId);
+        Assert.False(await db.ExtractionJobs.AnyAsync(j => j.Id == jobId));
+
+        var sourceId = job.SourceId;
+        var source = await db.Sources.SingleAsync(item => item.Id == sourceId);
+        db.Sources.Remove(source);
+        await db.SaveChangesAsync();
+        db.ChangeTracker.Clear();
+        Assert.Null((await db.Documents.SingleAsync(item => item.Id == documentId)).SourceId);
+        Assert.Equal(sourceId, (await db.DocumentParseJobs.SingleAsync(item => item.Id == jobId)).SourceId);
+
+        await scope.ServiceProvider.GetRequiredService<DocumentParseJobProcessor>()
+            .ProcessAsync(jobId, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        var completed = await db.DocumentParseJobs.AsNoTracking().SingleAsync(j => j.Id == jobId);
+        Assert.Equal("completed", completed.Status);
+        var snapshot = await db.DocumentVersions.AsNoTracking()
+            .SingleAsync(version => version.DocumentId == documentId);
+        var link = await db.DocumentFileVersionSnapshots.AsNoTracking()
+            .SingleAsync(item => item.DocumentVersionId == snapshot.Id);
+        Assert.Equal(fileVersion.Id, link.DocumentFileVersionId);
+    }
+
+    [Fact]
+    public async Task Queued_parse_of_old_file_version_does_not_overwrite_current_document_after_a_b_a()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "old-queued-parse");
+        var upload = await UploadBytesAsync(client, ksId, "old.txt", "old content"u8.ToArray(), "/");
+        var documentId = (await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>())
+            .GetProperty("id").GetGuid();
+        var queued = await client.PostAsync($"/api/knowledge/{ksId}/documents/{documentId}/parse/queue", null);
+        Assert.Equal(HttpStatusCode.Accepted, queued.StatusCode);
+        var jobId = (await queued.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>())
+            .GetProperty("job_id").GetGuid();
+
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var document = await db.Documents.SingleAsync(item => item.Id == documentId);
+        var first = await db.DocumentFileVersions.SingleAsync(item => item.DocumentId == documentId);
+        var second = new DocumentFileVersionEntity
+        {
+            DocumentId = documentId, Version = 2, Sha256 = new string('b', 64),
+            SizeBytes = 1, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        var third = new DocumentFileVersionEntity
+        {
+            DocumentId = documentId, Version = 3, Sha256 = first.Sha256,
+            SizeBytes = first.SizeBytes, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.AddRange(second, third);
+        document.ParseStatus = "pending";
+        document.ChunkCount = 0;
+        await db.SaveChangesAsync();
+
+        await scope.ServiceProvider.GetRequiredService<DocumentParseJobProcessor>()
+            .ProcessAsync(jobId, CancellationToken.None);
+        db.ChangeTracker.Clear();
+        var current = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == documentId);
+        Assert.Equal("pending", current.ParseStatus);
+        Assert.Equal(0, current.ChunkCount);
+        Assert.Equal("completed", (await db.DocumentParseJobs.SingleAsync(item => item.Id == jobId)).Status);
+        Assert.Equal(first.Id, (await db.DocumentFileVersionSnapshots.SingleAsync()).DocumentFileVersionId);
+        Assert.False(await db.ExtractionJobs.AnyAsync(item => item.Id == jobId));
+    }
+
+    [Fact]
+    public async Task Failed_queued_parse_of_old_file_version_does_not_fail_current_document()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "failed-old-parse");
+        var upload = await UploadBytesAsync(client, ksId, "failed.txt", "old content"u8.ToArray(), "/");
+        var documentId = (await upload.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>())
+            .GetProperty("id").GetGuid();
+        var queued = await client.PostAsync($"/api/knowledge/{ksId}/documents/{documentId}/parse/queue", null);
+        Assert.Equal(HttpStatusCode.Accepted, queued.StatusCode);
+        var jobId = (await queued.Content.ReadFromJsonAsync<System.Text.Json.JsonElement>())
+            .GetProperty("job_id").GetGuid();
+
+        using var scope = app.Services.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var document = await db.Documents.SingleAsync(item => item.Id == documentId);
+        db.DocumentFileVersions.Add(new DocumentFileVersionEntity
+        {
+            DocumentId = documentId, Version = 2, Sha256 = new string('b', 64),
+            SizeBytes = 1, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        document.Sha256 = new string('b', 64);
+        document.ParseStatus = "pending";
+        await db.SaveChangesAsync();
+        var blobs = (LocalCasBlobStore)scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        File.Delete(Path.Combine(blobs.Root, document.StoragePath));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            scope.ServiceProvider.GetRequiredService<DocumentParseJobProcessor>()
+                .ProcessAsync(jobId, CancellationToken.None));
+        db.ChangeTracker.Clear();
+        Assert.Equal("pending", (await db.Documents.SingleAsync(item => item.Id == documentId)).ParseStatus);
+        Assert.Equal("failed", (await db.DocumentParseJobs.SingleAsync(item => item.Id == jobId)).Status);
+        Assert.False(await db.ExtractionJobs.AnyAsync(item => item.Id == jobId));
     }
 
     [Fact]

@@ -24,7 +24,8 @@ public class PlainTextIngestionService
         Guid knowledgeSystemId,
         Guid documentId,
         string content,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid? fileVersionId = null)
     {
         ArgumentNullException.ThrowIfNull(content);
 
@@ -45,7 +46,8 @@ public class PlainTextIngestionService
                 knowledgeSystemId,
                 documentId,
                 contentSha256,
-                chunks),
+                chunks,
+                fileVersionId),
             cancellationToken).ConfigureAwait(false);
     }
 }

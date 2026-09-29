@@ -3,6 +3,7 @@ using System;
 using ISEStudio.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ISEStudio.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ISEStudioDbContext))]
-    partial class ISEStudioDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260929081237_AddDocumentParseJobs")]
+    partial class AddDocumentParseJobs
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -635,10 +638,6 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("sha256");
 
-                    b.Property<Guid?>("SourceId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("source_id");
-
                     b.Property<string>("Status")
                         .IsRequired()
                         .HasMaxLength(16)
@@ -653,9 +652,6 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                         .HasDatabaseName("ix_document_parse_job_document");
 
                     b.HasIndex("KnowledgeSystemId");
-
-                    b.HasIndex("SourceId")
-                        .HasDatabaseName("ix_document_parse_job_source");
 
                     b.HasIndex("Status", "CreatedAt")
                         .HasDatabaseName("ix_document_parse_job_pending");

@@ -30,6 +30,10 @@ public static class DocumentServiceCollectionExtensions
     public static IServiceCollection AddDocumentServices(this IServiceCollection services)
     {
         services.AddScoped<DocumentService>();
+        services.AddScoped<DocumentParseQueueService>();
+        services.AddScoped<DocumentParseJobProcessor>();
+        services.AddSingleton<DocumentParseJobStore>();
+        services.AddHostedService<DocumentParseWorker>();
         services.AddScoped<DocumentVersionStore>();
         services.AddScoped<PlainTextIngestionService>();
         services.AddScoped<PlainTextIngestionJobProcessor>();

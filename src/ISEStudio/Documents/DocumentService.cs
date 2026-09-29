@@ -59,6 +59,7 @@ public sealed class DocumentService
     private readonly Chunker _chunker;
     private readonly ExtractionJobStore _extractionJobs;
     private readonly ILogger<DocumentService>? _logger;
+    private readonly DocumentParseQueueService? _parseQueue;
 
     public DocumentService(
         ISEStudioDbContext db,
@@ -68,7 +69,8 @@ public sealed class DocumentService
         IDocumentParser parser,
         Chunker chunker,
         ExtractionJobStore extractionJobs,
-        ILogger<DocumentService>? logger = null)
+        ILogger<DocumentService>? logger = null,
+        DocumentParseQueueService? parseQueue = null)
     {
         _db = db;
         _clock = clock;
@@ -78,6 +80,7 @@ public sealed class DocumentService
         _chunker = chunker;
         _extractionJobs = extractionJobs;
         _logger = logger;
+        _parseQueue = parseQueue;
     }
 
     // ----------------------------------------------------------------------
@@ -173,7 +176,7 @@ public sealed class DocumentService
     /// </summary>
     public async Task<DocumentOut> UploadAsync(
         Guid ksId, Stream content, string fileName, string? mime,
-        long sizeBytes, string folder, Actor actor, CancellationToken ct)
+        long sizeBytes, string folder, Actor actor, CancellationToken ct, Guid? sourceId = null)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) throw new InvalidOperationException("Knowledge system not found.");
@@ -189,6 +192,38 @@ public sealed class DocumentService
             throw new InvalidOperationException(
                 $"Unsupported file type: .{ext}");
 
+        var sources = await _db.Sources
+            .Where(s => s.KnowledgeSystemId == ks.Id && s.Kind == "folder"
+                && (!sourceId.HasValue || s.Id == sourceId.Value))
+            .ToListAsync(ct).ConfigureAwait(false);
+        var chosenSource = sources.OrderBy(s => s.CreatedAt).ThenBy(s => s.Id).FirstOrDefault();
+        if (sourceId.HasValue && chosenSource is null)
+            throw new InvalidOperationException("source_id must be a folder source in this knowledge system.");
+        if (chosenSource is null)
+        {
+            await using var transaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+            if (_db.Database.IsNpgsql())
+                await _db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT id FROM knowledgesystem WHERE id = {ks.Id} FOR UPDATE", ct).ConfigureAwait(false);
+            var currentSources = await _db.Sources
+                .Where(s => s.KnowledgeSystemId == ks.Id && s.Kind == "folder")
+                .ToListAsync(ct).ConfigureAwait(false);
+            chosenSource = currentSources.OrderBy(s => s.CreatedAt).ThenBy(s => s.Id).FirstOrDefault();
+            if (chosenSource is null)
+            {
+                chosenSource = new SourceEntity
+                {
+                    KnowledgeSystemId = ks.Id,
+                    Kind = "folder",
+                    Name = "Default",
+                    CreatedAt = _clock.GetUtcNow(),
+                };
+                _db.Sources.Add(chosenSource);
+                await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+            }
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+        }
+
         var blob = await _blobs.PutAsync(content, ct).ConfigureAwait(false);
 
         // Per-KS content-addressed dedup: identical bytes already in
@@ -199,6 +234,8 @@ public sealed class DocumentService
         if (existing is not null)
         {
             existing.Folder = NormalizeFolder(folder);
+            existing.IsManualUpload = true;
+            existing.MissingSince = null;
             await _db.SaveChangesAsync(ct).ConfigureAwait(false);
             await WriteAuditAsync(ks.Id, user, "document.upload",
                 $"Re-uploaded \"{existing.OriginalFilename}\" (deduped)",
@@ -210,6 +247,7 @@ public sealed class DocumentService
         var doc = new DocumentEntity
         {
             KnowledgeSystemId = ks.Id,
+            SourceId = chosenSource.Id,
             Sha256 = blob.Sha256,
             OriginalFilename = fileName,
             Folder = NormalizeFolder(folder),
@@ -221,13 +259,23 @@ public sealed class DocumentService
             ParseStatus = "pending",
             ChunkCount = 0,
         };
+        await using var uploadTransaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
         _db.Documents.Add(doc);
+        _db.DocumentFileVersions.Add(new DocumentFileVersionEntity
+        {
+            DocumentId = doc.Id,
+            Version = 1,
+            Sha256 = doc.Sha256,
+            SizeBytes = doc.SizeBytes,
+            CreatedAt = _clock.GetUtcNow(),
+        });
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
 
         await WriteAuditAsync(ks.Id, user, "document.upload",
             $"Uploaded \"{doc.OriginalFilename}\"",
             BuildDocumentDetail(doc.Id, doc.Sha256, dedup: false),
             ct).ConfigureAwait(false);
+        await uploadTransaction.CommitAsync(ct).ConfigureAwait(false);
         return Project(doc);
     }
 
@@ -295,6 +343,17 @@ public sealed class DocumentService
         if (doc is null || doc.KnowledgeSystemId != ks.Id) return null;
 
         return await ParseDocumentAsync(doc, ks, user, ct).ConfigureAwait(false);
+    }
+
+    public async Task<DocumentParseQueueOut?> QueueParseAsync(
+        Guid ksId, Guid documentId, Actor actor, CancellationToken ct)
+    {
+        var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
+        if (user is null || ks is null) return null;
+        await EnsureNoActiveExtractionAsync(ks.Id, ct).ConfigureAwait(false);
+        if (_parseQueue is null)
+            throw new InvalidOperationException("Document parse queue is not configured.");
+        return await _parseQueue.EnqueueAsync(ks.Id, documentId, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -546,6 +605,26 @@ public sealed class DocumentService
         var filename = doc.OriginalFilename;
         var docId = doc.Id;
         var oldSha = doc.Sha256;
+        var fileShas = await _db.DocumentFileVersions.AsNoTracking()
+            .Where(version => version.DocumentId == docId)
+            .Select(version => version.Sha256)
+            .Distinct()
+            .ToListAsync(ct).ConfigureAwait(false);
+        fileShas.Add(oldSha);
+
+        await using var transaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+        await _db.DocumentFileVersionSnapshots
+            .Where(link => _db.DocumentFileVersions.Where(version => version.DocumentId == docId)
+                .Select(version => version.Id).Contains(link.DocumentFileVersionId))
+            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        await _db.DocumentFileVersions.Where(version => version.DocumentId == docId)
+            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        await _db.DocumentVersionChunks
+            .Where(chunk => _db.DocumentVersions.Where(version => version.DocumentId == docId)
+                .Select(version => version.Id).Contains(chunk.DocumentVersionId))
+            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
+        await _db.DocumentVersions.Where(version => version.DocumentId == docId)
+            .ExecuteDeleteAsync(ct).ConfigureAwait(false);
 
         // Cascade provenance for this doc's chunks.
         var chunkIds = await _db.Chunks.AsNoTracking()
@@ -588,16 +667,21 @@ public sealed class DocumentService
             .ExecuteDeleteAsync(ct)
             .ConfigureAwait(false);
 
-        // Cross-KS ref-count: only physically delete the blob if no
-        // other Document row (in any KS) still references this sha.
-        var anyOther = await _db.Documents.AsNoTracking()
-            .AnyAsync(d => d.Sha256 == oldSha, ct)
-            .ConfigureAwait(false);
-        if (!anyOther)
+        await WriteAuditAsync(ks.Id, user, "document.delete",
+            $"Deleted document \"{filename}\"",
+            BuildDocumentDetail(documentId, oldSha), ct).ConfigureAwait(false);
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
+
+        foreach (var sha in fileShas.Distinct())
         {
+            var referenced = await _db.Documents.AsNoTracking()
+                .AnyAsync(other => other.Sha256 == sha, ct).ConfigureAwait(false)
+                || await _db.DocumentFileVersions.AsNoTracking()
+                    .AnyAsync(version => version.Sha256 == sha, ct).ConfigureAwait(false);
+            if (referenced) continue;
             try
             {
-                await _blobs.RemoveAsync(oldSha, ct).ConfigureAwait(false);
+                await _blobs.RemoveAsync(sha, ct).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -606,13 +690,10 @@ public sealed class DocumentService
                 // also shouldn't block the audit log.
                 _logger?.LogWarning(ex,
                     "Failed to remove orphaned blob {Sha} after deleting document {DocId}",
-                    oldSha, documentId);
+                    sha, documentId);
             }
         }
 
-        await WriteAuditAsync(ks.Id, user, "document.delete",
-            $"Deleted document \"{filename}\"",
-            BuildDocumentDetail(documentId, oldSha), ct).ConfigureAwait(false);
         return true;
     }
 
@@ -679,78 +760,83 @@ public sealed class DocumentService
         DocumentEntity doc, KnowledgeSystemEntity ks, UserEntity user, CancellationToken ct)
     {
         var docId = doc.Id;
-        var stream = await _blobs.GetAsync(doc.Sha256, ct).ConfigureAwait(false);
-        if (stream is null)
+        try
         {
-            throw new InvalidOperationException("Blob missing on disk");
+            await using var transaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
+            if (_db.Database.IsNpgsql())
+                await _db.Database.ExecuteSqlInterpolatedAsync(
+                    $"SELECT id FROM document WHERE id = {docId} FOR UPDATE", ct).ConfigureAwait(false);
+            await _db.Entry(doc).ReloadAsync(ct).ConfigureAwait(false);
+            var fileVersion = await _db.DocumentFileVersions
+                .Where(version => version.DocumentId == docId)
+                .OrderByDescending(version => version.Version)
+                .FirstOrDefaultAsync(ct).ConfigureAwait(false);
+            if (fileVersion is not null && fileVersion.Sha256 != doc.Sha256)
+                throw new InvalidOperationException("Current file version does not match document SHA-256.");
+
+            await using var stream = await _blobs.GetAsync(doc.Sha256, ct).ConfigureAwait(false)
+                ?? throw new InvalidOperationException("Blob missing on disk");
+            var parsed = _parser.Parse(stream, doc.OriginalFilename);
+            var spans = _chunker.Chunk(parsed.Text);
+
+            await ApplyChunksAsync(doc, spans, ct).ConfigureAwait(false);
+            await new PlainTextIngestionService(new DocumentVersionStore(_db), _chunker)
+                .IngestAsync(ks.Id, docId, parsed.Text, ct, fileVersion?.Id).ConfigureAwait(false);
+
+            doc.ParseStatus = "parsed";
+            doc.ParserBackend = parsed.Backend;
+            doc.ParserVersion = parsed.ParserVersion;
+            doc.Mime = parsed.MediaType ?? doc.Mime;
+            doc.ParseError = null;
+            doc.TextCharCount = parsed.Text.Length;
+            doc.ChunkCount = spans.Count;
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+
+            await WriteAuditAsync(ks.Id, user, "document.parse",
+                $"Parsed \"{doc.OriginalFilename}\" ({doc.ChunkCount} chunks)",
+                BuildDocumentDetail(doc.Id, doc.ChunkCount),
+                ct).ConfigureAwait(false);
+            await transaction.CommitAsync(ct).ConfigureAwait(false);
+
+            return new ParseResponse(
+                DocumentId: doc.Id,
+                ParseStatus: doc.ParseStatus,
+                ParserBackend: parsed.Backend,
+                TextCharCount: doc.TextCharCount,
+                ChunkCount: doc.ChunkCount,
+                Error: null);
         }
-
-        await using (stream)
+        catch (Exception ex)
         {
-            try
+            _logger?.LogWarning(ex,
+                "Parse failed for document {DocId} ({Filename})",
+                doc.Id, doc.OriginalFilename);
+
+            foreach (var entry in _db.ChangeTracker.Entries().ToList())
             {
-                var parsed = _parser.Parse(stream, doc.OriginalFilename);
-                var spans = _chunker.Chunk(parsed.Text);
+                if (entry.State == EntityState.Added
+                    || entry.State == EntityState.Modified
+                    || entry.State == EntityState.Deleted)
+                    entry.State = EntityState.Detached;
+            }
 
-                await ApplyChunksAsync(doc, spans, ct).ConfigureAwait(false);
-
-                doc.ParseStatus = "parsed";
-                doc.ParserBackend = parsed.Backend;
-                doc.ParserVersion = parsed.ParserVersion;
-                doc.Mime = parsed.MediaType ?? doc.Mime;
-                doc.ParseError = null;
-                doc.TextCharCount = parsed.Text.Length;
-                doc.ChunkCount = spans.Count;
+            var refreshed = await _db.Documents
+                .FirstOrDefaultAsync(d => d.Id == docId, ct)
+                .ConfigureAwait(false);
+            if (refreshed is not null)
+            {
+                refreshed.ParseStatus = "failed";
+                refreshed.ParseError = ex.Message;
                 await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-
-                await WriteAuditAsync(ks.Id, user, "document.parse",
-                    $"Parsed \"{doc.OriginalFilename}\" ({doc.ChunkCount} chunks)",
-                    BuildDocumentDetail(doc.Id, doc.ChunkCount),
-                    ct).ConfigureAwait(false);
-
-                return new ParseResponse(
-                    DocumentId: doc.Id,
-                    ParseStatus: doc.ParseStatus,
-                    ParserBackend: parsed.Backend,
-                    TextCharCount: doc.TextCharCount,
-                    ChunkCount: doc.ChunkCount,
-                    Error: null);
             }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex,
-                    "Parse failed for document {DocId} ({Filename})",
-                    doc.Id, doc.OriginalFilename);
 
-                // Detach any pending changes to avoid poisoning SaveChanges.
-                foreach (var entry in _db.ChangeTracker.Entries().ToList())
-                {
-                    if (entry.State == EntityState.Added
-                        || entry.State == EntityState.Modified
-                        || entry.State == EntityState.Deleted)
-                    {
-                        entry.State = EntityState.Detached;
-                    }
-                }
-
-                var refreshed = await _db.Documents
-                    .FirstOrDefaultAsync(d => d.Id == docId, ct)
-                    .ConfigureAwait(false);
-                if (refreshed is not null)
-                {
-                    refreshed.ParseStatus = "failed";
-                    refreshed.ParseError = ex.Message;
-                    await _db.SaveChangesAsync(ct).ConfigureAwait(false);
-                }
-
-                return new ParseResponse(
-                    DocumentId: doc.Id,
-                    ParseStatus: "failed",
-                    ParserBackend: null,
-                    TextCharCount: null,
-                    ChunkCount: 0,
-                    Error: ex.Message);
-            }
+            return new ParseResponse(
+                DocumentId: doc.Id,
+                ParseStatus: "failed",
+                ParserBackend: null,
+                TextCharCount: null,
+                ChunkCount: 0,
+                Error: ex.Message);
         }
     }
 
@@ -812,6 +898,7 @@ public sealed class DocumentService
     private static DocumentOut Project(DocumentEntity d) => new(
         Id: d.Id,
         KnowledgeSystemId: d.KnowledgeSystemId ?? Guid.Empty,
+        SourceId: d.SourceId,
         Sha256: d.Sha256,
         OriginalFilename: d.OriginalFilename,
         Folder: d.Folder,

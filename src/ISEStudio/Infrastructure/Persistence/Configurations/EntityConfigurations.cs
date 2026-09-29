@@ -250,6 +250,38 @@ public sealed class KnowledgeSystemEntityConfiguration : IEntityTypeConfiguratio
     }
 }
 
+public sealed class SourceEntityConfiguration : IEntityTypeConfiguration<SourceEntity>
+{
+    public void Configure(EntityTypeBuilder<SourceEntity> builder)
+    {
+        builder.ToTable("source", table =>
+        {
+            table.HasCheckConstraint("ck_source_kind",
+                "kind IN ('folder','url','rss','custom','github_issues','jira_issues','s3','azure_blob','gcs','webdav','notion','api','statements','memory','upload')");
+            table.HasCheckConstraint("ck_source_last_sync_status",
+                "last_sync_status IN ('never','queued','running','ok','failed')");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.KnowledgeSystemId).HasColumnName("knowledge_system_id");
+        builder.Property(x => x.Kind).HasColumnName("kind").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(255).IsRequired();
+        builder.Property(x => x.Config).HasColumnName("config").IsRequired();
+        builder.Property(x => x.Icon).HasColumnName("icon").HasMaxLength(255);
+        builder.Property(x => x.SyncIntervalMinutes).HasColumnName("sync_interval_minutes");
+        builder.Property(x => x.SyncCron).HasColumnName("sync_cron");
+        builder.Property(x => x.LastSyncedAt).HasColumnName("last_synced_at");
+        builder.Property(x => x.LastSyncStatus).HasColumnName("last_sync_status").HasMaxLength(32).IsRequired();
+        builder.Property(x => x.LastSyncError).HasColumnName("last_sync_error");
+        builder.Property(x => x.LastSyncAdded).HasColumnName("last_sync_added").IsRequired();
+        builder.Property(x => x.IngestTokenCiphertext).HasColumnName("ingest_token_ciphertext");
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at").IsRequired();
+        builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_source_knowledge_system_id");
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
 /// <summary>EF Core mapping for the Python <c>Document</c> SQLModel.</summary>
 public sealed class DocumentEntityConfiguration : IEntityTypeConfiguration<DocumentEntity>
 {
@@ -264,6 +296,16 @@ public sealed class DocumentEntityConfiguration : IEntityTypeConfiguration<Docum
 
 
         builder.HasIndex(x => x.KnowledgeSystemId).HasDatabaseName("ix_document_knowledge_system_id");
+
+        builder.Property(x => x.SourceId).HasColumnName("source_id");
+        builder.Property(x => x.ExternalKey).HasColumnName("external_key").HasMaxLength(1024);
+        builder.Property(x => x.MissingSince).HasColumnName("missing_since");
+        builder.Property(x => x.IsManualUpload).HasColumnName("is_manual_upload").IsRequired().HasDefaultValue(true);
+        builder.HasIndex(x => new { x.SourceId, x.ExternalKey }).IsUnique()
+            .HasDatabaseName("ux_document_source_external_key")
+            .HasFilter("external_key IS NOT NULL AND source_id IS NOT NULL");
+        builder.HasOne<SourceEntity>().WithMany().HasForeignKey(x => x.SourceId)
+            .OnDelete(DeleteBehavior.SetNull);
 
         builder.Property(x => x.Sha256).HasMaxLength(64).IsRequired();
         builder.HasIndex(x => x.Sha256).HasDatabaseName("ix_document_sha256");
@@ -944,6 +986,80 @@ public sealed class ValidationDecisionEntityConfiguration : IEntityTypeConfigura
         // Foreign keys (Python foreign_key= parity)
         builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
 
+    }
+}
+
+public sealed class DocumentParseJobEntityConfiguration : IEntityTypeConfiguration<DocumentParseJobEntity>
+{
+    public void Configure(EntityTypeBuilder<DocumentParseJobEntity> builder)
+    {
+        builder.UseTpcMappingStrategy();
+        builder.ToTable("document_parse_job", table => table.HasCheckConstraint(
+            "ck_document_parse_job_status", "status IN ('pending', 'running', 'completed', 'failed')"));
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.KnowledgeSystemId).HasColumnName("knowledge_system_id");
+        builder.Property(x => x.DocumentId).HasColumnName("document_id");
+        builder.Property(x => x.SourceId).HasColumnName("source_id");
+        builder.Property(x => x.DocumentFileVersionId).HasColumnName("document_file_version_id");
+        builder.Property(x => x.Sha256).HasColumnName("sha256").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(16).IsRequired();
+        builder.Property(x => x.Error).HasColumnName("error");
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at");
+        builder.Property(x => x.FinishedAt).HasColumnName("finished_at");
+        builder.HasIndex(x => new { x.Status, x.CreatedAt }).HasDatabaseName("ix_document_parse_job_pending");
+        builder.HasIndex(x => x.DocumentId).HasDatabaseName("ix_document_parse_job_document");
+        builder.HasIndex(x => x.SourceId).HasDatabaseName("ix_document_parse_job_source");
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(x => x.KnowledgeSystemId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<DocumentEntity>().WithMany().HasForeignKey(x => x.DocumentId)
+            .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<DocumentFileVersionEntity>().WithMany().HasForeignKey(x => x.DocumentFileVersionId)
+            .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+public sealed class DocumentFileVersionEntityConfiguration : IEntityTypeConfiguration<DocumentFileVersionEntity>
+{
+    public void Configure(EntityTypeBuilder<DocumentFileVersionEntity> builder)
+    {
+        builder.UseTpcMappingStrategy();
+        builder.ToTable("document_file_version", table =>
+        {
+            table.HasCheckConstraint("ck_document_file_version_version", "version > 0");
+            table.HasCheckConstraint("ck_document_file_version_size", "size_bytes >= 0");
+        });
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.DocumentId).HasColumnName("document_id");
+        builder.Property(x => x.Version).HasColumnName("version");
+        builder.Property(x => x.Sha256).HasColumnName("sha256").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.SizeBytes).HasColumnName("size_bytes");
+        builder.Property(x => x.DocTime).HasColumnName("doc_time");
+        builder.Property(x => x.CreatedAt).HasColumnName("created_at");
+        builder.HasIndex(x => new { x.DocumentId, x.Version }).IsUnique()
+            .HasDatabaseName("ux_document_file_version_document_version");
+        builder.HasOne<DocumentEntity>().WithMany().HasForeignKey(x => x.DocumentId)
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+public sealed class DocumentFileVersionSnapshotEntityConfiguration : IEntityTypeConfiguration<DocumentFileVersionSnapshotEntity>
+{
+    public void Configure(EntityTypeBuilder<DocumentFileVersionSnapshotEntity> builder)
+    {
+        builder.UseTpcMappingStrategy();
+        builder.ToTable("document_file_version_snapshot");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.DocumentFileVersionId).HasColumnName("document_file_version_id");
+        builder.Property(x => x.DocumentVersionId).HasColumnName("document_version_id");
+        builder.HasIndex(x => new { x.DocumentFileVersionId, x.DocumentVersionId }).IsUnique()
+            .HasDatabaseName("ux_document_file_version_snapshot_pair");
+        builder.HasOne<DocumentFileVersionEntity>().WithMany().HasForeignKey(x => x.DocumentFileVersionId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<DocumentVersionEntity>().WithMany().HasForeignKey(x => x.DocumentVersionId)
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

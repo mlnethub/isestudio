@@ -11,7 +11,8 @@ public sealed record DocumentVersionInput(
     Guid KnowledgeSystemId,
     Guid DocumentId,
     string ContentSha256,
-    IReadOnlyList<DocumentVersionChunkInput> Chunks);
+    IReadOnlyList<DocumentVersionChunkInput> Chunks,
+    Guid? FileVersionId = null);
 
 public sealed record DocumentVersionResult(
     Guid Id,

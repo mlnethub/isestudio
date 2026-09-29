@@ -30,6 +30,19 @@ internal static class ExtractionJobPayloadReader
         throw new InvalidOperationException($"Payload field '{names[0]}' is not a valid GUID.");
     }
 
+    public static Guid? ReadOptionalGuid(JsonElement payload, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (!payload.TryGetProperty(name, out var element) || element.ValueKind == JsonValueKind.Null)
+                continue;
+            if (element.ValueKind == JsonValueKind.String && Guid.TryParse(element.GetString(), out var value))
+                return value;
+            throw new InvalidOperationException($"Payload field '{name}' is not a valid GUID.");
+        }
+        return null;
+    }
+
     public static string ReadRequiredString(JsonElement payload, params string[] names)
     {
         var value = ReadOptionalString(payload, names);

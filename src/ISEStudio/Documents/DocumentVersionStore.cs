@@ -34,6 +34,14 @@ public sealed class DocumentVersionStore
             throw new InvalidOperationException("Document does not belong to the knowledge system.");
         }
 
+        if (input.FileVersionId is { } fileVersionId && !await _db.DocumentFileVersions.AnyAsync(
+                file => file.Id == fileVersionId && file.DocumentId == input.DocumentId,
+                cancellationToken).ConfigureAwait(false))
+            throw new InvalidOperationException("File version does not belong to the document.");
+
+        await using var transaction = _db.Database.CurrentTransaction is null
+            ? await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false)
+            : null;
         var existing = await _db.DocumentVersions.AsNoTracking().SingleOrDefaultAsync(
             item => item.KnowledgeSystemId == input.KnowledgeSystemId
                 && item.DocumentId == input.DocumentId
@@ -41,11 +49,12 @@ public sealed class DocumentVersionStore
             cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
+            await LinkFileVersionAsync(input.FileVersionId, existing.Id, cancellationToken).ConfigureAwait(false);
+            if (transaction is not null)
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return Project(existing);
         }
 
-        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken)
-            .ConfigureAwait(false);
         existing = await _db.DocumentVersions.SingleOrDefaultAsync(
             item => item.KnowledgeSystemId == input.KnowledgeSystemId
                 && item.DocumentId == input.DocumentId
@@ -53,7 +62,9 @@ public sealed class DocumentVersionStore
             cancellationToken).ConfigureAwait(false);
         if (existing is not null)
         {
-            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+            await LinkFileVersionAsync(input.FileVersionId, existing.Id, cancellationToken).ConfigureAwait(false);
+            if (transaction is not null)
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return Project(existing);
         }
 
@@ -72,7 +83,9 @@ public sealed class DocumentVersionStore
                     && item.DocumentId == input.DocumentId
                     && item.ContentSha256 == contentSha256,
                 cancellationToken).ConfigureAwait(false);
-            await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+            await LinkFileVersionAsync(input.FileVersionId, existing.Id, cancellationToken).ConfigureAwait(false);
+            if (transaction is not null)
+                await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
             return Project(existing);
         }
 
@@ -86,13 +99,40 @@ public sealed class DocumentVersionStore
             TokenEstimate = chunk.TokenEstimate,
         }));
         await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-        await transaction.CommitAsync(CancellationToken.None).ConfigureAwait(false);
+        await LinkFileVersionAsync(input.FileVersionId, versionId, cancellationToken).ConfigureAwait(false);
+        if (transaction is not null)
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
         return new DocumentVersionResult(
             versionId,
             input.KnowledgeSystemId,
             input.DocumentId,
             contentSha256,
             input.Chunks.Count);
+    }
+
+    private async Task LinkFileVersionAsync(Guid? fileVersionId, Guid documentVersionId, CancellationToken ct)
+    {
+        if (fileVersionId is null) return;
+        if (_db.Database.IsNpgsql())
+        {
+            await _db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO document_file_version_snapshot
+                    (id, document_file_version_id, document_version_id)
+                VALUES ({Guid.NewGuid()}, {fileVersionId.Value}, {documentVersionId})
+                ON CONFLICT (document_file_version_id, document_version_id) DO NOTHING
+                """, ct).ConfigureAwait(false);
+        }
+        else if (!await _db.DocumentFileVersionSnapshots.AnyAsync(
+                     link => link.DocumentFileVersionId == fileVersionId && link.DocumentVersionId == documentVersionId,
+                     ct).ConfigureAwait(false))
+        {
+            _db.DocumentFileVersionSnapshots.Add(new DocumentFileVersionSnapshotEntity
+            {
+                DocumentFileVersionId = fileVersionId.Value,
+                DocumentVersionId = documentVersionId,
+            });
+            await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        }
     }
 
     private static string NormalizeSha256(string value)

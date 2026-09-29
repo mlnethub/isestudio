@@ -3,6 +3,7 @@ using System;
 using ISEStudio.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ISEStudio.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ISEStudioDbContext))]
-    partial class ISEStudioDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260929071038_AddKnowledgeSources")]
+    partial class AddKnowledgeSources
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -517,153 +520,6 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                         .HasFilter("external_key IS NOT NULL AND source_id IS NOT NULL");
 
                     b.ToTable("document", (string)null);
-
-                    b.UseTpcMappingStrategy();
-                });
-
-            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.DocumentFileVersionEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<DateTimeOffset?>("DocTime")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("doc_time");
-
-                    b.Property<Guid>("DocumentId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("document_id");
-
-                    b.Property<string>("Sha256")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("sha256");
-
-                    b.Property<long>("SizeBytes")
-                        .HasColumnType("bigint")
-                        .HasColumnName("size_bytes");
-
-                    b.Property<int>("Version")
-                        .HasColumnType("integer")
-                        .HasColumnName("version");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DocumentId", "Version")
-                        .IsUnique()
-                        .HasDatabaseName("ux_document_file_version_document_version");
-
-                    b.ToTable("document_file_version", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_document_file_version_size", "size_bytes >= 0");
-
-                            t.HasCheckConstraint("ck_document_file_version_version", "version > 0");
-                        });
-
-                    b.UseTpcMappingStrategy();
-                });
-
-            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.DocumentFileVersionSnapshotEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<Guid>("DocumentFileVersionId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("document_file_version_id");
-
-                    b.Property<Guid>("DocumentVersionId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("document_version_id");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DocumentVersionId");
-
-                    b.HasIndex("DocumentFileVersionId", "DocumentVersionId")
-                        .IsUnique()
-                        .HasDatabaseName("ux_document_file_version_snapshot_pair");
-
-                    b.ToTable("document_file_version_snapshot", (string)null);
-
-                    b.UseTpcMappingStrategy();
-                });
-
-            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.DocumentParseJobEntity", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<Guid>("DocumentFileVersionId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("document_file_version_id");
-
-                    b.Property<Guid>("DocumentId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("document_id");
-
-                    b.Property<string>("Error")
-                        .HasColumnType("text")
-                        .HasColumnName("error");
-
-                    b.Property<DateTimeOffset?>("FinishedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("finished_at");
-
-                    b.Property<Guid>("KnowledgeSystemId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("knowledge_system_id");
-
-                    b.Property<string>("Sha256")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)")
-                        .HasColumnName("sha256");
-
-                    b.Property<Guid?>("SourceId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("source_id");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasMaxLength(16)
-                        .HasColumnType("character varying(16)")
-                        .HasColumnName("status");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DocumentFileVersionId");
-
-                    b.HasIndex("DocumentId")
-                        .HasDatabaseName("ix_document_parse_job_document");
-
-                    b.HasIndex("KnowledgeSystemId");
-
-                    b.HasIndex("SourceId")
-                        .HasDatabaseName("ix_document_parse_job_source");
-
-                    b.HasIndex("Status", "CreatedAt")
-                        .HasDatabaseName("ix_document_parse_job_pending");
-
-                    b.ToTable("document_parse_job", null, t =>
-                        {
-                            t.HasCheckConstraint("ck_document_parse_job_status", "status IN ('pending', 'running', 'completed', 'failed')");
-                        });
 
                     b.UseTpcMappingStrategy();
                 });
@@ -2745,51 +2601,6 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                         .WithMany()
                         .HasForeignKey("SourceId")
                         .OnDelete(DeleteBehavior.SetNull);
-                });
-
-            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.DocumentFileVersionEntity", b =>
-                {
-                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.DocumentEntity", null)
-                        .WithMany()
-                        .HasForeignKey("DocumentId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.DocumentFileVersionSnapshotEntity", b =>
-                {
-                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.DocumentFileVersionEntity", null)
-                        .WithMany()
-                        .HasForeignKey("DocumentFileVersionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-
-                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.DocumentVersionEntity", null)
-                        .WithMany()
-                        .HasForeignKey("DocumentVersionId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
-                });
-
-            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.DocumentParseJobEntity", b =>
-                {
-                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.DocumentFileVersionEntity", null)
-                        .WithMany()
-                        .HasForeignKey("DocumentFileVersionId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.DocumentEntity", null)
-                        .WithMany()
-                        .HasForeignKey("DocumentId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
-                        .WithMany()
-                        .HasForeignKey("KnowledgeSystemId")
-                        .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
                 });
 
             modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.DocumentVersionChunkEntity", b =>

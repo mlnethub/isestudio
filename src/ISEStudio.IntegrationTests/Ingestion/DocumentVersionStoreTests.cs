@@ -1,6 +1,7 @@
 using ISEStudio.Documents;
 using ISEStudio.Application.Documents;
 using ISEStudio.Infrastructure.Persistence;
+using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.IntegrationTests.Graph;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,6 +16,70 @@ public sealed class DocumentVersionStoreTests : IClassFixture<PostgresGraphFixtu
     public DocumentVersionStoreTests(PostgresGraphFixture fixture)
     {
         _fixture = fixture;
+    }
+
+    [Fact]
+    public async Task Two_raw_versions_can_share_one_parsed_snapshot()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var doc = await db.Documents.SingleAsync(d => d.KnowledgeSystemId == _fixture.KnowledgeSystemId);
+        var first = new DocumentFileVersionEntity
+        {
+            DocumentId = doc.Id, Version = 1, Sha256 = new string('1', 64),
+            SizeBytes = 10, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        var second = new DocumentFileVersionEntity
+        {
+            DocumentId = doc.Id, Version = 2, Sha256 = new string('2', 64),
+            SizeBytes = 11, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.AddRange(first, second);
+        await db.SaveChangesAsync();
+        var store = new DocumentVersionStore(db);
+        var parsedSha = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+        var input = new DocumentVersionInput(_fixture.KnowledgeSystemId, doc.Id, parsedSha,
+            [new DocumentVersionChunkInput(0, "same", 0, 4, 1)], first.Id);
+        var initial = await store.RecordAsync(input, CancellationToken.None);
+        var repeated = await store.RecordAsync(input with { FileVersionId = second.Id }, CancellationToken.None);
+        Assert.Equal(initial.Id, repeated.Id);
+        Assert.Equal(2, await db.DocumentFileVersionSnapshots.CountAsync(link => link.DocumentVersionId == initial.Id));
+        await store.RecordAsync(input, CancellationToken.None);
+        Assert.Equal(2, await db.DocumentFileVersionSnapshots.CountAsync(link => link.DocumentVersionId == initial.Id));
+    }
+
+    [Fact]
+    public async Task Outer_transaction_rollback_removes_snapshot_and_file_link()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var doc = await db.Documents.SingleAsync(d => d.KnowledgeSystemId == _fixture.KnowledgeSystemId);
+        var fileVersion = new DocumentFileVersionEntity
+        {
+            DocumentId = doc.Id, Version = 3, Sha256 = new string('3', 64),
+            SizeBytes = 12, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.Add(fileVersion);
+        await db.SaveChangesAsync();
+
+        var parsedSha = Guid.NewGuid().ToString("N") + Guid.NewGuid().ToString("N");
+        Guid snapshotId;
+        await using (var transaction = await db.Database.BeginTransactionAsync())
+        {
+            var result = await new DocumentVersionStore(db).RecordAsync(
+                new DocumentVersionInput(_fixture.KnowledgeSystemId, doc.Id, parsedSha,
+                    [new DocumentVersionChunkInput(0, "rollback", 0, 8, 1)], fileVersion.Id),
+                CancellationToken.None);
+            snapshotId = result.Id;
+            Assert.True(await db.DocumentFileVersionSnapshots.AnyAsync(link => link.DocumentVersionId == snapshotId));
+            await transaction.RollbackAsync();
+        }
+
+        db.ChangeTracker.Clear();
+        Assert.False(await db.DocumentVersions.AnyAsync(version => version.Id == snapshotId));
+        Assert.False(await db.DocumentFileVersionSnapshots.AnyAsync(link => link.DocumentVersionId == snapshotId));
     }
 
     [Fact]

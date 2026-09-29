@@ -165,6 +165,11 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
                     && d.ImplementationType == typeof(DurableExtractionWorker))
                 .ToList();
             foreach (var desc in workerDescriptors) services.Remove(desc);
+            var parseWorkerDescriptors = services
+                .Where(d => d.ServiceType == typeof(IHostedService)
+                    && d.ImplementationType == typeof(DocumentParseWorker))
+                .ToList();
+            foreach (var desc in parseWorkerDescriptors) services.Remove(desc);
         });
     }
 

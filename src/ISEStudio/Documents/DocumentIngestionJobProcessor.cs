@@ -15,7 +15,8 @@ public sealed record DocumentIngestionJob(
     Guid KnowledgeSystemId,
     Guid DocumentId,
     string Model,
-    string? DocumentSha256 = null);
+    string? DocumentSha256 = null,
+    Guid? DocumentFileVersionId = null);
 
 public sealed record DocumentIngestionJobResult(
     string Status,
@@ -52,6 +53,7 @@ public sealed class DocumentIngestionJobProcessor
         var job = await LoadOrCreateJobAsync(input, cancellationToken).ConfigureAwait(false);
         DocumentEntity? document = null;
         DocumentVersionResult? persistedVersion = null;
+        var mayUpdateDocument = false;
         try
         {
             document = await _db.Documents.SingleOrDefaultAsync(
@@ -67,12 +69,34 @@ public sealed class DocumentIngestionJobProcessor
                 throw new InvalidOperationException("Document does not belong to the knowledge system.");
             }
 
-            if (input.DocumentSha256 is not null
-                && !string.Equals(document.Sha256, input.DocumentSha256, StringComparison.OrdinalIgnoreCase))
+            var expectedSha = input.DocumentSha256 ?? document.Sha256;
+            DocumentFileVersionEntity? fileVersion = null;
+            if (input.DocumentFileVersionId is { } fileVersionId)
             {
-                throw new InvalidOperationException(
-                    $"Document SHA-256 '{input.DocumentSha256}' does not match stored blob '{document.Sha256}'.");
+                fileVersion = await _db.DocumentFileVersions.SingleOrDefaultAsync(
+                    version => version.Id == fileVersionId && version.DocumentId == document.Id,
+                    cancellationToken).ConfigureAwait(false)
+                    ?? throw new InvalidOperationException("Queued file version does not belong to the document.");
+                if (!string.Equals(fileVersion.Sha256, expectedSha, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("Queued file version SHA-256 does not match the job payload.");
+                expectedSha = fileVersion.Sha256;
             }
+            else
+            {
+                var matchingVersions = await _db.DocumentFileVersions
+                    .Where(version => version.DocumentId == document.Id && version.Sha256 == expectedSha)
+                    .ToListAsync(cancellationToken).ConfigureAwait(false);
+                if (matchingVersions.Count == 1)
+                    fileVersion = matchingVersions[0];
+            }
+
+            var fileVersions = await _db.DocumentFileVersions
+                .Where(version => version.DocumentId == document.Id)
+                .ToListAsync(cancellationToken).ConfigureAwait(false);
+            var latestFileVersion = fileVersions.OrderByDescending(version => version.Version).FirstOrDefault();
+            mayUpdateDocument = latestFileVersion is null
+                ? document.Sha256 == expectedSha
+                : fileVersion is not null && latestFileVersion.Id == fileVersion.Id;
 
             job.Status = JobStatus.Running.ToWire();
             job.Model = input.Model;
@@ -81,12 +105,12 @@ public sealed class DocumentIngestionJobProcessor
             job.Phase = "parsing";
             await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
 
-            await using var blob = await _blobs.GetAsync(document.Sha256, cancellationToken)
+            await using var blob = await _blobs.GetAsync(expectedSha, cancellationToken)
                 .ConfigureAwait(false);
             if (blob is null)
             {
                 throw new InvalidOperationException(
-                    $"Blob '{document.Sha256}' for document '{document.Id}' was not found.");
+                    $"Blob '{expectedSha}' for document '{document.Id}' was not found.");
             }
 
             await using var buffered = CreateBufferedBlobStream();
@@ -95,10 +119,10 @@ public sealed class DocumentIngestionJobProcessor
             buffered.Position = 0;
 
             var actualSha256 = await ComputeSha256Async(buffered, cancellationToken).ConfigureAwait(false);
-            if (!string.Equals(actualSha256, document.Sha256, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(actualSha256, expectedSha, StringComparison.OrdinalIgnoreCase))
             {
                 throw new InvalidOperationException(
-                    $"Blob SHA-256 '{actualSha256}' does not match document '{document.Sha256}'.");
+                    $"Blob SHA-256 '{actualSha256}' does not match queued file version '{expectedSha}'.");
             }
 
             buffered.Position = 0;
@@ -107,15 +131,19 @@ public sealed class DocumentIngestionJobProcessor
                 input.KnowledgeSystemId,
                 input.DocumentId,
                 parsed.Text,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                fileVersion?.Id).ConfigureAwait(false);
 
-            document.ParseStatus = "parsed";
-            document.ParserBackend = parsed.Backend;
-            document.ParserVersion = parsed.ParserVersion;
-            document.Mime = parsed.MediaType ?? document.Mime;
-            document.ParseError = null;
-            document.TextCharCount = parsed.Text.EnumerateRunes().Count();
-            document.ChunkCount = persistedVersion.ChunkCount;
+            if (mayUpdateDocument)
+            {
+                document.ParseStatus = "parsed";
+                document.ParserBackend = parsed.Backend;
+                document.ParserVersion = parsed.ParserVersion;
+                document.Mime = parsed.MediaType ?? document.Mime;
+                document.ParseError = null;
+                document.TextCharCount = parsed.Text.EnumerateRunes().Count();
+                document.ChunkCount = persistedVersion.ChunkCount;
+            }
             job.Status = JobStatus.Completed.ToWire();
             job.Phase = "finalizing";
             job.ProcessedChunks = persistedVersion.ChunkCount;
@@ -131,7 +159,8 @@ public sealed class DocumentIngestionJobProcessor
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            if (document is not null && document.KnowledgeSystemId == input.KnowledgeSystemId)
+            if (document is not null && document.KnowledgeSystemId == input.KnowledgeSystemId
+                && mayUpdateDocument)
             {
                 document.ParseStatus = "failed";
                 document.ParseError = exception.Message;

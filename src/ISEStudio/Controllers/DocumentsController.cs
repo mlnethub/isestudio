@@ -63,6 +63,7 @@ public sealed class DocumentsController : InternalControllerBase
         Guid id,
         [FromForm] IFormFile? file,
         [FromForm] string? folder,
+        [FromForm] Guid? source_id,
         CancellationToken ct)
     {
         if (file is null || file.Length == 0)
@@ -82,7 +83,8 @@ public sealed class DocumentsController : InternalControllerBase
                 sizeBytes: file.Length,
                 folder: folder ?? "/",
                 actor: actor,
-                ct: ct).ConfigureAwait(false);
+                ct: ct,
+                sourceId: source_id).ConfigureAwait(false);
             return Ok(result);
         }
         catch (ArgumentException ex)
@@ -141,4 +143,20 @@ public sealed class DocumentsController : InternalControllerBase
     [KSRoleAuthorize(Minimum = KSRole.Editor)]
     public Task<IActionResult> ParseAsync(Guid id, Guid document_id, CancellationToken ct)
         => InvokeAsync("documents.parse", ReqGuid(id, res: document_id.ToString()), ct);
+
+    [HttpPost("api/knowledge/{id:guid}/documents/{document_id:guid}/parse/queue")]
+    [KSRoleAuthorize(Minimum = KSRole.Editor)]
+    public async Task<IActionResult> QueueParseAsync(Guid id, Guid document_id, CancellationToken ct)
+    {
+        try
+        {
+            var queued = await _documents.QueueParseAsync(id, document_id, ResolveActor(), ct)
+                .ConfigureAwait(false);
+            return queued is null ? NotFound() : Accepted(queued);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { detail = ex.Message });
+        }
+    }
 }

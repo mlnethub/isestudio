@@ -67,6 +67,8 @@ public sealed class ISEStudioDbContext : DbContext
     /// <summary>Named ontology graphs (1 KS = 1 named RDF graph).</summary>
     public DbSet<KnowledgeSystemEntity> KnowledgeSystems => Set<KnowledgeSystemEntity>();
 
+    public DbSet<SourceEntity> Sources => Set<SourceEntity>();
+
     /// <summary>Uploaded source files, per-KS dedup on (KS, Sha256).</summary>
     public DbSet<DocumentEntity> Documents => Set<DocumentEntity>();
 
@@ -75,6 +77,12 @@ public sealed class ISEStudioDbContext : DbContext
 
     /// <summary>Immutable parsed snapshots of an uploaded document.</summary>
     public DbSet<DocumentVersionEntity> DocumentVersions => Set<DocumentVersionEntity>();
+
+    public DbSet<DocumentFileVersionEntity> DocumentFileVersions => Set<DocumentFileVersionEntity>();
+
+    public DbSet<DocumentFileVersionSnapshotEntity> DocumentFileVersionSnapshots => Set<DocumentFileVersionSnapshotEntity>();
+
+    public DbSet<DocumentParseJobEntity> DocumentParseJobs => Set<DocumentParseJobEntity>();
 
     /// <summary>Chunks owned by one immutable document version.</summary>
     public DbSet<DocumentVersionChunkEntity> DocumentVersionChunks => Set<DocumentVersionChunkEntity>();
@@ -237,6 +245,7 @@ public sealed class ISEStudioDbContext : DbContext
         modelBuilder.Entity<Entities.TboxReconciliationEntity>().Property(x => x.Candidates).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.OntologyAxiomEntity>().Property(x => x.Payload).HasColumnType("jsonb");
         modelBuilder.Entity<Entities.ReleaseStatementEntity>().Property(x => x.Payload).HasColumnType("jsonb");
+        modelBuilder.Entity<Entities.SourceEntity>().Property(x => x.Config).HasColumnType("jsonb");
 
         // ---- Binary columns (bytea) ----
         modelBuilder.Entity<Entities.AuditEventEntity>().Property(x => x.Added).HasColumnType("bytea");

@@ -41,6 +41,10 @@ public sealed class ParserExtractionJobHandler : IExtractionJobHandler
             payload,
             "document_sha256",
             "documentSha256");
+        var documentFileVersionId = ExtractionJobPayloadReader.ReadOptionalGuid(
+            payload,
+            "document_file_version_id",
+            "documentFileVersionId");
         var model = ExtractionJobPayloadReader.ReadOptionalString(payload, "model") ?? job.Model;
 
         var result = await _processor.ProcessAsync(
@@ -49,7 +53,8 @@ public sealed class ParserExtractionJobHandler : IExtractionJobHandler
                 knowledgeSystemId,
                 documentId,
                 model,
-                documentSha256),
+                documentSha256,
+                documentFileVersionId),
             cancellationToken).ConfigureAwait(false);
 
         if (!string.Equals(result.Status, JobStatus.Completed.ToWire(), StringComparison.Ordinal))

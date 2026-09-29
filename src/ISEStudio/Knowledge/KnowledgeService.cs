@@ -179,8 +179,16 @@ public sealed class KnowledgeService
         };
         // The GraphIri/BaseIri embed the row's PublicId, so they are
         // patched in by a second SaveChanges below.
+        await using var transaction = await _db.Database.BeginTransactionAsync(ct).ConfigureAwait(false);
         _db.KnowledgeSystems.Add(ks);
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        _db.Sources.Add(new SourceEntity
+        {
+            KnowledgeSystemId = ks.Id,
+            Kind = "folder",
+            Name = "Default",
+            CreatedAt = ks.CreatedAt,
+        });
         // Stamp the knowledge system's IRI root + base from the configured
         // IriRoot so a future migration is a config change rather than a
         // code change. Mirrors Python `GRAPH_ROOT` (`backend/app/api/
@@ -190,6 +198,7 @@ public sealed class KnowledgeService
         ks.GraphIri = $"{_options.IriRoot}/{ks.PublicId}";
         ks.BaseIri = $"{_options.IriRoot}/{ks.PublicId}/onto#";
         await _db.SaveChangesAsync(ct).ConfigureAwait(false);
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
 
         var projection = await ProjectAsync(new[] { ks }, user, ct).ConfigureAwait(false);
         return projection[0];

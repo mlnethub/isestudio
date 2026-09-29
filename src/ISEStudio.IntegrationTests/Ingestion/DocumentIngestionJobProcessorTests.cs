@@ -22,6 +22,82 @@ public sealed class DocumentIngestionJobProcessorTests : IClassFixture<PostgresG
     }
 
     [Fact]
+    public async Task Document_parse_jobs_are_claimed_once_across_postgres_consumers()
+    {
+        await using var services = _fixture.BuildServices(configure: items =>
+            items.AddSingleton<DocumentParseJobStore>());
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var document = await AddDocumentAsync(db, "claim.txt");
+        var version = new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 1, Sha256 = new string('a', 64),
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.Add(version);
+        var jobs = Enumerable.Range(0, 2).Select(_ => new DocumentParseJobEntity
+        {
+            KnowledgeSystemId = _fixture.KnowledgeSystemId,
+            DocumentId = document.Id,
+            DocumentFileVersionId = version.Id,
+            Sha256 = version.Sha256,
+            CreatedAt = DateTimeOffset.UtcNow,
+        }).ToArray();
+        db.DocumentParseJobs.AddRange(jobs);
+        await db.SaveChangesAsync();
+
+        var store = services.GetRequiredService<DocumentParseJobStore>();
+        var claimed = await Task.WhenAll(Enumerable.Range(0, 3)
+            .Select(_ => store.ClaimNextAsync(CancellationToken.None)));
+        Assert.Equal(2, claimed.Count(item => item is not null));
+        Assert.Equal(2, claimed.Where(item => item is not null).Select(item => item!.Id).Distinct().Count());
+        Assert.All(claimed.Where(item => item is not null), item => Assert.Equal("running", item!.Status));
+    }
+
+    [Fact]
+    public async Task Document_parse_job_completes_and_links_the_pinned_version_on_postgres()
+    {
+        await using var services = _fixture.BuildServices(configure: items =>
+        {
+            items.AddSingleton(TimeProvider.System);
+            items.AddScoped<DocumentParseJobProcessor>();
+        });
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobs = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var document = await AddDocumentAsync(db, "parse-job.txt");
+        await PutBlobAsync(blobs, db, document, "pinned parse job content");
+        var version = new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 1, Sha256 = document.Sha256,
+            SizeBytes = document.SizeBytes, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.Add(version);
+        var job = new DocumentParseJobEntity
+        {
+            KnowledgeSystemId = _fixture.KnowledgeSystemId,
+            DocumentId = document.Id,
+            DocumentFileVersionId = version.Id,
+            Sha256 = version.Sha256,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentParseJobs.Add(job);
+        await db.SaveChangesAsync();
+
+        await scope.ServiceProvider.GetRequiredService<DocumentParseJobProcessor>()
+            .ProcessAsync(job.Id, CancellationToken.None);
+
+        Assert.Equal("completed", (await db.DocumentParseJobs.AsNoTracking()
+            .SingleAsync(item => item.Id == job.Id)).Status);
+        Assert.Equal("parsed", (await db.Documents.AsNoTracking()
+            .SingleAsync(item => item.Id == document.Id)).ParseStatus);
+        var snapshot = await db.DocumentVersions.SingleAsync(item => item.DocumentId == document.Id);
+        Assert.Equal(version.Id, (await db.DocumentFileVersionSnapshots.SingleAsync(
+            item => item.DocumentVersionId == snapshot.Id)).DocumentFileVersionId);
+        Assert.False(await db.ExtractionJobs.AnyAsync(item => item.Id == job.Id));
+    }
+
+    [Fact]
     public async Task Txt_blob_is_parsed_and_document_metadata_is_persisted()
     {
         await using var services = _fixture.BuildServices();
@@ -280,6 +356,141 @@ public sealed class DocumentIngestionJobProcessorTests : IClassFixture<PostgresG
     }
 
     [Fact]
+    public async Task Delayed_job_parses_its_pinned_file_version_without_overwriting_current_document_state()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var document = await AddDocumentAsync(db, "delayed.txt");
+
+        await PutBlobAsync(blobStore, db, document, "version A text");
+        var first = new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 1, Sha256 = document.Sha256,
+            SizeBytes = document.SizeBytes, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.Add(first);
+        await db.SaveChangesAsync();
+
+        await PutBlobAsync(blobStore, db, document, "version B text");
+        db.DocumentFileVersions.Add(new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 2, Sha256 = document.Sha256,
+            SizeBytes = document.SizeBytes, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        await db.SaveChangesAsync();
+
+        await PutBlobAsync(blobStore, db, document, "version A text");
+        var latest = new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 3, Sha256 = document.Sha256,
+            SizeBytes = document.SizeBytes, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.Add(latest);
+        document.ParseStatus = "parsed";
+        document.ParserBackend = "latest-version-parser";
+        document.ChunkCount = 77;
+        await db.SaveChangesAsync();
+
+        var result = await scope.ServiceProvider.GetRequiredService<DocumentIngestionJobProcessor>()
+            .ProcessAsync(new DocumentIngestionJob(Guid.NewGuid(), _fixture.KnowledgeSystemId,
+                document.Id, "stage-4-test", first.Sha256, first.Id), CancellationToken.None);
+
+        var link = await db.DocumentFileVersionSnapshots.SingleAsync(
+            item => item.DocumentVersionId == result.Version.Id);
+        Assert.Equal(first.Id, link.DocumentFileVersionId);
+        Assert.NotEqual(latest.Id, link.DocumentFileVersionId);
+        var persisted = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == document.Id);
+        Assert.Equal("parsed", persisted.ParseStatus);
+        Assert.Equal("latest-version-parser", persisted.ParserBackend);
+        Assert.Equal(77, persisted.ChunkCount);
+    }
+
+    [Fact]
+    public async Task Delayed_job_parses_old_file_bytes_even_when_current_document_is_different()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var document = await AddDocumentAsync(db, "older-version.txt");
+        await PutBlobAsync(blobStore, db, document, "version A");
+        var versionA = new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 1, Sha256 = document.Sha256,
+            SizeBytes = document.SizeBytes, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.Add(versionA);
+        await PutBlobAsync(blobStore, db, document, "version B");
+        var versionB = new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 2, Sha256 = document.Sha256,
+            SizeBytes = document.SizeBytes, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.Add(versionB);
+        await PutBlobAsync(blobStore, db, document, "version A");
+        db.DocumentFileVersions.Add(new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 3, Sha256 = document.Sha256,
+            SizeBytes = document.SizeBytes, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        document.ParseStatus = "parsed";
+        document.ParserBackend = "current-parser";
+        document.ChunkCount = 19;
+        await db.SaveChangesAsync();
+
+        var result = await scope.ServiceProvider.GetRequiredService<DocumentIngestionJobProcessor>()
+            .ProcessAsync(new DocumentIngestionJob(Guid.NewGuid(), _fixture.KnowledgeSystemId,
+                document.Id, "stage-4-test", versionB.Sha256, versionB.Id), CancellationToken.None);
+
+        var link = await db.DocumentFileVersionSnapshots.SingleAsync(item => item.DocumentVersionId == result.Version.Id);
+        Assert.Equal(versionB.Id, link.DocumentFileVersionId);
+        var persisted = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == document.Id);
+        Assert.Equal("parsed", persisted.ParseStatus);
+        Assert.Equal("current-parser", persisted.ParserBackend);
+        Assert.Equal(19, persisted.ChunkCount);
+    }
+
+    [Fact]
+    public async Task Missing_blob_for_old_file_version_does_not_fail_current_document()
+    {
+        await using var services = _fixture.BuildServices();
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var blobStore = scope.ServiceProvider.GetRequiredService<IBlobStore>();
+        var document = await AddDocumentAsync(db, "missing-old-version.txt");
+        await PutBlobAsync(blobStore, db, document, "current version A");
+        var missing = new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 1, Sha256 = new string('c', 64),
+            SizeBytes = 4, CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.DocumentFileVersions.Add(missing);
+        db.DocumentFileVersions.Add(new DocumentFileVersionEntity
+        {
+            DocumentId = document.Id, Version = 2, Sha256 = document.Sha256,
+            SizeBytes = document.SizeBytes, CreatedAt = DateTimeOffset.UtcNow,
+        });
+        document.ParseStatus = "parsed";
+        document.ParserBackend = "current-parser";
+        document.ParseError = null;
+        await db.SaveChangesAsync();
+        var job = new DocumentIngestionJob(Guid.NewGuid(), _fixture.KnowledgeSystemId,
+            document.Id, "stage-4-test", missing.Sha256, missing.Id);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => scope.ServiceProvider
+            .GetRequiredService<DocumentIngestionJobProcessor>()
+            .ProcessAsync(job, CancellationToken.None));
+
+        var persisted = await db.Documents.AsNoTracking().SingleAsync(item => item.Id == document.Id);
+        Assert.Equal("parsed", persisted.ParseStatus);
+        Assert.Equal("current-parser", persisted.ParserBackend);
+        Assert.Null(persisted.ParseError);
+        Assert.Equal("failed", (await db.ExtractionJobs.AsNoTracking().SingleAsync(item => item.Id == job.Id)).Status);
+    }
+
+    [Fact]
     public async Task Cross_knowledge_system_document_is_rejected_without_writes()
     {
         await using var services = _fixture.BuildServices();
@@ -389,13 +600,15 @@ public sealed class DocumentIngestionJobProcessorTests : IClassFixture<PostgresG
             Guid knowledgeSystemId,
             Guid documentId,
             string content,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            Guid? fileVersionId = null)
         {
             var result = await base.IngestAsync(
                 knowledgeSystemId,
                 documentId,
                 content,
-                CancellationToken.None);
+                CancellationToken.None,
+                fileVersionId);
             _cancellation.Cancel();
             return result;
         }

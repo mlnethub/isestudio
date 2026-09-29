@@ -10,6 +10,7 @@ namespace ISEStudio.Application.Documents;
 public sealed record DocumentOut(
     Guid Id,
     Guid KnowledgeSystemId,
+    Guid? SourceId,
     string Sha256,
     string OriginalFilename,
     string Folder,
@@ -25,6 +26,12 @@ public sealed record DocumentOut(
     int ChunkCount,
     DateTimeOffset? TboxExtractedAt,
     DateTimeOffset? AboxExtractedAt);
+
+public sealed record DocumentParseQueueOut(
+    Guid JobId,
+    string Status,
+    Guid DocumentId,
+    Guid DocumentFileVersionId);
 
 /// <summary>
 /// Paginated document list envelope. Mirrors Python

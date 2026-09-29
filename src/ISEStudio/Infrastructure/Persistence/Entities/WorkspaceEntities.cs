@@ -70,6 +70,11 @@ public sealed class DocumentEntity : EntityBase
     /// <summary>FK to the owning knowledge system; null = orphan (will be backfilled on startup).</summary>
     public Guid? KnowledgeSystemId { get; set; }
 
+    public Guid? SourceId { get; set; }
+    public string? ExternalKey { get; set; }
+    public DateTimeOffset? MissingSince { get; set; }
+    public bool IsManualUpload { get; set; } = true;
+
     /// <summary>Content-addressed SHA-256 hex of the raw bytes.</summary>
     public string Sha256 { get; set; } = string.Empty;
 
