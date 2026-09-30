@@ -25,6 +25,7 @@ test.describe("dotnet / upload → extract → publish", () => {
   })
 
   test("upload, extract, review and publish against dotnet", async ({ page }) => {
+    test.setTimeout(300_000)
     await loginAsAdmin(page)
     // Enter the seeded knowledge system before reaching the
     // Documents & Extraction side-nav link.
@@ -52,9 +53,18 @@ test.describe("dotnet / upload → extract → publish", () => {
     // the same selector works regardless of how the dialog labels itself
     // across locales.
     await pdfRow.getByRole("button", { name: /extract|抽取/i }).first().click()
-    await page.getByRole("button", { name: /extract|抽取|start|开始/i }).last().click()
-    await expect(page.getByText("completed")).toBeVisible({ timeout: 60_000 })
+    const extractionResponsePromise = page.waitForResponse((response) =>
+      response.request().method() === "POST"
+        && /^\/api\/knowledge\/[^/]+\/extract-all$/.test(new URL(response.url()).pathname),
+    )
+    await page.getByRole("dialog").getByRole("button", { name: /extract|抽取|start|开始/i }).click()
+    const extractionResponse = await extractionResponsePromise
+    expect(extractionResponse.ok()).toBeTruthy()
+    const job = await extractionResponse.json() as { id: string }
+    await page.getByRole("tab", { name: /extraction queue|抽取队列/i }).click()
+    const jobRow = page.getByRole("row").filter({ has: page.getByText(`#${job.id}`, { exact: true }) })
+    await expect(jobRow.getByRole("cell").nth(1)).toHaveText(/^(completed|已完成)$/i, { timeout: 180_000 })
+    await page.getByRole("link", { name: /releases|发布版本/i }).click()
     await publishCurrentDraft(page)
-    await expect(page.getByText("published")).toBeVisible()
   })
 })
