@@ -151,6 +151,16 @@ const json = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 })
 
+function vocabularyConceptRequest(body: VocabularyConceptInput) {
+  const { pref_labels, ...concept } = body
+  const preferred = pref_labels[0]
+  return {
+    ...concept,
+    pref_label: preferred?.value ?? "",
+    language: preferred?.language ?? "en",
+  }
+}
+
 const patch = (body: unknown): RequestInit => ({
   method: "PATCH",
   headers: { "Content-Type": "application/json" },
@@ -426,16 +436,16 @@ export const api = {
       { method: "DELETE" },
     ),
   createVocabularyConcept: (ksId: string, body: VocabularyConceptInput) =>
-    request<VocabularyConcept>(`/api/knowledge/${ksId}/vocabulary/concepts`, json(body)),
+    request<VocabularyConcept>(`/api/knowledge/${ksId}/vocabulary/concepts`, json(vocabularyConceptRequest(body))),
   updateVocabularyConcept: (ksId: string, iri: string, body: VocabularyConceptInput) =>
     request<VocabularyConcept>(
       `/api/knowledge/${ksId}/vocabulary/concepts?iri=${encodeURIComponent(iri)}`,
-      patch(body),
+      patch({ ...vocabularyConceptRequest(body), iri }),
     ),
   deleteVocabularyConcept: (ksId: string, iri: string) =>
     request<{ deleted: string; removed_triples: number }>(
       `/api/knowledge/${ksId}/vocabulary/concepts?iri=${encodeURIComponent(iri)}`,
-      { method: "DELETE" },
+      { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ iri }) },
     ),
   suggestVocabulary: (ksId: string, schemeIri: string) =>
     request<TermProposalList>(

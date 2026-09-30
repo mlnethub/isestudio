@@ -144,4 +144,66 @@ test.describe("dotnet / ingestion sources", () => {
     expect(movedDocument.folder).toBe(movedFolder)
     expect(movedDocument.source_id).toBe(source.id)
   })
+
+  test("keeps Sources read-only for viewers and denies users without KS access", async ({ page }) => {
+    test.skip(!usesIsolatedSourceTestDatabase(), "Viewer access contracts require the isolated SQLite E2E database.")
+
+    await loginAsAdmin(page)
+    const origin = new URL(page.url()).origin
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    const viewerUsername = `viewer-e2e-${suffix}`
+    const outsiderUsername = `outsider-e2e-${suffix}`
+    const password = `Viewer-e2e-${suffix}-private`
+
+    const viewerResponse = await page.request.post(`${origin}/api/auth/users`, {
+      data: { username: viewerUsername, password, is_admin: false },
+    })
+    expect(viewerResponse.ok()).toBeTruthy()
+    const outsiderResponse = await page.request.post(`${origin}/api/auth/users`, {
+      data: { username: outsiderUsername, password, is_admin: false },
+    })
+    expect(outsiderResponse.ok()).toBeTruthy()
+
+    const systemResponse = await page.request.post(`${origin}/api/knowledge`, {
+      data: { name: `Viewer Source E2E ${suffix}`, description: "Temporary isolated Viewer contract" },
+    })
+    expect(systemResponse.ok()).toBeTruthy()
+    const ksId = (await systemResponse.json() as { id: string }).id
+    const sourceName = `Viewer folder ${suffix}`
+    const sourceResponse = await page.request.post(`${origin}/api/knowledge/${ksId}/ingestion-sources`, {
+      data: { kind: "folder", name: sourceName },
+    })
+    expect(sourceResponse.ok()).toBeTruthy()
+
+    const memberResponse = await page.request.post(`${origin}/api/knowledge/${ksId}/members`, {
+      data: { username: viewerUsername, role: "viewer" },
+    })
+    expect(memberResponse.ok()).toBeTruthy()
+
+    await page.context().clearCookies()
+    await loginAsAdmin(page, { username: viewerUsername, password })
+    await page.goto(`/knowledge/${ksId}/documents?tab=sources`)
+
+    await expect(page.getByRole("heading", { name: /sources|来源/i })).toBeVisible()
+    await expect(page.getByText(sourceName, { exact: true })).toBeVisible()
+    await expect(page.getByRole("button", { name: /add source|添加来源/i })).toHaveCount(0)
+    await expect(page.getByRole("columnheader", { name: /actions|操作/i })).toHaveCount(0)
+    await expect(page.getByRole("button", { name: /edit|delete|sync now|manage.*token|编辑|删除|同步|令牌/i })).toHaveCount(0)
+
+    await page.getByRole("tab", { name: /documents|文档/i }).click()
+    await expect(page.getByRole("button", { name: /upload here|上传到当前目录/i })).toHaveCount(0)
+    await expect(page.getByRole("button", { name: /new folder|新建文件夹/i })).toHaveCount(0)
+    await expect(page.locator("#document-upload-source")).toHaveCount(0)
+    await page.evaluate(() => {
+      const transfer = new DataTransfer()
+      transfer.items.add(new File(["viewer upload must not start"], "viewer.txt", { type: "text/plain" }))
+      window.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: transfer }))
+    })
+    await expect(page.getByText(/drag and drop or click to upload|拖放文件/i)).toHaveCount(0)
+
+    await page.context().clearCookies()
+    await loginAsAdmin(page, { username: outsiderUsername, password })
+    const deniedResponse = await page.request.get(`${origin}/api/knowledge/${ksId}`)
+    expect(deniedResponse.status()).toBe(403)
+  })
 })

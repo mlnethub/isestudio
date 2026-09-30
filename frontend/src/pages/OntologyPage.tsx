@@ -113,8 +113,14 @@ export default function OntologyPage() {
 
   const refresh = useCallback(async () => {
     try {
+      const knowledgeSystemPromise = api.getKS(ksId)
+      const jobsPromise = knowledgeSystemPromise.then((knowledgeSystem) =>
+        knowledgeSystem.my_role === "viewer"
+          ? Promise.resolve<ExtractionJob[]>([])
+          : api.listJobs(ksId),
+      )
       const [k, v, j, c, s] = await Promise.all([
-        api.getKS(ksId), api.getOntology(ksId), api.listJobs(ksId), api.listConflicts(ksId), api.getSources(ksId),
+        knowledgeSystemPromise, api.getOntology(ksId), jobsPromise, api.listConflicts(ksId), api.getSources(ksId),
       ])
       setKs(k); setView(normalizeOntologyView(v)); setJobs(j); setConflicts(c); setSources(s)
     } catch (e) {

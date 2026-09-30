@@ -682,7 +682,7 @@ function TermDialog({
               <SelectContent>{schemes.map((scheme) => <SelectItem key={scheme.iri} value={scheme.iri}>{scheme.title}</SelectItem>)}</SelectContent>
             </Select>
           </div>}
-          <div className="space-y-1.5"><Label>{t("vocabulary.preferredTerm")}</Label><Input value={preferred} onChange={(event) => setPreferred(event.target.value)} autoFocus /></div>
+          <div className="space-y-1.5"><Label htmlFor="vocabulary-preferred-term">{t("vocabulary.preferredTerm")}</Label><Input id="vocabulary-preferred-term" value={preferred} onChange={(event) => setPreferred(event.target.value)} autoFocus /></div>
           <div className="space-y-1.5"><Label>{t("vocabulary.language")}</Label><Input value={language} onChange={(event) => setLanguage(event.target.value)} placeholder="zh-CN" /></div>
           <div className="space-y-1.5 sm:col-span-2"><Label>{t("vocabulary.alternativeLabels")}</Label><Input value={aliases} onChange={(event) => setAliases(event.target.value)} placeholder={t("vocabulary.aliasPlaceholder")} /></div>
           <div className="space-y-1.5 sm:col-span-2"><Label>{t("vocabulary.hiddenLabels")}</Label><Input value={hidden} onChange={(event) => setHidden(event.target.value)} placeholder={t("vocabulary.hiddenPlaceholder")} /></div>

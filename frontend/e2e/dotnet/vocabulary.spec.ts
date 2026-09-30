@@ -32,6 +32,22 @@ test.describe("dotnet / vocabulary (SKOS CRUD)", () => {
     // landing surface. Click whichever Card-as-link tile is rendered.
     await page.getByRole("link", { name: /open/i }).first().click()
 
+    const ksId = new URL(page.url()).pathname.match(/\/knowledge\/([^/]+)/)?.[1]
+    expect(ksId, "The selected knowledge system URL did not contain its id.").toBeTruthy()
+    const schemesResponse = await page.request.get(`/api/knowledge/${ksId}/vocabulary/schemes`)
+    expect(schemesResponse.ok()).toBeTruthy()
+    const schemes = await schemesResponse.json() as { items: { iri: string }[] }
+    if (schemes.items.length === 0) {
+      const createScheme = await page.request.post(`/api/knowledge/${ksId}/vocabulary/schemes`, {
+        data: {
+          title: `E2E terminology ${Date.now()}`,
+          description: "Temporary browser-test fixture",
+          default_language: "en",
+        },
+      })
+      expect(createScheme.ok()).toBeTruthy()
+    }
+
     // The side nav exposes the vocabulary section as a "Terminology" link
     // (URL: /knowledge/{ksId}/vocabulary). Main content does not yet use
     // a tablist primitive, so a `getByRole('tab')` selector would miss it.
@@ -40,8 +56,8 @@ test.describe("dotnet / vocabulary (SKOS CRUD)", () => {
     const uniqueLabel = `dotnet-e2e-${Date.now()}`
 
     // Create a new concept.
-    await page.getByRole("button", { name: /add concept|new concept|\+concept/i }).first().click()
-    await page.getByLabel(/preferred label|prefLabel|label/i).first().fill(uniqueLabel)
+    await page.getByRole("button", { name: /add concept|new concept|new term|\+concept/i }).first().click()
+    await page.getByLabel(/preferred term|preferred label|prefLabel|label/i).first().fill(uniqueLabel)
     await page.getByRole("button", { name: /save|create|confirm/i }).click()
     await expect(page.getByText(uniqueLabel), `Concept "${uniqueLabel}" was not rendered after creation.`).toBeVisible({
       timeout: 15_000,
@@ -51,7 +67,7 @@ test.describe("dotnet / vocabulary (SKOS CRUD)", () => {
     const row = page.getByRole("row").filter({ hasText: uniqueLabel })
     await row.getByRole("button", { name: /edit|pencil/i }).first().click()
     const edited = `${uniqueLabel}-edited`
-    await page.getByLabel(/preferred label|prefLabel|label/i).first().fill(edited)
+    await page.getByLabel(/preferred term|preferred label|prefLabel|label/i).first().fill(edited)
     await page.getByRole("button", { name: /save|update|confirm/i }).click()
     await expect(page.getByText(edited), `Edited concept "${edited}" did not appear.`).toBeVisible({
       timeout: 15_000,
