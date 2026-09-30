@@ -594,6 +594,125 @@ public sealed class DocumentApiTests
         Assert.Contains("/y", folders);
     }
 
+    [Fact]
+    public async Task ListPage_filters_by_source_and_binding_without_duplicates()
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "source-page-filter");
+        var firstUpload = await UploadBytesAsync(
+            client, ksId, "first.txt", "first"u8.ToArray(), folder: "/x");
+        var secondUpload = await UploadBytesAsync(
+            client, ksId, "second.txt", "second"u8.ToArray(), folder: "/y");
+        Assert.Equal(HttpStatusCode.OK, firstUpload.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondUpload.StatusCode);
+        var firstDocumentId = (await firstUpload.Content
+            .ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetGuid();
+        var secondDocumentId = (await secondUpload.Content
+            .ReadFromJsonAsync<System.Text.Json.JsonElement>()).GetProperty("id").GetGuid();
+
+        var firstSource = new SourceEntity
+        {
+            KnowledgeSystemId = ksId,
+            Kind = "folder",
+            Name = "First source",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        var secondSource = new SourceEntity
+        {
+            KnowledgeSystemId = ksId,
+            Kind = "folder",
+            Name = "Second source",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        var emptySource = new SourceEntity
+        {
+            KnowledgeSystemId = ksId,
+            Kind = "folder",
+            Name = "Empty source",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        using (var db = app.CreateDbContext())
+        {
+            db.Sources.AddRange(firstSource, secondSource, emptySource);
+            await db.SaveChangesAsync();
+
+            var firstDocument = await db.Documents.SingleAsync(document => document.Id == firstDocumentId);
+            var secondDocument = await db.Documents.SingleAsync(document => document.Id == secondDocumentId);
+            firstDocument.SourceId = firstSource.Id;
+            secondDocument.SourceId = secondSource.Id;
+            db.SourceDocumentBindings.AddRange(
+                new SourceDocumentBindingEntity
+                {
+                    SourceId = firstSource.Id,
+                    ExternalKey = "first-shared",
+                    DocumentId = secondDocumentId,
+                },
+                new SourceDocumentBindingEntity
+                {
+                    SourceId = secondSource.Id,
+                    ExternalKey = "second-primary",
+                    DocumentId = secondDocumentId,
+                });
+            await db.SaveChangesAsync();
+        }
+
+        var firstPage = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+            $"/api/knowledge/{ksId}/documents/page?source_id={firstSource.Id}&limit=10");
+        var firstItems = firstPage.GetProperty("items").EnumerateArray()
+            .Select(item => item.GetProperty("id").GetGuid()).ToList();
+        Assert.Equal(2L, firstPage.GetProperty("total").GetInt64());
+        Assert.Equal(new[] { firstDocumentId, secondDocumentId }.OrderBy(id => id),
+            firstItems.OrderBy(id => id));
+
+        var secondPage = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+            $"/api/knowledge/{ksId}/documents/page?source_id={secondSource.Id}&limit=10");
+        var secondItems = secondPage.GetProperty("items").EnumerateArray()
+            .Select(item => item.GetProperty("id").GetGuid()).ToList();
+        Assert.Equal(1L, secondPage.GetProperty("total").GetInt64());
+        Assert.Equal(secondDocumentId, Assert.Single(secondItems));
+
+        var emptyPage = await client.GetFromJsonAsync<System.Text.Json.JsonElement>(
+            $"/api/knowledge/{ksId}/documents/page?source_id={emptySource.Id}&folder=/x&limit=10");
+        Assert.Empty(emptyPage.GetProperty("items").EnumerateArray());
+        Assert.Equal(0L, emptyPage.GetProperty("total").GetInt64());
+        var folders = emptyPage.GetProperty("folders").EnumerateArray()
+            .Select(item => item.GetString()).ToList();
+        Assert.Contains("/x", folders);
+        Assert.Contains("/y", folders);
+    }
+
+    [Theory]
+    [InlineData("malformed")]
+    [InlineData("missing")]
+    [InlineData("foreign")]
+    public async Task ListPage_rejects_malformed_missing_or_foreign_source(string sourceKind)
+    {
+        await using var app = new AuthTestWebApplicationFactory();
+        var (client, _) = await SeedAdminAndClientAsync(app);
+        var ksId = await CreateKsAsync(client, "invalid-page-source");
+        var sourceId = sourceKind == "malformed" ? "not-a-guid" : Guid.NewGuid().ToString();
+
+        if (sourceKind == "foreign")
+        {
+            var otherKsId = await CreateKsAsync(client, "foreign-page-source");
+            var foreignUpload = await UploadBytesAsync(
+                client, otherKsId, "foreign-private.txt", "private"u8.ToArray(), folder: "/");
+            Assert.Equal(HttpStatusCode.OK, foreignUpload.StatusCode);
+            using var db = app.CreateDbContext();
+            sourceId = (await db.Sources
+                .Where(source => source.KnowledgeSystemId == otherKsId)
+                .Select(source => source.Id)
+                .SingleAsync()).ToString();
+        }
+
+        var response = await client.GetAsync(
+            $"/api/knowledge/{ksId}/documents/page?source_id={sourceId}");
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("foreign-private.txt", responseBody);
+    }
+
     // -----------------------------------------------------------------
     // Parse flow
     // -----------------------------------------------------------------

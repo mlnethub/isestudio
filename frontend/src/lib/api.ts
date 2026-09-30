@@ -262,6 +262,7 @@ export const api = {
       folder?: string
       q?: string
       status?: "pending" | "parsed" | "failed"
+      sourceId?: string
       limit?: number
       offset?: number
     } = {},
@@ -270,6 +271,7 @@ export const api = {
     if (params.folder !== undefined) qs.set("folder", params.folder)
     if (params.q) qs.set("q", params.q)
     if (params.status) qs.set("status", params.status)
+    if (params.sourceId) qs.set("source_id", params.sourceId)
     qs.set("limit", String(params.limit ?? 20))
     qs.set("offset", String(params.offset ?? 0))
     return request<DocumentListResponse>(`/api/knowledge/${ksId}/documents/page?${qs.toString()}`)

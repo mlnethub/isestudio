@@ -63,11 +63,19 @@ public sealed class DocumentApplicationService : IDocumentApplicationService
         var folder = QueryString(request, "folder");
         var q = QueryString(request, "q");
         var status = QueryString(request, "status");
+        var sourceIdValue = QueryString(request, "source_id");
+        Guid? sourceId = null;
+        if (sourceIdValue is not null)
+        {
+            if (!Guid.TryParse(sourceIdValue, out var parsedSourceId))
+                throw new InvalidOperationException("source_id must be a valid GUID.");
+            sourceId = parsedSourceId;
+        }
         var limit = QueryInt(request, "limit", 50);
         var offset = QueryInt(request, "offset", 0);
         return _documents.ListPageAsync(
             request.KnowledgeSystemGuid.Value, folder, q, status,
-            limit, offset, request.Actor, cancellationToken);
+            limit, offset, request.Actor, cancellationToken, sourceId);
     }
 
     public Task<DocumentOut?> GetAsync(

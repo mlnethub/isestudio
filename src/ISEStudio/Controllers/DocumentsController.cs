@@ -42,8 +42,17 @@ public sealed class DocumentsController : InternalControllerBase
 
     [HttpGet("api/knowledge/{id:guid}/documents/page")]
     [KSRoleAuthorize(Minimum = KSRole.Viewer)]
-    public Task<IActionResult> ListPageAsync(Guid id, CancellationToken ct)
-        => InvokeAsync("documents.list_page", ReqGuid(id), ct);
+    public async Task<IActionResult> ListPageAsync(Guid id, CancellationToken ct)
+    {
+        try
+        {
+            return await InvokeAsync("documents.list_page", ReqGuid(id), ct).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(new { detail = ex.Message });
+        }
+    }
 
     [HttpPost("api/knowledge/{id:guid}/documents/parse-batch")]
     [KSRoleAuthorize(Minimum = KSRole.Editor)]

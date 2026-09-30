@@ -104,6 +104,12 @@ test.describe("dotnet / ingestion sources", () => {
     expect(sourceResponse.ok()).toBeTruthy()
     const source = await sourceResponse.json() as { id: string; kind: string }
     expect(source.kind).toBe("folder")
+    const emptySourceName = `Empty filter source ${Date.now()}`
+    const emptySourceResponse = await page.request.post(`${origin}/api/knowledge/${ksId}/ingestion-sources`, {
+      data: { kind: "folder", name: emptySourceName },
+    })
+    expect(emptySourceResponse.ok()).toBeTruthy()
+    const emptySource = await emptySourceResponse.json() as { id: string }
 
     await page.getByRole("tab", { name: /documents|文档/i }).click()
     await page.getByLabel(/upload source/i).click()
@@ -128,6 +134,34 @@ test.describe("dotnet / ingestion sources", () => {
 
     const documentRow = page.getByRole("row").filter({ hasText: "pump.pdf" })
     await expect(documentRow).toBeVisible()
+
+    const sourceFilter = page.getByLabel(/filter by source|按来源筛选/i)
+    const emptyFilterResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url())
+      return url.pathname === `/api/knowledge/${ksId}/documents/page`
+        && response.request().method() === "GET"
+        && url.searchParams.get("source_id") === emptySource.id
+    })
+    await sourceFilter.click()
+    await page.getByRole("option", { name: emptySourceName, exact: true }).click()
+    const emptyFilterResponse = await emptyFilterResponsePromise
+    expect(emptyFilterResponse.ok()).toBeTruthy()
+    await expect(documentRow).toHaveCount(0)
+    await expect(page.getByText(/this folder is empty|此文件夹为空/i)).toBeVisible()
+
+    const allSourcesResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url())
+      return url.pathname === `/api/knowledge/${ksId}/documents/page`
+        && response.request().method() === "GET"
+        && url.searchParams.get("source_id") === null
+    })
+    await sourceFilter.click()
+    await page.getByRole("option", { name: /all sources|全部来源/i }).click()
+    const allSourcesResponse = await allSourcesResponsePromise
+    expect(allSourcesResponse.ok()).toBeTruthy()
+    await expect(documentRow).toBeVisible()
+    await expect(page.getByLabel(/upload source/i)).toHaveText(sourceName)
+
     await documentRow.getByRole("button", { name: /move/i }).click()
     const moveDialog = page.getByRole("dialog")
     const movedFolder = `/source-ui-moved-${Date.now()}`

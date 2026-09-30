@@ -105,12 +105,12 @@ public sealed class DocumentService
 
     /// <summary>
     /// Paginated list with optional <c>folder</c> / <c>q</c> (filename
-    /// substring) / <c>status</c> filters plus a <c>folders</c> distinct
-    /// enumeration.
+    /// substring) / <c>status</c> / <c>source_id</c> filters plus a
+    /// <c>folders</c> distinct enumeration.
     /// </summary>
     public async Task<DocumentListResponse?> ListPageAsync(
         Guid ksId, string? folder, string? q, string? status,
-        int limit, int offset, Actor actor, CancellationToken ct)
+        int limit, int offset, Actor actor, CancellationToken ct, Guid? sourceId = null)
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Viewer, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
@@ -119,12 +119,25 @@ public sealed class DocumentService
             throw new InvalidOperationException("limit must be between 1 and 100.");
         if (offset < 0)
             throw new InvalidOperationException("offset must be >= 0.");
+        if (sourceId is Guid selectedSourceId
+            && !await _db.Sources.AnyAsync(
+                source => source.Id == selectedSourceId && source.KnowledgeSystemId == ks.Id,
+                ct).ConfigureAwait(false))
+        {
+            throw new InvalidOperationException("source_id must belong to this knowledge system.");
+        }
 
         var conditions = new List<System.Linq.Expressions.Expression<Func<DocumentEntity, bool>>>(
-            capacity: 4)
+            capacity: 5)
         {
             d => d.KnowledgeSystemId == ks.Id,
         };
+        if (sourceId is Guid filterSourceId)
+        {
+            conditions.Add(d => d.SourceId == filterSourceId
+                || _db.SourceDocumentBindings.Any(binding =>
+                    binding.SourceId == filterSourceId && binding.DocumentId == d.Id));
+        }
         if (!string.IsNullOrWhiteSpace(folder))
         {
             var normFolder = NormalizeFolder(folder);

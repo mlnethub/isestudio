@@ -157,8 +157,10 @@ export default function KsDocuments({
   const [serverFolders, setServerFolders] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
+  const [ingestionSources, setIngestionSources] = useState<{ id: string; name: string }[]>([])
   const [folderSources, setFolderSources] = useState<{ id: string; name: string }[]>([])
   const [selectedSourceId, setSelectedSourceId] = useState("")
+  const [selectedFilterSourceId, setSelectedFilterSourceId] = useState("all")
   const [parsing, setParsing] = useState<string | null>(null)
   const [batchParsing, setBatchParsing] = useState(false)
   const [dragOver, setDragOver] = useState(false)
@@ -184,6 +186,7 @@ export default function KsDocuments({
       const result = await api.listDocumentsPage(ksId, {
         folder: debouncedSearch ? undefined : cwd,
         q: debouncedSearch || undefined,
+        sourceId: selectedFilterSourceId === "all" ? undefined : selectedFilterSourceId,
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       })
@@ -195,23 +198,20 @@ export default function KsDocuments({
     } finally {
       setLoading(false)
     }
-  }, [cwd, debouncedSearch, ksId, page, t])
+  }, [cwd, debouncedSearch, ksId, page, selectedFilterSourceId, t])
 
   useEffect(() => { refresh() }, [refresh])
   useEffect(() => {
-    if (!canWrite) {
-      setFolderSources([])
-      setSelectedSourceId("")
-      return
-    }
     let active = true
     void api.listIngestionSources(ksId).then((sources) => {
       if (!active) return
-      const folders = sources
+      setIngestionSources(sources.map(({ id, name }) => ({ id, name })))
+      const folders = (canWrite ? sources : [])
         .filter((source) => source.kind === "folder")
         .map(({ id, name }) => ({ id, name }))
       setFolderSources(folders)
-      setSelectedSourceId((current) =>
+      if (!canWrite) setSelectedSourceId("")
+      else setSelectedSourceId((current) =>
         folders.some((source) => source.id === current) ? current : folders[0]?.id ?? "",
       )
     }).catch(() => {
@@ -223,7 +223,7 @@ export default function KsDocuments({
     const timer = setTimeout(() => setDebouncedSearch(search.trim()), 300)
     return () => clearTimeout(timer)
   }, [search])
-  useEffect(() => { setPage(0) }, [cwd, debouncedSearch])
+  useEffect(() => { setPage(0) }, [cwd, debouncedSearch, selectedFilterSourceId])
   useEffect(() => {
     setPage((current) => Math.min(current, Math.max(0, Math.ceil(docTotal / PAGE_SIZE) - 1)))
   }, [docTotal])
@@ -495,8 +495,26 @@ export default function KsDocuments({
         )}
       </div>
 
-      {canWrite && folderSources.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2 border-b pb-3">
+      <div className="flex flex-wrap items-center gap-2 border-b pb-3">
+        <Label htmlFor="document-source-filter" className="text-xs text-muted-foreground">
+          {t("documents.filterBySource")}
+        </Label>
+        <Select value={selectedFilterSourceId} onValueChange={(value) => {
+          setSelectedFilterSourceId(value)
+          setPage(0)
+        }}>
+          <SelectTrigger id="document-source-filter" className="h-8 min-w-48 max-w-full text-sm">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t("documents.allSources")}</SelectItem>
+            {ingestionSources.map((source) => (
+              <SelectItem key={source.id} value={source.id}>{source.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {canWrite && folderSources.length > 0 && (
+        <>
           <Label htmlFor="document-upload-source" className="text-xs text-muted-foreground">
             {t("ingestionSources.uploadSource")}
           </Label>
@@ -510,8 +528,9 @@ export default function KsDocuments({
               ))}
             </SelectContent>
           </Select>
-        </div>
-      )}
+        </>
+        )}
+      </div>
 
       <input
         ref={inputRef} type="file" multiple className="hidden"
