@@ -6,11 +6,40 @@ namespace ISEStudio.Ontology;
 
 public sealed class PostgresRdfStatementRepository : IRdfStatementRepository
 {
+    private const string XsdString = "http://www.w3.org/2001/XMLSchema#string";
     private readonly ISEStudioDbContext _db;
 
     public PostgresRdfStatementRepository(ISEStudioDbContext db)
     {
         _db = db;
+    }
+
+    public Task<RdfWriteScope> BeginWriteAsync(Guid knowledgeSystemId, CancellationToken cancellationToken = default)
+        => RdfWriteScope.BeginAsync(_db, knowledgeSystemId, cancellationToken);
+
+    public Task<RdfWriteScope> BeginCaptureWriteAsync(Guid knowledgeSystemId, CancellationToken cancellationToken = default)
+        => _db.Database.IsNpgsql()
+            ? RdfWriteScope.BeginAsync(_db, knowledgeSystemId, cancellationToken)
+            : Task.FromResult(RdfWriteScope.Unmanaged());
+
+    public async Task<bool> AppendIfAbsentAsync(Guid knowledgeSystemId, string layer, RdfStatement statement, CancellationToken cancellationToken = default)
+    {
+        await using var write = await BeginWriteAsync(knowledgeSystemId, cancellationToken).ConfigureAwait(false);
+        var row = ToEntity(knowledgeSystemId, layer, statement, DateTimeOffset.UtcNow);
+        var exists = await _db.WorkspaceStatements.AsNoTracking().AnyAsync(item =>
+            item.KnowledgeSystemId == knowledgeSystemId && item.Layer == layer && item.GraphIri == row.GraphIri
+            && item.Subject == row.Subject && item.SubjectKind == row.SubjectKind && item.Predicate == row.Predicate
+            && item.Object == row.Object && item.ObjectKind == row.ObjectKind
+            && item.Language == row.Language && (item.Datatype == row.Datatype
+                || (row.ObjectKind == "literal" && row.Language == null && row.Datatype == null && item.Datatype == XsdString)),
+            cancellationToken).ConfigureAwait(false);
+        if (!exists)
+        {
+            _db.WorkspaceStatements.Add(row);
+            await _db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        await write.CommitAsync(cancellationToken).ConfigureAwait(false);
+        return !exists;
     }
 
     public async Task ReplaceLayerAsync(
@@ -21,6 +50,8 @@ public sealed class PostgresRdfStatementRepository : IRdfStatementRepository
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(layer);
         ArgumentNullException.ThrowIfNull(statements);
+
+        await using var write = await BeginWriteAsync(knowledgeSystemId, cancellationToken).ConfigureAwait(false);
 
         await _db.WorkspaceStatements
             .Where(item => item.KnowledgeSystemId == knowledgeSystemId && item.Layer == layer)
@@ -41,6 +72,7 @@ public sealed class PostgresRdfStatementRepository : IRdfStatementRepository
         var now = DateTimeOffset.UtcNow;
         _db.WorkspaceStatements.AddRange(statements.Select(statement => ToEntity(knowledgeSystemId, layer, statement, now)));
         await _db.SaveChangesAsync(cancellationToken);
+        await write.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<RdfStatement>> ListAsync(
@@ -89,7 +121,8 @@ public sealed class PostgresRdfStatementRepository : IRdfStatementRepository
     {
         RdfIri iri => (iri.Value, "iri", null, null),
         RdfBlankNode blank => (blank.Id, "blank", null, null),
-        RdfLiteral literal => (literal.Value, "literal", literal.Language, literal.Datatype),
+        RdfLiteral literal => (literal.Value, "literal", literal.Language,
+            literal.Datatype == XsdString ? null : literal.Datatype),
         _ => throw new ArgumentOutOfRangeException(nameof(term)),
     };
 

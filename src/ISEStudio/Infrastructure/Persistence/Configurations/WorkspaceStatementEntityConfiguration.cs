@@ -21,6 +21,5 @@ public sealed class WorkspaceStatementEntityConfiguration : IEntityTypeConfigura
         builder.Property(item => item.Datatype).HasMaxLength(2048);
         builder.Property(item => item.CreatedAt).IsRequired();
         builder.HasIndex(item => new { item.KnowledgeSystemId, item.Layer });
-        builder.HasIndex(item => new { item.KnowledgeSystemId, item.Layer, item.Subject, item.Predicate, item.Object, item.Language, item.Datatype }).IsUnique();
     }
 }

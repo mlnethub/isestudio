@@ -95,6 +95,8 @@ public sealed class ExtractionMerger : IExtractionMerger
         ArgumentNullException.ThrowIfNull(delta);
         if (delta.IsEmpty) return ExtractionMergeResult.Empty;
 
+        using var write = _statements.BeginWriteAsync(ks.KnowledgeSystemId).GetAwaiter().GetResult();
+
         var tboxStatements = _statements.ListAsync(ks.KnowledgeSystemId, "TBox")
             .GetAwaiter().GetResult();
         var view = SchemaBuilder.BuildView(ks.TBoxGraph, tboxStatements);
@@ -181,6 +183,7 @@ public sealed class ExtractionMerger : IExtractionMerger
             }
         }
 
+        write.Commit();
         return new ExtractionMergeResult(
             ClassesAdded: 0,
             PropertiesAdded: 0,

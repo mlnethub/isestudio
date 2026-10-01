@@ -6,6 +6,7 @@ using Microsoft.EntityFrameworkCore;
 using ISEStudio.Authorization;
 using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Sources.Networking;
 
 namespace ISEStudio.Sources;
 
@@ -70,7 +71,7 @@ public sealed class SourceService
             summary.Id, summary.Kind, summary.SupportsPushToken, summary.Name, summary.Icon, summary.SyncIntervalMinutes,
             summary.SyncCron, summary.LastSyncedAt, summary.LastSyncStatus, summary.LastSyncError,
             summary.LastSyncAdded, summary.CreatedAt, summary.DocumentCount, summary.MissingDocumentCount,
-            ProjectConfig(source)));
+            ProjectConfig(source), summary.RssFullContent));
     }
 
     public async Task<SourceMutationResult<SourceSyncJobOut>> SyncAsync(
@@ -318,6 +319,7 @@ public sealed class SourceService
         }
 
         if (source is null) return SourceMutationResult<bool>.Failure(404, "Source not found");
+        await using var aboxWrite = await ISEStudio.Ontology.RdfWriteScope.BeginAsync(_db, ksId, ct).ConfigureAwait(false);
         if (await _db.SourceSyncJobs.AnyAsync(
                 job => job.SourceId == sourceId && (job.Status == "queued" || job.Status == "running"), ct)
             .ConfigureAwait(false))
@@ -433,16 +435,33 @@ public sealed class SourceService
         return SourceMutationResult<SourceTokenOut>.Success(new SourceTokenOut(token));
     }
 
-    public async Task<bool> VerifyAsync(
-        Guid ksId, Guid sourceId, string? presentedToken, CancellationToken ct)
+    public Task<bool> VerifyAsync(
+        Guid ksId, Guid sourceId, string? presentedToken, CancellationToken ct, string? requiredKind = null)
+        => VerifyAsync(_db, ksId, sourceId, presentedToken, ct, requiredKind);
+
+    internal async Task<bool> VerifyAsync(
+        ISEStudioDbContext db, Guid ksId, Guid sourceId, string? presentedToken, CancellationToken ct,
+        string? requiredKind = null)
     {
         if (string.IsNullOrEmpty(presentedToken) || !_secrets.IsConfigured) return false;
-        var source = await _db.Sources.AsNoTracking().SingleOrDefaultAsync(
+        var source = await db.Sources.AsNoTracking().SingleOrDefaultAsync(
             item => item.Id == sourceId && item.KnowledgeSystemId == ksId,
             ct).ConfigureAwait(false);
         if (source is null || !SupportsPushToken(source.Kind)
+            || (requiredKind is not null && source.Kind != requiredKind)
             || string.IsNullOrWhiteSpace(source.IngestTokenCiphertext))
             return false;
+
+        if (requiredKind is SourceKind.Api or SourceKind.Statements)
+        {
+            try
+            {
+                using var config = JsonDocument.Parse(source.Config);
+                if (config.RootElement.ValueKind != JsonValueKind.Object || config.RootElement.EnumerateObject().Any())
+                    return false;
+            }
+            catch (JsonException) { return false; }
+        }
 
         try
         {
@@ -494,6 +513,29 @@ public sealed class SourceService
 
         return await _db.Sources.SingleOrDefaultAsync(
             item => item.Id == sourceId && item.KnowledgeSystemId == ksId, ct).ConfigureAwait(false);
+    }
+
+    public SourceRequestOptions CreateRequestOptions(SourceEntity source, string? authorizationField = null,
+        string? cookieField = null, IReadOnlyDictionary<string, string>? headers = null)
+    {
+        if (!_registry.TryGet(source.Kind, out var kind))
+            throw new SourceNetworkException("Source kind is not available.");
+        foreach (var field in new[] { authorizationField, cookieField }.OfType<string>())
+        {
+            if (!kind.ConfigFields.Any(descriptor => descriptor.Name == field && descriptor.Secret))
+                throw new SourceNetworkException("Source credential field is not registered.");
+        }
+        return SourceRequestOptions.FromSealedConfig(_secrets, source, authorizationField, cookieField, headers);
+    }
+
+    public SourceRequestOptions CreateContentRequestOptions(SourceEntity source)
+    {
+        if (source.Kind is not (SourceKind.WebDav or SourceKind.Notion) || !_registry.TryGet(source.Kind, out var kind))
+            throw new SourceNetworkException("Source kind is not available.");
+        foreach (var field in source.Kind == SourceKind.Notion ? new[] { "token" } : new[] { "username", "password" })
+            if (!kind.ConfigFields.Any(descriptor => descriptor.Name == field && descriptor.Secret))
+                throw new SourceNetworkException("Source credential field is not registered.");
+        return SourceRequestOptions.FromSealedContentConfig(_secrets, source);
     }
 
     private string? Validate(SourceUpsertRequest request, out SourceKindDescriptor kind)
@@ -562,6 +604,10 @@ public sealed class SourceService
                     if (!_secrets.IsConfigured)
                         return (null, 503, "Source secret protection is not configured", changedFields);
 
+                    if (kind.Kind == SourceKind.Gcs && field.Name == "service_account_key"
+                        && Adapters.ObjectStorageSourceConfig.ValidateServiceAccount(property.Value.GetString()!) is { } storageError)
+                        return (null, 400, storageError, changedFields);
+
                     var ciphertext = _secrets.Seal(
                         property.Value.GetString()!, ConfigAssociatedData(source.KnowledgeSystemId, source.Id, field.Name));
                     values[field.Name] = JsonSerializer.SerializeToElement(ciphertext, JsonOptions);
@@ -610,7 +656,10 @@ public sealed class SourceService
             }
         }
 
-        return (JsonSerializer.Serialize(values, JsonOptions), 200, null, changedFields);
+        var serialized = JsonSerializer.SerializeToElement(values, JsonOptions);
+        if (kind.ValidateConfig?.Invoke(serialized) is { } error)
+            return (null, 400, error, changedFields);
+        return (serialized.GetRawText(), 200, null, changedFields);
     }
 
     private static bool MatchesType(JsonElement value, string type)
@@ -648,7 +697,8 @@ public sealed class SourceService
         return new SourceOut(
             source.Id, source.Kind, SupportsPushToken(source.Kind), source.Name, source.Icon, source.SyncIntervalMinutes, source.SyncCron,
             source.LastSyncedAt, source.LastSyncStatus, source.LastSyncError, source.LastSyncAdded,
-            source.CreatedAt, documentCount, missingDocumentCount);
+            source.CreatedAt, documentCount, missingDocumentCount,
+            source.Kind == SourceKind.Rss ? new RssFullContentSummary("full", documentCount, missingDocumentCount) : null);
     }
 
     private JsonElement ProjectConfig(SourceEntity source)
@@ -657,6 +707,8 @@ public sealed class SourceService
         var visible = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         if (_registry.TryGet(source.Kind, out var kind))
         {
+            if (kind.ValidateConfig?.Invoke(parsed.RootElement) is not null)
+                return JsonSerializer.SerializeToElement(visible, JsonOptions);
             foreach (var field in kind.ConfigFields.Where(field => !field.Secret))
             {
                 if (parsed.RootElement.TryGetProperty(field.Name, out var value))

@@ -116,6 +116,17 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
     }
 
     [Fact]
+    public void AddDataAssertion_treats_explicit_xsd_string_as_plain_string()
+    {
+        var abox = new ABoxManager(_fx.Statements);
+        var subj = abox.CreateIndividual(_ks, "urn:ind-1", "urn:Class");
+        const string xsdString = "http://www.w3.org/2001/XMLSchema#string";
+
+        Assert.True(abox.AddDataAssertion(_ks, subj, "urn:name", "Ada", null));
+        Assert.False(abox.AddDataAssertion(_ks, subj, "urn:name", "Ada", xsdString));
+    }
+
+    [Fact]
     public void AddObjectAssertion_writes_object_property_triple()
     {
         var abox = new ABoxManager(_fx.Statements);
@@ -140,6 +151,19 @@ public class ABoxManagerTests : IClassFixture<ABoxManagerFixture>, IAsyncLifetim
 
         Assert.Empty(_fx.ABox.Match(
             subjectIri: subj, predicateIri: "urn:age", graphIri: _ks.ABoxGraph));
+    }
+
+    [Fact]
+    public void RemoveDataAssertion_with_explicit_xsd_string_removes_plain_string()
+    {
+        var abox = new ABoxManager(_fx.Statements);
+        var subj = abox.CreateIndividual(_ks, "urn:ind-1", "urn:Class");
+        abox.AddDataAssertion(_ks, subj, "urn:name", "Ada", null);
+
+        abox.RemoveDataAssertion(_ks, subj, "urn:name", "Ada", "http://www.w3.org/2001/XMLSchema#string");
+
+        Assert.Empty(_fx.ABox.Match(
+            subjectIri: subj, predicateIri: "urn:name", graphIri: _ks.ABoxGraph));
     }
 
     [Fact]

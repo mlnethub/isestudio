@@ -46,6 +46,7 @@ public sealed class PostgresRdfGraphStore
     /// </summary>
     public void AddStatements(string graphIri, IEnumerable<RdfStatement> statements)
     {
+        using var write = _statements.BeginWriteAsync(_knowledgeSystemId).GetAwaiter().GetResult();
         _writeLock.Wait();
         try
         {
@@ -57,6 +58,7 @@ public sealed class PostgresRdfGraphStore
                 .Distinct()
                 .ToList();
             Replace(other.Concat(inGraph));
+            write.Commit();
         }
         finally { _writeLock.Release(); }
     }
@@ -66,6 +68,7 @@ public sealed class PostgresRdfGraphStore
     /// </summary>
     public void RemoveStatements(string graphIri, IEnumerable<RdfStatement> statements)
     {
+        using var write = _statements.BeginWriteAsync(_knowledgeSystemId).GetAwaiter().GetResult();
         _writeLock.Wait();
         try
         {
@@ -74,14 +77,19 @@ public sealed class PostgresRdfGraphStore
                 .Where(s => !(s.GraphIri == graphIri && remove.Contains(s)))
                 .ToList();
             Replace(remaining);
+            write.Commit();
         }
         finally { _writeLock.Release(); }
     }
 
-    public ValueTask<PostgresRdfCapture> CaptureAsync(string graphIri, CancellationToken cancellationToken = default)
+    public async ValueTask<PostgresRdfCapture> CaptureAsync(string graphIri, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        return ValueTask.FromResult(new PostgresRdfCapture(this, graphIri, DumpNQuads(graphIri)));
+        var write = _layer == "ABox"
+            ? await _statements.BeginCaptureWriteAsync(_knowledgeSystemId, cancellationToken).ConfigureAwait(false)
+            : RdfWriteScope.Unmanaged();
+        try { return new PostgresRdfCapture(this, graphIri, DumpNQuads(graphIri), write); }
+        catch { await write.DisposeAsync().ConfigureAwait(false); throw; }
     }
 
     public ValueTask<PostgresRdfCapture> CaptureAsync(string graphIri,
@@ -107,8 +115,10 @@ public sealed class PostgresRdfGraphStore
 
     internal void Restore(string graphIri, byte[] snapshot)
     {
+        using var write = _statements.BeginWriteAsync(_knowledgeSystemId).GetAwaiter().GetResult();
         var restored = RdfDotNetRdfCodec.ParseNQuads(snapshot).Statements;
         Replace(Statements().Where(s => s.GraphIri != graphIri).Concat(restored));
+        write.Commit();
     }
 
     private IReadOnlyList<RdfStatement> Statements() =>
@@ -125,19 +135,25 @@ public sealed class PostgresRdfCapture : IAsyncDisposable
     private readonly string _graphIri;
     private readonly byte[] _snapshot;
     private bool _error;
+    private readonly RdfWriteScope _write;
 
-    internal PostgresRdfCapture(PostgresRdfGraphStore store, string graphIri, byte[] snapshot)
+    internal PostgresRdfCapture(PostgresRdfGraphStore store, string graphIri, byte[] snapshot, RdfWriteScope write)
     {
         _store = store;
         _graphIri = graphIri;
         _snapshot = snapshot;
+        _write = write;
     }
 
     public void MarkError() => _error = true;
 
-    public ValueTask DisposeAsync()
+    public async ValueTask DisposeAsync()
     {
-        if (_error) _store.Restore(_graphIri, _snapshot);
-        return ValueTask.CompletedTask;
+        try
+        {
+            if (_error) _store.Restore(_graphIri, _snapshot);
+            await _write.CommitAsync().ConfigureAwait(false);
+        }
+        finally { await _write.DisposeAsync().ConfigureAwait(false); }
     }
 }

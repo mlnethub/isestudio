@@ -45,6 +45,7 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
     private readonly IReadOnlyCollection<SourceKindDescriptor>? _sourceKindOverrides;
     private readonly ISourceSyncQueueWakeup? _sourceSyncQueueWakeupOverride;
     private readonly bool _sourceTickerEnabled;
+    private readonly bool _extractionWorkerEnabled;
 
     public AuthTestWebApplicationFactory() : this(passwordOverride: null, sourceEncryptionKey: null)
     {
@@ -66,7 +67,8 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
         string? sourceEncryptionKey,
         IReadOnlyCollection<SourceKindDescriptor>? sourceKindOverrides = null,
         ISourceSyncQueueWakeup? sourceSyncQueueWakeupOverride = null,
-        bool sourceTickerEnabled = false)
+        bool sourceTickerEnabled = false,
+        bool extractionWorkerEnabled = false)
     {
         var testId = Guid.NewGuid().ToString("N");
         var rawPath = Path.Combine(
@@ -96,6 +98,7 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
         _sourceKindOverrides = sourceKindOverrides;
         _sourceSyncQueueWakeupOverride = sourceSyncQueueWakeupOverride;
         _sourceTickerEnabled = sourceTickerEnabled;
+        _extractionWorkerEnabled = extractionWorkerEnabled;
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -208,11 +211,14 @@ public class AuthTestWebApplicationFactory : WebApplicationFactory<Program>
             // BackgroundService exception stops the whole host
             // (HostOptions.BackgroundServiceExceptionBehavior = StopHost),
             // and every later request hits a disposed TestServer.
-            var workerDescriptors = services
-                .Where(d => d.ServiceType == typeof(IHostedService)
-                    && d.ImplementationType == typeof(DurableExtractionWorker))
-                .ToList();
-            foreach (var desc in workerDescriptors) services.Remove(desc);
+            if (!_extractionWorkerEnabled)
+            {
+                var workerDescriptors = services
+                    .Where(d => d.ServiceType == typeof(IHostedService)
+                        && d.ImplementationType == typeof(DurableExtractionWorker))
+                    .ToList();
+                foreach (var desc in workerDescriptors) services.Remove(desc);
+            }
             var parseWorkerDescriptors = services
                 .Where(d => d.ServiceType == typeof(IHostedService)
                     && d.ImplementationType == typeof(DocumentParseWorker))

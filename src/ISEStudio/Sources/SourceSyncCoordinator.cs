@@ -45,7 +45,7 @@ public sealed class SourceSyncCoordinator
         if (source is null)
             return new SourceSyncResult(0, 0, ["Source not found."], IsComplete: false);
         if (!_adapters.TryGetValue(source.Kind, out var adapter))
-            return new SourceSyncResult(0, 0, [$"No adapter is registered for source kind '{source.Kind}'."], false);
+            return new SourceSyncResult(0, 0, ["Source connector is unavailable."], false);
 
         SourceScan scan;
         try
@@ -56,9 +56,9 @@ public sealed class SourceSyncCoordinator
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            return new SourceSyncResult(0, 0, [exception.Message], IsComplete: false);
+            return new SourceSyncResult(0, 0, ["Source discovery failed."], IsComplete: false);
         }
 
         var errors = new List<string>();
@@ -73,7 +73,7 @@ public sealed class SourceSyncCoordinator
                 await using var itemContent = item.Content;
                 if (!seenKeys.Add(item.ExternalKey))
                 {
-                    errors.Add($"Duplicate external key '{item.ExternalKey}' in source scan.");
+                    errors.Add("Source scan contains duplicate identities.");
                     continue;
                 }
 
@@ -91,9 +91,9 @@ public sealed class SourceSyncCoordinator
                 {
                     throw;
                 }
-                catch (Exception exception)
+                catch (Exception)
                 {
-                    errors.Add($"'{item.ExternalKey}': {exception.Message}");
+                    errors.Add("Source item ingestion failed.");
                 }
             }
             enumerationCompleted = true;
@@ -102,9 +102,9 @@ public sealed class SourceSyncCoordinator
         {
             throw;
         }
-        catch (Exception exception)
+        catch (Exception)
         {
-            errors.Add($"Source enumeration failed: {exception.Message}");
+            errors.Add("Source enumeration failed.");
         }
 
         var isComplete = scan.IsComplete && enumerationCompleted;
@@ -118,34 +118,72 @@ public sealed class SourceSyncCoordinator
             {
                 throw;
             }
-            catch (Exception exception)
+            catch (Exception)
             {
-                errors.Add($"Missing-item reconciliation failed: {exception.Message}");
+                errors.Add("Source missing-item reconciliation failed.");
             }
         }
 
         return new SourceSyncResult(added, updated, errors, isComplete);
     }
 
-    private async Task<UpsertOutcome> UpsertItemAsync(
+    public Task<SourceItemResult> IngestItemAsync(
+        Guid sourceId, SourceItem item, CancellationToken ct)
+        => IngestItemAsync(sourceId, item, null, ct);
+
+    internal async Task<SourceItemResult> IngestItemAsync(
+        Guid sourceId, SourceItem item,
+        Func<ISEStudioDbContext, SourceEntity, CancellationToken, Task<bool>>? guard,
+        CancellationToken ct)
+    {
+        ValidateItem(item);
+        await using var staged = await StagedBlobUpload.CreateAsync(item.Content, ct).ConfigureAwait(false);
+        return await UpsertItemAsync(sourceId, null, null, item, staged, ct, guard).ConfigureAwait(false);
+    }
+
+    private async Task<SourceItemResult> UpsertItemAsync(
         Guid sourceId,
-        Guid jobId,
-        Guid runId,
+        Guid? jobId,
+        Guid? runId,
         SourceItem item,
         StagedBlobUpload staged,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<ISEStudioDbContext, SourceEntity, CancellationToken, Task<bool>>? guard = null)
     {
         for (var attempt = 0; attempt < MaxWriteAttempts; attempt++)
         {
             await using var db = await _contexts.CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
             await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken)
                 .ConfigureAwait(false);
-            if (!await _jobs.ValidateClaimUnderLockAsync(db, sourceId, jobId, runId, cancellationToken)
-                    .ConfigureAwait(false))
-                throw new InvalidOperationException("Source sync claim is no longer current or its lease expired.");
-
-            var source = await db.Sources.SingleAsync(itemSource => itemSource.Id == sourceId, cancellationToken)
-                .ConfigureAwait(false);
+            SourceEntity source;
+            if (jobId is { } syncJobId && runId is { } syncRunId)
+            {
+                if (!await _jobs.ValidateClaimUnderLockAsync(db, sourceId, syncJobId, syncRunId, cancellationToken)
+                        .ConfigureAwait(false))
+                    throw new InvalidOperationException("Source sync claim is no longer current or its lease expired.");
+                source = await db.Sources.SingleAsync(itemSource => itemSource.Id == sourceId, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                SourceEntity? lockedSource;
+                if (db.Database.IsNpgsql())
+                    lockedSource = await db.Sources.FromSqlInterpolated(
+                        $"SELECT * FROM source WHERE id = {sourceId} FOR UPDATE")
+                        .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+                else
+                {
+                    await db.Database.ExecuteSqlInterpolatedAsync(
+                        $"UPDATE source SET id = id WHERE id = {sourceId}", cancellationToken).ConfigureAwait(false);
+                    lockedSource = await db.Sources.SingleOrDefaultAsync(itemSource => itemSource.Id == sourceId,
+                        cancellationToken).ConfigureAwait(false);
+                }
+                if (lockedSource is null || (guard is not null
+                    ? !await guard(db, lockedSource, cancellationToken).ConfigureAwait(false)
+                    : lockedSource.Kind is SourceKind.Api or SourceKind.Statements || !_adapters.ContainsKey(lockedSource.Kind)))
+                    throw new SourcePushAuthorizationException();
+                source = lockedSource;
+            }
             var bindingSnapshot = await db.SourceDocumentBindings.AsNoTracking()
                 .SingleOrDefaultAsync(binding => binding.SourceId == sourceId
                     && binding.ExternalKey == item.ExternalKey, cancellationToken)
@@ -206,7 +244,7 @@ public sealed class SourceSyncCoordinator
                         .ConfigureAwait(false);
                     await RenewAndCommitAsync(db, transaction, sourceId, jobId, runId, cancellationToken)
                         .ConfigureAwait(false);
-                    return UpsertOutcome.None;
+                    return new SourceItemResult(0, 0);
                 }
 
                 if (binding is not null && candidateDocument is not null)
@@ -220,7 +258,7 @@ public sealed class SourceSyncCoordinator
                         .ConfigureAwait(false);
                     await RenewAndCommitAsync(db, transaction, sourceId, jobId, runId, cancellationToken)
                         .ConfigureAwait(false);
-                    return new UpsertOutcome(0, 1);
+                    return new SourceItemResult(0, 1);
                 }
 
                 var shouldUpdateInPlace = binding is not null
@@ -247,7 +285,7 @@ public sealed class SourceSyncCoordinator
                         .ConfigureAwait(false);
                     await RenewAndCommitAsync(db, transaction, sourceId, jobId, runId, cancellationToken)
                         .ConfigureAwait(false);
-                    return new UpsertOutcome(0, 1);
+                    return new SourceItemResult(0, 1);
                 }
 
                 var addedDocument = candidateDocument;
@@ -295,7 +333,7 @@ public sealed class SourceSyncCoordinator
                     .ConfigureAwait(false);
                 await RenewAndCommitAsync(db, transaction, sourceId, jobId, runId, cancellationToken)
                     .ConfigureAwait(false);
-                return new UpsertOutcome(addedCount, addedCount == 0 && binding is not null ? 1 : 0);
+                return new SourceItemResult(addedCount, addedCount == 0 && binding is not null ? 1 : 0);
             }
             catch (DbUpdateException exception) when (IsRetryableConflict(exception))
             {
@@ -489,11 +527,12 @@ public sealed class SourceSyncCoordinator
         ISEStudioDbContext db,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction transaction,
         Guid sourceId,
-        Guid jobId,
-        Guid runId,
+        Guid? jobId,
+        Guid? runId,
         CancellationToken cancellationToken)
     {
-        if (!await _jobs.RenewUnderLockAsync(db, sourceId, jobId, runId, cancellationToken).ConfigureAwait(false))
+        if (jobId is { } syncJobId && runId is { } syncRunId
+            && !await _jobs.RenewUnderLockAsync(db, sourceId, syncJobId, syncRunId, cancellationToken).ConfigureAwait(false))
             throw new InvalidOperationException("Source sync claim changed before item commit.");
         await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -534,8 +573,4 @@ public sealed class SourceSyncCoordinator
         ArgumentNullException.ThrowIfNull(item.Content);
     }
 
-    private sealed record UpsertOutcome(int Added, int Updated)
-    {
-        public static UpsertOutcome None { get; } = new(0, 0);
-    }
 }

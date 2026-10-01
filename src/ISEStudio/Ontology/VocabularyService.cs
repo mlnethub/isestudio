@@ -720,6 +720,7 @@ public static class VocabularyServiceCollectionExtensions
     /// </summary>
     public static IServiceCollection AddVocabularyServices(this IServiceCollection services)
     {
+        services.AddScoped<SkosManager>();
         services.AddScoped<VocabularyService>();
         services.AddScoped<VocabularyProposalService>();
         // Application service facade for the twenty-eight vocabulary

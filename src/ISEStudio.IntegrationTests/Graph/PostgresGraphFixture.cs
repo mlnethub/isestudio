@@ -161,6 +161,12 @@ public sealed class PostgresGraphFixture : IAsyncLifetime
         return connection;
     }
 
+    public string GetConnectionString(string database)
+    {
+        var builder = new NpgsqlConnectionStringBuilder(_container.GetConnectionString()) { Database = database };
+        return builder.ConnectionString;
+    }
+
     public async Task ResetGraphWritesAsync()
     {
         await using var connection = await OpenConnectionAsync();

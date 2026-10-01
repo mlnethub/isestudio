@@ -285,6 +285,37 @@ public sealed class SourceEntityConfiguration : IEntityTypeConfiguration<SourceE
     }
 }
 
+public sealed class SourceStatementEntityConfiguration : IEntityTypeConfiguration<SourceStatementEntity>
+{
+    public void Configure(EntityTypeBuilder<SourceStatementEntity> builder)
+    {
+        builder.ToTable("source_statement");
+        builder.HasKey(item => item.Id);
+        builder.Property(item => item.ExternalStatementId).HasMaxLength(1024).IsRequired();
+        builder.Property(item => item.PayloadSha256).HasMaxLength(64).IsRequired();
+        builder.Property(item => item.FactKey).HasMaxLength(80).IsRequired();
+        builder.Property(item => item.SourceNameSnapshot).HasMaxLength(255).IsRequired();
+        builder.HasIndex(item => new { item.SourceId, item.ExternalStatementId }).IsUnique().HasFilter("\"SourceId\" IS NOT NULL");
+        builder.HasIndex(item => new { item.KnowledgeSystemId, item.FactKey });
+        builder.HasOne<SourceEntity>().WithMany().HasForeignKey(item => item.SourceId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(item => item.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+public sealed class SourceStatementFactEntityConfiguration : IEntityTypeConfiguration<SourceStatementFactEntity>
+{
+    public void Configure(EntityTypeBuilder<SourceStatementFactEntity> builder)
+    {
+        builder.ToTable("source_statement_fact");
+        builder.HasKey(item => item.Id);
+        builder.Property(item => item.FactKey).HasMaxLength(80).IsRequired();
+        builder.HasIndex(item => new { item.SourceStatementId, item.FactKey }).IsUnique();
+        builder.HasIndex(item => new { item.KnowledgeSystemId, item.FactKey });
+        builder.HasOne<SourceStatementEntity>().WithMany().HasForeignKey(item => item.SourceStatementId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne<KnowledgeSystemEntity>().WithMany().HasForeignKey(item => item.KnowledgeSystemId).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
 public sealed class SourceSyncJobEntityConfiguration : IEntityTypeConfiguration<SourceSyncJobEntity>
 {
     public void Configure(EntityTypeBuilder<SourceSyncJobEntity> builder)

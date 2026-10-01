@@ -171,9 +171,11 @@ public sealed class RdfImportService
         var incoming = RdfDotNetRdfCodec.ParseNQuads(nQuads).Statements
             .Select(s => s with { GraphIri = graphIri }).ToList();
         var layerName = layer.ToString();
+        await using var write = await _statements.BeginWriteAsync(ks.KnowledgeSystemId, cancellationToken).ConfigureAwait(false);
         var existing = await _statements.ListAsync(ks.KnowledgeSystemId, layerName, cancellationToken).ConfigureAwait(false);
         var next = mode == ImportMode.Replace ? incoming : RdfStatementSet.Merge(existing, incoming);
         await _statements.ReplaceLayerAsync(ks.KnowledgeSystemId, layerName, next, cancellationToken).ConfigureAwait(false);
+        await write.CommitAsync(cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -250,6 +252,7 @@ public sealed class RdfImportService
             blankNodeScope);
 
         var partition = _parser.Partition(parsed.Statements, target);
+        await using var write = await _statements.BeginWriteAsync(ks.Id, cancellationToken).ConfigureAwait(false);
 
         // Shared GroupId so the two audit rows (TBox + ABox) collapse
         // into one logical "rdf.import" event in the audit trail.
@@ -376,6 +379,8 @@ public sealed class RdfImportService
 
         await _stats.RefreshAsync(ks.Id, cancellationToken).ConfigureAwait(false);
 
+        await write.CommitAsync(cancellationToken).ConfigureAwait(false);
+
         return new RdfImportResult(
             Filename: request.Filename,
             Format: parsed.Format,
@@ -415,11 +420,13 @@ public sealed class RdfImportService
     {
         var incoming = statements.Select(statement => statement with { GraphIri = graphIri }).ToList();
         var layer = LayerForGraph(graphIri);
+        await using var write = await _statements.BeginWriteAsync(knowledgeSystemId, cancellationToken).ConfigureAwait(false);
         var existing = await _statements.ListAsync(knowledgeSystemId, layer, cancellationToken).ConfigureAwait(false);
         var next = strategy == "replace" ? incoming : existing.Concat(incoming).Distinct().ToList();
         var addedStatements = next.Except(existing).ToList();
         var removedStatements = existing.Except(next).ToList();
         await _statements.ReplaceLayerAsync(knowledgeSystemId, layer, next, cancellationToken).ConfigureAwait(false);
+        await write.CommitAsync(cancellationToken).ConfigureAwait(false);
         var addedBytes = Serialize(addedStatements);
         var removedBytes = Serialize(removedStatements);
         return (CountLines(addedBytes), CountLines(removedBytes), addedBytes, removedBytes);

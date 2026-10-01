@@ -143,6 +143,8 @@ public sealed class ResolutionService
         if (role < KSRole.Editor)
             throw new ValidationException("Editor access required to resolve.");
 
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
+
         var row = await _db.EntityResolutions
             .FirstOrDefaultAsync(r => r.KnowledgeSystemId == ks.Id && r.Id == rowId, ct)
             .ConfigureAwait(false);
@@ -201,6 +203,7 @@ public sealed class ResolutionService
             detail, "abox",
             added, removed, null, ct).ConfigureAwait(false);
 
+        await write.CommitAsync(ct).ConfigureAwait(false);
         return ToDecision(row);
     }
 

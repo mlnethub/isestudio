@@ -36,7 +36,10 @@ public sealed class ExtractionRunApiTests
     [Fact]
     public async Task Post_extract_tbox_creates_job_and_writes_ontology_classes()
     {
-        await using var app = new AuthTestWebApplicationFactory();
+        await using var app = new AuthTestWebApplicationFactory(
+            passwordOverride: null,
+            sourceEncryptionKey: null,
+            extractionWorkerEnabled: true);
         FakeChatClientFactory.Default.Reset();
         // Extract reply + the two verify replies that keep every candidate.
         // The blob text is FakeChat.VerifySourceText so the critic evidence
@@ -142,7 +145,10 @@ public sealed class ExtractionRunApiTests
     [Fact]
     public async Task Post_extract_instances_creates_job_and_writes_individuals()
     {
-        await using var app = new AuthTestWebApplicationFactory();
+        await using var app = new AuthTestWebApplicationFactory(
+            passwordOverride: null,
+            sourceEncryptionKey: null,
+            extractionWorkerEnabled: true);
         FakeChatClientFactory.Default.Reset();
         var (client, _) = await SeedAdminAndClientAsync(app);
         var (ksId, ksGuid) = await SeedKnowledgeSystemAsync(app, client, "b6b-abox");
@@ -189,7 +195,10 @@ public sealed class ExtractionRunApiTests
     [Fact]
     public async Task Post_extract_all_combined_runs_tbox_and_abox()
     {
-        await using var app = new AuthTestWebApplicationFactory();
+        await using var app = new AuthTestWebApplicationFactory(
+            passwordOverride: null,
+            sourceEncryptionKey: null,
+            extractionWorkerEnabled: true);
         FakeChatClientFactory.Default.Reset();
         var (client, _) = await SeedAdminAndClientAsync(app);
         var (ksId, ksGuid) = await SeedKnowledgeSystemAsync(app, client, "b6b-combined");
@@ -479,6 +488,20 @@ public sealed class ExtractionRunApiTests
         // The wire `id` is the KS primary-key Guid (the migration dropped
         // the legacy integer from the DTO).
         var ksId = body.GetProperty("id").GetGuid();
+        var db = app.CreateDbContext();
+        var provider = new ProviderEntity
+        {
+            Name = $"test-openai-{tag}",
+            BaseUrl = "https://api.example.com",
+            ApiKey = "test-key",
+            Model = "gpt-4",
+            Kind = "llm",
+            ConcurrencyLimit = 4,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Providers.Add(provider);
+        db.KnowledgeSystems.Single(system => system.Id == ksId).LlmProviderId = provider.Id;
+        db.SaveChanges();
         return (ksId, ksId);
     }
 
@@ -590,10 +613,14 @@ public sealed class ExtractionRunApiTests
             if (job.ValueKind != JsonValueKind.Undefined)
             {
                 var status = job.GetProperty("status").GetString();
-                if (status == "completed" || status == "failed")
+                if (status == "failed")
                 {
-                    return;
+                    var error = job.TryGetProperty("error", out var errorElement)
+                        ? errorElement.GetString()
+                        : null;
+                    throw new Xunit.Sdk.XunitException($"Job {jobId} failed: {error ?? "no error details"}");
                 }
+                if (status == "completed") return;
             }
             await Task.Delay(100);
         }

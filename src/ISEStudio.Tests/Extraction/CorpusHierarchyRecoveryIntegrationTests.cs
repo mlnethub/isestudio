@@ -1,8 +1,14 @@
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using ISEStudio.Conflicts;
 using ISEStudio.Configuration;
 using ISEStudio.Extraction;
+using ISEStudio.Extraction.Dovetail;
+using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
+using ISEStudio.Knowledge;
 using ISEStudio.Llm;
 using ISEStudio.Ontology;
 using ISEStudio.Parsing;
@@ -46,8 +52,20 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
             var ksId = rdf.KnowledgeSystemId;
             const string graphIri = "http://goodcrew.local/ks/recovery-tests";
             const string baseIri = graphIri + "/onto#";
+            var providerId = Guid.NewGuid();
             using (var db = contexts.CreateDbContext())
             {
+                db.Providers.Add(new ProviderEntity
+                {
+                    Id = providerId,
+                    Name = "recovery-fixture-llm",
+                    BaseUrl = "https://fake.test/v1",
+                    ApiKey = "test-key",
+                    Model = "fake-model",
+                    Kind = "llm",
+                    ConcurrencyLimit = 2,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                });
                 db.KnowledgeSystems.Add(new KnowledgeSystemEntity
                 {
                     Id = ksId,
@@ -55,6 +73,7 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
                     Name = "Recovery fixture",
                     GraphIri = graphIri,
                     BaseIri = baseIri,
+                    LlmProviderId = providerId,
                     CreatedAt = DateTimeOffset.UtcNow,
                     UpdatedAt = DateTimeOffset.UtcNow,
                 });
@@ -87,25 +106,21 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
 
                 var jobs = new ExtractionJobStore(contexts, TimeProvider.System);
                 var verifyService = new TBoxVerifyService(Options.Create(new ISEStudioOptions()));
-                var orchestrator = new ExtractionOrchestrator(
-                    jobs,
-                    blobs,
-                    new DocumentParser(),
-                    new Chunker(size: 400, overlap: 20),
-                    FakeChatClientFactory.Default,
-                    new EndpointCapacityCoordinator(),
-                    new TBoxExtractionService(Options.Create(new ISEStudioOptions())),
-                    new ABoxExtractionService(Options.Create(new ISEStudioOptions())),
-                    new TerminologyService(rdf.Statements),
-                    new PromptSnapshotService(),
-                    new FakeMerger(new ExtractionMerger(rdf.Statements)),
-                    rdf.Statements,
-                    TimeProvider.System,
-                    verify: verifyService,
-                    corpus: new CorpusRecoveryService(
-                        Options.Create(new ISEStudioOptions()), verifyService),
-                    hierarchy: new HierarchyRecoveryService(
-                        Options.Create(new ISEStudioOptions()), verifyService));
+                var options = Options.Create(new ISEStudioOptions());
+                var corpusService = new CorpusRecoveryService(options, verifyService);
+                var hierarchyService = new HierarchyRecoveryService(options, verifyService);
+                ExtractionOrchestrator? orchestrator = null;
+                using var services = BuildServices(
+                    contexts, rdf, jobs, blobs, verifyService, corpusService, hierarchyService,
+                    () => orchestrator ?? throw new InvalidOperationException("Orchestrator is not initialized."));
+                orchestrator = new ExtractionOrchestrator(
+                    jobs, blobs, new DocumentParser(), new Chunker(size: 400, overlap: 20),
+                    FakeChatClientFactory.Default, new EndpointCapacityCoordinator(),
+                    new TBoxExtractionService(options), new ABoxExtractionService(options),
+                    new TerminologyService(rdf.Statements), new PromptSnapshotService(),
+                    new ExtractionMerger(rdf.Statements), rdf.Statements, TimeProvider.System,
+                    options, verifyService, corpusService, hierarchyService,
+                    services.GetRequiredService<IServiceScopeFactory>());
 
                 var request = new ExtractionRequest(
                     KnowledgeSystemId: ksId,
@@ -117,7 +132,7 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
                     ApiKey: null,
                     ConcurrencyLimit: 2);
                 var job = await orchestrator.StartTBoxAsync(request, CancellationToken.None);
-                var finished = await jobs.WaitAsync(job.Id);
+                var finished = await RunDurableWorkerUntilTerminalAsync(services, jobs, job.Id);
 
                 Assert.Equal("completed", finished.Status);
                 // 1 extract + 1 critic + 1 denotation + 1 hierarchy recovery.
@@ -154,6 +169,86 @@ public sealed class CorpusHierarchyRecoveryIntegrationTests : IDisposable
                 // Stale directory handles on Windows must never fail the run.
             }
             await rdf.DisposeAsync();
+        }
+    }
+
+    private static ServiceProvider BuildServices(
+        SqliteContextFactory contexts,
+        PostgresRdfFixture rdf,
+        ExtractionJobStore jobs,
+        IBlobStore blobs,
+        TBoxVerifyService verify,
+        CorpusRecoveryService corpus,
+        HierarchyRecoveryService hierarchy,
+        Func<ExtractionOrchestrator> orchestratorFactory)
+    {
+        var options = Options.Create(new ISEStudioOptions());
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton<Microsoft.EntityFrameworkCore.IDbContextFactory<ISEStudioDbContext>>(contexts);
+        services.AddScoped<ISEStudioDbContext>(sp =>
+            sp.GetRequiredService<Microsoft.EntityFrameworkCore.IDbContextFactory<ISEStudioDbContext>>()
+                .CreateDbContext());
+        services.AddSingleton<IRdfStatementRepository>(rdf.Statements);
+        services.AddSingleton(jobs);
+        services.AddSingleton<IChatClientFactory>(FakeChatClientFactory.Default);
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton(options);
+        services.AddSingleton(verify);
+        services.AddSingleton(corpus);
+        services.AddSingleton(hierarchy);
+        services.AddScoped<EmbeddingGeneratorFactory>();
+        services.AddScoped<DuplicateJudge>();
+        services.AddScoped<ConflictService>();
+        services.AddScoped<IConflictAgent, ConflictAgent>();
+        services.AddScoped<IStructureAgent, StructureAgent>();
+        services.AddSingleton<OntologyViewBuilder>();
+        services.AddScoped<IKnowledgeStatsService, KnowledgeStatsService>();
+        services.AddScoped<TerminologyAgent>();
+        services.AddSingleton(blobs);
+        services.AddSingleton<IDocumentParser, DocumentParser>();
+        services.AddSingleton(new Chunker(size: 400, overlap: 20));
+        services.AddSingleton(new EndpointCapacityCoordinator());
+        services.AddSingleton(new TBoxExtractionService(options));
+        services.AddSingleton(new ABoxExtractionService(options));
+        services.AddSingleton<ITerminologySync>(new TerminologyService(rdf.Statements));
+        services.AddSingleton(new PromptSnapshotService());
+        services.AddSingleton<IExtractionMerger>(new ExtractionMerger(rdf.Statements));
+        services.AddDovetailPipelines();
+        services.AddScoped<IExtractionJobHandler, TBoxExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, ABoxExtractionJobHandler>();
+        services.AddScoped<IExtractionJobHandler, CombinedExtractionJobHandler>();
+        services.AddScoped<ExtractionJobDispatcher>();
+        services.AddSingleton<ExtractionOrchestrator>(_ => orchestratorFactory());
+        return services.BuildServiceProvider();
+    }
+
+    private static async Task<ExtractionJobEntity> RunDurableWorkerUntilTerminalAsync(
+        ServiceProvider services,
+        ExtractionJobStore jobs,
+        Guid jobId)
+    {
+        var worker = new DurableExtractionWorker(
+            services.GetRequiredService<IServiceScopeFactory>(),
+            jobs,
+            TimeProvider.System,
+            NullLogger<DurableExtractionWorker>.Instance,
+            Options.Create(new DurableExtractionWorkerOptions
+            {
+                PollInterval = TimeSpan.FromMilliseconds(10),
+                SupportedKinds = new[] { ExtractionWire.KindTBox, ExtractionWire.KindABox, ExtractionWire.KindBoth },
+            }));
+        using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var workerTask = worker.StartAsync(cancellation.Token);
+        try
+        {
+            return await jobs.WaitAsync(jobId, cancellation.Token);
+        }
+        finally
+        {
+            cancellation.Cancel();
+            await worker.StopAsync(CancellationToken.None);
+            await workerTask;
         }
     }
 

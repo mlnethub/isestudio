@@ -66,6 +66,8 @@ public sealed class HistoryService
         var role = await _access.GetEffectiveRoleAsync(user, ks, _db, ct).ConfigureAwait(false);
         if (role < KSRole.Editor) throw new InvalidOperationException("Editor access required for rollback.");
 
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
+
         var target = await _db.AuditEvents.AsNoTracking()
             .FirstOrDefaultAsync(e => e.Id == eventId && e.KnowledgeSystemId == ksId, ct).ConfigureAwait(false);
         if (target is null) throw new KeyNotFoundException("History event not found");
@@ -128,6 +130,7 @@ public sealed class HistoryService
             openConflicts = await _conflicts.SyncAfterOntologyMutationAsync(ksId, semantic: false, ct).ConfigureAwait(false);
         }
         var view = await _ontology.GetViewAsync(ksId, actor, ct).ConfigureAwait(false);
+        await write.CommitAsync(ct).ConfigureAwait(false);
         return new RollbackResponseOut(undone, view, openConflicts);
     }
 

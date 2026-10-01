@@ -171,6 +171,7 @@ public sealed class ABoxService
         ArgumentNullException.ThrowIfNull(req);
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
         if (string.IsNullOrWhiteSpace(req.Label))
             throw new InvalidOperationException("label is required.");
         if (string.IsNullOrWhiteSpace(req.ClassIri))
@@ -198,7 +199,9 @@ public sealed class ABoxService
             },
             ksc.ABoxGraph, added, removed, ct).ConfigureAwait(false);
 
-        return _manager.GetIndividual(ksc, iri, classLabels, propLabels);
+        var result = _manager.GetIndividual(ksc, iri, classLabels, propLabels);
+        await write.CommitAsync(ct).ConfigureAwait(false);
+        return result;
     }
 
     /// <summary>
@@ -222,6 +225,7 @@ public sealed class ABoxService
         ArgumentNullException.ThrowIfNull(req);
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
 
         var kind = NormalizeKind(req.Kind);
         var prop = NormalizeProp(req.Prop);
@@ -261,7 +265,9 @@ public sealed class ABoxService
                 ct).ConfigureAwait(false);
         }
 
-        return _manager.GetIndividual(ksc, subjectIri, classLabels, propLabels);
+        var result = _manager.GetIndividual(ksc, subjectIri, classLabels, propLabels);
+        await write.CommitAsync(ct).ConfigureAwait(false);
+        return result;
     }
 
     /// <summary>
@@ -280,6 +286,7 @@ public sealed class ABoxService
         ArgumentNullException.ThrowIfNull(req);
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
 
         var kind = NormalizeKind(req.Kind);
         var prop = NormalizeProp(req.Prop);
@@ -312,7 +319,9 @@ public sealed class ABoxService
         // with the RDF graph without a pre-check.
         await _provenance.RemoveFactsAsync(ks.Id, factKey, ct).ConfigureAwait(false);
 
-        return _manager.GetIndividual(ksc, subjectIri, classLabels, propLabels);
+        var result = _manager.GetIndividual(ksc, subjectIri, classLabels, propLabels);
+        await write.CommitAsync(ct).ConfigureAwait(false);
+        return result;
     }
 
     /// <summary>
@@ -329,6 +338,7 @@ public sealed class ABoxService
         ArgumentException.ThrowIfNullOrEmpty(iri);
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
 
         var ksc = ToKsContext(ks);
         var classLabels = await LoadClassLabelsAsync(ks, ct).ConfigureAwait(false);
@@ -352,6 +362,7 @@ public sealed class ABoxService
             },
             ksc.ABoxGraph, added, removedBytes, ct).ConfigureAwait(false);
 
+        await write.CommitAsync(ct).ConfigureAwait(false);
         return new DeleteIndividualResponse(removed);
     }
 
@@ -631,6 +642,7 @@ public sealed class ABoxService
         }
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (ks is null) return null;
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
 
         var provenanceRows = await _db.AboxProvenances.AsNoTracking()
             .CountAsync(p => p.KnowledgeSystemId == ks.Id, ct)
@@ -671,6 +683,7 @@ public sealed class ABoxService
         // parity — a stale row must not survive a destructive operation.
         await _stats.RefreshAsync(ks.Id, ct).ConfigureAwait(false);
 
+        await write.CommitAsync(ct).ConfigureAwait(false);
         return new ResetAboxResponse(removed.Length, provenanceRows, resolutionRows);
     }
 
@@ -711,6 +724,7 @@ public sealed class ABoxService
     {
         var (user, ks) = await RequireRoleAsync(ksId, actor, KSRole.Editor, ct).ConfigureAwait(false);
         if (user is null || ks is null) return null;
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
 
         var op = req.Op ?? new Dictionary<string, JsonElement>();
         if (!op.TryGetValue("kind", out var kindEl) || kindEl.ValueKind != JsonValueKind.String)
@@ -770,6 +784,7 @@ public sealed class ABoxService
             graphIri, added, removed, ct).ConfigureAwait(false);
 
         var report = _validator.Validate(ksc);
+        await write.CommitAsync(ct).ConfigureAwait(false);
         return MapReport(report);
     }
 

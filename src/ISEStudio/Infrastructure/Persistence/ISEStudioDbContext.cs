@@ -75,6 +75,10 @@ public sealed class ISEStudioDbContext : DbContext
 
     public DbSet<SourceDocumentBindingEntity> SourceDocumentBindings => Set<SourceDocumentBindingEntity>();
 
+    public DbSet<SourceStatementEntity> SourceStatements => Set<SourceStatementEntity>();
+
+    public DbSet<SourceStatementFactEntity> SourceStatementFacts => Set<SourceStatementFactEntity>();
+
     /// <summary>Uploaded source files, per-KS dedup on (KS, Sha256).</summary>
     public DbSet<DocumentEntity> Documents => Set<DocumentEntity>();
 

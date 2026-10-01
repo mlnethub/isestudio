@@ -332,6 +332,7 @@ public sealed class ReleaseService
         if (!CaptureReady(row))
             throw new ResourceInUseException("Release snapshot is not ready.");
 
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
         var ksc = KsContext.FromEntity(ks);
         foreach (var layer in new[] { RdfLayer.TBox, RdfLayer.ABox, RdfLayer.Vocabulary })
         {
@@ -361,6 +362,7 @@ public sealed class ReleaseService
             $"Restored release {row.Version}",
             new Dictionary<string, object?> { ["release_id"] = row.Id, ["version"] = row.Version },
             ct).ConfigureAwait(false);
+        await write.CommitAsync(ct).ConfigureAwait(false);
         return new ReleaseRollbackResponse(row.Id, row.Version);
     }
 

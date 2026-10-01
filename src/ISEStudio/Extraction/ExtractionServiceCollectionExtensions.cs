@@ -35,11 +35,11 @@ public static class ExtractionServiceCollectionExtensions
         services.AddSingleton<CorpusRecoveryService>();
         services.AddSingleton<HierarchyRecoveryService>();
         services.AddSingleton<ABoxExtractionService>();
-        services.AddSingleton<TerminologyService>();
-        services.AddSingleton<ITerminologySync>(sp => sp.GetRequiredService<TerminologyService>());
+        services.AddScoped<TerminologyService>();
+        services.AddScoped<ITerminologySync>(sp => sp.GetRequiredService<TerminologyService>());
         services.AddSingleton<PromptSnapshotService>();
-        services.AddSingleton<IExtractionMerger, ExtractionMerger>();
-        services.AddSingleton<ExtractionOrchestrator>();
+        services.AddScoped<IExtractionMerger, ExtractionMerger>();
+        services.AddScoped<ExtractionOrchestrator>();
         services.AddScoped<TerminologyAgent>();
         services.AddScoped<IExtractionJobHandler, ParserExtractionJobHandler>();
         services.AddScoped<IExtractionJobHandler, TBoxExtractionJobHandler>();

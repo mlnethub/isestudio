@@ -100,6 +100,17 @@ public sealed class SourceSyncJobStore
             }
 
             var now = _clock.GetUtcNow();
+            if (SourceAdapterRegistry.IsReservedKind(source.Kind))
+            {
+                job.Status = Failed;
+                job.FinishedAt = now;
+                job.Error = "Source kind is not available.";
+                source.LastSyncStatus = Failed;
+                source.LastSyncError = job.Error;
+                await db.SaveChangesAsync(ct).ConfigureAwait(false);
+                await transaction.CommitAsync(ct).ConfigureAwait(false);
+                continue;
+            }
             var run = new SourceSyncRunEntity
             {
                 SourceId = sourceId.Value,

@@ -96,6 +96,22 @@ public sealed class OntologyProvenanceService
                 Actor: string.IsNullOrEmpty(r.ActorName) ? null : r.ActorName,
                 Review: r.ReviewRecord));
         }
+        var statementSources = await (
+            from relationship in _db.SourceStatementFacts.AsNoTracking()
+            join statement in _db.SourceStatements.AsNoTracking() on relationship.SourceStatementId equals statement.Id
+            where relationship.KnowledgeSystemId == ksId && statement.KnowledgeSystemId == ksId
+            select new { relationship.FactKey, Statement = statement }).ToListAsync(ct).ConfigureAwait(false);
+        foreach (var source in statementSources)
+        {
+            if (!grouped.TryGetValue(source.FactKey, out var list))
+            {
+                list = new List<ProvenanceSourceOut>();
+                grouped[source.FactKey] = list;
+            }
+            var statement = source.Statement;
+            list.Add(new ProvenanceSourceOut(null, null, null, null, null, "source", statement.SourceNameSnapshot, null,
+                statement.SourceId, statement.Id, statement.ExternalStatementId, statement.SourceNameSnapshot));
+        }
         return grouped.Select(kv => new ProvenanceGroupOut(kv.Key, kv.Value)).ToList();
     }
 

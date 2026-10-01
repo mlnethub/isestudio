@@ -2283,6 +2283,79 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.SourceStatementEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ExternalStatementId")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("character varying(1024)");
+
+                    b.Property<string>("FactKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<Guid>("KnowledgeSystemId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("PayloadSha256")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<Guid?>("SourceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("SourceNameSnapshot")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("character varying(255)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("KnowledgeSystemId", "FactKey");
+
+                    b.HasIndex("SourceId", "ExternalStatementId")
+                        .IsUnique()
+                        .HasFilter("\"SourceId\" IS NOT NULL");
+
+                    b.ToTable("source_statement", (string)null);
+                });
+
+            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.SourceStatementFactEntity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("FactKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<Guid>("KnowledgeSystemId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("SourceStatementId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("KnowledgeSystemId", "FactKey");
+
+                    b.HasIndex("SourceStatementId", "FactKey")
+                        .IsUnique();
+
+                    b.ToTable("source_statement_fact", (string)null);
+                });
+
             modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.SourceSyncJobEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2789,9 +2862,6 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("KnowledgeSystemId", "Layer");
-
-                    b.HasIndex("KnowledgeSystemId", "Layer", "Subject", "Predicate", "Object", "Language", "Datatype")
-                        .IsUnique();
 
                     b.ToTable("workspace_statements", (string)null);
                 });
@@ -3327,6 +3397,35 @@ namespace ISEStudio.Infrastructure.Persistence.Migrations
                     b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
                         .WithMany()
                         .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.SourceStatementEntity", b =>
+                {
+                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.SourceEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SourceId")
+                        .OnDelete(DeleteBehavior.SetNull);
+                });
+
+            modelBuilder.Entity("ISEStudio.Infrastructure.Persistence.Entities.SourceStatementFactEntity", b =>
+                {
+                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.KnowledgeSystemEntity", null)
+                        .WithMany()
+                        .HasForeignKey("KnowledgeSystemId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("ISEStudio.Infrastructure.Persistence.Entities.SourceStatementEntity", null)
+                        .WithMany()
+                        .HasForeignKey("SourceStatementId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
                 });

@@ -130,6 +130,7 @@ public sealed class OntologyService
         }
 
         var aboxGraphIri = AboxIri(ks.GraphIri);
+        await using var write = await _statements.BeginWriteAsync(ks.Id, ct).ConfigureAwait(false);
         var preTBox = await _statements.ListAsync(ks.Id, "TBox", ct).ConfigureAwait(false);
         var preABox = await _statements.ListAsync(ks.Id, "ABox", ct).ConfigureAwait(false);
         await _statements.ReplaceLayerAsync(ks.Id, "TBox", Array.Empty<RdfStatement>(), ct).ConfigureAwait(false);
@@ -149,6 +150,7 @@ public sealed class OntologyService
         // the reset (mirrors Python's ontology.py:188).
         await _stats.RefreshAsync(ks.Id, ct).ConfigureAwait(false);
 
+        await write.CommitAsync(ct).ConfigureAwait(false);
         return new OntologyEditResult(ks.GraphIri);
     }
 

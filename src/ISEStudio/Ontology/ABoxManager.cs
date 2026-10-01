@@ -24,11 +24,14 @@ namespace ISEStudio.Ontology;
 /// </remarks>
 public sealed class ABoxManager
 {
+    private const string XsdString = "http://www.w3.org/2001/XMLSchema#string";
     private readonly IABoxGraphStore _store;
+    private readonly IRdfStatementRepository _statements;
 
     public ABoxManager(IRdfStatementRepository statements)
     {
         ArgumentNullException.ThrowIfNull(statements);
+        _statements = statements;
         _store = new PostgresABoxGraphStore(statements);
     }
 
@@ -44,6 +47,9 @@ public sealed class ABoxManager
     /// a hint only — the actual IRI is <c>BaseIri + "ind-" + uuid4[:12]</c>.
     /// </summary>
     public string CreateIndividual(KsContext ks, string individualIri, string classIri, string label)
+        => Write(ks, () => CreateIndividualCore(ks, individualIri, classIri, label));
+
+    private string CreateIndividualCore(KsContext ks, string individualIri, string classIri, string label)
     {
         Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
@@ -85,6 +91,9 @@ public sealed class ABoxManager
     /// user-facing callers should pass the 4-arg overload with a label.
     /// </summary>
     public string CreateIndividual(KsContext ks, string individualIri, string classIri)
+        => Write(ks, () => CreateIndividualCore(ks, individualIri, classIri));
+
+    private string CreateIndividualCore(KsContext ks, string individualIri, string classIri)
     {
         Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
@@ -110,6 +119,9 @@ public sealed class ABoxManager
 
     /// <summary>Remove every quad whose subject is <paramref name="iri"/> in the ABox graph.</summary>
     public int DeleteIndividual(KsContext ks, string iri)
+        => Write(ks, () => DeleteIndividualCore(ks, iri));
+
+    private int DeleteIndividualCore(KsContext ks, string iri)
     {
         Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
@@ -128,6 +140,9 @@ public sealed class ABoxManager
 
     /// <summary>Add <c>iri rdf:type classIri</c> to the ABox graph.</summary>
     public void AddType(KsContext ks, string iri, string classIri)
+        => Write(ks, () => AddTypeCore(ks, iri, classIri));
+
+    private void AddTypeCore(KsContext ks, string iri, string classIri)
     {
         Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
@@ -145,6 +160,9 @@ public sealed class ABoxManager
 
     /// <summary>Remove the <c>iri rdf:type classIri</c> triple from the ABox graph.</summary>
     public void RemoveType(KsContext ks, string iri, string classIri)
+        => Write(ks, () => RemoveTypeCore(ks, iri, classIri));
+
+    private void RemoveTypeCore(KsContext ks, string iri, string classIri)
     {
         Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
@@ -174,6 +192,9 @@ public sealed class ABoxManager
     /// this to count only fresh assertions).
     /// </summary>
     public bool AddObjectAssertion(KsContext ks, string subject, string property, string target)
+        => Write(ks, () => AddObjectAssertionCore(ks, subject, property, target));
+
+    private bool AddObjectAssertionCore(KsContext ks, string subject, string property, string target)
     {
         Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
@@ -199,6 +220,9 @@ public sealed class ABoxManager
 
     /// <summary>Remove an object-property assertion.</summary>
     public void RemoveObjectAssertion(KsContext ks, string subject, string property, string target)
+        => Write(ks, () => RemoveObjectAssertionCore(ks, subject, property, target));
+
+    private void RemoveObjectAssertionCore(KsContext ks, string subject, string property, string target)
     {
         Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
@@ -220,6 +244,9 @@ public sealed class ABoxManager
     /// means <c>xsd:string</c> per the RDF spec).
     /// </summary>
     public bool AddDataAssertion(KsContext ks, string subject, string property, string value, string? datatype)
+        => Write(ks, () => AddDataAssertionCore(ks, subject, property, value, datatype));
+
+    private bool AddDataAssertionCore(KsContext ks, string subject, string property, string value, string? datatype)
     {
         Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
@@ -229,9 +256,7 @@ public sealed class ABoxManager
 
         if (_store is null) return false;
 
-        var literal = datatype is null
-            ? new RdfLiteral(value)
-            : new RdfLiteral(value, Datatype: datatype);
+        var literal = new RdfLiteral(value, Datatype: datatype == XsdString ? null : datatype);
 
         var existing = _store.Match(
             subjectIri: subject, predicateIri: property, graphIri: ks.ABoxGraph);
@@ -249,6 +274,9 @@ public sealed class ABoxManager
 
     /// <summary>Remove a data-property assertion.</summary>
     public void RemoveDataAssertion(KsContext ks, string subject, string property, string value, string? datatype)
+        => Write(ks, () => RemoveDataAssertionCore(ks, subject, property, value, datatype));
+
+    private void RemoveDataAssertionCore(KsContext ks, string subject, string property, string value, string? datatype)
     {
         Bind(ks);
         ArgumentNullException.ThrowIfNull(ks);
@@ -258,9 +286,7 @@ public sealed class ABoxManager
 
         if (_store is null) return;
 
-        var literal = datatype is null
-            ? new RdfLiteral(value)
-            : new RdfLiteral(value, Datatype: datatype);
+        var literal = new RdfLiteral(value, Datatype: datatype == XsdString ? null : datatype);
 
         var existing = _store.Match(
             subjectIri: subject, predicateIri: property, graphIri: ks.ABoxGraph);
@@ -549,6 +575,17 @@ public sealed class ABoxManager
             DataAssertions: dataAssertions);
     }
 
+    private TResult Write<TResult>(KsContext ks, Func<TResult> mutation)
+    {
+        ArgumentNullException.ThrowIfNull(ks);
+        using var write = _statements.BeginWriteAsync(ks.KnowledgeSystemId).GetAwaiter().GetResult();
+        var result = mutation();
+        write.Commit();
+        return result;
+    }
+
+    private void Write(KsContext ks, Action mutation) => Write(ks, () => { mutation(); return true; });
+
     private void Bind(KsContext ks)
     {
         ArgumentNullException.ThrowIfNull(ks);
@@ -626,7 +663,7 @@ public sealed class ABoxManager
 
         public void AddStatements(string graphIri, IEnumerable<RdfStatement> statements)
         {
-            var existing = Match(graphIri: graphIri);
+            var existing = _statements.ListAsync(_knowledgeSystemId, "ABox").GetAwaiter().GetResult();
             var merged = existing.Concat(statements).Distinct().ToList();
             _statements.ReplaceLayerAsync(_knowledgeSystemId, "ABox", merged)
                 .GetAwaiter().GetResult();
@@ -635,8 +672,8 @@ public sealed class ABoxManager
         public void RemoveStatements(string graphIri, IEnumerable<RdfStatement> statements)
         {
             var remove = statements.ToHashSet();
-            var remaining = Match(graphIri: graphIri)
-                .Where(s => !remove.Contains(s))
+            var remaining = _statements.ListAsync(_knowledgeSystemId, "ABox").GetAwaiter().GetResult()
+                .Where(s => s.GraphIri != graphIri || !remove.Contains(s))
                 .ToList();
             _statements.ReplaceLayerAsync(_knowledgeSystemId, "ABox", remaining)
                 .GetAwaiter().GetResult();

@@ -28,7 +28,7 @@
          migration entry point builds an AmazonS3Client from CLI args so
          the PowerShell wrapper can wire MinIO without forcing the rest
          of the project to take a transitive SDK dependency. -->
-    <PackageReference Include="AWSSDK.S3" Version="4.0.102.4" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.103.4" />
     <!-- Oxigraph 0.5.8: the data-cutover RDF layer (Task 2) consumes the
          same disk-backed store wrapper the rest of ISEStudio already uses.
          The Migration project deliberately does NOT depend on

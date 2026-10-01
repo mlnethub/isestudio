@@ -21,7 +21,9 @@ public sealed record SourceOut(
 /// </summary>
 public sealed record ProvenanceSourceOut(
     Guid? ChunkId, Guid? DocumentId, Guid? JobId, string? Model,
-    JsonDocument? PromptSnapshot, string Method, string? Actor, JsonDocument? Review);
+    JsonDocument? PromptSnapshot, string Method, string? Actor, JsonDocument? Review,
+    Guid? SourceId = null, Guid? SourceStatementId = null, string? ExternalStatementId = null,
+    string? SourceNameSnapshot = null);
 
 /// <summary>
 /// One axiom's full provenance — every chunk + job + reviewer that

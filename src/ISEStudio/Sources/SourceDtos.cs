@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace ISEStudio.Sources;
 
@@ -24,7 +25,8 @@ public sealed record SourceOut(
     int LastSyncAdded,
     DateTimeOffset CreatedAt,
     int DocumentCount,
-    int MissingDocumentCount);
+    int MissingDocumentCount,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RssFullContentSummary? RssFullContent = null);
 
 public sealed record SourceDetailOut(
     Guid Id,
@@ -41,7 +43,10 @@ public sealed record SourceDetailOut(
     DateTimeOffset CreatedAt,
     int DocumentCount,
     int MissingDocumentCount,
-    JsonElement Config);
+    JsonElement Config,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] RssFullContentSummary? RssFullContent = null);
+
+public sealed record RssFullContentSummary(string ContentMode, int DocumentCount, int MissingDocumentCount);
 
 public sealed record SourceTokenOut(string Token);
 

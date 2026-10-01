@@ -1,6 +1,8 @@
 using System.Runtime.CompilerServices;
+using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using ISEStudio.Application.Foundation;
 using ISEStudio.Authorization;
 using ISEStudio.Documents;
@@ -9,11 +11,13 @@ using ISEStudio.Infrastructure.Persistence;
 using ISEStudio.Infrastructure.Persistence.Entities;
 using ISEStudio.IntegrationTests.Graph;
 using ISEStudio.Sources;
+using ISEStudio.Sources.Networking;
 using ISEStudio.Storage;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Options;
 
 namespace ISEStudio.IntegrationTests.Ingestion;
 
@@ -1032,6 +1036,224 @@ public sealed class SourceSyncTests : IClassFixture<PostgresGraphFixture>
         Assert.True(await blobs.ExistsAsync(storedBlob.Sha256, CancellationToken.None));
         await jobs.CompleteAsync(jobId, runId, result, CancellationToken.None);
         if (Directory.Exists(blobRoot)) Directory.Delete(blobRoot, recursive: true);
+    }
+
+    [Theory]
+    [InlineData("url")]
+    [InlineData("rss")]
+    [InlineData("custom")]
+    [InlineData("github_issues")]
+    [InlineData("jira_issues")]
+    public async Task Real_http_adapters_keep_identity_versions_and_failed_scans_never_reconcile(string kind)
+    {
+        var http = new ConnectorHttpFake();
+        await using var services = _fixture.BuildServices(collection =>
+        {
+            collection.AddSingleton(TimeProvider.System);
+            collection.AddSingleton<IConfiguration>(new ConfigurationBuilder().Build());
+            collection.AddSingleton<KnowledgeSystemAccessService>();
+            collection.AddSingleton<IOptions<SourceNetworkOptions>>(Options.Create(new SourceNetworkOptions()));
+            collection.AddSingleton<ISafeSourceHttpClient>(kind is "github_issues" or "jira_issues"
+                ? new SafeSourceHttpClient(new SourceNetworkPolicy(new ConnectorPublicDns(), Options.Create(new SourceNetworkOptions())), http,
+                    Options.Create(new SourceNetworkOptions()), TimeProvider.System) : http);
+            collection.AddSourceServices();
+        });
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<ISEStudioDbContext>();
+        var contexts = scope.ServiceProvider.GetRequiredService<IDbContextFactory<ISEStudioDbContext>>();
+        var source = new SourceEntity
+        {
+            KnowledgeSystemId = _fixture.KnowledgeSystemId,
+            Kind = kind,
+            Name = $"real-http-{kind}-{Guid.NewGuid():N}",
+            Config = JsonSerializer.Serialize(kind switch
+            {
+                "url" => (object)new { urls = new[] { "https://example.test/a", "https://example.test/b" } },
+                "rss" => new { feed_url = "https://example.test/feed" },
+                "github_issues" => new { repo = "owner/repo" },
+                "jira_issues" => new { base_url = "https://example.test", project = "TEST" },
+                _ => new { endpoint = "https://example.test/api" },
+            }),
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        db.Sources.Add(source);
+        await db.SaveChangesAsync();
+        var jobs = scope.ServiceProvider.GetRequiredService<SourceSyncJobStore>();
+        var coordinator = scope.ServiceProvider.GetRequiredService<SourceSyncCoordinator>();
+        var time = DateTimeOffset.Parse("2026-09-29T10:00:00Z");
+
+        void Responses(string value, bool includeSecond = true, bool complete = true, bool fail = false)
+        {
+            if (kind is "github_issues" or "jira_issues")
+            {
+                var status = value == "alpha" ? "open" : value == "bravo" ? "closed" : "open";
+                if (kind == "github_issues")
+                {
+                    var entries = new List<object> { new { node_id = "key-a", number = value == "alpha" ? 1 : 9, title = Content(value), body = Content(value), state = status, created_at = time, updated_at = time } };
+                    entries.AddRange(Enumerable.Range(1, 99).Select(index => (object)new { node_id = $"pr-{index}", pull_request = new { url = "https://api.github.com/pull" } }));
+                    http.Bodies["https://api.github.com/repos/owner/repo/issues?state=all&per_page=100&page=1"] = JsonSerializer.Serialize(entries);
+                    http.Bodies["https://api.github.com/repos/owner/repo/issues?state=all&per_page=100&page=2"] = includeSecond
+                        ? JsonSerializer.Serialize(new[] { new { node_id = "key-b", number = 2, title = Content("b"), body = Content("unchanged-b"), state = "open", created_at = time, updated_at = time } }) : "[]";
+                    http.FailedUrl = fail ? "https://api.github.com/repos/owner/repo/issues?state=all&per_page=100&page=2" : null;
+                }
+                else
+                {
+                    string Url(int offset) => "https://example.test/rest/api/2/search?jql=" + Uri.EscapeDataString("project = TEST ORDER BY id ASC")
+                        + "&fields=summary,description,status,created,updated,resolutiondate&maxResults=100&startAt=" + offset;
+                    http.Bodies[Url(0)] = JsonSerializer.Serialize(new { startAt = 0, maxResults = 1, total = includeSecond || fail ? 2 : 1,
+                        issues = new[] { new { id = "key-a", key = value == "alpha" ? "TEST-1" : "MOVED-99", fields = new { summary = Content(value), description = Content(value), status = new { name = status }, created = time, updated = time } } } });
+                    http.Bodies[Url(1)] = JsonSerializer.Serialize(new { startAt = 1, maxResults = 1, total = 2,
+                        issues = new[] { new { id = "key-b", key = "TEST-2", fields = new { summary = Content("b"), description = Content("unchanged-b"), status = new { name = "open" }, created = time, updated = time } } } });
+                    http.FailedUrl = fail ? Url(1) : null;
+                }
+                return;
+            }
+            http.Bodies["https://example.test/a"] = Content(value);
+            http.Bodies["https://example.test/b"] = Content("unchanged-b");
+            http.Bodies["https://example.test/feed"] = $"<rss><channel><item><guid>key-a</guid><link>https://example.test/a</link><pubDate>Tue, 29 Sep 2026 10:00:00 GMT</pubDate></item>{(includeSecond ? "<item><guid>key-b</guid><link>https://example.test/b</link></item>" : "")}</channel></rss>";
+            http.Bodies["https://example.test/api"] = JsonSerializer.Serialize(new
+            {
+                items = includeSecond && !fail ? new[] { new { id = "key-a", content = Content(value), doc_time = time }, new { id = "key-b", content = Content("unchanged-b"), doc_time = time } }
+                    : new[] { new { id = "key-a", content = Content(value), doc_time = time } },
+                is_complete = complete,
+                next_url = fail ? "/failure" : null,
+            });
+            http.FailedUrl = fail ? kind is "rss" or "url" ? "https://example.test/b" : "https://example.test/failure" : null;
+        }
+
+        async Task<SourceSyncResult> Run()
+        {
+            var jobId = await jobs.EnqueueAsync(source.Id, CancellationToken.None);
+            var claim = Assert.IsType<SourceSyncJobEntity>(await jobs.ClaimNextAsync(CancellationToken.None));
+            Assert.Equal(source.Id, claim.SourceId);
+            var runId = Assert.IsType<Guid>(claim.ActiveRunId);
+            var result = await coordinator.RunAsync(source.Id, jobId, runId, CancellationToken.None);
+            await jobs.CompleteAsync(jobId, runId, result, CancellationToken.None);
+            return result;
+        }
+
+        Responses("alpha");
+        Assert.Equal(2, (await Run()).Added);
+        var first = await ReadSourceStateAsync(contexts, source.Id);
+        var key = kind == "url" ? "https://example.test/a" : "key-a";
+        var firstId = first.Bindings.Single(binding => binding.ExternalKey == key).DocumentId;
+        Assert.Equal(0, (await Run()).Updated);
+        Assert.Equal(2, (await ReadSourceStateAsync(contexts, source.Id)).FileVersions.Count);
+        Responses("bravo");
+        Assert.Equal(1, (await Run()).Updated);
+        var updated = await ReadSourceStateAsync(contexts, source.Id);
+        Assert.Equal(firstId, updated.Bindings.Single(binding => binding.ExternalKey == key).DocumentId);
+        Assert.Equal(new[] { 1, 2 }, updated.FileVersions.Where(version => version.DocumentId == firstId).OrderBy(version => version.Version).Select(version => version.Version));
+        Assert.Equal(3, updated.ParseJobs.Count);
+        Assert.All(updated.FileVersions.Where(version => version.DocumentId == firstId), version => Assert.Equal(kind == "url" ? (DateTimeOffset?)null : time, version.DocTime));
+        Responses("partial-update", includeSecond: true, complete: false, fail: true);
+        var failed = await Run();
+        Assert.False(failed.IsComplete);
+        Assert.NotEmpty(failed.Errors);
+        Assert.Equal(0, failed.Added);
+        Assert.Equal(1, failed.Updated);
+        var afterFailure = await ReadSourceStateAsync(contexts, source.Id);
+        Assert.All(afterFailure.Bindings, binding => Assert.Null(binding.MissingSince));
+        Assert.Equal(updated.FileVersions.Count + 1, afterFailure.FileVersions.Count);
+        Assert.Equal(updated.ParseJobs.Count + 1, afterFailure.ParseJobs.Count);
+        Assert.Equal(new[] { 1, 2, 3 }, afterFailure.FileVersions.Where(version => version.DocumentId == firstId).OrderBy(version => version.Version).Select(version => version.Version));
+        await using (var verify = await contexts.CreateDbContextAsync())
+        {
+            Assert.Equal("failed", (await verify.Sources.SingleAsync(item => item.Id == source.Id)).LastSyncStatus);
+            Assert.Equal("failed", (await verify.SourceSyncRuns.Where(run => run.SourceId == source.Id).OrderByDescending(run => run.StartedAt).FirstAsync()).Status);
+        }
+        Responses("partial-add", includeSecond: true, complete: false, fail: true);
+        foreach (var url in http.Bodies.Keys.ToArray())
+            http.Bodies[url] = http.Bodies[url].Replace("key-a", "key-c", StringComparison.Ordinal);
+        if (kind == "url")
+        {
+            http.Bodies["https://example.test/c"] = Content("partial-add");
+            await using var change = await contexts.CreateDbContextAsync();
+            var persisted = await change.Sources.SingleAsync(item => item.Id == source.Id);
+            persisted.Config = JsonSerializer.Serialize(new { urls = new[] { "https://example.test/c", "https://example.test/b" } });
+            await change.SaveChangesAsync();
+        }
+        var partialAdd = await Run();
+        Assert.Equal(1, partialAdd.Added);
+        Assert.Equal(0, partialAdd.Updated);
+        Assert.False(partialAdd.IsComplete);
+        Assert.NotEmpty(partialAdd.Errors);
+        var afterAdd = await ReadSourceStateAsync(contexts, source.Id);
+        Assert.Equal(3, afterAdd.Bindings.Count);
+        Assert.All(afterAdd.Bindings, binding => Assert.Null(binding.MissingSince));
+        if (kind is "github_issues" or "jira_issues")
+        {
+            Responses("reopened");
+            Assert.Equal(1, (await Run()).Updated);
+            var reopened = await ReadSourceStateAsync(contexts, source.Id);
+            Assert.Equal(firstId, reopened.Bindings.Single(binding => binding.ExternalKey == key).DocumentId);
+            Assert.Equal(new[] { 1, 2, 3, 4 }, reopened.FileVersions.Where(version => version.DocumentId == firstId).OrderBy(version => version.Version).Select(version => version.Version));
+            Responses("reopened", includeSecond: false, fail: true);
+            Assert.False((await Run()).IsComplete);
+            var afterReopenedFailure = await ReadSourceStateAsync(contexts, source.Id);
+            Assert.All(afterReopenedFailure.Bindings.Where(binding => binding.ExternalKey != "key-c"), binding => Assert.Null(binding.MissingSince));
+            Assert.Equal(reopened.Bindings.Single(binding => binding.ExternalKey == "key-c").MissingSince,
+                afterReopenedFailure.Bindings.Single(binding => binding.ExternalKey == "key-c").MissingSince);
+        }
+        if (kind == "custom")
+        {
+            Responses("bravo", includeSecond: false, complete: false);
+            Assert.False((await Run()).IsComplete);
+            Assert.All((await ReadSourceStateAsync(contexts, source.Id)).Bindings, binding => Assert.Null(binding.MissingSince));
+        }
+        else if (kind == "url")
+        {
+            await using var change = await contexts.CreateDbContextAsync();
+            var persisted = await change.Sources.SingleAsync(item => item.Id == source.Id);
+            persisted.Config = JsonSerializer.Serialize(new { urls = new[] { "https://example.test/a" } });
+            await change.SaveChangesAsync();
+        }
+        Responses(kind is "github_issues" or "jira_issues" ? "reopened" : "bravo", includeSecond: false);
+        Assert.True((await Run()).IsComplete);
+        var reconciled = await ReadSourceStateAsync(contexts, source.Id);
+        Assert.Null(reconciled.Bindings.Single(binding => binding.ExternalKey == key).MissingSince);
+        Assert.All(reconciled.Bindings.Where(binding => binding.ExternalKey != key), binding => Assert.NotNull(binding.MissingSince));
+    }
+
+    private sealed class ConnectorPublicDns : ISourceDnsResolver
+    {
+        public Task<IPAddress[]> ResolveAsync(string host, CancellationToken ct)
+            => Task.FromResult(new[] { IPAddress.Parse("8.8.8.8") });
+    }
+
+    private sealed class ConnectorHttpFake : ISafeSourceHttpClient, ISourceHttpTransport
+    {
+        public Dictionary<string, string> Bodies { get; } = new();
+        public string? FailedUrl { get; set; }
+
+        public Task<Stream> GetAsync(Uri uri, SourceRequestOptions options, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (uri.AbsoluteUri == FailedUrl) throw new SourceNetworkException("Source upstream request failed.");
+            return Task.FromResult<Stream>(new MemoryStream(Encoding.UTF8.GetBytes(Bodies[uri.AbsoluteUri])));
+        }
+
+        public Task<Stream> PropFindAsync(Uri uri, int depth, SourceRequestOptions options, CancellationToken ct)
+            => throw new NotSupportedException();
+
+        public Task<SourceHttpResponse> SendAsync(HttpRequestMessage request, IReadOnlyList<IPAddress> addresses, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Assert.Empty(request.Headers.IfNoneMatch);
+            var url = request.RequestUri!.AbsoluteUri;
+            var response = new HttpResponseMessage(url == FailedUrl ? HttpStatusCode.NotModified : HttpStatusCode.OK)
+            {
+                Content = new StringContent(url == FailedUrl ? "" : Bodies[url], Encoding.UTF8, "application/json"),
+            };
+            if (request.RequestUri.Host == "api.github.com" && url.EndsWith("page=1", StringComparison.Ordinal))
+            {
+                var next = url[..^1] + "2";
+                if (Bodies.TryGetValue(next, out var nextBody) && (nextBody != "[]" || next == FailedUrl))
+                    response.Headers.TryAddWithoutValidation("Link", $"<{next}>; rel=\"next\"");
+            }
+            return Task.FromResult(new SourceHttpResponse(response));
+        }
     }
 
     private async Task<(SourceEntity Source, UserEntity Actor)> CreateSourceAndActorAsync(

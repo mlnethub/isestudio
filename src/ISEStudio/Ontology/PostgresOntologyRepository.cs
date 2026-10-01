@@ -31,7 +31,7 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
             item => item.GraphIri == graphIri, cancellationToken).ConfigureAwait(false)
             ?? throw new OntologyEditException($"Knowledge system not found for graph: {graphIri}");
 
-        await using var transaction = await _db.Database.BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
+        await using var transaction = await RdfWriteScope.BeginAsync(_db, system.Id, cancellationToken).ConfigureAwait(false);
         try
         {
             var result = operation switch
@@ -62,7 +62,6 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
         }
         catch
         {
-            await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             throw;
         }
     }
@@ -409,7 +408,8 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
         IReadOnlyDictionary<string, object?> payload,
         CancellationToken cancellationToken)
     {
-        var all = (await _statements!.ListAsync(system.Id, cancellationToken: cancellationToken).ConfigureAwait(false)).ToList();
+        var allTBox = await _statements!.ListAsync(system.Id, "TBox", cancellationToken).ConfigureAwait(false);
+        var allABox = await _statements.ListAsync(system.Id, "ABox", cancellationToken).ConfigureAwait(false);
         // Normalise the graph IRI once — the raw GraphIri column may have a
         // trailing slash, but every read path (KsContext.TBoxGraph,
         // PostgresRdfGraphStore, ABoxService.LoadClassLabelsAsync, …) goes
@@ -417,8 +417,8 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
         // write is what the reader looks up.
         var tboxGraph = system.GraphIri.TrimEnd('/');
         var aboxGraph = tboxGraph + "/abox";
-        var tbox = all.Where(statement => statement.GraphIri == tboxGraph).ToList();
-        var abox = all.Where(statement => statement.GraphIri == aboxGraph).ToList();
+        var tbox = allTBox.Where(statement => statement.GraphIri == tboxGraph).ToList();
+        var abox = allABox.Where(statement => statement.GraphIri == aboxGraph).ToList();
 
         switch (operation)
         {
@@ -641,8 +641,10 @@ public sealed class PostgresOntologyRepository : IOntologyRepository
             }
         }
 
-        await _statements.ReplaceLayerAsync(system.Id, RdfLayer.TBox.ToString(), tbox, cancellationToken).ConfigureAwait(false);
-        await _statements.ReplaceLayerAsync(system.Id, RdfLayer.ABox.ToString(), abox, cancellationToken).ConfigureAwait(false);
+        await _statements.ReplaceLayerAsync(system.Id, RdfLayer.TBox.ToString(),
+            allTBox.Where(statement => statement.GraphIri != tboxGraph).Concat(tbox).ToList(), cancellationToken).ConfigureAwait(false);
+        await _statements.ReplaceLayerAsync(system.Id, RdfLayer.ABox.ToString(),
+            allABox.Where(statement => statement.GraphIri != aboxGraph).Concat(abox).ToList(), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

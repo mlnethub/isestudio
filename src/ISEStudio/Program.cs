@@ -31,6 +31,7 @@ using ISEStudio.Exports;
 using ISEStudio.Parsing;
 using ISEStudio.Prompts;
 using ISEStudio.Sources;
+using ISEStudio.Sources.Networking;
 using ISEStudio.Sparql;
 using ISEStudio.Providers;
 using ISEStudio.Serialization;
@@ -435,6 +436,14 @@ builder.Services.AddSparqlServices();
 // (singleton, registered above) for the Viewer / Editor / Owner gates.
 builder.Services.AddKnowledgeServices();
 builder.Services.AddSourceServices();
+builder.Services.AddOptions<SourceNetworkOptions>()
+    .Bind(builder.Configuration.GetSection("ISEStudio:Sources:Networking"));
+builder.Services.AddSingleton<ISourceDnsResolver, SourceDnsResolver>();
+builder.Services.AddSingleton<SourceNetworkPolicy>();
+builder.Services.AddSingleton<ISourceSocketConnector, SourceSocketConnector>();
+builder.Services.AddSingleton<ISourceHttpTransport, SourceHttpTransport>();
+builder.Services.AddSingleton<ISafeSourceHttpClient, SafeSourceHttpClient>();
+builder.Services.AddTransient<SourceDiscoveryBudget>();
 var sourceTickerEnabled = builder.Configuration.GetValue<bool?>("ISEStudio:Sources:TickerQ:Enabled") ?? true;
 if (sourceTickerEnabled)
 {
@@ -528,8 +537,6 @@ builder.Services.AddExtractionServices();
 // ABoxService pattern). SkosManager is registered here as a singleton
 // (depends on the scoped IRdfStatementRepository); the underlying TerminologyService
 // + ExtractionJobStore come from AddExtractionServices above.
-builder.Services.AddSingleton<SkosManager>(sp =>
-    new SkosManager(sp.GetRequiredService<IRdfStatementRepository>()));
 builder.Services.AddVocabularyServices();
 
 // ---- Releases exports (slice 7b) ----
@@ -779,6 +786,7 @@ app.UseMiddleware<FastApiErrorMiddleware>();
 
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseRateLimiter();
 
 // DNS-rebinding protection runs FIRST on /mcp so a malicious origin
 // sending a malformed bearer cannot elicit a 401 envelope before the
