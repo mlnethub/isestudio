@@ -501,12 +501,26 @@ export const api = {
     request<IngestionSourceKind[]>(`/api/knowledge/${ksId}/ingestion-sources/kinds`),
   createIngestionSource: (
     ksId: string,
-    body: { kind: string; name: string; icon?: string | null; config?: Record<string, unknown> },
+    body: {
+      kind: string
+      name: string
+      icon?: string | null
+      sync_interval_minutes?: number | null
+      sync_cron?: string | null
+      config?: Record<string, unknown>
+    },
   ) => request<IngestionSource>(`/api/knowledge/${ksId}/ingestion-sources`, json(body)),
   updateIngestionSource: (
     ksId: string,
     sourceId: string,
-    body: { kind: string; name: string; icon?: string | null; config?: Record<string, unknown> },
+    body: {
+      kind: string
+      name: string
+      icon?: string | null
+      sync_interval_minutes?: number | null
+      sync_cron?: string | null
+      config?: Record<string, unknown>
+    },
   ) => request<IngestionSource>(`/api/knowledge/${ksId}/ingestion-sources/${sourceId}`, patch(body)),
   deleteIngestionSource: (ksId: string, sourceId: string) =>
     request<void>(`/api/knowledge/${ksId}/ingestion-sources/${sourceId}`, { method: "DELETE" }),

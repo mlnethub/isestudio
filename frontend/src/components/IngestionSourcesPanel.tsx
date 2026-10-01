@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import IngestionSourceSchedulePicker from "@/components/IngestionSourceSchedulePicker"
 import {
   Table,
   TableBody,
@@ -19,7 +20,9 @@ import {
 import { api } from "@/lib/api"
 import { useConfirm } from "@/lib/confirm"
 import { useI18n } from "@/lib/i18n"
+import { sourceConfigFieldLabel, sourceKindLabel } from "@/lib/ingestionSourceLabels"
 import { waitForIngestionSourceJob } from "@/lib/ingestionSourceSync"
+import { scheduleForSourceKind, scheduleToPickerState, type IngestionSourceSchedulePickerState } from "@/lib/ingestionSourceSchedule"
 import type { IngestionSource, IngestionSourceDetail, IngestionSourceKind, IngestionSourceRun } from "@/lib/types"
 
 type SourceForm = {
@@ -27,6 +30,7 @@ type SourceForm = {
   kind: string
   name: string
   config: Record<string, string | boolean>
+  schedule: IngestionSourceSchedulePickerState
 }
 
 function formatDate(value: string, locale: string) {
@@ -131,7 +135,7 @@ export default function IngestionSourcesPanel({
   const openCreate = () => {
     const kind = kinds[0]
     if (!kind) return
-    setForm({ id: null, kind: kind.kind, name: "", config: {} })
+    setForm({ id: null, kind: kind.kind, name: "", config: {}, schedule: scheduleToPickerState() })
     setFormError("")
   }
 
@@ -157,6 +161,7 @@ export default function IngestionSourcesPanel({
         kind: form.kind,
         name: form.name.trim(),
         config: configForRequest(form, kind),
+        ...scheduleForSourceKind(kind.active_sync, form.schedule),
       }
       if (form.id) await api.updateIngestionSource(ksId, form.id, body)
       else await api.createIngestionSource(ksId, body)
@@ -347,12 +352,17 @@ export default function IngestionSourcesPanel({
                 <Select
                   value={form.kind}
                   disabled={form.id !== null}
-                  onValueChange={(kind) => setForm({ ...form, kind, config: {} })}
+                  onValueChange={(kind) => setForm({
+                    ...form,
+                    kind,
+                    config: {},
+                    schedule: scheduleToPickerState(),
+                  })}
                 >
                   <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {kinds.map((kind) => (
-                      <SelectItem key={kind.kind} value={kind.kind}>{kind.kind}</SelectItem>
+                      <SelectItem key={kind.kind} value={kind.kind}>{sourceKindLabel(kind.kind, t)}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
@@ -371,7 +381,7 @@ export default function IngestionSourcesPanel({
               {kinds.find((kind) => kind.kind === form.kind)?.config_fields.map((field) => (
                 <div key={field.name} className="space-y-2">
                   <Label htmlFor={`source-config-${field.name}`}>
-                    {field.name}{field.required ? " *" : ""}
+                    {sourceConfigFieldLabel(field.name, t)}{field.required ? " *" : ""}
                   </Label>
                   <Input
                     id={`source-config-${field.name}`}
@@ -386,6 +396,12 @@ export default function IngestionSourcesPanel({
                   />
                 </div>
               ))}
+              {kinds.find((kind) => kind.kind === form.kind)?.active_sync && (
+                <IngestionSourceSchedulePicker
+                  value={form.schedule}
+                  onChange={(schedule) => setForm({ ...form, schedule })}
+                />
+              )}
               {formError && <p role="alert" className="text-sm text-destructive">{formError}</p>}
             </form>
           )}
@@ -473,7 +489,7 @@ function SourceRows({
     <>
       <TableRow>
         <TableCell className="font-medium">{source.name}</TableCell>
-        <TableCell>{source.kind}</TableCell>
+        <TableCell>{sourceKindLabel(source.kind, t)}</TableCell>
         <TableCell>
           <Badge variant={source.last_sync_status === "failed" ? "destructive" : "secondary"}>
             {t(`ingestionSources.status.${source.last_sync_status}`)}
@@ -548,11 +564,15 @@ function SourceRows({
 }
 
 function formFromDetail(detail: IngestionSourceDetail, kinds: IngestionSourceKind[]): SourceForm {
-  const fields = kinds.find((kind) => kind.kind === detail.kind)?.config_fields ?? []
+  const kind = kinds.find((item) => item.kind === detail.kind)
+  const fields = kind?.config_fields ?? []
   const config = Object.fromEntries(fields
     .filter((field) => !field.secret && detail.config[field.name] !== undefined)
     .map((field) => [field.name, detail.config[field.name] as string | boolean]))
-  return { id: detail.id, kind: detail.kind, name: detail.name, config }
+  const schedule = kind?.active_sync
+    ? scheduleToPickerState(detail)
+    : scheduleToPickerState()
+  return { id: detail.id, kind: detail.kind, name: detail.name, config, schedule }
 }
 
 function configForRequest(form: SourceForm, kind: IngestionSourceKind): Record<string, unknown> | undefined {
